@@ -1,0 +1,364 @@
+<HTML>   
+     <HEAD>
+<TITLE>October 1999/The Journeyman's Shop</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tococt.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">The Journeyman's Shop: Memory and Object Management, Part 3</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Pete Becker</FONT></H3>
+
+<BLOCKQUOTE>
+<p>A block-structured symbol table and a runtime memory manager present similar administrative problems.</p>
+</BLOCKQUOTE>
+
+<hr>
+<BLOCKQUOTE>
+
+<p>For the past several months, with the exception of last month's brief excursion into testing inspired by a particularly offensive Dilbert &reg; cartoon, we've been talking about memory management. The performance of many applications can be improved by providing an application-specific memory manager, designed to work well with the particular memory demands made by the application. We looked at a memory manager for fixed-size blocks, suitable for use with a linked list. This month we'll look at another form of memory manager, inspired by the needs of compilers of block-structured languages like C, C++, and Pascal. Most of you probably aren't writing compilers, but can still benefit from looking at another memory-management technique. In particular, you can benefit by looking at the sort of problems that must be solved to make a memory manager that's fast and robust. One of the biggest problems is alignment. We'll take a look at what alignment means and how to avoid alignment problems.</p>
+<p>A block-structured language uses delimiters to indicate the beginning and end of a block. C and C++ use curly braces ( <B>{</B> and <B>}</B> ) to mark a block. Pascal uses the keywords <B>begin</B> and <B>end</B> <a href="#1">[1]</a>. You can write a block that's entirely enclosed in another block, but you cannot begin a block inside another block and end it after the end of the enclosing block. When we write a block inside another one we often refer to the enclosing block as the "outer block" and the enclosed block as the "inner block." Symbols defined in an outer block can be used in an inner block, but symbols defined in an inner block cannot be used in an outer block. In addition, symbol definitions in an inner block mask definitions of symbols with the same name in an outer block.</p>
+<p>Block structured languages provide many benefits, but the one we'll be concerned with here is that they make some things easier for compiler writers. When the compiler reaches the end of a block it can throw away much of the information that it has accumulated while compiling that block. For example, because identifiers defined within a block are not available after the end of that block, the compiler doesn't need to keep track of their names or the definitions of variables defined in that block after it has finished processing the block. The memory that was used to store the names of these variables and their definitions can be freed up and reused.</p>
+<p>The data structures that the compiler uses to keep track of names (the "symbol table") must support looking up names in outer blocks, and should take advantage of the block structure to release unneeded memory as early as possible. We'll begin by defining two structs, one to keep track of the properties of blocks, and one to keep track of symbols <a href="#2">[2]</a>:</p>
+
+<pre>
+typedef struct block_data_
+{
+struct block_data_ *outer;
+struct symbol_data_ *sym_tab;
+} block_data;
+ 
+typedef struct symbol_data_
+{
+struct symbol_data_ *prev;
+char *name;
+int type;
+} symbol_data;
+</pre>
+
+<p>Each <B>block_data</B> object has a pointer to the <B>block_data</B> object that contains it. When we enter a new code block we'll create a new <B>block_data</B> object, setting its <B>outer</B> pointer to point to the current <B>block_data</B> object; and when we leave a block we'll remove that block's <B>block_data</B> object. We need to create a pointer to keep track of the current block. When the compiler begins compiling a program we can pretend that it's in a global block, although this block is not delimited in the usual way. So we'll begin by creating a <B>block_data</B> object to represent the global block, and setting our block pointer to point to it:</p>
+
+<pre>
+static block_data global;
+block_data *cur_block = &amp;global;
+</pre>
+
+<p>Since the global block is not nested inside any other block, <B>global.outer</B> can be initialized to zero. Since it currently has no symbols associated with it, <B>global.sym_tab</B> can also be initialized to zero. Since <B>global</B> is defined outside any block, it will be zero-initialized by the compiler and we don't need to provide any explicit initialization for it.</p>
+<p>As our compiler reads through the code that it is compiling it will come across symbol definitions. We need a function to check whether the name is already defined:</p>
+
+<pre>
+int exists(const char *name)
+{
+symbol_data *sym =
+   cur_block-&gt;sym_tab;
+while (sym != 0)
+   if (strcmp(sym-&gt;name, name))
+      sym = sym-&gt;prev;
+   else
+      return 1;
+return 0;
+}
+</pre>
+
+<p>This function simply walks through the linked list of symbols <a href="#3">[3]</a> until it finds a symbol whose name matches the name it's looking for or until it reaches the end of the list.</p>
+<p>We also need a function to add a symbol to the symbol table:</p>
+
+<pre>
+symbol_data *
+add_symbol(const char *name,
+   int type)
+{
+symbol_data *sym =
+   alloc_mem(sizeof(symbol_data));
+sym-&gt;name =
+   alloc_mem(strlen(name) + 1);
+strcpy(sym-&gt;name, name);
+sym-&gt;type = type;
+sym-&gt;prev = cur_block-&gt;sym_tab;
+cur_block-&gt;sym_tab = sym;
+return sym;
+}
+</pre>
+
+<p>This code is straightforward. It begins by allocating a block of memory to hold the new symbol, then allocates a block to hold the name, and stores the name and type of the symbol in the newly allocated blocks. Then it links the new <B>symbol_data</B> object into the linked list of symbols.</p>
+<p>Obviously, we need a function to allocate memory. For now we'll call <B>malloc</B>, and abort execution if there is no memory available:</p>
+
+<pre>
+void *alloc_mem(size_t sz)
+{
+void *res = malloc(sz);
+if (sz == 0)
+   quit("out of memory");
+return res;
+}
+</pre>
+
+<p>And finally, we need to provide the function <B>quit</B>:</p>
+
+<pre>
+void quit(const char *msg)
+{
+fprintf(stderr,
+   "Fatal error: %s\n", msg);
+exit(EXIT_FAILURE);
+}
+</pre>
+
+<p>Now let's write a quick little test driver to check that we haven't made any major errors:</p>
+
+<pre>
+int main()
+{
+assert(!exists("foo"));
+assert(!exists("bar"));
+add_symbol("foo", 0);
+assert(exists("foo"));
+assert(!exists("bar"));
+add_symbol("bar", 0);
+assert(exists("foo"));
+assert(exists("bar"));
+printf("Success\n");
+return 0;
+}
+</pre>
+
+<p>If you put these pieces of code together in a single source file with all the appropriate <B>#include</B> directives you should be able to compile and run the program, and get the output</p>
+
+<pre>
+Success
+</pre>
+
+<p>This tells us that we can add symbols to our symbol table and look them up. The next task to implement is entering and leaving a block. Entering a block is easy: we create a new <B>block_data</B> object and update <B>cur_block</B>:</p>
+
+<pre>
+block_data *enter_block(void)
+{
+block_data *block =
+   alloc_mem(sizeof(block_data));
+block-&gt;outer = cur_block;
+block-&gt;sym_tab = cur_block-&gt;sym_tab;
+cur_block = block;
+return block;
+}
+</pre>
+
+<p>Leaving a block is a bit more complicated. We have to get rid of the symbols that were defined in the current block, update <B>cur_block</B> to point to the outer block, then get rid of our <B>block_data</B> object. Like this:</p>
+
+<pre>
+void exit_block(void)
+{
+block_data *temp_block = cur_block;
+symbol_data *sym =
+   cur_block-&gt;sym_tab;
+symbol_data *end =
+   cur_block-&gt;outer-&gt;sym_tab;
+while (sym != end)
+   {
+   symbol_data *temp_sym = sym;
+   sym = sym-&gt;prev;
+   free_mem(temp_sym);
+   }
+cur_block = cur_block-&gt;outer;
+free_mem(temp_block);
+}
+</pre>
+
+<p>The function <B>free_mem</B> is simply a wrapper around <B>free</B>:</p>
+
+<pre>
+void free_mem(void *ptr)
+{
+free(ptr);
+}
+</pre>
+
+<p>Now we need to extend our test driver, by adding the following in front of the <B>printf</B> call:</p>
+
+<pre>
+enter_block();
+assert(exists("foo"));
+assert(exists("bar"));
+assert(!exists("baz"));
+add_symbol("baz", 0);
+assert(exists("foo"));
+assert(exists("bar"));
+assert(exists("baz"));
+add_symbol("bar", 0);
+assert(exists("foo"));
+assert(exists("bar"));
+assert(exists("baz"));
+exit_block();
+assert(exists("foo"));
+assert(exists("bar"));
+assert(!exists("baz"));
+</pre>
+
+<p>If you're confused by this test code, think of it as checking that the identifiers and blocks in the following sample code can be handled reasonably by the symbol table:</p>
+
+<pre>
+int foo;
+int bar;
+{
+int baz;
+int bar;
+}
+</pre>
+
+<p>Now we can integrate our symbol table and memory management code into the compiler <a href="#4">[4]</a>. When we do that, we quickly discover a problem: our code runs far too slowly. We haven't taken advantage of our special knowledge of how the symbol table uses memory. A bit of thought reveals that every memory block that is allocated after a call to <B>enter_block</B> is released in the corresponding call to <B>exit_block</B>. If we can allocate a single memory block and use it for all of the allocations within a code block, we can release all of the memory with a single function call instead of having to repeatedly call <B>free</B>. We do this with a technique known as mark-and-release: we start with a large memory block and a pointer to the beginning of the block; <B>enter_block</B> copies the pointer; memory allocations bump the pointer by the required size and return the old value of the pointer; and <B>exit_block</B> restores the pointer to the value saved by <B>enter_block</B>. The code looks like this:</p>
+
+<pre>
+#define MEM_SIZE 16384
+static char *mem_block;
+typedef size_t mark_t;
+static mark_t cur_pos;
+ 
+mark_t mark(void)
+{
+if (mem_block == 0
+   &amp;&amp; (mem_block = malloc(MEM_SIZE))
+         == 0)
+   quit("unable to initialize
+      memory manager");
+return cur_pos;
+}
+ 
+void *alloc_mem(size_t sz)
+{
+void *res = mem_block + mark();
+cur_pos += sz;
+return res;
+}
+ 
+void release(mark_t pos)
+{
+assert(mem_block != 0);
+cur_pos = pos;
+}
+</pre>
+
+<p>To use this memory management scheme, we need to change the definition of <B>block_data</B> to provide room to store the marked position. We also need to change <B>enter_block</B> to call <B>mark</B>, and we need to change <B>exit_block</B> to call <B>release</B> instead of individually releasing symbol table entries.</p>
+
+<pre>
+typedef struct block_data_
+{
+struct block_data_ *outer;
+struct symbol_data_ *sym_tab;
+mark_t marked_pos;
+} block_data;
+ 
+block_data *enter_block(void)
+{
+mark_t pos = mark();
+block_data *block =
+   alloc_mem(sizeof(block_data));
+block-&gt;outer = cur_block;
+block-&gt;sym_tab = cur_block-&gt;sym_tab;
+block-&gt;marked_pos = pos;
+cur_block = block;
+return block;
+}
+ 
+void exit_block(void)
+{
+block_data *temp = cur_block;
+cur_block = cur_block-&gt;outer;
+release(temp-&gt;marked_pos);
+}
+</pre>
+
+<p>Once again, compile and run the driver program to satisfy yourself that this code works.</p>
+<p>There's one obvious problem with this memory manager: it can handle only 16,384 bytes of data. If our compiler has to handle many levels of nesting with lots of symbols, it can easily run out of memory. I won't go into details on how to solve this problem here, but I'll sketch the solution. Instead of using a single block, use a linked list of blocks. You can divide the value of the mark by the size of a block to determine which block the mark is in, and use the remainder as the position within that block. It's probably helpful to keep track of the block number of the current block, so that you don't have to count blocks from the beginning when <B>release</B> is called.</p>
+<p>There's a more subtle problem with this memory manager, too. I referred to it earlier: this memory manager doesn't have any provision for alignment issues. The underlying problem here is that some computers require that some data types be stored at addresses that are multiples of some small constant (often 8). The C library function <B>malloc</B> is guaranteed to return memory that is suitably aligned for any data type, so if you stick to <B>malloc</B> and don't play funny pointer games you don't have to worry about alignment problems. But when you start writing your own memory managers you can't avoid thinking about alignment for long.</p>
+<p>Here's a bit of code that demonstrates the problem:</p>
+
+<pre>
+int main()
+{
+double *ptr =
+   malloc(2 * sizeof(double));
+double *ptr1 =
+   (double *)((char *)ptr + 1);
+*ptr = 3.14159265;
+*ptr1 = 2.71828183;
+return 0;
+}
+</pre>
+
+<p>If you compile and run this program under Windows it will run just fine. If you compile and run it on a Sun Sparc system you'll get a core dump. The problem is in the assignment through the pointer <B>ptr1</B>: the value that it contains is not suitably aligned for storage of <B>double</B>s, and when we try to use it as the address of a <B>double</B> the processor objects strenuously.</p>
+<p>Alignment involves more than just avoiding crashes, though. Misaligned pointers can also cause a program to run more slowly. This was an issue for many of us when we upgraded from the first PCs, which used an 8088 chip, to PC AT systems, which used an 80286. The 8088 uses an 8-bit bus to talk to memory. To read data from memory, the processor simply reads the bytes that are needed, one at a time. The 80286 uses a 16-bit bus, which in turn deals with addresses that are even numbers. To read a 16-bit value whose address is an even number, the 80286 reads a single 16-bit value. To read a 16-bit value whose address is an odd number, the 80286 reads the 16-bit value whose address is the even number just below the requested address, then reads the 16-bit value whose address is the even number just above the requested address, and combines the low byte from the first value with the high byte from the second value <a href="#5">[5]</a>. This requires two memory accesses, which takes twice as long as reading a value whose address is an even value.</p>
+<p>Today's architectures use a memory cache to better match the processor's speed to the slower speed of the memory bus. The cache holds blocks of bytes ("cache lines") that are adjacent in memory to bytes that were read recently. This means that misalignment isn't as big a problem &#151; when the processor notices on the first read that the desired address isn't in the cache, it will read several nearby bytes, and chances are good that the data needed for the second read will be pulled into the cache as part of this read. Still, if a data object runs over the edge of a cache line, reading it can end up requiring extra reads, again slowing the program down.</p>
+<p>You may recall that in the memory manager that we looked at in August we also didn't have any code to deal with alignment. That wasn't laziness &#151; it wasn't necessary, because we didn't play any pointer games in that code. We used <B>malloc</B> to allocate enough memory for forty of our memory objects, and doled them out one at a time, as needed. The compiler knows what the alignment requirements on our platform are, and adjusts the size of a struct accordingly. So when we bumped the pointer by the size of our data structure we didn't have to worry about ending up with a pointer that wasn't aligned correctly. In this month's memory manager we're allocating data blocks of several different sizes, including rather arbitrary arrays of <B>char</B> to hold our strings, so the compiler can't help us with alignment. We have to take care of it ourselves.</p>
+<p>Let's begin by assuming that on our hardware platform any data object can be stored at an address that is a multiple of eight. Our original call to <B>malloc</B> gave us back a pointer that was suitably aligned for any data type, so if <B>alloc_mem</B> always allocates a multiple of eight bytes, we can be sure that we will continue to have pointers that are suitably aligned. Making that change is straightforward:</p>
+
+<pre>
+#define ALIGN_SIZE 8
+#define ALIGN(s)                 \
+   ((((s) + ALIGN_SIZE - 1)      \
+      / ALIGN_SIZE) * ALIGN_SIZE)
+ 
+void *alloc_mem(size_t sz)
+{
+void *res = mem_block + mark();
+cur_pos += ALIGN(sz);
+return res;
+}
+</pre>
+
+<p>The macro <B>ALIGN</B> produces a value that is the first multiple of <B>ALIGN_SIZE</B> that is greater than or equal to its argument. Adjusting by this value instead of the actual amount requested guarantees that the next allocation request will produce a pointer that is aligned on a boundary of <B>ALIGN_SIZE</B> bytes. It wastes a bit of space by allocating more than was requested, but that's the price of simplicity.</p>
+<p>Now all we need to do is determine a suitable value of <B>ALIGN_SIZE</B> for our hardware platform. The safest way to do this is to read the system's documentation, and plug the right value into our code. I'd write conditional code for the various systems that I knew about, and make sure that the code produced an error for a system that I hadn't researched. Like this:</p>
+
+<pre>
+#if defined(__BORLANDC__ ) ||
+   defined(_MSC_VER)
+#define ALIGN_SIZE 1
+#elif defined(__sun__)
+#define ALIGN_SIZE 8
+#else
+#error Alignment unknown for target platform
+#endif
+</pre>
+
+<p>Then as I ported the code to other platforms I'd add additional <B>#elif</B> branches as appropriate.</p>
+<p>Some folks prefer to try to make this automatic. The idea is that if you create a union of all the basic types you can be sure that its size will give you a good value for <B>ALIGN_SIZE</B>.</p>
+
+<pre>
+union all_types
+{
+char ch;
+unsigned char uch;
+signed char sch;
+short sh;
+unsigned short ush;
+int i;
+unsigned int ui;
+long l;
+unsigned long ul;
+float f;
+double d;
+void *vptr;
+char *chptr;
+struct undef *sptr;
+};
+ 
+#define ALIGN_SIZE \
+   sizeof(union all_types)
+</pre>
+
+<p>Of course, if you're programming in C++, you have to add pointers to data members and pointers to member functions to this union. This approach can produce a value that's larger than needed, resulting in wasted space. It's safe to assume that a <B>double</B>'s alignment requirement is no larger than the size of a <B>double</B>. Otherwise pointer arithmetic on a <B>double*</B> wouldn't produce valid addresses. But it's certainly reasonable for the alignment requirement of a type to be smaller than the size of that type. A <B>double</B> might take up eight bytes, but require alignment on a 4-byte boundary. In this case, aligning <B>double</B>s on 8-byte boundaries will always work, but it will waste four bytes of space. Personally, I'd stick to checking the right value on each platform.</p>
+<p>Now that we've added code to handle alignment, our memory manager is complete. If you've been typing in the code as we go along, you should be able to add the alignment code, and compile and run the test program. Of course, before putting this code into an actual application, you'd need to develop a comprehensive test suite, factor the code out into separate modules, and write suitable header files. Having code that works doesn't mark the end of a job.</p>
+<p>Next month we'll talk about iteration. There are many ways to walk through all the elements of a container. We'll look at several of them, with an eye toward identifying the most common problems, in the hope that we can develop coding habits that avoid mistakes.</p>
+
+<h4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1] Which leads a friend of mine to refer to Pascal programmers as "begin-enders."</p>
+<p><a name="2"></a>[2] Ordinarily I'd probably name these structs <B>block</B> and <B>symbol</B>, but it's hard to write about blocks and symbols when we have both programming concepts and data structures with the same names. So please be tolerant of these rather cumbersome names.</p>
+<p><a name="3"></a>[3] A real compiler would use a hash table to store symbol names for each block. I've used a linked list here because the code is shorter, so it fits better in an article.</p>
+<p><a name="4"></a>[4] The symbol table for a compiler also must be able to check whether a symbol is defined in the current scope. I haven't provided that function, although it's easy to write. So this test program doesn't check that the definition of <B>bar</B> in the inner block is properly nested, and it doesn't check whether redefinitions in the same scope can be detected.</p>
+<p><a name="5"></a>[5] That's not backwards. The x86 architecture stores the high-order bits of multi-byte values at higher addresses than the low-order bits. That is, it's little-endian.</p>
+
+<p><i><B>Pete Becker</B> is Technical Project Leader for Dinkumware, Ltd. He spent eight years in the C++ group at Borland International, both as a developer and manager. He is a member of the ANSI/ISO C++ standardization committee. He can be reached by email at <B>petebecker@acm.org</B>.</i></p>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

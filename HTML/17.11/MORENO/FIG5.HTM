@@ -1,0 +1,183 @@
+<HTML><HEAD>
+<TITLE>November 1999/Constructing FIR Digital Filters with valarray/Figure 5</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Figure 5: Partial listing of file Signal.h, the Signal class implementation</A></h4>
+<pre>
+#include "FIR.h"
+
+enum Fade_in_modes { linear, cosine_shaped };
+
+template &lt;class T&gt;
+class Signal
+{
+public:
+            // **************  Constructor  ******************
+    Signal (int requested_size = 256, int fade_in_len = 10, 
+            Fade_in_modes mode = linear);
+
+            // *********  Samples insertion methods  *********
+    Signal&lt;T&gt; &amp; operator&lt;&lt; (const T &amp; value)
+    {
+        recent_sample_pos = (recent_sample_pos + 1) &amp; mask;
+        x[recent_sample_pos] = value;
+        return *this;
+    }
+
+    void fade_in (const T &amp; value);  // definition omited here
+
+    template &lt;class Iterator&gt;
+    void insert_block (Iterator block_start, size_t block_size)
+    {
+        if (block_size &gt; capacity() || block_size &lt; 1)
+            throw exception("Bad block_size in Signal::insert_block()");
+
+        if (recent_sample_pos + block_size &lt; x.size())
+        {
+            copy (block_start, block_start + block_size, 
+                  &amp;x[recent_sample_pos + 1]);
+            recent_sample_pos += block_size;
+        }
+        else
+        {
+            copy (block_start, 
+                  block_start + x.size() - recent_sample_pos - 1, 
+                  &amp;x[recent_sample_pos + 1]);
+            copy (block_start + x.size() - recent_sample_pos - 1, 
+                  block_start + block_size, 
+                  &amp;x[0]);
+            recent_sample_pos += block_size - x.size();
+        }
+    }
+
+            // ************  Samples read methods  ************
+    const T &amp; operator[] (int subscript) const
+    {
+        if (subscript &lt;= 0)
+            return const_cast&lt;Signal&lt;T&gt; *&gt;(this) -&gt; 
+                   x[(recent_sample_pos + subscript) &amp; mask];
+        else
+            throw out_of_range("Subscript must be negative");
+    }
+
+    const T &amp; most_recent_sample () const
+    {
+        return const_cast &lt;Signal&lt;T&gt; *&gt;(this)-&gt;x[recent_sample_pos];
+    }
+
+    const T &amp; front () const  { return most_recent_sample(); }
+
+        // ************  Iterators  ***************
+    class iterator
+    {
+        friend class const_iterator;
+    public:
+        iterator (T * sig = NULL, int it = 0, int msk = 0)
+            : signal(sig), iter(it), mask(msk) {}
+
+        T &amp; operator* () const  { return signal[iter]; }
+            // iter was already "ANDed" with mask in 
+            // all the iterator arithmetic operators
+
+        const iterator &amp; operator++ ()
+        {
+            iter = (iter + 1) &amp; mask;
+            return *this;
+        }
+
+        const iterator operator+ (int offset) const
+        {
+            return iterator (signal, (iter+offset) &amp; mask, mask);
+        }
+            // The rest of the operators are not shown here
+
+    private:
+        T * signal;
+        int iter;
+        int mask;
+    };
+
+        // **  class const_iterator is not shown here, to save 
+        // **  magazine space;  its definition is very similar 
+        // **  to that of iterator.
+
+    iterator begin ()
+    {
+        return iterator(&amp;x[0], recent_sample_pos, mask);
+    }
+
+    const_iterator begin () const
+    {
+        return const_iterator (const_cast&lt;Signal&lt;T&gt; *&gt;(this)-&gt;begin());
+    }
+
+        // ************ Filtering Functions ******************
+    template &lt;class FilterCoeff&gt;
+    void filtered_output (const basic_FIR&lt;FilterCoeff&gt; &amp; filter, 
+                          T &amp; result) const
+    {
+        if (recent_sample_pos &gt;= filter.length() - 1)
+            filter.output (&amp;const_cast&lt;Signal&lt;T&gt; *&gt;(this) -&gt; 
+                           x[recent_sample_pos], 
+                           result);
+        else
+            filter.output (begin(), result);
+    }
+
+    template &lt;class FilterCoeff&gt;
+    T filtered_output (const basic_FIR&lt;FilterCoeff&gt; &amp; filter) const
+    {
+        T result;
+        filtered_output (filter, result);
+        return result;
+    }
+
+    template &lt;class FilterCoeff, class OutputIterator&gt;
+    void filtered_block (const basic_FIR&lt;FilterCoeff&gt; &amp; filter, 
+                         int num_samples, OutputIterator y) const
+    {
+        for (int i = -num_samples + 1; i &lt;= 0; i++)
+            if (((recent_sample_pos + i) &amp; mask) &gt;= filter.length()-1)
+                filter.output (&amp;const_cast&lt;Signal&lt;T&gt; *&gt;(this) -&gt; 
+                               x [(recent_sample_pos + i) &amp; mask], 
+                               *y++);
+            else
+                filter.output (begin() + i, *y++);
+    }
+
+            // **************  Misc. / Utility  ***************
+    int capacity () const  { return size; }
+
+private:
+    valarray&lt;T&gt; x;
+    int mask, size, recent_sample_pos;
+
+    Fade_in_modes fade_in_mode;
+    int fade_in_counter, fade_in_length;
+};
+
+
+// *************************************
+//      Member functions definitions
+// *************************************
+
+template &lt;class T&gt;
+Signal&lt;T&gt;::Signal (int requested_size, int fade_len, 
+                   Fade_in_modes mode)
+    : size(requested_size), fade_in_length(fade_len), 
+      fade_in_mode(mode), recent_sample_pos(0), 
+      fade_in_counter(0)
+{
+    mask = -1;
+    while (mask &amp; (size-1))
+        mask &lt;&lt;= 1;
+
+    mask = ~mask;
+    x.resize(mask + 1);
+    x = T();      // Fill the buffer (a valarray) with zeroes
+}
+
+</pre>
+</BODY>
+</HTML>

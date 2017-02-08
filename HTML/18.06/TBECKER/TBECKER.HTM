@@ -1,0 +1,208 @@
+<HTML>   
+     <HEAD>
+<TITLE>June 2000/Generic Extensions to the STL</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocjun.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Generic Extensions to the STL</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Thomas Becker</FONT></H3>
+
+<BLOCKQUOTE>
+<p>STL is a pretty complete set of tinker toys, but you can always find a few more good ones to add.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<H4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>I have had the opportunity, over the past two years, to be part of a major software project that made extensive use of the C++ Standard Template Library. Looking back, I find that one of the remarkable advantages of the STL over earlier attempts at similar libraries is its flexibility and extensibility. This is primarily due to the way the STL decouples containers from algorithms. Algorithms generally take a pair of iterators as arguments and act on the sequence of elements defined by this pair of iterators. Sometimes, they will also take a "functional," or function object, as an additional argument. A typical example is a unary functional returning a <B>bool</B>. An algorithm can operate on each element conditionally, choosing just those elements that return true when passed as an argument to the functional.</p>
+<p>All this has nothing directly to do with containers. Containers and their iterators are merely one possible way to supply sequences. As long as you mind the STL's iterator specifications, you can therefore drop in your own containers, iterators, algorithms, and functionals and have them cooperate seamlessly with everything that is already there.</p>
+<p>Adding containers to the STL is certainly not something that the average STL client programmer would attempt very often. If the need arises for containers that the STL does not provide, such as hash-tables or singly linked lists, one would try to find them elsewhere. Writing your own algorithms and functionals, on the other hand, is something that happens all the time when using the STL. The STL provides a collection of algorithms and functionals that are so generic in nature that they are likely to be needed in almost every context. But it doesn't try to provide <I>all</I> potentially useful algorithms and functionals. The possibilities are unlimited. The STL specification does a remarkable job in providing just enough to serve everybody's most frequent needs while keeping the entire library reasonably compact. So it is likely that any software project of more than trivial size will add its own specific algorithms and functionals.</p>
+<p>I would certainly not want to spoil this pleasant situation by dumping on the rest of the world my own collection of algorithms and functionals. You'll be better served by writing your own as the need arises. However, among those things that I had to add to the STL, I have identified a small number of items that are so frequently needed and so generic that it seems worth having them around at all times. The purpose of this article is to provide and explain these additions to the STL. The complete source code comes with documentation in HTML format.</p>
+
+<H4><FONT COLOR="#000080">Member Function Adapters</FONT></H4>
+
+<p>Let me begin by reminding you that a functional is a class with an overloaded <B>operator()</B>. A predicate is a functional that returns a <B>bool</B> result. Suppose now that <B>cont</B> is some container of objects of type <B>CSomeClass</B>, and you want to find out if <B>cont</B> contains an object that has some property <B>X</B>. To determine whether or not an object of type <B>CSomeClass</B> has property <B>X</B>, <B>CSomeClass</B> supplies a member function:</p>
+
+<pre>
+bool HasPropertyX() const;
+</pre>
+
+<p>The task at hand is a typical application of the STL algorithm <B>find_if</B>. The container <B>cont</B> has an object with property <B>X</B> if and only if:</p>
+
+<pre>
+cont.end() != 
+   std::find_if(cont.begin(), cont.end(), 
+   pred)
+</pre>
+
+<p>Here, <B>pred</B> must be a predicate whose <B>operator()</B> is defined something like:</p>
+
+<pre>
+bool
+operator()(const CSomeClass&amp; x) const
+{ return x.HasPropertyX(); }
+</pre>
+
+<p>This would be easy enough to write. However, since turning a member function into a functional in this way is something that will obviously occur quite frequently, the STL provides a generic mechanism to do just that. The template function <B>mem_fun_ref</B> in the <B>std</B> namespace takes as its only argument a pointer to a member function. The only obvious requirement is that the member function take no arguments. There is an additional, less obvious requirement, which we will run into shortly. The return value of <B>mem_fun_ref</B> is a functional of the kind that we need in our example. It takes a reference argument and calls the indicated member function on this argument. If the member function is to be called through a pointer rather than a reference, you must use <B>mem_fun</B> instead of <B>mem_fun_ref</B>. If the member function takes an argument, use <B>mem_fun1</B> or <B>mem_fun1_ref</B>. The types of the functionals that these non-member functions return are <B>mem_fun_ref_t</B>, <B>mem_fun_t</B>, <B>mem_fun1_ref_t</B>, and <B>mem_fun1_t</B>, respectively. In practice, using these template functions will usually save you from having to refer to these types explicitly.</p>
+<p>Rather than writing your own predicate <B>pred</B> for the algorithm <B>find_if</B>, you can solve the problem with the following one-liner:</p>
+
+<pre>
+cont.end() != std::find_if(
+   cont.begin(),
+   cont.end(),
+   std::mem_fun_ref(CSomeClass::HasPropertyX)
+   );
+</pre>
+
+<p>Unfortunately, this will compile only if your STL implementation conforms to the final C++ Standard. In earlier drafts of the C++ Standard, there was only one version of <B>mem_fun_ref</B>, which took as its argument a pointer to a non-const member function. The compiler rightfully refuses to cast a pointer to a const member function to a pointer to a non-const member function. The C++ Standard has therefore recently added alternate versions of the four original member function adapters that work for const member functions. Their type names are simply the names of the original adapters prefixed with a <B>const_</B>. By contrast, template functions such as <B>mem_fun</B> are simply overloaded for const member functions, so there is no need to prefix them with <B>const_</B>.</p>
+<p>Since there is at least one widely used STL implementation out there that does not yet include the new const member function adapters, I have provided them as part of my STL supplement, enclosed in an <B>#ifdef</B> so they can easily be thrown out.</p>
+<p>I said earlier that there is a less obvious requirement on the member functions that can be supplied to <B>mem_fun_ref</B>. To see what that requirement is, suppose now that our class <B>CSomeClass</B> also has a member function:</p>
+
+<pre>
+void 
+Dump(CDumpTarget&amp; dump_target) const;
+</pre>
+
+<p>which dumps the state of the object to some suitable target. Suppose further that we wish to iterate through our container and dump each object. Easy enough, it would seem:</p>
+
+<pre>
+std::for_each(
+   cont.begin(),
+   cont_end(),
+   std::mem_fun1_ref(CSomeClass::Dump, 
+      dump_target)
+   );
+</pre>
+
+<p>No such luck. This will not compile because <B>Dump</B> returns <B>void</B>. The overloaded <B>operator()</B> of the functional that <B>mem_fun1_ref</B> returns looks like this:</p>
+
+<pre>
+R operator()(const T&amp; ref, A arg) const
+   {return (ref.*_Ptr)(arg); }
+</pre>
+
+<p>where <B>R</B>, <B>T</B>, and <B>A</B> are template arguments. It is not even necessary to understand this in full detail. It is clear that we cannot use the type <B>void</B> for the return type <B>R</B> here. In a function returning <B>void</B>, the compiler will not accept any lexical token other than a semicolon following the return statement.</p>
+<p>Recall that we already have eight member function adapters, four for non-const member functions and the four corresponding const versions. I have provided eight more, which are exact counterparts to the original eight except that they work for member functions returning void. Their names are the original names prefixed with a <B>void_</B>. Here, I have prefixed not only the class type names with <B>void_</B>, but also the names of the generating template functions <B>mem_fun_ref</B>, <B>mem_fun</B>, <B>mem_fun1_ref</B>, and <B>mem_fun1</B>. Using the same names is theoretically possible. However, it requires that the compiler handle partial template specialization, and some widely used compilers still don't do that.</p>
+<p><a href="fig1.htm">Figure 1</a> shows <B>void_mem_fun_t</B> as an example of a member function adapter for member functions returning void.</p>
+
+<H4><FONT COLOR="#000080">Predicate Logic</FONT></H4>
+
+<p>Let's stay with the example of the container <B>cont</B> that holds objects of type <B>CSomeClass</B>. Suppose now we wish to find the first element, if any, in the container that does <I>not</I> have property <B>X</B>. We must call the algorithm <B>find_if</B> with a predicate that returns true on a <B>CSomeClass</B> object if and only if that object does not have property <B>X</B>. The member function adapter that we used earlier provided us with a predicate that returns true on a <B>CSomeClass</B> object if and only if that object <I>has</I> property <B>X</B>. Again, we are looking at a situation that cries out for a generic solution.</p>
+<p>We need an adapter that takes any predicate and turns it into a new predicate that represents the negation of the original one. The STL does indeed provide two such adapters, called <B>unary_negate</B> and <B>binary_negate</B>, with corresponding template functions called <B>not1</B> and <B>not2</B> to generate them. The first one works for predicates taking one argument, the second one for predicates taking two arguments. Since our original member function <B>CSomeClass::HasPropertyX</B> takes no argument, the predicate obtained from the member function adapter <B>mem_fun_ref</B> takes one argument. Therefore, <B>not1</B> is the function we need to use. The call</p>
+
+<pre>
+std::find_if(
+   cont.begin(),
+   cont.end(),
+   std::not1(std::mem_fun_ref(CSomeClass::HasPropertyX))
+   );
+</pre>
+
+<p>will return an iterator to the first element in <B>cont</B> that does not have property <B>X</B>, or <B>cont.end()</B> if no such element exists.</p>
+<p>Now where there's a "not," you can bet that "and" and "or" are not far off. Indeed, I often find myself in a situation where I have two predicates and I need a new one that represents the logical conjunction or disjunction of the two. Every time this has happened to me, the two predicates were reasonably similar in the sense that the number and the types of the arguments were the same. For a rather typical example, suppose <B>CSomeClass</B> also has a const member function <B>HasPropertyY</B>, and we wish to find the first element, if any, in our container that has both properties. Having seen the adapter function <B>not1</B> in action, we obviously want to be able to say:</p>
+
+<pre>
+std::find_if(
+   cont.begin(),
+   cont.end(),
+   and1(
+       std::mem_fun_ref(CSomeClass::HasPropertyX),
+       std::mem_fun_ref(CSomeClass::HasPropertyY)
+       )
+   );
+</pre>
+
+<p>or, if we are looking for the first element with at least one of the two properties,</p>
+
+<pre>
+std::find_if(
+   cont.begin(),
+   cont.end(),
+   or1(
+      std::mem_fun_ref(CSomeClass::HasPropertyX),
+      std::mem_fun_ref(CSomeClass::HasPropertyY)
+      )
+   );
+</pre>
+
+<p>The STL does not have anything like this. At first glance, you might think that the STL's <B>logical_and</B> and <B>logical_or</B> do the job. However, upon closer inspection you will see that these correspond to the template class <B>logical_not</B> rather than to the template functions <B>not1</B> and <B>not2</B>, and that is not what we are looking for. I have therefore provided the four adapters <B>unary_and</B>, <B>binary_and</B>, <B>unary_or</B>, and <B>binary_or</B>, with generating functions <B>and1</B>, <B>and2</B>, <B>or1</B>, and <B>or2</B>, respectively. They are modelled after <B>not1</B> and <B>not2</B>, except that they take two predicates instead of one, and they require that the two predicates have the same number and types of arguments. Usage of these adapters is analogous to <B>not1</B> and <B>not2</B> and hence should need no further explanation. <a href="fig2.htm">Figure 2</a> shows <B>unary_and</B> as an example.</p>
+
+<H4><FONT COLOR="#000080">Composition of Functionals</FONT></H4>
+
+<p>If <B>f</B> is a function taking one argument of type <B>T</B> and <B>g</B> is a function that returns a <B>T</B>, then we may evaluate <B>f(g(...))</B>, where the ellipsis stands for the parameters of <B>g</B>. As you will recall from elemetary algebra, this is called "composition of functions." When working with STL-style functionals, rather than functions, this situation calls for a certain kind of adapter. This adapter takes two functionals <B>func1</B> and <B>func2</B>, where the result type of <B>func2</B> allows a conversion to the type of the sole argument of <B>func1</B>. The adapter would turn these two functionals into a new one whose <B>operator()</B> evaluates <B>func1(func2(...))</B>.</p>
+<p>The C++ Standard does not provide such a composition adapter for functionals. However, Austern mentions it as a "frequent addition," on pages 431 through 434 of his book <a href="#1">[1]</a>. Since I know of at least one widely used STL implementation that does not, or does not yet, have this addition, I have provided it in my STL supplement, again enclosed in an <B>#ifdef</B>. The actual adapters are called <B>unary_compose</B> and <B>binary_compose</B>, and the template functions that generate them are called <B>compose1</B> and <B>compose2</B>. Both turn functionals <B>func1</B> and <B>func2</B> into <B>func1(func2(...))</B>. The difference is that <B>compose1</B> requires <B>func2</B> to be unary, whereas <B>compose2</B> requires it to be binary.</p>
+<p>The following example shows a functional that takes <B>double</B>s <B>r</B> and <B>t</B> as arguments and returns <B>exp(r * t)</B>, the continuously compounded cumulative return on the dollar after time <B>t</B> at a return rate of <B>r</B>.</p>
+
+<pre>
+compose2(
+   std::ptr_fun(exp),
+   std::multiplies&lt;double&gt;()
+   );
+</pre>
+
+<p>As with the member function adapters that I have mentioned earlier, the composition adapters will not work if the return type of the outer functional is <B>void</B>. Therefore, I have provided two more adapters <B>void_unary_compose</B> and <B>void_binary_compose</B>, with generating functions <B>void_compose1</B> and <B>void_compose2</B>. These are precise counterparts to <B>compose1</B> and <B>compose2</B>, except that they require the outer functional to return <B>void</B>. <a href="fig3.htm">Figure 3</a> shows <B>void_binary_compose</B> as an example.</p>
+
+<H4><FONT COLOR="#000080">Binary Search</FONT></H4>
+
+<p>One of the most frequent operations to perform on a container, second perhaps only to iteration, is to look up elements. Trivial as it may seem, this turns out to be a rather subtle issue. There are essentially three different situations.</p>
+<p>In the first scenario, your container is a map, a multimap, a set, or a multiset. In the STL, these are all internally based on trees, but there are also hash table versions available. All of these containers were designed for efficient lookup. In the case of sets, you actually look up elements by their value, whereas in a map, you lookup elements by key. To perform a lookup in any one of these containers, you want to use the member function <B>find</B>, not the algorithm <B>find</B>. In the case of multimap and multiset, you can also use the member functions <B>lower_bound</B>, <B>upper_bound</B>, and <B>equal_range</B> to determine an entire range of positions. Using these member functions guarantees you the efficiency that the containers were designed for.</p>
+<p>In the second scenario, your container is something other than a map or a set, and the elements are not sorted in any way. In this case, you have no choice but to use the algorithm <B>find</B>, which will simply iterate linearly through the entire collection and stop when it has found the desired element. In terms of complexity, this is about as bad as it gets, but in the absence of an ordering, you cannot do any better than that.</p>
+<p>In the third scenario, your container is again anything other than a map or a set. This time, however, there is an ordering relation between the elements, and the container is in fact sorted with respect to that ordering. In other words, if <B>it1</B> and <B>it2</B> are two valid iterators and <B>it1 &lt; it2</B>, then <B>*it1 &lt; *it2</B>. If this sounds abstract or contrived to you, think of a vector that holds dates. The dates were placed in the container using <B>push_back</B>, and each newly added date is later than anything that was already in the container. Thus, the vector is in fact an ordered collection of dates. Now if you wish to find a particular date in the collection, even the thought of using the algorithm <B>find</B> should make you cringe. You know that in an ordered sequence, you can use a binary search, which will give you logarithmic complexity as opposed to the linear complexity of <B>find</B>. Need I remind you that the (binary) logarithm of 232 is 32?</p>
+<p>Having anticipated this situation, the STL provides the algorithm <B>binary_search</B>. This algorithm will look up an element in the sense that it returns true or false depending on whether or not the element is present. It will do so in logarithmic time, provided that the iterators given to the algorithm are random-access iterators. If you think about the way binary search works, you will agree that it must be possible to determine the distance between two iterators in constant time, and it must be possible to move an iterator forward or backward by any number of steps in constant time. That is what the random-access property ensures. Therefore, you will be out of luck with a container such as a list, but you will be in business with a vector.</p>
+<p>The obvious drawback of the <B>binary_search</B> algorithm is the fact that it only tells you whether or not an element is present in the container. It will not give you its position in case of a positive answer. Chances are you will need this position, as the starting or ending point of an iteration, for example. The STL has a solution for you, and here's where things get subtle. Almost every book or document on the STL will give you the hint that the algorithms <B>lower_bound</B> and <B>upper_bound</B> are what you are looking for. Most do not go into any further detail, and at least one book that I have seen goes to great length to explain that you may simply use <B>lower_bound</B> as a drop-in for <B>find</B>. That's almost true, but not quite, as we will see shortly.</p>
+<p>There is more than one way to explain precisely what <B>lower_bound</B> does. The most concise and, in my opinion, most practical explanation can be found in Austern <a href="#1">[1]</a>, on page 310. A similar definition is given in Musser and Saini <a href="#2">[2]</a>, p. 346. Referring to the declaration:</p>
+
+<pre>
+template&lt;class FwdIt, class T&gt;
+FwdIt lower_bound(FwdIt first, FwdIt last, const T&amp; val);
+</pre>
+
+<p>we may describe the algorithm <B>lower_bound</B> as follows: it returns the first position in the range <B>[first, last]</B> before which <B>val</B> could be inserted without violating the ordering. Let me remind you that the notation <B>[first, last]</B> stands for the interval between <B>first</B> and <B>last</B> with both <B>first</B> and <B>last</B> included. Note that the indicated position always exists. There is no need to add anything like, "... such-and-such if no such position exists." Now consider the following code fragment:</p>
+
+<pre>
+std::vector&lt;int&gt; vect;
+vect.push_back(41);
+vect.push_back(43);
+vect.push_back(44);
+</p>
+std::vector&lt;int&gt;::iterator it =
+   std::lower_bound(vect.begin(), vect.end(), 42);
+</pre>
+
+<p>A quick glance at the above description of <B>lower_bound</B> will convince you that the iterator <B>it</B> now points to the element 43 at position 1 in the vector. That is dramatically different from the algorithm <B>find</B>, which would have returned <B>vect.end()</B> because the element 42 is not present in the vector.</p>
+<p>Do not despair, though, as there is an easy way to make use of <B>lower_bound</B>'s superior performance and still get the exact same behavior as <B>find</B>. Recall that the notation <B>[first, last)</B> stands for the interval between <B>first</B> and <B>last</B> with <B>first</B> included but <B>last</B> not included. Now convince yourself that the following statement holds true: If the element <B>val</B> is present at all in the interval <B>[first, last)</B>, then the first position before which <B>val</B> could be inserted without violating the ordering is the first occurrence of <B>val</B> in the interval <B>[first, last)</B>. Using our definition of <B>lower_bound</B>, we can rephrase this as saying: If the element <B>val</B> is present at all in the interval <B>[first, last)</B>, then:</p>
+
+<pre>
+lower_bound(first, last, val);
+</pre>
+
+<p>returns an iterator that points to the first occurrence of <B>val</B> in the interval <B>[first, last)</B>. That is almost identical to what the algorithm <B>find</B> does. The only difference is that if <B>val</B> is not present in the sequence, we may not conclude that <B>lower_bound</B> will return <B>last</B>, as <B>find</B> would. All we may conclude is that <B>lower_bound</B> will return either <B>last</B>, or some iterator <B>it</B> in <B>[first, last)</B> with <B>*it != val</B>. That was the case in our example of the vector with three elements. The value 42 was not present, and <B>lower_bound</B> returned an iterator <B>it</B> at position 1 with <B>*it != 42</B>.</p>
+<p>This argument shows that we can make <B>lower_bound</B> act like <B>find</B> without increasing the complexity. <a href="fig4.htm">Figure 4</a> shows you the code for an algorithm that I have called <B>lower_bound_find</B>. The algorithm first calls <B>lower_bound</B>. If the return value of <B>lower_bound</B> equals <B>last</B> or an iterator whose dereferenced value does not equal <B>val</B>, then it returns <B>last</B>. Otherwise, it returns what <B>lower_bound</B> has found. Note that under normal circumstances the if-branching could have been written a little more tightly as:</p>
+
+<pre>
+if(lb == last || *lb != val)
+   return last;
+return lb;
+</pre>
+
+<p>but that may cause <B>*last</B> to be evaluated if some mischievous programmer has done the unspeakable and overloaded <B>operator||</B>.</p>
+<p>A few more remarks on the algorithm <B>lower_bound_find</B> are in order. I have provided a second version that uses a predicate <B>pred</B> rather than the binary <B>operator&lt;</B> for the binary search. One can, of course, also base the binary search on the algorithm <B>upper_bound</B>. It's just that <B>lower_bound</B> is a trifle more elegant because it saves one iterator decrement. Also, I strongly recommend that you study the discussion of <B>lower_bound</B> and related algorithms in <a href="#1">[1]</a>. Austern explains precisely what prerequisites the various algorithms impose on the underlying ordering relation. In the above discussion, I have been relying on the intuitive understanding that the elements in the container are sorted "like integers," or "like dates," with the possibility of duplicates. Finally, I would have preferred to write <B>lower_bound_find</B> so that it branches on the iterator category of <B>first</B> and <B>last</B>. If these are random-access iterators, my <B>lower_bound_find</B> would be called. Otherwise, the STL's <B>find</B> would be called. However, this feature would require the use of the STL's <B>iterator_traits</B>, and that is not a realistic proposition as long as some major compiler vendors do not support partial template specialization.</p>
+
+<H4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>Everybody who uses the STL will end up writing their own algorithms and functionals specific to the software project at hand. Here, I have shared with you some elementary additions to the STL which I suspect you will need regardless of the context you are working in. Have fun discussing the STL's binary-search capabilities, and remember: a quick little sample program settles almost every argument in no time.</p>
+
+<H4><FONT COLOR="#000080">References</FONT></H4>
+
+<p><a name="1"></a>[1]  Matthew H. Austern. <I>Generic Programming and the STL</I> (Addison Wesley, 1998).</p>
+<p><a name="2"></a>[2]  David R. Musser and Atul Saini. <I>STL Tutorial and Reference Guide</I> (Addison Wesley, 1996).</p>
+
+<p><i><B>Thomas Becker</B> works as a senior software engineer for Zephyr Associates, Inc. in Zephyr Cove, NV. He can be reached at <B>thomas@styleadvisor.com</B>.</i></p>
+
+<h4><a href="../../../source/2000/jun00/tbecker.zip">Get Article Source Code</a></h4>
+
+</blockquote></body></html>

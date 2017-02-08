@@ -1,0 +1,519 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>September 1998/Questions and Answers</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocsep.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Questions &amp; Answers: Implementing Dynamic Function Calls</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Pete Becker</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>Pete tackles head on how to use tables of function pointers, a powerful but confusing subject since the earliest days of C.</p></BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+<p><I>To ask Pete a question about C or C++, send e-mail to </I><B>petebecker@acm.org</B><I>, use subject line: Questions and Answers, or write to Pete Becker, C/C++ Users Journal, 1601 W. 23rd St., Ste. 200, Lawrence, KS 66046.</I></p>
+
+<h4><FONT COLOR="#000080">Q</FONT></H4>
+
+<p>I am trying to create a function that would accept a <B>char</B> string as an argument and would return a pointer to the function whose name is contained in the string. Is there a way to do this? &#151; Daniela Toneva</p>
+
+<h4><FONT COLOR="#000080">A</FONT></H4>
+
+<p>Yes, it's pretty straightforward. I'll build up code to call the trigonometric functions <B>cos</B>, <B>sin</B>, <B>tan</B>, <B>cosh</B>, <B>sinh</B>, and <B>tanh</B>. Let's begin by writing a stub lookup function that we can call from a test program. The function should take a pointer to <B>char</B> as its argument, and return a pointer to the function we want to call. If there is no such function our lookup function should return a null pointer. Since the functions we're going to be calling take an argument of type <B>double</B> and return <B>double</B>, the lookup function's prototype looks like this:</p>
+
+<pre>
+double
+(*lookup(const char *nm))(double);
+</pre>
+
+<p>If you're getting a headache from trying to figure out what that says, you're not alone. Since we're writing code that manipulates function pointers we really should create a typedef. Then we can talk about the type of our function pointers more easily. A typedef will also make our code more flexible, so we can use the same code with functions of a different type with only minor changes. The typedef looks like this:</p>
+
+<pre>
+typedef double (*fptr)(double);
+</pre>
+
+<p>Now we can write a simpler prototype for the lookup function:</p>
+
+<pre>
+fptr lookup(const char *nm);
+</pre>
+
+<p>And we can write a very simple version of <B>lookup</B> that always returns <B>NULL</B>, and a small driver program to test it:</p>
+
+<pre>
+#include &lt;string.h&gt;
+#include &lt;stdio.h&gt;
+
+typedef double (*fptr)(double);
+
+fptr lookup(const char *nm)
+{
+return NULL;
+}
+
+int main()
+{
+char name[20];
+fptr target;
+printf("Name of function to call:\n");
+fgets(name, sizeof(name), stdin);
+if (name[strlen(name) - 1] == '\n')
+    name[strlen(name) - 1] = '\0';
+
+target = lookup(name);
+
+if (target == NULL)
+    printf("Couldn't find %s.\n",
+           name);
+else
+    printf("%s(0.0) is %f.\n",
+           target(0.0));
+return 0;
+}
+</pre>
+
+<p>You can compile this code and run it. Once you're satisfied that this driver and the lookup function talk to each other sensibly, it's time to move on to the meat of the project. Ultimately, our task is to associate the name of a function with a pointer to its implementation. This suggests that we create a struct that holds two elements: a name and a function pointer. Like this:</p>
+
+<pre>
+typedef struct
+{
+const char *name;
+fptr func;
+} pair;
+</pre>
+
+<p>Eventually we'll create one object of type <B>pair</B> for each of the functions we want to be able to call. Before we do that, though, we must think a bit about how we're going to handle looking up function names, because that will affect how we create these objects. If we needed to add and remove functions from the data table while the program was running, I'd suggest some form of binary tree, or perhaps a hash table. Many applications don't need that sort of flexibility, though, so here we'll simply use an array.</p>
+
+<p>Let's begin by creating an array with six elements, one for each of the six functions we're going to call:</p>
+
+<pre>
+#include &lt;math.h&gt;
+
+pair func_table[] =
+{
+{ "cos", cos },
+{ "sin", sin },
+{ "tan", tan },
+{ "cosh", cosh },
+{ "sinh", sinh },
+{ "tanh", tanh }
+};
+</pre>
+
+<p>Notice that even though we have exactly six elements I didn't declare the array to hold six elements. There's a good chance that somewhere along the line, either during development or during maintenance of our application, someone will want to add a function to the list. We want to make it as easy as possible to make changes of this sort, so I didn't specify the size of the array. The compiler will figure it out, by counting the number of initializers. Don't hardcode information that the compiler can figure out for you &#151; that just makes maintaining the code more difficult.</p>
+
+<p>Now, you've probably noticed that each of the initializers in the array definition contains redundant information: the text in the string is the same as the function identifier. With half a dozen initializers we can easily check that we've spelled them all correctly, but if there were a hundred or so a typographical error would likely creep in somewhere. If the typo occurred in the initializer for the function pointer it would probably result in an invalid name, and the compiler would catch it. If the typo occurred in the quoted text, however, the compiler wouldn't find it. We can increase the compiler's chances of catching such a typo by creating a macro. The macro enables us to type the name of the function just once, and to use that text for both initializers. Like this:</p>
+
+<pre>
+#define FUNC(name) { #name, name }
+</pre>
+
+<p>Using this macro, our table initialization now looks like this:</p>
+
+<pre>
+#include &lt;math.h&gt;
+#define FUNC(name) { #name, name }
+
+pair func_table[] =
+{
+FUNC(cos),
+FUNC(sin),
+FUNC(tan),
+FUNC(cosh),
+FUNC(sinh),
+FUNC(tanh)
+};
+</pre>
+
+<p>Adding this code to our driver and stub produces the following:</p>
+
+<pre>
+#include &lt;string.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;math.h&gt;
+
+typedef double (*fptr)(double);
+
+typedef struct
+{
+const char *name;
+fptr func;
+} pair;
+
+#define FUNC(name) { #name, name }
+
+pair func_table[] =
+{
+FUNC(cos),
+FUNC(sin),
+FUNC(tan),
+FUNC(cosh),
+FUNC(sinh),
+FUNC(tanh)
+};
+
+fptr lookup(const char *nm)
+{
+return NULL;
+}
+
+int main()
+{
+char name[20];
+fptr target;
+printf("Name of function to call:\n");
+fgets(name, sizeof(name), stdin);
+if (name[strlen(name) - 1] == '\n')
+    name[strlen(name) - 1] = '\0';
+target = lookup(name);
+if (target == NULL)
+    printf("Couldn't find %s.\n", name);
+else
+    printf("%s(0.0) is %f.\n", name, target(0.0));
+return 0;
+}
+</pre>
+
+<p>Even though this code does nothing different from the previous version, I recommend compiling and running it anyway. Occasionally this step will find problems in the added code.</p>
+
+<p>Now it's time to write the code that actually looks up a name in our table. As a first attempt, let's simply walk through the array of pairs in order, looking for one whose name matches the name we're looking for. If we find a match, we return the function pointer from the matching pair. If we don't find a match, we return <B>NULL</B>. The code looks like this:</p>
+
+<pre>
+fptr lookup(const char *nm)
+{
+int i;
+for (i = 0;
+     i &lt; sizeof(func_table)/sizeof(func_table[0]);
+     ++i)
+    if (strcmp(func_table[i].name, nm) == 0)
+        return func_table[i].func;
+return NULL;
+}
+</pre>
+
+<p>The terminating condition in the <B>for</B> loop is fairly complicated. It uses a common idiom, however: the number of elements in an array is equal to the number of bytes in the array divided by the number of bytes in an element of the array. That's an idiom you could put in your toolkit. In this case I'll just express the idiom as a macro to make the code easier to read:</p>
+
+<pre>
+#define ARR_SIZE(arr)(sizeof(arr)/sizeof((arr)[0])
+
+fptr lookup(const char *nm)
+{
+int i;
+for (i = 0; i &lt; ARR_SIZE(func_table); ++i)
+    if (strcmp(func_table[i].name, nm) == 0)
+        return func_table[i].func;
+return NULL;
+}
+</pre>
+
+<p>Plug this code back in in place of the stub version of lookup and see if it works.</p>
+
+<p>Now that we have working code it's time to think a bit about efficiency. For half a dozen functions a linear search works just fine. If we had a thousand functions to choose from it wouldn't be so good. We might have to do a thousand string comparisons to find the function we're looking for. If we know that the time spent looking up functions is a bottleneck in our application we can improve its performance by switching to a binary search instead of a linear search. A binary search requires a bit more work, but the result can be significantly faster if we have a large number of functions.</p>
+
+<p>To do a binary search we need to arrange our pairs in some sort of order. Then we need to write a compare function that can tell us whether the pair we're looking for comes before or after some specified pair. In this case it's natural to order the pairs by function name:</p>
+
+<pre>
+pair func_table[] =
+{
+FUNC(cos),
+FUNC(cosh),
+FUNC(sin),
+FUNC(sinh),
+FUNC(tan),
+FUNC(tanh)
+};
+</pre>
+
+<p>The compare function just calls <B>strcmp</B>:</p>
+
+<pre>
+int compare(const void *nm, const void *pr)
+{
+return strcmp((const char*)nm, ((const pair*)pr)-&gt;name);
+}
+</pre>
+
+<p>This usage may look a little strange, but it's the form of comparison required by the standard library function <B>bsearch</B> (binary search). When we call <B>bsearch</B> we pass it a pointer to this comparison function. <B>bsearch</B> calls this function with the first argument pointing to the key it's looking for and the second argument pointing to the array element that it's currently examining. The <B>compare</B> function casts the first argument into a pointer to <B>char</B>, since that's the type of the key we're using. It casts the second argument into a pointer to <B>pair</B>, because that's the type of the array element we're looking at. The <B>compare</B> function then uses the <B>-&gt;</B> operator to get at the <B>name</B> field of that pair.</p>
+
+<p>Now our lookup function looks like this:</p>
+
+<pre>
+fptr lookup(const char *nm)
+{
+const pair *res =
+    bsearch(nm, func_table,
+            ARR_SIZE(func_table),
+            sizeof(pair), compare);
+return
+    res == NULL ? NULL : res-&gt;func;
+}
+</pre>
+
+<p>Note that <B>bsearch</B> returns a pointer to the <B>pair</B> object that satisfies our <B>compare</B> function. If that pointer is null it means the function we asked for does not exist. If the pointer is not null we must extract the function pointer held in that pair.</p>
+
+<p>There's one danger lurking in the code as currently written: if we accidently place a pair in <B>func_table</B> out of order, <B>bsearch</B> will become hopelessly lost. Of course, we can check the order ourselves simply by looking through the initializer list. We should do that, just to satisfy ourselves that we haven't made any gross errors. But checking the order manually is tedious, and not very reliable &#151; this is just the sort of task the computer ought to do for us. So let's add some code to check the order while the application is starting up.</p>
+
+<p>That's simple to do: just loop through the array elements, checking that each element is higher in the ordering sequence than the one before. Since <B>bsearch</B> expects elements to be ordered in accordance with our comparison function, we should use our comparison function to check their order:</p>
+
+<pre>
+void check_table(void)
+{
+int i;
+const char *nm = func_table[0].name;
+for (i = 1;
+     i &lt; ARR_SIZE(func_table);
+     ++i)
+     if (compare(nm, func_table + i)
+         &lt; 0)
+         nm = func_table[i].name;
+     else
+     {
+     printf(
+       "Table out of order at %d.\n",
+       i);
+     exit(EXIT_FAILURE);
+     }
+}
+</pre>
+
+<p>That's all there is to it. As I pointed out at the beginning, I've written this code to handle functions that take an argument of type <B>double</B> and return a <B>double</B>. If you want to look up functions with a different signature just change the definition of <B>fptr</B>.</p>
+
+<h4><FONT COLOR="#000080">Q</FONT></H4>
+
+<p>I have a program in which I want to be able to call a C function specified by the user. The conventional answer about how to do this involves an array of structures containing function names and function pointers. The function name specified by the user is compared against the array of names, and the corresponding function pointer is then used. When doing this for the usual math functions, it looks something like this:</p>
+
+<pre>
+struct function_list {
+char *name;
+double (* fptr)(double);
+} flist[] = {
+{ "sin", sin },
+{ "cos", cos },
+{ "ceil", ceil },
+{ "floor", floor },
+/* ... */
+};
+</pre>
+
+<p>Ignoring the problem of how users can specify arguments to these functions, this tecnique works fine. However, it does require that all the functions take exactly one argument (of type <B>double</B>), and return a <B>double</B>. If I want to include some other function, such as <B>pow</B>, which takes two <B>double</B>s, or <B>rand</B> which returns an <B>int</B>, everything falls apart.</p>
+
+<p>To handle multiple arguments, I can leave the argument list off the function pointer type declaration, but then some strange things happen. In the absence of a prototype, C promotes all ordinal arguments up to <B>int</B>, and all real arguments up to <B>double</B>. If one of my functions is expecting three <B>float</B>s as arguments, I can't get them there without using a function pointer of type <B>(*)(float, float, float)</B>.</p>
+
+<p>I've managed to come up with at least one terrible solution: I'm allowing the user to call only functions with a return type of <B>void</B>, <B>char</B>, <B>short</B>, <B>int</B>, <B>float</B>, <B>double</B>, or a pointer to a 1-D array of these (as in the case of strings). This means no structs, no multi-dimensional pointers, no function pointers, etc. This restriction allows me to add an enumerated "return type" to my structure, and switch on that, casting the generic function pointer in my <B>function_list</B> structure into one that specifies the appropriate return type right before calling the function. This works okay, but it does nothing for the argument promotion problem, and generally falls a few meters short of elegant.</p>
+
+<p>Rather than regale you more tales of failure, now is the point at which to ask: "Got any bright ideas?" &#151; Noel Gorelick</p>
+
+<h4><FONT COLOR="#000080">A</FONT></H4>
+
+<p>"Doctor, it hurts when I do this." "Well, don't to that." But if you must deal with looking up and calling functions that don't all take the same argument type lists, you've got a much harder job than in the preceding question. Trying to force all the function signatures to look alike, so you can put them into a single data structure, is probably not the right approach. Eventually your code must call the function, and that code must know the function's actual signature. So divide the functions into groups, with all the functions in the same group having the same signature. Use the technique described in the previous answer, but when you store information about a function, store information about its group as well. The solution might look something like this:</p>
+
+<pre>
+typedef double (*fptr1)(double);
+typedef double (*fptr2)(double,
+                        double);
+
+enum signature
+{
+one_arg, two_args
+};
+
+typedef struct
+{
+const char *name;
+enum signature sig;
+union
+    {
+    fptr1 func1;
+    fptr2 func2;
+    } ptrs;
+} pair;
+</pre>
+
+<p>Since the calling sequence for the function depends on the function itself, I'd then change <B>lookup</B> to return the pair instead of the function pointer:</p>
+
+<pre>
+const pair *lookup(const char *nm)
+{
+return bsearch(nm, func_table,
+               ARR_SIZE(func_table),
+               sizeof(pair), compare);
+}
+</pre>
+
+<p>And in <B>main</B>, I'd switch on the signature field to call the function:</p>
+
+<pre>
+int main()
+{
+char name[20];
+pair *target;
+printf(
+    "Name of function to call:\n");
+fgets(name, sizeof(name), stdin);
+if (name[strlen(name) - 1] == '\n')
+    name[strlen(name) - 1] = '\0';
+
+target = lookup(name);
+
+if (target == NULL)
+    printf("Couldn't find %s.\n", name);
+else
+    switch (target-&gt;sig)
+        {
+        case one_arg:
+           printf(
+               "%s(0.0) is %f.\n",
+               name,
+               target-&gt;func1(0.0));
+           break;
+        case two_args:
+           printf(
+             "%s(1.0, 0.0) is %f.\n",
+             name,
+             target-&gt;func2(1.0, 0.0));
+           break;
+        default:
+           printf(
+             "Invalid data structure.");
+           break;
+        }
+return 0;
+}
+</pre>
+
+<p>There's one problem with this approach: it's hard to initialize portably. If we modify the <B>FUNC</B> macro above to initialize the signature field like this:</p>
+
+<pre>
+#define FUNC(name, sig) { #name, sig, name }
+</pre>
+
+<p>we may get warnings from the compiler about suspicious pointer conversions. The problem is that when you initialize a union you initialize its first member. When we try to create an array entry for, say, <B>pow</B>, we're taking the address of the function <B>pow</B>, which takes two arguments of type <B>double</B>, and assigning that address to the first element of the union, which expects a pointer to a function taking a single argument of type <B>double</B>. Further, since we initialized the first element of the union but got the address of this function through the second element, the result is implementation-defined. Both of these operations increase the risk that the code won't work the way we expect. All the compilers I'm familiar with handle this code just fine. However, if you use this approach, be aware of the danger, and when you move to a new compiler check that the code still works correctly. Or consider a different technique.</p>
+
+<p>A portable but more complex technique is to add a level of indirection. Instead of storing the function pointers themselves in the pairs, store pointers to structs that hold function pointers. Like this:</p>
+
+<pre>
+typedef double (*fptr1)(double);
+typedef double (*fptr2)(double, double);
+
+enum signature
+{
+one_arg, two_args
+};
+
+typedef struct { fptr1 func; } f1;
+typedef struct { fptr2 func; } f2;
+
+typedef struct
+{
+const char *name;
+enum signature sig;
+void *f;
+} pair;
+</pre>
+
+<p>To initialize this data structure, create the appropriate objects of type <B>f1</B> and <B>f2</B>, and initialize them with the addresses of the functions they point to:</p>
+
+<pre>
+f1 c = { cos };
+f1 ch = { cosh };
+f2 p = { pow };
+
+pair func_table[] =
+{
+{ "cos", one_arg, &amp;c },
+{ "cosh", one_arg, &amp;ch },
+{ "pow", two_args, &amp;p },
+};
+</pre>
+
+<p>Now, of course, you must allow for the extra level of indirection in the code that uses these pointers:</p>
+
+<pre>
+#define USE1(tgt) (((f1*)target-&gt;f)-&gt;func)
+#define USE2(tgt) (((f2*)target-&gt;f)-&gt;func)
+
+switch (target-&gt;sig)
+    {
+    case one_arg:
+        printf("%s(0.0) is %f.\n",
+          name, USE1(target)(0.0));
+        break;
+    case two_args:
+        printf(
+          "%s(1.0, 0.0) is %f.\n",
+          name,
+          USE2(target)(1.0, 0.0));
+        break;
+    default:
+        printf(
+          "Invalid data structure.");
+        break;
+    }
+</pre>
+
+<p>Once again I'd wrap most of the initialization in macros. In this case I'd write a macro to define each of the little structs, so that I could automatically give them names that the array initializer macros can also use:</p>
+
+<pre>
+#define DEFINE_WRAPPER1(name) f1 s_##name = { name }
+#define DEFINE_WRAPPER2(name) f2 s_##name = { name }
+
+#define FUNC1(name) { #name, one_arg, &amp;s_##func }
+#define FUNC2(name) { #name, two_args, &amp;s_##func }
+</pre>
+
+<p>Now the array initialization looks like this:</p>
+
+<pre>
+DEFINE_WRAPPER1(cos);
+DEFINE_WRAPPER1(cosh);
+DEFINE_WRAPPER2(pow);
+
+pair func_table[] =
+{
+FUNC1(cos),
+FUNC1(cosh),
+FUNC2(pow)
+};
+</pre>
+
+<p>This approach works, and it's fully portable. It still has a problem, though: suppose the initializer for <B>cosh</B> had said <B>FUNC2(cosh)</B> instead of <B>FUNC1(cosh)</B>. The compiler would have no reason to complain, because the only place where <B>cosh</B>'s type can be checked is in <B>DEFINE_WRAPPER1</B>, and we constructed that wrapper correctly. Once we take that object's address and convert it to a <B>void *</B> we have lost all information about its actual type, and the error can't be detected. When you ask the program to call <B>"cosh"</B> it will call <B>cosh</B> with the wrong number of arguments.</p>
+
+<p>Fixing this problem is easy if we don't mind adding a bit of run-time overhead. We remove the signature field from <B>pair</B> and move it into our structs <B>f1</B> and <B>f2</B>, like this:</p>
+
+<pre>
+typedef struct { enum signature sig; fptr1 func; } f1;
+typedef struct { enum signature sig; fptr2 func; } f2;
+
+#define DEFINE_WRAPPER1(name) \
+    f1 s_##name = { one_arg, name }
+#define DEFINE_WRAPPER2(name) \
+    f2 s_##name = { two_args, name }
+
+#define FUNC(name) { #name, &amp;s_##func }
+</pre>
+
+<p>Then we change the code that calls the functions to check the signatures in their new locations:</p>
+
+<pre>
+#define USE1(tgt) (((f1*)target-&gt;f)-&gt;func)
+#define USE2(tgt) (((f2*)target-&gt;f)-&gt;func)
+switch (((f1*)target-&gt;f)-&gt;sig)
+    {
+    .....
+    }
+</pre>
+
+<p>The reason we can do this is that we put the signature field at the front of both <B>f1</B> and <B>f2</B>. We can use a pointer declared as a pointer to <B>f1</B> to access data in an object of type <B>f2</B> and vice versa, provided we access only the common prefix of those two types through the pointer. That is, so long as we look at only the signature field, we can use either type of pointer interchangeably. That lets us look up the type of the actual struct by accessing the signature field, then cast the pointer to the correct type so that we can use the actual function pointer.</p>
+
+<p>As you've seen by now, the code to handle looking up functions with different signatures is quite a bit more complex than the code to handle a single signature. That's because the task itself is more complicated. Even with the added complexity, however, the solution to the harder problem is similar to the solution to the simpler one: we create a data structure to associate names with properties, look up the properties of the function we need, and call it. The rest is just details.</p>
+
+<p><i>Pete Becker is Technical Project Leader for Dinkumware, Ltd. He spent eight years in the C++ group at Borland International, both as a developer and manager. He is a member of the ANSI/ISO C++ standardization commmittee. He can be reached by email at <B>petebecker@acm.org</B>.</i></p>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

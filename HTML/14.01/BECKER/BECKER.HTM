@@ -1,0 +1,522 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>January 1996/Questions and Answers: Creating Your Own Manipulator</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><A href="../tocjan.htm"><IMG src="../../toc.gif" WIDTH="54" HEIGHT="54"></A>
+          <FONT COLOR="#FF0000">Columns</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">Questions and Answers:
+          Creating Your Own Manipulator</FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">by Pete Becker </FONT></H3>
+          
+          <BLOCKQUOTE>
+               
+               <P>To ask Pete a question about C or C++, send e-mail to
+                    pbecker@wpo.borland.com, use subject line: Questions and
+                    Answers, or write to Pete Becker, C/C++ Users Journal, 1601
+                    W. 23rd St., Ste. 200, Lawrence, KS 66046.</P></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <P> <B>Q</B><BR> Why doesn't this work? I have a
+                    linked list with elements 13 10 8 6 4 2. And a function pop
+                    that returns and removes the first element in the list. If I
+                    write:</P>
+
+<PRE>
+cout &lt;&lt; L.pop() &lt;&lt; ' ' &lt;&lt; L.pop() &lt;&lt; endl;
+</PRE>
+               
+               <P><BR>
+                     it prints:</P>
+
+<PRE>
+10 13   // It reversed the order.
+</PRE>
+               
+               <P><BR>
+                     If I write:</P>
+
+<PRE>
+first_el = L.pop()
+second_el = L.pop()
+cout &lt;&lt; first_el &lt;&lt; ' ' &lt;&lt; second_el &lt;&lt; endl;
+</PRE>
+               
+               <P><BR>
+                     it prints:</P>
+
+<PRE>
+13 10  // The correct order.
+</PRE>
+               
+               <P><BR>
+                     What is cout doing?</P>
+               
+               <P><B>A</B><BR> It's not cout that's confusing
+                    things here, it's C++. Although it's easy to overlook, the
+                    first code snippet relies on unspecified behavior. Each of
+                    those &lt;&lt; operators is actually a function call, and
+                    the order of evaluation of arguments to a function is
+                    unspecified. To see what's happening, let's separate the &lt;&lt;
+                    operators from the calls to pop.</P>
+               
+               <P></P>
+
+<PRE>
+void show( int i1, int i2 )
+{
+cout &lt;&lt; "i1 is " &lt;&lt; i1 &lt;&lt; endl;
+cout &lt;&lt; "i2 is " &lt;&lt; i2 &lt;&lt; endl;
+}
+
+show( L.pop(), L.pop() );
+</PRE>
+               
+               <P><BR>
+                     Chances are that your compiler will produce the same
+                    results as it did with the original code snippet. That's
+                    because it is allowed to calculate the values of the two
+                    arguments to show in any order. For example, the compiler is
+                    free to calculate the value of the second parameter first,
+                    by calling pop, then calculate the value of the first
+                    parameter, by calling pop again. That produces the
+                    unintuitive results mentioned above.</P>
+               
+               <P> If you like to parse language
+                    definitions, section 5.2.2 of the C++ working paper says
+                    this (ANSI C has similar language):</P>
+               
+               <P> The order of evaluation of arguments
+                    is unspecified. All side effects of argument expressions
+                    take effect before the function is entered. The order of
+                    evaluation of the postfix expression and the argument
+                    expression list is unspecified.</P>
+               
+               <P> This rule provides flexibility to
+                    compiler writers to handle argument lists more efficiently,
+                    but it complicates the use of function calls with iostreams.
+                    You can handle this unspecified behavior a couple of ways.
+                    One way is to do any function calls "by hand"
+                    before using the inserter. Another is to create a
+                    manipulator.</P>
+               
+               <P> A manipulator is an object whose
+                    inserter or extractor changes the state of a stream. For
+                    example, setw is a manipulator that sets the minimum number
+                    of characters that the succeeding insertion should use.
+                    You've probably seen it used like this:</P>
+
+<PRE>
+cout &lt;&lt; setw(2) &lt;&lt; n &lt;&lt; endl;
+</PRE>
+               
+               <P><BR>
+                     If you think about it a bit, there's something tricky going
+                    on here. setw can't be an ordinary function, since it has no
+                    way of knowing which stream to modify. It also can't be a
+                    member function, since it is not being called with an
+                    object. Further, in either of these cases, multiple calls to
+                    setw would run into the same unspecified behavior that we
+                    saw above: there would be no way of controlling the order in
+                    which they would actually be called.</P>
+               
+               <P> The trick that setw relies on is
+                    simple to describe: it returns an object, and that object's
+                    inserter changes the state of the stream. There's a fair
+                    amount of mechanics needed to make this work, however. We
+                    need to begin by writing a function that changes the width
+                    setting for an ostream. That looks like this:</P>
+
+<PRE>
+ostream&amp; set_width( ostream&amp; str, int w )
+{
+str.width(w);
+return str;
+}
+</PRE>
+               
+               <P><BR>
+                     Then we write a class that takes a pointer to a function of
+                    this type and an integer value:</P>
+
+<PRE>
+typedef ostream&amp; (*int_func)(ostream&amp;, int);
+class omanip_int
+{
+public:
+     omanip_int(
+          int_func f, int v )
+          { func = f; val = v; }
+     int_func func;
+     int val;
+};
+</PRE>
+               
+               <P><BR>
+                     Then we write a function that takes a width and returns an
+                    object of type omanip_int:</P>
+
+<PRE>
+omanip_int setw(int width)
+{
+return omanip_int( set_width, width );
+}
+</PRE>
+               
+               <P>And, finally, we write a stream inserter that inserts an
+                    object of type omanip_int by calling the function that the
+                    object points to with the integer value that the object holds:</P>
+
+<PRE>
+ostream&amp; operator &lt;&lt; ( ostream&amp; str,omanip_int&amp; manip )
+{
+manip.func( str, manip.val );
+return str;
+}
+</PRE>
+               
+               <P><BR>
+                     Now, that may be a bit too much to swallow in one gulp. So
+                    let's work through the sequence of calls that occur when
+                    this manipulator is actually used.</P>
+
+<PRE>
+cout &lt;&lt; setw(2);
+</PRE>
+               
+               <P><BR>
+                     The leftshift operator takes two arguments. The first
+                    argument here is cout, and the second argument is the result
+                    of setw(2). The compiler calls setw(2), which constructs an
+                    object of type omanip_int. setw initializes this object with
+                    the value 2 and a pointer to the function set_width. This is
+                    a temporary object: the compiler is responsible for creating
+                    space for it, and for destroying it when it is no longer
+                    needed.</P>
+               
+               <P> Now we've got the information we need
+                    to invoke the leftshift operator: we've got a stream, cout,
+                    and we've got a temporary object of type omanip_int. The
+                    compiler passes these two objects to the stream inserter.
+                    The stream inserter pulls the omanip_int object apart to get
+                    the function pointer and the integer value. It calls the
+                    function set_width, and passes the stream and the value 2. 
+                    set_width, in turn, actually sets the width field in the
+                    stream.</P>
+               
+               <P> That's a lot of indirection to go
+                    through. All this indirection provides benefits, however.
+                    First, we avoid the problem that the original question
+                    demonstrated: having no guarantee about the order of
+                    evaluation of arguments. Even though the call to setw can
+                    occur at any point in the output statement we know that the
+                    width settings will take place at the appropriate times. 
+                    That's because they occur as a result of the leftshift
+                    operation, not the function call. The order of execution of
+                    the leftshifts is well defined.</P>
+               
+               <P> Second, the extra indirection of
+                    passing a function pointer to omanip_int, rather than
+                    hard-coding the call to ostream::width, allows us to use
+                    omanip_int to perform other operations as well, as long as
+                    those operations can be implemented by calling a function
+                    that takes a reference to an ostream and an integer. In the
+                    iostream library this means we can use the same class to 
+                    implement the manipulators setprecision, setbase, and (until
+                    recently) setfill, because they all take a single integer
+                    parameter.</P>
+               
+               <P> The iostream library actually goes a
+                    step further in its indirection: it has a set of templates
+                    that are used to generate manipulators. The template
+                    parameter specifies the type of the argument that the
+                    manipulator takes. Using templates makes it easy to write
+                    manipulators that take, for example, a long integer value
+                    rather than an int.</P>
+               
+               <P> When writing code to pop a stacks I
+                    wouldn't go through the overhead of writing a manipulator.
+                    That would tie the stack operations too closely to the
+                    stream library. However, for changing the state of a stream
+                    in well defined ways, nothing beats a good manipulator.</P>
+               
+               <P> <B>Q</B><BR>I get the following error when I
+                    compile:</P>
+
+<PRE>
+ncmain.cc: In function 'int main(int, char **)'
+ncmain.cc:116: incompatible pointer types for argument
+2 of 'void (*signal(int,void (*)(int)))(int)'
+</PRE>
+               
+               <P></P>
+               
+               <P>I looked at the source code at the
+                    actual line:</P>
+               
+               <P></P>
+
+<PRE>
+signal(SIGINT, SIG_IGN);
+</PRE>
+               
+               <P></P>
+               
+               <P>It looked harmless so I examined even
+                    deeper and found this in the signal.h file.</P>
+               
+               <P></P>
+
+<PRE>
+#define SIGINT 3 /* quit */
+#define SIG_IGN ((void (*)())( 1))
+extern void(*signal(int __sig,
+void(*__func)(int)))(int);
+</PRE>
+               
+               <P></P>
+               
+               <P>The above error occurred when I
+                    compiled the file as a C++ file (with the .cc extension).
+                    When I use a .c extension (normal C file), the above error
+                    does not appear. Do you know how to fix that? I need to
+                    compile it as a .cc file. Thanks.</P>
+               
+               <P> <B>A</B><BR>What a wonderful question! It touches
+                    on two areas at once: an incompatibility between C and C++,
+                    and one of my favorite topics, writing readable and
+                    maintainable code. First, the incompatibility.</P>
+               
+               <P>One of the most noticeable changes
+                    from C to C++ is in the meaning of a function declaration
+                    with an empty parameter list. In C such a declaration means
+                    that we're not saying anything about the argument types that
+                    the function requires. That is, in C, the following code is
+                    valid:</P>
+
+<PRE>
+void func();
+func(3);
+</PRE>
+               
+               <P><BR>
+                     In C++ a function declaration with an empty parameter list
+                    says that the function takes no arguments. The preceding
+                    code is not valid, because the declaration of func says that
+                    it takes no arguments and we are trying to call it with an
+                    integer argument.</P>
+               
+               <P> According to the prototype given
+                    above for signal its second argument is of type void
+                    (*)(int), that is, it is a pointer to a function that takes
+                    an argument of type int and returns void. At the point where
+                    the error occurs, signal is being called with a second
+                    argument of SIG_IGN, which is defined as ((void (*)())(1))
+                    &#151; that is, the value 1 cast to a void (*)(). (Don't do this
+                     sort of thing in your code: system headers can get away
+                    with system-dependent tricks like this because they do not
+                    have to be portable.) The effect of this cast is to tell the
+                    compiler that this is a pointer to a function that takes no
+                    arguments and returns void. The compiler is expecting a
+                    function that takes an integer argument. Since the function
+                    pointer does not match the type that signal takes, the
+                    compiler gives an error message.</P>
+               
+               <P> When compiled as C code, the cast
+                    tells the compiler that we have a pointer to a function with
+                    unspecified argument types that returns void. It is
+                    perfectly valid to call such a function with an integer
+                    argument, so this function pointer is a valid argument to
+                    signal. That's the incompatibility that we saw earlier: this
+                    code is valid in C but not in C++.</P>
+               
+               <P> The maintainability issue in this
+                    header file is a little less obvious. My guess is that
+                    signal.h started out as a C header file, with a prototype
+                    for signal that looked something like this:</P>
+
+<PRE>
+extern void(*signal(int __sig, void(*__func)()))();
+</PRE>
+               
+               <P></P>
+               
+               <P>That prototype works fine in C. Users
+                    can write signal handlers that take an integer argument and
+                    pass them to signal. However, when this header file was used
+                    in a C++ program, those calls to signal started getting
+                    errors because of the type mismatch. Somebody fixed this
+                    problem by changing the prototype for signal and the obvious
+                    problems went away. What they failed to do was change the 
+                    cast in the definition of SIG_IGN, leading to the problem
+                    that we have been examining here.</P>
+               
+               <P>This problem almost certainly wouldn't
+                    have occurred if the original writer of signal.h had divided
+                    the prototype of signal into pieces like this:</P>
+
+<PRE>
+typedef void (*__sigfunc)();
+__sigfunc signal( int, __sigfunc );
+</PRE>
+               
+               <P></P>
+               
+               <P>In this form it is much easier to
+                    read, and it provides the additional benefit that the type
+                    name __sigfunc is now available for use within the header.
+                    This means that the definition of SIG_IGN could have been
+                    written like this:</P>
+               
+               <P></P>
+
+<PRE>
+#define SIG_IGN ((__sigfunc)1)
+</PRE>
+               
+               <P></P>
+               
+               <P>If it had been done this way in the
+                    first place, the change to accommodate C++ would have been
+                    trivial and error-free. All we would need to do to change
+                    the definition of __sigfunc would be this:</P>
+               
+               <P></P>
+
+<PRE>
+typedef void (*__sigfunc)(int);
+</PRE>
+               
+               <P><BR>
+                     With this change, both the prototype for signal and the
+                    definition of SIG_IGN would have been correct, with no need
+                    to hunt through the header file for every use of that ugly
+                    cast. In general, if it is possible to write your code so
+                    that you only define something in one place, you should do
+                    so. It will save you from having to seek out duplicate
+                    definitions that you didn't update correctly.</P>
+               
+               <P> <B>Q</B><BR>I recently tried to use sizeof to
+                    figure out how much stack space I was using in a function
+                    call and it tells me that a reference takes up just as much
+                    space as the type itself. Is it really true that I don't
+                    save any space by using a reference instead of passing a
+                    large object by value?</P>
+               
+               <P> <B>A</B><BR>You do save space in function calls
+                    when you use a reference to a large object. You have to be
+                    careful of how you check it, though, because sizeof doesn't
+                    help you here. Remember that when you create a reference you
+                    are creating a new name for the object that the reference
+                    refers to; everything you do with the reference gets passed
+                    on transparently to the object. This means that sizeof will
+                    tell you the size of the object that a reference refers to,
+                    not the amount of storage space taken up by the reference
+                    itself. In most cases, that's what you want. For example:</P>
+               
+               <P></P>
+
+<PRE>
+struct Sample
+{
+int a[20];
+};
+
+void clear( Sample&amp; sample )
+{
+memset( &amp;sample, '\0', sizeof sample );
+}
+</PRE>
+               
+               <P></P>
+               
+               <P>If this code only cleared the first
+                    four bytes of sample it would be rather surprising and not
+                    very useful.</P>
+               
+               <P>On the other hand you may be genuinely
+                    concerned with the space taken up by the reference itself.
+                    The behavior of sizeof when applied to a reference doesn't
+                    help here. You can do a trick, though: embed a reference in
+                    a struct and look at the size of the struct, like this:</P>
+
+<PRE>
+#include &lt;iostream.h&gt;
+
+struct Sample
+{
+int a[20];
+};
+
+struct SRef
+{
+Sample&amp; sample;
+SRef();
+
+};
+
+int main()
+{
+cout &lt;&lt; "sizeof Sample&amp;: " &lt;&lt; sizeof(Sample&amp;) &lt;&lt; '\n';
+cout &lt;&lt; "sizeof SRef: " &lt;&lt; sizeof(SRef) &lt;&lt; '\n';
+return 0;
+}
+</PRE>
+               
+               <P></P>
+               
+               <P>If I compile this program with Borland
+                    C++ and run it I get the following:</P>
+               
+               <P></P>
+
+<PRE>
+sizeof Sample&amp;: 80
+sizeof SRef: 4
+</PRE>
+               
+               <P><BR>
+                     By asking for the size of SRef instead of the size of the
+                    reference itself I've obtained something related to the size
+                    of the reference. Note, however, that this does not
+                    necessarily tell me exactly how much space is needed to pass
+                    a reference as an argument: the struct SRef might have some
+                    padding added by the compiler. In this case it doesn't; we
+                    can verify that by generating assembly code and examining it
+                    carefully.</P>
+               
+               <P> References simplify some of the
+                    things we often have to do in programming. You have to treat
+                    them carefully, however, until you get used to them. Don't
+                    make assumptions about their underlying implementation. In
+                    particular, don't treat them as just a different syntax for
+                    a pointer. Take the time to understand what they do and why.
+                    You'll find that your code can often be greatly simplified.
+                    </P>
+               
+               <P><I>Pete Becker is Senior QA Project
+                    Manager for C++ at Borland International. He has been
+                    involved with C++ as a developer and manager at Borland for
+                    the past six years, and is Borland's principal
+                    representative to the ANSI/ISO C++ standardization
+                    committee.</I></P> </BLOCKQUOTE>
+     </BODY>
+</HTML>

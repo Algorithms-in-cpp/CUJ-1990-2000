@@ -1,0 +1,234 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>October 1998/Encapsulating the Observer Pattern</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tococt.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Encapsulating the Observer Pattern</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Mark Bartosik</FONT></H3>
+<BLOCKQUOTE>
+<p>Event processing is a seemingly simple operation with a surprising number of perils. Hiding the details in a well-designed class or two can save the day.</p></BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+<p>A fundamental part of programming is the generation and handling events. All sorts of objects generate events &#151; these events can be anything from "KeyDown" to "EarthQuakeWarning". An event can manifest itself and be handled in many ways. For a Windows SDK programmer, in the posting and receiving of a message. When using a class library (e.g., MFC), handling an event might involve calling a virtual function. Event processing poses a number of problems which often go unresolved.</p>
+<p>A common pattern for handling events is known as the Observer pattern, also known as Publish-Subscribe or Multicast, as documented in <I>Design Patterns</I> <a href="#1">[1]</a>. A single subject (or publisher), sends events to one or more observers (the subscribers). Each observer implements an interface, supported by the subject, and registers with the subject to receive events. For example, if the subject is an earthquake-monitoring station, dissimilar observers representing the fire service, police, and a research institute might register interest in receiving events from the monitoring station. It is also possible to implement a "unicast" pattern, in which there is a single observer. While unicast is simpler to implement, and has other advantages, this article concentrates on the challenges of implementing multicast.</p>
+
+<h4><FONT COLOR="#000080">Implementation Challenges</FONT></H4>
+
+<p>The observer pattern is common in current software implementations. It is found in the document-view architecture. It is also the basis for how events are fired using Microsoft's COM (Component Object Model). The advantages to this pattern are the support for multiple observers, which require no knowledge of each other, and the minimal coupling between each observer and the subject. The challenges in using this pattern are:</p>
+
+<UL><LI>passing parameters with the event</LI>
+    <LI>maintaining efficiency</LI>
+    <LI>avoiding reentrance</LI>
+    <LI>maintaining type safety</LI>
+    <LI>encapsulating the pattern within a reusable module</LI></UL>
+
+<p>Nowhere have I found support for firing events that meets these challenges. The code presented in this article does so, and is generic. A version supporting COM is available electronically on the <I>CUJ</I> ftp site (see p. 3 for downloading instructions).</p>
+
+<h4><FONT COLOR="#000080">Passing Parameters</FONT></H4>
+
+<p>Passing parameters with the event is known as the push model. This model has the advantage that the observers do not need to make inquiries of the subject to find out how it has changed. Passing the magnitude of the quake as a parameter enables the fire and police service to ignore minor tremors. In contrast, if the implementation does not pass parameters with the event, each observer must re-read data from the subject. This is known as the pull model.</p>
+
+<h4><FONT COLOR="#000080">Efficiency</FONT></H4>
+
+<p>In many implementations of Observer, efficiency is neglected. Consider an <B>AutoPilot</B> object with the properties <B>Speed</B>, <B>Course</B>, and <B>Altitude</B>, that fires an event named <B>Changed</B> when one of its property values changes. The following code can result in three events being fired:</p>
+<pre>
+void CObserver::Foo(unsigned x, unsigned y, unsigned z)
+{
+   if (AutoPilot != NULL) {
+      AutoPilot-&gt;SetSpeed(x);
+      AutoPilot-&gt;SetAltitude(y);
+      AutoPilot-&gt;SetCourse(z);
+   }
+}
+</pre>
+
+<p>Typical implementations of these three autopilot functions call code similar to the following:</p>
+
+<pre>
+void CAutoPilot::FireChanged() {
+   for each observer
+      Observer-&gt;OnChanged();
+}
+</pre>
+
+<p>In such implementations <B>Foo</B> generates three events when logically only one has occurred. An implementation could avoid signaling the event within each of the autopilot functions <B>SetSpeed</B>, <B>SetAltitude</B>, and <B>SetCourse</B>, and require clients, such as callers to <B>Foo</B>, to signal the event instead. But clients are bound to forget.</p>
+
+<h4><FONT COLOR="#000080">Avoiding Reentrance</FONT></H4>
+
+<p>Reentrance occurs when an observer stimulates the subject by calling its own function, as <B>Foo</B> (above) does. As seen above, calling <B>Foo</B> triggers three separate events which are sent to all observers. The client object will thus be called back (via <B>CObserver::OnChanged</B>) before <B>CObserver::Foo</B> has completed.</p>
+<p>An observer's <B>OnChanged</B> function should, where possible, avoid changing its own state or that of the subject. Consider what happens when <B>Foo(0,0,0)</B> is called and the observer's event handler is defined as follows:</p>
+
+<pre>
+void CObserver::OnChanged() {
+  if (AutoPilot-&gt;GetSpeed() == 0 &amp;&amp;
+    AutoPilot-&gt;GetAltitude() == 0)
+      AutoPilot = NULL; // Landed
+}
+</pre>
+
+<p>1.  <B>Foo</B> calls <B>AutoPilot-&gt;SetSpeed(0)</B>, which results in a call to the observer's <B>OnChanged</B> function. Nothing happens within <B>OnChanged</B> &#151; the <B>if</B> statement is not executed.</p>
+<p>2.  <B>Foo</B> calls <B>AutoPilot-&gt;SetAltitude(0),</B> which results in another call to the observer's <B>OnChanged</B> function. This time the <B>if</B> statement within <B>OnChanged</B> is executed, and a state change occurs as <B>AutoPilot</B> is set to <B>NULL</B>.</p>
+<p>3.  <B>Foo</B> attempts to call <B>AutoPilot-&gt; SetCourse(0),</B> but <B>AutoPilot</B> is <B>NULL.</B> <B>SetCourse(0)</B> is never executed and the program crashes.</p>
+
+<h4><FONT COLOR="#000080">Type Safety</FONT></H4>
+
+<p>Type safety is typically achieved by using a custom function to fire each event. The solution used by MFC is to provide a function with variable arguments and then wrap it in a short wizard-generated function:</p>
+
+<pre>
+void COleControl::FireEvent(DISPID dispid,
+     BYTE FAR* pbParams, ... );
+
+void MFCSubject::FireWarning
+    (double Magnitude)
+{
+    FireEvent(eventidWarning,
+              EVENT_PARAM(VTS_R8),
+              Magnitude);
+}
+</pre>
+
+<p>The wizard-generated function gives the illusion of type safety, but relies on the programmer specifying the correct parameter types to the wizard. Variable arguments, as used by <B>printf</B>, eliminate type safety. Using wizards to generate code does not provide good encapsulation.</p>
+
+<h4><FONT COLOR="#000080">A Solution</FONT></H4>
+
+<p>I have written a class <B>Multicast</B> to encapsulate the behavior of the subject (see <A HREF="fig1.htm">Figure 1</A>). The interface to the class comprises the following functions:</p>
+
+<pre>
+bool Advise(IObserver *);
+void Unadvise(IObserver *);
+virtual bool OnActive();
+virtual void OnInactive();
+void FireEvent(func, parameters);
+void FireSingleEvent(func, parameters);
+</pre>
+
+<p>To register to receive events each observer calls function <B>Advise</B>, passing its <B>this</B> pointer as an argument. To stop receiving events an observer calls function <B>Unadvise</B>. The subject can override <B>OnActive</B> and <B>OnInactive</B> to receive notification of when the first observer registers and the last observer de-registers.</p>
+
+<h4><FONT COLOR="#000080">Passing Parameters to Observers</FONT></H4>
+
+<p>To fire an event the subject calls <B>FireEvent</B>, passing a pointer to the observers' member function intended to handle that event. The subject also passes between zero and n parameters. Alternatively, the subject can collapse multiple events (such as the autopilot's <B>Changed</B> event) into a single event by calling <B>FireSingleEvent</B>.</p>
+<p>Event firing is simple. In the example below, <B>DisasterTest</B> triggers an earthquake "warning" event of magnitude 6.5:</p>
+
+<pre>
+class IQuake {
+   virtual void
+   Warning(double Magnitude) = 0;
+    .
+    .
+class QuakeMonitor :
+  public Multicast&lt;IQuake&gt; {
+   void DisasterTest() {
+     FireEvent(IQuake::Warning, 6.5);
+    .
+    .
+</pre>
+
+<p>The subject and the events it generates are separate entities. <A HREF="fig1.htm">Figure 1</A> shows the two principal classes, <B>Event</B> and <B>Multicast</B>.</p>
+<p>The <B>Multicast</B> class gives the illusion of possessing functions with variable arguments. It accomplishes this by providing several overloaded versions of the same template function:</p>
+
+<pre>
+template&lt;class F&gt;
+   void FireEvent(F f);
+template&lt;class F, class P1&gt;
+   void FireEvent(F f, P1 p1);
+template&lt;class F, class P1, class P2&gt;
+   void FireEvent(F f, P1 p1, P2 p2);
+</pre>
+
+<p>To support events with up to <I>n</I> parameters, <I>n</I>+1 overloaded functions are required. For brevity, <A HREF="fig1.htm">Figure 1</A> shows only two implementations of <B>FireEvent</B> and <B>FireSingleEvent</B>. Code for more parameters can be easily cloned, and is available electronically.</p>
+<p>Duplication of code occurs in the reusable <B>Multicast</B> class, not in developers' code. To avoid bloat, each overloaded function, if it is instantiated, constructs an <B>Event</B> object of the correct type, and delegates the rest of the work to a plain old member function. If you find yourself passing more than about seven parameters you should probably consider passing structures or subobjects.</p>
+
+<h4><FONT COLOR="#000080">Avoiding Reentrance and Increasing Efficiency</FONT></H4>
+
+<p>Calling the observer asynchronously enables the implementation to avoid reentrance. Asynchronous calling also enables efficiency to be improved by coalescing equivalent events. When the subject makes multiple calls to <B>FireSingleEvent</B>, the first call creates an event, stores it in a collection, and then triggers an asynchronous function call. Subsequent calls to <B>FireSingleEvent</B> initiate a search of the collection for an equivalent event.</p>
+<p>The implementation arranges for the operating system to call the function <B>AsynchEvent</B> a short time later (the time interval is unimportant). Even with a minimal time interval, separate events, such as the three <B>OnChanged</B> events generated by <B>CObserver::Foo</B> (above), can be coalesced. What is important is that <B>AsynchEvent</B> is not called from within an observer's function; instead it is called as soon as the program returns to a quiescent state. It is this procedure that prevents reentrance. When <B>AsynchEvent</B> is called it invokes all events in the collection and then discards them.</p>
+<p>Thus, duplicate events can be dropped, but which ones? I have chosen to drop the older events in favor of the most up-to-date. Which event to drop is of significance only if there are parameters associated with the events in question.</p>
+<p>Invoking a function asynchronously is a platform-specific operation. On Win32 platforms the traditional method is through posting and receiving a Windows message. However, <B>QueueUserAPC</B> can also be used.</p>
+<p>To call an observer's interface function requires an interface pointer, a member function pointer, and the parameters to be passed:</p>
+
+<UL>
+<p>1) <B>IQuake *</B><br>
+2) <B>void (IQuake:: *)(double)</B><br>
+3) <B>double</B></p>
+</UL>
+
+<p>Each observer's <B>IQuake</B> interface pointer is supplied via the <B>Advise</B> function to the subject, which stores them. When the subject fires an event, it passes the event's member function pointer, and the required parameters, to <B>FireEvent</B> or <B>FireSingleEvent</B>. <B>FireEvent </B>and <B>FireSingleEvent</B> use these parameters to create an <B>Event</B> object.</p>
+<p>The event class inherits from <B>AbstractEvent</B>, which defines the interface between the event and the subject, including the <B>operator==.</B> My implementation considers events to be equivalent if they call the same function (even with different parameter values). Events are compared by their member function pointers, but to make this comparison the pointers must be of the same type. Each of the member functions in <B>IFoo</B> below has a different type.</p>
+
+<pre>
+struct IFoo {
+   void Func1(int);
+   void Func2();
+};
+</pre>
+
+<p>The types are respectively:</p>
+
+<pre>
+void (IFoo:: *)(int);
+void (IFoo:: *)();
+</pre>
+
+<p>The syntax may be a little confusing, but these are clearly different types, which cannot be converted to <B>void *</B>. (The size of a function pointer could be different from the size of a data pointer.) A member function pointer can be converted only to another member function pointer. The event class implements a virtual function <B>Value</B>, which converts the member function pointer to a fixed type. The value returned by <B>Value</B> is used by the <B>operator==</B> to compare two events. (It would be difficult to define <B>operator&lt;</B> because this operator is not defined for function or member function pointers. After all, the address of functions is determined by the linker, and could be different for each build.)</p>
+
+<h4><FONT COLOR="#000080">Maintaining Type Safety</FONT></H4>
+
+<p>Event objects store a member function pointer and between zero and <I>n</I> parameters. To enable calling of the event function this implementation provides <I>n</I>+1 versions of the template member function <B>InvokeImpl</B>. The first version calls the event function, passing zero parameters; the last version passes <I>n</I> parameters. For each event object only one of these functions is valid; for example, it is only valid to call <B>IQuake::Warning</B> with one parameter. The compiler must be able to decide at compile time which version to invoke.</p>
+<p>The implementation manages this by counting the parameters supplied to the object. The default parameter type is <B>DefType</B>. I have specialized a template class <B>ArgC</B> such that <B>ArgC&lt;T&gt;::Count</B> has a constant value of 1 for all types except <B>DefType</B>, for which <B>Count</B> is zero. This technique is also used by the <B>&lt;limits&gt;</B> header in the Standard Library.</p>
+<p>The number of parameters supplied is:</p>
+
+<pre>
+ArgC&lt;P1&gt;::Count + ArgC&lt;P2&gt;::Count + ...
+</pre>
+
+<p>The template member function <B>InvokeImpl</B> cannot be overloaded on a value, but by creating a unique type for each of the values 0 to n it can be overloaded on each of those types:</p>
+
+<pre>
+template &lt;unsigned&gt; class NumType {};
+template &lt;class T&gt;
+   void InvokeImpl(T * p, NumType&lt;0&gt;);
+template &lt;class T&gt;
+   void InvokeImpl(T * p, NumType&lt;1&gt;);
+</pre>
+
+<p>The virtual function <B>Invoke</B> is now able to choose which version of <B>InvokeImpl</B> to instantiate by passing an object of type <B>NumType&lt;ArgCount&gt;</B>. Finally, each version of <B>InvokeImpl</B> calls the observers' member function using <B>operator-&gt;*.</B></p>
+
+<pre>
+(void)(pObserver-&gt;*pFunc)(p1);
+</pre>
+
+<p>The left-hand argument of <B>operator-&gt;*</B> is an interface pointer, the right-hand argument is a pointer to a member function of that interface, followed by zero or more parameters. The compiler checks the parameters passed to the member function just as it would any other function.</p>
+<p>When using the <B>Multicast</B> class, the parameters passed to <B>FireEvent</B> and <B>FireSingleEvent</B> are not required to have the same type as the parameters of the event function, but the compiler must be able to convert the parameters to the type expected. If it can't perform the necessary conversions the compiler generates an error. Unfortunately, the error may not be generated at the site of the real problem.</p>
+
+<h4><FONT COLOR="#000080">Miscellaneous Issues</FONT></H4>
+
+<p>To complete my presentation of the <B>Multicast</B> class, I discuss how it should be copied and assigned. Finally, I discuss the implications of using the class in a multithreaded environment.</p>
+<p>Copying and assignment of subjects using the default C++ functions would copy the currently subscribed observers and outstanding events. This would be dangerous. For example, a new subject might fire events to observers that no longer exist. There are two obvious solutions: either prevent copying and assignment by making the functions private or implement benign functions (which do nothing), thereby providing an interface for copying and assignment to classes deriving from or containing the <B>Multicast</B> class.</p>
+<p>Thread safety concerns more than just protecting access to the subject's data. Users must also be aware of the risk of deadlock. For deadlock to occur an attempt must be made to hold more than one lock at a time. Holding a lock from within <B>AsyncCall</B>, while calling the observers' functions, is taking one step on the path to deadlock. On the other hand, if no lock were held, the risk would exist that an observer could be destroyed while simultaneously being called from within <B>AsynchCall</B>. Therefore observers must be aware that when an event function (such as <B>OnChanged</B>) is called, the subject will be locked. Thus all access to the subject from other threads will be blocked until the event function returns.</p>
+<p>Consider the following scenario: An observer's event function attempts to call a function of another observer that is already blocked, in another thread, waiting to access the subject. If the second observer is locked, it will not unlock itself until it can access the subject. The first observer becomes blocked waiting for the second observer, and the second observer remains blocked waiting to access the subject &#151; deadlock!</p>
+<p>To avoid deadlock with my implementation, the observers' event functions should avoid calling external objects, which might be locked. These functions should especially avoid calling other objects with direct or indirect access to the subject. Dealing with multiple threads is a complex issue to which whole books are dedicated. An in-depth discussion is beyond the scope of this article.</p>
+
+<h4><FONT COLOR="#000080">Summary</FONT></H4>
+<p>I have shown how it is possible to avoid using wizard-generated code and still provide an efficient, type-safe, and generic implementation of the subject side of the Observer pattern. Along the way I have shown how to simulate variable arguments and count arguments at compile time, all while maintaining type safety. I have also touched on some issues concerning the manipulation of member function pointers. The code uses many advanced features of C++. I used Visual C++ 5.0; the mileage from other compilers may vary.</p>
+<p>The situation often arises in which the user has a more elementary need to call member functions, of the same object, asynchronously while maintaining type safety. The same techniques I demonstrated can be applied and much of the multicast code reused.</p>
+
+<h4><FONT COLOR="#000080">Acknowledgements</FONT></H4>
+
+<p>My thanks to Alan Stokes, Terry Way, and Sunil Kalkunte for reviewing this article, and to my colleagues at RCP Consultants for inspiring it.</p>
+
+<h4><FONT COLOR="#000080">References</FONT></H4>
+
+<p><a name="1"></a>[1] Erich Gamma, Richard Helm, Ralph Johnson, and John Vlissides. <I>Design Patterns &#151; Elements of Reusable Object-Oriented Software</I> (Addison-Wesley, 1995).</p>
+
+<p><i>Mark Bartosik is a software engineer specializing in C++, COM, and Win32 at RCP Consultants, and can be reached at <B>mbartosik@yahoo.com</B> or <B>mark@rcp.co.uk</B>.</i></p>
+
+<h4><a href="../../../source/1998/oct98/bartosik.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

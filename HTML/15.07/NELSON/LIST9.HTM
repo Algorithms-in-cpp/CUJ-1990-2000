@@ -1,0 +1,174 @@
+
+
+
+
+<HTML><HEAD>
+
+<TITLE>July 1997/Polyphase Merge Sorting/Listing 9</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4>Listing 9:	PolySort implementation</h4>
+
+<pre>
+/*
+ *  psort.c
+ */
+
+#define NO_SORT_LOG     //#define to disable logging
+#include "psort.h"
+//#include "sortlog.h"  /* on code disk only */
+
+PolySort::PolySort( InternalSort &amp; insort,
+                    int nfiles, size_t blen ) :
+    _next_call(0), _width(insort.Width())
+{   Ins = &amp;insort;
+    _old_handler = set_new_handler(0);
+    if( nfiles &lt; 3 )  nfiles = 3;   //minimum size
+    Src  = new MergeFile( _width, blen );
+    Targ = new MergeFile( _width, blen );
+    Ps   = new PreSort( *Src, insort );
+    Mp   = new MergeList( nfiles - 1, _width, blen );
+    set_new_handler(_old_handler);
+}
+
+PolySort::~PolySort()   {   delete Mp;
+                            delete Src;
+                            delete Targ;
+                            delete Ps;     }
+
+int PolySort::_distribute_runs()
+{   int level = 0;
+    MergeFile *p, *tail = Mp-&gt;PeekTail();
+    if( _next_call++ )  //Clear for next sort run ...
+        for( Mp-&gt;Restart(); Mp-&gt;Test(); Mp-&gt;Next() )
+            Mp-&gt;Current()-&gt;ResetIOMode(MergeFile::out);
+
+    while( !Src-&gt;EndOfFile() )
+    {  /* Compute ideal #runs to reach next level.. */
+        int ideal = (level == 0 ? 1 : tail-&gt;Actual());
+        size_t max_runs = 0;
+        Mp-&gt;Restart();
+        p = Mp-&gt;Current();
+        p-&gt;Null( p-&gt;Actual() ); /*save old value */
+        p-&gt;Actual( ideal );
+
+        while (1)
+        {   int actual = p-&gt;Null();  /* get old value*/
+            p-&gt;Null( p-&gt;Actual() - actual);
+            max_runs += p-&gt;Null();
+            Mp-&gt;Next();
+            if( Mp-&gt;Test() == 0 ) break;
+            p = Mp-&gt;Current(); /* next buffer */
+            p-&gt;Null( p-&gt;Actual() ); /*save old value */
+            p-&gt;Actual( actual + ideal ); /* new ideal*/
+        }
+
+        /* Distribute runs for current level .... */
+        while( max_runs &amp;&amp; !Src-&gt;EndOfFile() )
+        {   int cont;
+            size_t items;
+            for( Mp-&gt;Restart(); Mp-&gt;Test(); Mp-&gt;Next())
+            {   p = Mp-&gt;Current();
+                if( Src-&gt;EndOfFile() )
+                    break;
+                while( p-&gt;Null() )
+                {   items = Ps-&gt;GenerateRun( p, cont);
+                    if( items == 0 )
+                        break;
+                    d_SetItemsIn(d_ItemsIn() + items);
+                    d_SetRunsIn(d_RunsIn() + 1);
+                    if( 0 == level || cont &gt; 0 )
+                    {   p-&gt;Null(p-&gt;Null() - 1);
+                        d_SetRunsOut(d_RunsOut() + 1);
+                        --max_runs;
+                        break;
+                    }   //else continue same run...
+                }
+            }
+        }
+        level++;
+    }
+
+    d_RunDistributionSummary( level, Mp, Targ );
+    return level;
+}
+
+void PolySort::_merge_runs(int level )
+{   /* Flush &amp; rewind work files and begin merge....*/
+    for( Mp-&gt;Restart(); Mp-&gt;Test(); Mp-&gt;Next() )
+        Mp-&gt;Current()-&gt;ResetIOMode(MergeFile::in);
+
+    do  /* For each merge level...... */
+    {   MergeFile *p, *head = Mp-&gt;PeekHead();
+        int min_runs = head-&gt;Actual(); //has &lt;st #runs
+        Targ-&gt;ResetIOMode(MergeFile::out);   //zero out
+        d_DisplayRunsAtBegLevel( level, Mp, Targ );
+
+        do  //Merge min_runs from each file to Targ
+        {   //Exclude all files with null runs ...
+            d_SetXferCount(0);
+            for(Mp-&gt;Restart(); Mp-&gt;Test(); Mp-&gt;Next() )
+            {   p = Mp-&gt;Current();
+                if( p-&gt;Null() )
+                {   p-&gt;Null( p-&gt;Null() - 1 );
+                    p-&gt;Actual( p-&gt;Actual() - 1 );
+                }
+                else  //Put file on active list....
+                    Mp-&gt;PutActive(p);
+            } //if all files have null runs, do a
+            if( Mp-&gt;ActiveCount() == 0 )  //dummy merge
+                Targ-&gt;Null(Targ-&gt;Null() + 1);
+            else do   //Merge 1 run from each active
+            {   PCDATA pmin, ptmp; //file to Targ...
+                MergeFile *fmin;
+                Mp-&gt;RestartActive();
+                fmin = Mp-&gt;CurrentActive();
+                pmin = fmin-&gt;Nextg();
+                Mp-&gt;NextActive();
+                while(Mp-&gt;TestActive()) //find &lt;st item
+                {   p = Mp-&gt;CurrentActive();
+                    ptmp = p-&gt;Nextg();
+                    if( Ins-&gt;Compare
+                        ( &amp;ptmp, &amp;pmin ) &lt; 0 )
+                    {   fmin = p;
+                        pmin = ptmp;
+                    }
+                    Mp-&gt;NextActive();
+                }
+                /* Transfer 1 data item .... */
+                Targ-&gt;Put( fmin-&gt;Get() );
+                d_SetXferCount( d_XferCount()+1 );
+                d_SetXferTotal( d_XferTotal()+1 );
+                /* Detect end of run ...... */
+                ptmp = Targ-&gt;Lastp();
+                pmin = fmin-&gt;Nextg();
+                if( fmin-&gt;EndOfFile() ||
+                    Ins-&gt;Compare( &amp;ptmp, &amp;pmin) &gt; 0 )
+                {   fmin-&gt;Actual(fmin-&gt;Actual()-1);
+                    Mp-&gt;DetachActive(fmin);
+                }
+            } while( Mp-&gt;ActiveCount() );
+            //.... end of a mini-pass
+            Targ-&gt;Actual(Targ-&gt;Actual() + 1);
+            d_DisplayRunsAtEndPass( Mp, Targ );
+        } while( --min_runs );  //...end of 1 merge pass
+        /* Rotate files for next level ...... */
+        if( level &gt; 1 )
+        {   Targ-&gt;ResetIOMode( MergeFile::in );
+            Mp-&gt;PutTail(Targ);  //now has &gt;st #runs
+            Mp-&gt;GetHead(Targ);  //head empty, = next Targ
+        }
+    } while( --level );
+}
+
+void PolySort::Sort( ffstream *input_stream,
+                     const char *output_file )
+{   d_ResetLog();
+    Src-&gt;AttachStream( input_stream );
+    _merge_runs( _distribute_runs() );
+    d_DisplayXferTotals();
+    d_VerifySort( output_file, Ins, Mp, Targ );
+    Targ-&gt;RenameOutput( output_file );
+}
+//End of File
+</pre>
+</body></html>

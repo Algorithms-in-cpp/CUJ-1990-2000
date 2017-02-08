@@ -1,0 +1,388 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>April 1997/We Have Mail</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><FONT COLOR="#FF0000"><A href="../tocapr.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          Departments</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">We Have Mail</FONT></H2>
+          <BLOCKQUOTE>
+          <P> Letters to the editor may be sent via email to cujed@mfi.com, or
+               via the postal service to Letters to the Editor, C/C++ Users
+               Journal, 1601 W. 23rd St., Ste 200, Lawrence, KS 66046-2700.</P></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <p> Mr. Plauger, </p>
+               
+               <p> I am sending this to you mostly
+                    because your name appears in the copyright notices on the
+                    latest generation of the Microsoft VC++ compiler's runtime
+                    library. (That would be version 4.2.) I will CC the CUJ
+                    editor alias so that you feel free to print it there if you
+                    feel that others may benefit from my experiences. </p>
+               
+               <p> I have noticed a distressing problem
+                    with the class ofstream, from the header file &lt;fstream&gt;.
+                    I want to use an ofstream to control the export of a data
+                    structure (specifically a bitmap, but that's not important)
+                    to a file. I do something like this, less all the
+                    distracting details:</p>
+
+<PRE>
+void ExportStuff(void) {
+ struct { char a; unsigned char b; }
+  stuff = { 1, 255 };
+ ofstream out("foo.bin",
+  ios::out|ios::trunc|ios::binary);
+ for (int i=0; i&lt;16; i++)
+  out.write((char *)&amp;stuff,
+           sizeof(stuff));
+ }
+</PRE>
+               
+               <p>This should produce a 32-byte file,
+                    containing the bytes 0x01 0xff alternately. Unfortunately it
+                    doesn't; it produces a 16-byte file containing only the 0x01
+                    bytes, having stuffed all of the 0xff bytes into a bitbucket
+                    somewhere. </p>
+               
+               <p> I examined the header files in an
+                    attempt to narrow down the problem. After noticing your
+                    copyright, I dug up a stack of CUJ back issues and found
+                    that your column made a lot more sense on the second reading
+                    (especially with a specific mystery to focus my attention).
+                    As you have done in your column, I have elided out the extra
+                    complications from "templatizing" the iostreams classes in
+                     the following discussion. </p>
+               
+               <p> The problem appears to be an
+                    interaction between the declaration of the function
+                    streambuf::overflow, and its use in streambuf::sputn which
+                    was called by ostream::write. </p>
+               
+               <p> Specifically, overflow is declared as
+                    taking an int containing the character which is overflowing
+                    the buffer. A typical implementation of overflow, such as
+                    filebuf::overflow, begins by comparing that integer to EOF.
+                    When overflow is called from streambuf::sputc care was taken
+                    to avoid any trouble by casting the character to an unsigned
+                    char. (Actually since the whole class hierarchy is 
+                    implemented out of templates parametized on both the
+                    specific character type and its characteristics, the
+                    character is passed to char_traits&lt;char&gt;::to_int_type
+                    which is implemented as a cast to unsigned char.) </p>
+               
+               <p> However, streambuf::xsputn does not
+                    handle the character as cleanly. It simply allows the
+                    compiler generated coercion between char and int to occur.
+                    As we all know, the dark side of having signed chars is that
+                    EOF and (int)(char)0xff are both equal TO -1! </p>
+               
+               <p> Having finally identified a likely
+                    cause for the behavior I observed, I decided to attempt to
+                    fix it. I could have just edited the source (since
+                    everything interesting in the runtime library is a template
+                    these days, that is simply a matter of editing the
+                    appropriate header file) but I don't really like having
+                    custom hacks in my system header files, since this tends to 
+                    cause problems for my customers who might wish to be able to
+                    recompile the code later. </p>
+               
+               <p> Then I noticed that streambuf::sputn
+                    is just a wrapper for a protected virtual function
+                    streambuf::xsputn. If I derived a class from filebuf and
+                    overrode just xsputn in my derived class, I would get a
+                    better filebuf that might not have this bug. </p>
+               
+               <p> I added the class declaration shown
+                    in <A href="list1.htm">Listing 1</a>
+to my test program: </p>
+               
+               <p> Since I didn't go and rebuild the
+                    ofstream class, you have to declare the file buffer
+                    separately frome the stream, like this:</p>
+
+<PRE>
+void ExportStuff(void) {
+ struct { char a; unsigned char b; }
+  stuff = { 1, 255 };
+ fixedfilebuf fb;
+ ostream out(&amp;fb);
+ fb.open("foo.bin",
+  ios::out|ios::trunc|ios::binary);
+ for (int i=0; i&lt;16; i++)
+  out.write((char *)&amp;stuff, sizeof(stuff));
+ }
+</PRE>
+               
+               <p>Much to my surprise, this actually
+                    works. If ofstream had included a documented way to replace
+                    the filebuf it creates internally (like a ofstream(filebuf*)
+                    constructor analogous to the one available for ostream) I
+                    would be a little happier. On the whole, I am more impressed
+                    that I seem to finally have a clear enough understanding of
+                    the library and language that I was able to fix a library
+                    bug with public class inherintance. </p>
+               
+               <p> Incidentally, while researching the
+                    modern iostreams classes in your CUJ column, I noticed that
+                    your implementation of class streambuf (CUJ, June 1994, pp.
+                    10-22) appears to have the same bug. Your streambuf::sputc
+                    (shown in Listing 1 on p. 12) calls overflow without a
+                    protecting cast, but your streambuf::sputn (Listing 1 on p.
+                    12) calls the virtual function streambuf::xsputn (Listing 6 
+                    on pp. 18-20) which does have the necessary cast to unsigned
+                    char. Sometimes these kinds of bugs are a little like ants.
+                    You wipe out one hill, only to find that they have moved
+                    back to the spot they favored last year... </p>
+               
+               <p> (By the way, since Windows
+                    agressively uses the file extension to choose an associated
+                    tool for viewing a general class of files, the newfangled
+                    extension-free header file names are a real pain. And the
+                    fact that Microsoft has chosen to ship both the new and old
+                    headers in support of backward compatibilty for iostreams
+                    programs seems to have prevented them from doing something 
+                    reasonable like assuming that a name like &lt;foo&gt; refers
+                    to file named foo.h in a magic location, which would have
+                    eliminated the extension-challenged files from the system
+                    quite nicely.) </p>
+               
+               <p> Ross Berteig <BR>
+                     Cheshire Engineering Corp. <BR>
+                     chesheng@earthlink.net </p>
+               
+               <p><I> I had already found and fixed
+                    this particular bug, but I appreciate your reporting it. I'd
+                    rather hear about the same bug a dozen times than not at
+                    all. And yes, it is a persistent type of bug, given all the
+                    casting required between different representations of
+                    characters in iostreams. </I></p>
+               
+               <p><I> I raised the same objections you
+                    did about header names with no suffix, but to no avail. I
+                    hope the day will soon come when the .h versions can refer
+                    to the Standard C++ library instead of some traditional
+                    library. Alas, that day has not yet come. &#151; pjp</I> </p><HR>
+               
+               <p> Dear Dr. Plauger, </p>
+               
+               <p> The coming of the renewal bill for
+                    CUJ has spurred me to finally write. I am a competent C
+                    programmer who has only done minimal C++ coding and have
+                    been reading CUJ from before I was competent in C. Frankly,
+                    C++ bothers me, and I don't always receive the help needed
+                    to master it from CUJ. </p>
+               
+               <p> Partly it's my fault. I hate to read
+                    code that I don't have a current interest in, and that
+                    limits my learning C++ from the tutorial articles. But the
+                    other part is due to the C++ standard. It's depressing,
+                    since it includes everything, even the kitchen sink, and
+                    offers precious little guidance for when and how to use
+                    those features, or more to the point, when not to. Frankly, 
+                    trying to master a complex language, a complex OS, and the
+                    problem to be solved is at least one too many complexities
+                    for me. </p>
+               
+               <p> What really gets me is that the only
+                    current place that I see any hope is also in C++, in the
+                    Standard Template Library. For the first time I am seeing
+                    the possiblity of programming on a higher level of
+                    abstraction, with the true building blocks of programming:
+                    debugged and fast algorithms that are decoupled from the
+                    data they manipulate. With STL you can more easily create 
+                    your problem-domain objects, and you can actually play with
+                    the design tradeoffs much later in development. I would no
+                    longer have to type text in from a book or riskily
+                    cut-and-paste modify the same algorithm again and again in
+                    my code, having to understand it properly each time so that
+                    my data-structure-driven modifications all work. Inheritance
+                    is good but class libraries tend to concentrate on modeling
+                    the problem domain, which means that they get less and less
+                    reusable, especially in a new problem domain, the farther
+                    down the inheritance tree you get. </p>
+               
+               <p> Getting back to gripes though, on top
+                    of C++'s complexity, it also seems that C++ executables,
+                    when C++ is used as an OOL, are bloated. Whether created via
+                    class libraries or with STL, programs are much bigger than
+                    their non-OO equivalents, mostly because we can't properly
+                    prune away code that is unused &#151; our own, and also all the
+                    stuff that is in the language definition and cannot be 
+                    eliminated either. </p>
+               
+               <p> From the last issue or so of CUJ, it
+                    seems clear that the new C standard will not include any
+                    experimental additions and that disappoints me too. I was
+                    hoping to get more Pascal-like declarations, at least for C.
+                    Dan Saks' May 1996 article on declarations infuriated me
+                    because it said, "Just learn this backward system and then
+                    everything will be okay." That's true for C/C++ as they 
+                    stand now, but fails to recognize what's conceptually broken
+                    about C/C++ declarations. </p>
+               
+               <p> The proposed solution in C++ that
+                    Stroustrup rejected &#151; postfix -&gt; to declare pointers &#151;
+                    didn't get to the point, because what people like myself
+                    want is to declare variables as what we want them to be, not
+                    as what they are when completely dereferenced (always a base
+                    type or struct in C). Thus, int **ppint could be written as
+                    &amp;&amp;int ppint.</p>
+               
+               <p> This is the reason that novice C/C++
+                    programmers tend to type and then debug declarations like
+                    int* x,y,z. They instinctively want to make declarations of
+                    multiple variables all of the same pointer type without
+                    decorating each of them with pointer operators. In the
+                    process they thus wrongly consider all the pointer operators
+                    to be postfix to the decl-specifiers (using Saks' notation).
+                    </p>
+               
+               <p> With my proposal, which I believe
+                    would be backward compatible with the old-style
+                    declarations, you could think about declarations much more
+                    naturally, since the decl-specifiers would be modified by
+                    the (prefix) pointer (actually, address-of) operators and
+                    only the postfix operators, e.g. [] and (), would be
+                    associated with the individual variables. This way, the
+                    English and the C way of describing variables would match.
+                    The statement "x, y, and z are pointer to pointer to int
+                    variables" (or equivalently, "x, y, and z contain the
+                    address of the address of an int") turns into &amp;&amp;int
+                    x,y,z. </p>
+               
+               <p> Similarly, the declaration &amp;&amp;char
+                    a, b[], c[][] would translate to "a is a pointer to a
+                    pointer to a char, b is an array of pointer to pointer to
+                    char, and c is an array of an array of pointer to pointer to
+                    char." Try it on function pointers and see if the
+                    parentheses disappear (not sure yet myself 8-). </p>
+               
+               <p> Note too that function prototypes
+                    using my proposed syntax, could be a bit shorter, e.g.:</p>
+
+<PRE>
+foo(&amp;int bar1, bar2, bar3,
+    &amp;&amp;char a, b[], c);
+</PRE>
+               
+               <p>The fewer hoops I have to jump through
+                    conceptually, the better and more quickly I program. I know,
+                    one could argue about a lot of C/C++ syntax from that
+                    perspective. Passing pointers instead of Pascal/Java-style
+                    references, the necessity of break in case statements, and
+                    so on. Perhaps I am actually questioning the C philosophy,
+                    that the programmer knows what (s)he is doing. Frankly my 
+                    philosophy of programming is, "Do what I meant not what I
+                    said 8-)" and I am just not sure which I dislike more,
+                    trying to satisfy picky parsers or hours of debugging.
+                    </p>
+               
+               <p> Ok, someone can surely show that the
+                    above proposal is not a good idea, at least not unless I
+                    want to join the ranks of language designers myself. But
+                    consider the overall problem we have. We are like the
+                    cobbler's children, we make shoes for all the other people
+                    but go shoeless ourselves. For a start, we are stuck typing
+                    ASCII characters on machines that support all sorts of 
+                    dingbat-like fonts that could make many cryptic languages
+                    readable and relatively easy to type (since the glyphs could
+                    be assigned to unshifted keys). </p>
+               
+               <p> Face it, our likes and dislikes in
+                    languages hinge on such trivial things as how easy it is to
+                    remember or type ^ or -&gt; for pointers, or := or = or ==
+                    or &lt;- for equality or assignment. And who can remember
+                    what language "PL" is using $ or % for anyway? The once
+                    expensive APL terminals are now trivially replaced by
+                    today's font-enabled machines (no matter what you think of
+                    APL or its readablity 8-). </p>
+               
+               <p> Then there are the "languages" that
+                    are graphical, and/or have a great deal of functionality
+                    encapsulated in function calls or language keywords or other
+                    add ons. These are coming, and are frequently more
+                    productive than programming on the bare metal, but we tend
+                    to avoid them. Or in the case of C++, without a real
+                    standard, we make competing versions, adding complexity to 
+                    complexity. </p>
+               
+               <p> The latter point brings me back to my
+                    problem with CUJ. As a semi-academic journal, (meaning you
+                    publish what we want to write about rather than commission
+                    articles on what we want to read), I don't get the guidance
+                    as to what areas of C++ are immediately helpful, and what
+                    are more trouble to maintain or debug than they are worth.
+                    </p>
+               
+               <p> An example from my former work might
+                    clarify things. The DSP chips from Analog Devices and TI are
+                    both Harvard architecture machines with separate memory
+                    areas and data busses for code and data. Analog Devices
+                    clearly specifies which bank is supposed to be which, even
+                    though you can use the program area for data also. TI on the
+                    other hand, makes both busses nearly symmetric, you can 
+                    store code or data on each, and you can share either bank
+                    with another TI DSP. I found the amount of freedom granted
+                    by TI rather counterproductive, since I could not easily
+                    decide what to do. The hardware and software tradeoffs were
+                    subtle if they existed at all, even though I knew that, in
+                    the end, the same principles of code in one bank, data in
+                    the other still applied. </p>
+               
+               <p> On the library front, I have found
+                    that much of C programming has consisted in mastering
+                    libraries. I would like to see more discussion/reviews of
+                    the complex class libraries available for C++ for various
+                    platforms, even if CUJ sticks to the most portable and
+                    generic view of them. </p>
+               
+               <p> Should I subscribe to The C++ Journal
+                    instead to get this sort of thing? How do class libraries
+                    work and how do you apply them? Where exactly is the
+                    increased productivity? I like not having to grind through
+                    routine stuff, so long as I don't end up with a bigger
+                    problem than I started with. </p>
+               
+               <p> I guess that this rant has gone on
+                    long enough &#151; will I renew? Yes, but not for a long period,
+                    I am yearning for more support from CUJ and for better
+                    languages and computer systems. One other sample dilemma, I
+                    love the idea that the file system is a RDBMS on the BeBox,
+                    but, you know what that Box is programmed in: C++, sigh.
+                    </p>
+               
+               <p>Yours, <BR>
+                    Bob Pegram <BR>
+                     pegram@ibm.net </p>
+               
+               <p><I> We do indeed publish articles
+                    that our readers want to write far more often than we
+                    commission articles on what we think is stylish at the
+                    moment. It's letters like yours, however, that stimulate
+                    other readers to become writers. Let's hope you've primed
+                    the pump to deliver more of the kind of material you're
+                    looking for. &#151; pjp </I></p></BLOCKQUOTE>
+     
+<h4><a href="../../../source/1997/apr97/letters.zip">Get Article Source Code</a></h4>
+
+     </BODY>
+</HTML>

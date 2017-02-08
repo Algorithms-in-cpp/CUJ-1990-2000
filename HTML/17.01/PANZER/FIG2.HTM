@@ -1,0 +1,177 @@
+<HTML><HEAD>
+<TITLE>January 1999/Automatic Code Instrumentation/Figure 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Figure 2:	CallMonitor class implementation</A></h4>
+<pre>
+// Copyright (c) 1998 John Panzer.  Permission is granted to
+// use, copy, modify, distribute, and sell this source code as
+// long as this copyright notice appears in all source files.
+
+// Utility functions
+void indent(int level)
+{
+    for(int i=0;i&lt;level;i++) putchar('\t');
+}
+
+//
+// class CallMonitor
+//
+DWORD CallMonitor::tlsSlot=0xFFFFFFFF;
+
+CallMonitor::CallMonitor() {queryTicks(&amp;threadStartTime);}
+
+CallMonitor::~CallMonitor() {}
+
+void CallMonitor::threadAttach(CallMonitor *newObj)
+{
+    if (tlsSlot==0xFFFFFFFF) tlsSlot = TlsAlloc();
+    TlsSetValue(tlsSlot,newObj);
+}
+
+void CallMonitor::threadDetach()
+{
+    delete &amp;threadObj();
+}
+
+
+CallMonitor &amp;CallMonitor::threadObj()
+{
+    CallMonitor *self = (CallMonitor *)
+        TlsGetValue(tlsSlot);
+    return *self;
+}
+
+// Performs standard entry processing
+void CallMonitor::enterProcedure(ADDR parentFramePtr,
+                                 ADDR funcAddr,
+                                 ADDR *retAddrPtr,
+                                 const TICKS &amp;entryTime)
+{
+    // Record procedure entry on shadow stack
+    callInfoStack.push_back(CallInfo());
+
+    CallInfo &amp;ci = callInfoStack.back();
+    ci.funcAddr = funcAddr;
+    ci.parentFrame = parentFramePtr;
+    ci.origRetAddr = *retAddrPtr,
+    ci.entryTime = entryTime;
+
+    logEntry(ci);  // Log procedure entry event
+
+    // Redirect eventual return to local thunk
+    *retAddrPtr = (ADDR)_pexitThunk;
+
+    queryTicks(&amp;ci.startTime); // Track approx. start time
+}
+
+// Performs standard exit processing
+void CallMonitor::exitProcedure(ADDR parentFramePtr,
+                                ADDR *retAddrPtr,
+                                const TICKS &amp;endTime)
+{
+    // Pops shadow stack until finding a call record
+    // that matches the current stack layout.
+    bool inSync=false;
+    while(1)
+    {
+        // Retrieve original call record
+        CallInfo &amp;ci = callInfoStack.back();
+        ci.endTime = endTime;
+        *retAddrPtr = ci.origRetAddr;
+        if (ci.parentFrame==parentFramePtr)
+        {
+            logExit(ci,true); // Record normal exit
+            callInfoStack.pop_back();
+            return;
+        }
+        logExit(ci,false);    // Record exceptional exit
+        callInfoStack.pop_back();
+    }
+}
+
+// Default entry logging procedure
+void CallMonitor::logEntry(CallInfo &amp;ci)
+{
+    indent(callInfoStack.size()-1);
+    string module,name;
+    getFuncInfo(ci.funcAddr,module,name);
+    printf("%s!%s (%08X)\n",module.c_str(),
+            name.c_str(),ci.funcAddr);
+}
+
+// Default exit logging procedure
+void CallMonitor::logExit(CallInfo &amp;ci,bool normalRet)
+{
+    indent(callInfoStack.size()-1);
+    if (!normalRet) printf("exception ");
+    printf("exit %08X, elapsed time=%I64d\n",ci.funcAddr,
+           ci.endTime-ci.startTime);
+}
+
+void CallMonitor::getFuncInfo(ADDR addr,
+                              string &amp;module,
+                              string &amp;funcName)
+{
+    SymInitialize(GetCurrentProcess(),NULL,FALSE);
+    TCHAR moduleName[MAX_PATH];
+    TCHAR modShortNameBuf[MAX_PATH];
+    MEMORY_BASIC_INFORMATION mbi;
+
+    VirtualQuery((void*)addr,&amp;mbi,sizeof(mbi));
+    GetModuleFileName((HMODULE)mbi.AllocationBase,
+                      moduleName, MAX_PATH );
+
+    _splitpath(moduleName,NULL,NULL,modShortNameBuf,NULL);
+
+    BYTE symbolBuffer[ sizeof(IMAGEHLP_SYMBOL) + 1024 ];
+    PIMAGEHLP_SYMBOL pSymbol =
+            (PIMAGEHLP_SYMBOL)&amp;symbolBuffer[0];
+    // Following not per docs, but per example...
+    pSymbol-&gt;SizeOfStruct = sizeof(symbolBuffer);
+    pSymbol-&gt;MaxNameLength = 1023;
+
+    DWORD symDisplacement = 0;
+    SymLoadModule(GetCurrentProcess(),
+                  NULL,
+                  moduleName,
+                  NULL,
+                  (DWORD)mbi.AllocationBase,
+                  0);
+
+    SymSetOptions( SymGetOptions() &amp; ~SYMOPT_UNDNAME );
+    char undName[1024];
+    if (! SymGetSymFromAddr(GetCurrentProcess(), addr,
+                            &amp;symDisplacement, pSymbol) )
+    {
+        // Couldn't retrieve symbol (no debug info?)
+        strcpy(undName,"&lt;unknown symbol&gt;");
+    }
+    else
+    {
+        // Unmangle name, throwing away decorations
+        // that don't affect uniqueness:
+        if ( 0 == UnDecorateSymbolName(
+                pSymbol-&gt;Name, undName,
+                sizeof(undName),
+                UNDNAME_NO_MS_KEYWORDS |
+                UNDNAME_NO_ACCESS_SPECIFIERS |
+                UNDNAME_NO_FUNCTION_RETURNS |
+                UNDNAME_NO_ALLOCATION_MODEL |
+                UNDNAME_NO_ALLOCATION_LANGUAGE |
+                UNDNAME_NO_MEMBER_TYPE))
+            strcpy(undName,pSymbol-&gt;Name);
+    }
+    SymUnloadModule(GetCurrentProcess(),
+                    (DWORD)mbi.AllocationBase);
+    SymCleanup(GetCurrentProcess());
+    module = modShortNameBuf;
+    funcName = undName;
+}
+
+
+//End of File
+</pre>
+</BODY>
+</HTML>

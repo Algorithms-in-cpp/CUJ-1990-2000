@@ -1,0 +1,110 @@
+<HTML>   
+     <HEAD>
+<TITLE>April 2000/Stressing Your COM Objects</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocapr.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   COM</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Stressing Your COM Objects</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Panos Kougiouris</FONT></H3>
+
+<BLOCKQUOTE>
+<p>The best known way to detect synchronization errors in code is simply to pound on it to see if it breaks.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+<p>Writing COM objects in C++ is the most effective way to take advantage of both COM and the Win32 API. It is not as easy as using Visual Basic, Java, or a scripting language, but it gives you immediate access to the whole Win32 API. What's more, using C++ is currently the only way to program free threaded, apartment neutral, and context neutral objects (objects that exploit COM's free threaded marshaler). On the downside, C++ COM objects &#151; like all code written in C++ &#151; are prone to memory corruption and memory leaks. In addition, since multiple threads can access free threaded and context neutral objects, synchronization problems might creep in.</p>
+<p>Good design can help prevent most of these problems. Yet there is nothing better than a stress test to reveal hidden flaws in an implementation. Such tests are invaluable because they not only help to catch defects in the original implementation, they help to keep them from creeping in during the software maintenance cycle. In fact, to keep test software relevant you should update it along with the software it is intended to test.</p>
+<p>This article presents a framework to help in writing stress tests for COM objects. The framework is implemented as a Visual C++ AppWizard to help you create stress tests in record time. You should always stress your COM objects before you ship them to your customer or deploy them to your operations center.</p>
+
+<H4><FONT COLOR="#000080">What the Framework Can Do</FONT></H4>
+
+<p>Before I deep dive into the design and implementation of the framework, I give an example of how the framework can be used to test COM objects. For convenience, the framework comes packaged as a Visual Studio Application Wizard. Before you begin, be sure to copy the file <B>COMStressAppWizard.awx</B> (supplied with the <I>CUJ</I> online sources &#151; see p. 3 for downloading instructions) into the <B>templates</B> directory of your Visual Studio installation. Normally this directory is under <B>C:\Program Files\Microsoft Visual Studio\Common\MSDev98\Bin\IDE</B>. Register the wizard using the Windows regsvr32 utility. This is a one-time installation.</p>
+<p>The COM object I stress in this example has only one method, named <B>capitalize</B> (see <a href="fig1.htm">Figure 1</a>). The method takes a string as an <B>[in, out]</B> parameter <a href="#1">[1]</a>, converts all the characters to upper case, and returns it. The COM object also contains a property named <B>m_counter</B>. This property indicates how many times the <B>capitalize</B> method has been called since the object was created. This COM object is apartment neutral (it uses the free threaded marshaler), so it can be created by one thread, stored in global memory, and then used by other threads. The implementation of the object is distributed as a dynamic linked library, <B>myString.dll</B>.</p>
+<p>Testing the object involves the following steps.</p>
+<p>1.  Create a new project using the Visual Studio "COM Stress Tester" wizard. (The wizard appears as a choice along with the other VC++ wizards in the File-&gt;New dialog box.) For this example I have named the project <B>myStringObjectTest</B>. Then I accept all the defaults and let the wizard generate the project. As you would expect from every well-behaved wizard, the generated project compiles to an executable with empty template functions.</p>
+<p>2.  Add code to test the object, by editing the <B>myStringObjectTest.cpp</B> file. For this example I have modified the <B>OnBeforeStartThreads</B> method to create a <B>myString</B> object. I have also modified the <B>OnAfterThreadsExited</B> method to print the <B>m_counter</B> property of the object I created earlier. The framework stresses a COM object by running multiple threads that invoke the object's methods. As their names imply, <B>OnBeforeStartThreads</B> and <B>OnAfterThreadsExited</B> are methods called by the framework before and after it runs these threads. The framework runs two kinds of threads, free threads and apartment threads, which invoke the methods <B>FreeThreadTest</B> and <B>AptThreadTest</B> respectively. For this test I modified these two methods to call the <B>capitalize</B> method on the COM object. (I explain more about threads and methods later in the article.)</p>
+<p>3.  Build the project. An executable named <B>myStringObject.exe</B> is created.</p>
+<p>4.  Run the executable from the command line.</p>
+<p>I first ran the program using the arguments <B>-l 10000</B>:</p>
+
+<pre>
+myStringObjectTest -l 10000</p>
+</pre>
+
+<p>Typing this in at the command line causes the test to run with only one thread that loops 10,000 times. Note that I did not have to deal with thread management or argument parsing; the implementation of the framework takes care of that.</p>
+<p>5.  Monitor the test program with PM (Windows Performance Monitor).</p>
+<p>When I ran PM, I got the display shown in <a href="fig2.htm">Figure 2</a>. The red line shows the number of bytes allocated from the process heap vs. time. I expected the plot trace to be a straight, horizontal line. The fact that it wasn't meant that memory was leaking somewhere. It turns out that I was not freeing the <B>BSTR</B> that was being passed as an argument to the <B>capitalize</B> method. Much to my relief, after I fixed this problem PM displayed a straight line.</p>
+<p>6.  Run the test using multiple threads.</p>
+<p>I ran the test again with the following command line:</p>
+
+<pre>
+myStringObject -at 10 -ft 10 -l 100
+</pre>
+
+<p>This runs the test using ten apartment threads and ten free threads, each looping 100 times. When I printed out the counter value at the end of the test, it was only 1009, instead of the correct 2000. After a closer examination of the code, it turned out that I was not incrementing the counter inside a critical region. As a result, some of the counter's increments were lost.</p>
+<p>This simple example shows you the kind of errors you can detect with the stress test. Things get way more interesting when your object creates other objects to accomplish its tasks. You can be sure that the defects you uncover using this framework are the same ones that would have reappeared later inside IIS/MTS (Internet Information Server/Microsoft Transaction Server). The framework and the wizard provide you with a test bed to uncover the bugs early and in a reproducible way.</p>
+<p>From what I've told you so far, you should be able to download the wizard and start using it. The following sections explain the design and implementation of the framework.</p>
+
+<H4><FONT COLOR="#000080">Structure of the Framework</FONT></H4>
+
+<p>The framework provides an abstract class, <B>HSTSTDriver</B> (see <a href="fig3.htm">Figure 3</a>). Users must override the class to add the code that tests their objects. <B>HSTSDriver</B> includes three member variables and five methods. The three variables, <B>m_numOfFreeThreads</B>, <B>m_numOfAptThreads</B>, and <B>m_numOfIterations</B>, are available to users' driver methods to provide the total number of free threads, apartment threads, and current number of iterations, respectively. These values might be useful to know when you allocate your internal data structures. The user of the test controls these values through command-line arguments.</p>
+<p>The <B>OnBeforeStartThreads</B> method is called from the framework before the threads are created and started. It gives you the first chance to set up your data structures. The <B>OnAfterStartThreads</B> is called after the threads have been created and started.</p>
+<p>The <B>AptThreadTest</B> and <B>FreeThreadTest</B> methods are called multiple times, once for every iteration. The former method is called from apartment threads, the latter from free threads. Both methods take three arguments. The first argument is the iteration counter. The second argument is a form of thread id. This is <I>not</I> a thread id provided by the operating system; it is implemented as a counter, whose value is equal to the current number of threads minus one. This argument uniquely identifies a thread within a process, but unlike an OS-provided thread id, it is repeatable from run to run. Finally, the third argument is a pointer to a random number generator object, which can be used to generate random numbers and strings.</p>
+<p>The method <B>OnAfterThreadsExited</B> is called at the end of the test to enable users to do cleanup.</p>
+
+<H4><FONT COLOR="#000080">COM Threading Models</FONT></H4>
+
+<p>One of the most frequently confusing aspects of COM is the way objects interact with threads. This interaction is usually referred to as the <I>threading model</I> <a href="#2">[2]</a>. COM objects can implement one of the following threading models:</p>
+<UL><LI>   Apartment threaded. Only one thread can execute within a member function of an object, the thread that created the object.</LI>
+<LI>   Free threaded. One or more threads can execute within a member function of the object at a time. Any threads that execute within a member function must come from a pool of threads marked as free threads.</LI>
+<LI>   Neutral. Any thread can enter a member function of a neutral object, but COM+ guarantees that only one thread at a time will enter such a member function. (This is a new model introduced with COM+.)</LI></UL>
+
+<p>Not only are COM objects classified according to a threading model; so are the threads that call the COM objects. Any thread that uses a COM object will be either an apartment thread or a free thread, depending on how it initializes COM through the <B>CoInitialize</B> family of functions. COM and COM+ take special precautions to ensure that an object is always called from a thread that is compatible with the object's threading model.</p>
+<p>The framework creates both free and apartment threads to allow for full testing of objects under realistic conditions. Two command-line switches, <B>-at</B> and <B>-ft</B>, control how many threads of each type will be created. You can adjust the number and type of threads used in the test to approximate the environment in which your objects will eventually be used.</p>
+
+<H4><FONT COLOR="#000080">Stress Testing with Random Input</FONT></H4>
+
+<p>Every good stress test should present the tested software with random input. Random input can be generated using a random number generator. Random number generators generate a sequence of integers that satisfy a certain distribution <a href="#3">[3]</a>. Other random data can be generated from this sequence. For instance, to generate a random string, you would first generate a random number N for the length of the string, and then you would generate N more random numbers, each representing one of the characters of the string.</p>
+<p>The Standard C library provides a <B>rand</B> function that can be used for this purpose. In my first implementation of this framework, I wrapped these functions in a C++ class. However, I soon discovered that under certain multithreading conditions &#151; which are still mysterious to me, but they seem to have to do with the destruction of COM objects residing in the same process space &#151; the <B>rand</B> function was resetting itself. This meant that the random numbers were not random at all. You can see this for yourself by compiling and running the projects <B>randomObject</B> and <B>randomObjectTest</B> provided with the online source code. The result was really embarrassing, so I went back and implemented a random generator out of the textbook <a href="#3">[3]</a>. This is the class <B>CRandomGenerator</B>. The class is part of the framework and is generated by the wizard. Every time the framework calls one of your test functions, it passes an object of this class as an argument.</p>
+<p>When you run a stress test you often want your inputs to be as random as possible. However, when you hit a rare bug, you want to restart the test with the same sequence of random numbers, so you can reproduce the error, debug it, and fix it. You can do this with the framework by supplying an optional command-line argument, the seed number. If you do not provide a seed number, the framework will generate a random one and print it as part of its standard output. The framework goes to extra lengths to ensure that when the same test is run twice with the same arguments (and seed number), the same results are produced.</p>
+
+<H4><FONT COLOR="#000080">Invoking the Framework</FONT></H4>
+
+<p>The framework is designed to be compiled to a Windows console application. The executable accepts six command-line arguments <a href="#4">[4]</a>. These are as follows:</p>
+
+<UL><LI>   <B>-l</B>. This option controls the number of times your test method will be called. The default is once.</LI>
+<LI>   <B>-at</B>. This option controls the number of apartment threads that will call your method. Each thread will call your method as many times as specified by the <B>-l</B> option.</LI>
+<LI>   <B>-ft</B>. This option controls the number of free threads that will call your method. Each thread will call your method as many times as specified by the <B>-l</B> option.</LI>
+<LI>   <B>-s</B>. By default the random number generation will be controlled by a random seed. This option allows you to specify the seed so that the test is reproducible.</LI>
+<LI>   <B>-e</B>. To allow you to reset the counters, bring up the Performance Monitor, etc., the program stops at the beginning and end and asks for input. This behavior isn't desirable for automated tests, so the <B>-e</B> option disables it.</LI>
+<LI>   <B>-v</B>. The program can operate in one of five different levels of verbosity. At level 1 no output is printed to the screen. At level 5 many actions (e.g. every iteration of the loop) are printed as part of the output. There is an <B>hsMain</B> object in the framework, which a program can query to determine the current verbosity level. Here is an example of its use:</LI>
+<pre>
+if (hsMain-&gt;m_verbose() &gt;= 2)
+   _tprintf(_T("The level is "), 
+   hsMain-&gt;m_verbose());
+</pre></UL>
+
+<H4><FONT COLOR="#000080">Summary</FONT></H4>
+
+<p>I have presented a test framework for stressing COM objects. The framework is based on an abstract superclass with virtual methods. To use the framework, users derive from the abstract class and override its virtual methods to implement their test code. The provided Visual Studio AppWizard creates a buildable project in seconds, so users then can focus on writing test code. The framework parses the command-line switches, creates and manages the threads and random generation objects, and calls user code at appropriate well-defined points.</p>
+
+<H4><FONT COLOR="#000080">Acknowledgments</FONT></H4>
+
+<p>I would like to thank Hao Xu and Roger Wen, who helped me debug parts of the framework. I would also like to thank Rajesh Tiwari, who suggested some of the command-line switches.</p>
+
+<H4><FONT COLOR="#000080">Notes and References</FONT></H4>
+
+<p><a name="1"></a>[1]  The term <B>[in, out]</B> is from COM IDL (Interface Description Language). IDL provides a way to specify COM interfaces in a language-neutral way. <B>[in, out]</B> means that the function inputs and outputs data through the same argument.</p>
+<p><a name="2"></a>[2]  Don Box. <I>Essential COM</I> (Addison-Wesley, 1998).</p>
+<p><a name="3"></a>[3]  Donald Knuth. <I>Seminumerical Algorithms, 2nd Edition</I> (Addison-Wesley 1981).</p>
+<p><a name="4"></a>[4]  The implementation of the command-line parsing is based on another framework and as such is very easy to extend. See Panos Kougiouris, "Yet Another Command-Line Parser," <I>C/C++ Users Journal,</I> Vol. 15, No. 4, April 1997.</p>
+
+<p><i><B>Panos Kougiouris</B> is a software development professional with extensive experience in component and distributed systems, the Internet, and the WWW. He is a Chief Engineer at Healtheon|WebMD Corp. In the past he has held technical positions with Oracle and Sun Microsystems. He holds Computer Science degrees from the University of Illinois at Urbana-Champaign and the University of Patra, Greece. He can be reached at <B>panos@acm.org</B>.</i></p>
+
+<h4><a href="../../../source/2000/apr00/kougiour.zip">Get Article Source Code</a></h4>
+
+
+</blockquote></body></html>

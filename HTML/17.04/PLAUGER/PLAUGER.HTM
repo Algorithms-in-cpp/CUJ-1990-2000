@@ -1,0 +1,117 @@
+<HTML>   
+     <HEAD>
+<TITLE>April 1999/Standard C/C++</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocapr.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Standard C/C++: Unicode Files</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">P. J. Plauger</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>There's more than one way to represent Unicode in a file. A C++ program may not read or write the form you expect, at least not without a little help.</p>
+</BLOCKQUOTE>
+<HR>
+<BLOCKQUOTE>
+<p>Those cards and letters keep coming in. More specifically, I get a steady stream of email, and bug reports from the Dinkumware website, from people who are using the Standard C++ library. Most of the reports I get through these relatively public channels are from users of Microsoft Visual C++. That's hardly surprising, given the huge market share that Microsoft commands. But I also get queries from other users of our C++ library, mostly filtered through the compiler vendors that license the library from us.</p>
+<p>I have observed a growing sophistication among all these users. Certainly, most people use the Standard C++ library in a fairly straightforward manner &#151; writing to iostreams, manipulating a few strings, maybe indulging in a bit of complex arithmetic. But more and more folks are trying out the fancier new features added as part of standardization. So the questions are getting progressively harder to answer.</p>
+<p>The hardest questions are those that appear, on the surface, to have easy answers. Not only do you have to explain what's going on, you have to at least sketch the reasons why things are not so simple as they might seem. Often, these questions are from people who do not think of themselves as sophisticated users. They just happen to stumble into a part of the library where the water is deeper than it appears.</p>
+<p>Last month, I described such a case involving stream buffers. (See "Standard C/C++: Simple Iostreams," <I>CUJ,</I> March 1999.) In that case, what was once a simple matter has become harder since the standardization of C++. You have to do more work to specialize a stream buffer than was required in the past. So I showed a minimalist extension to template class <B>basic_streambuf</B> that you can use as a starting point for more ambitious efforts.</p>
+<p>Since I wrote that article, I have received a couple of questions about reading and writing Unicode files. What was once a fairly esoteric topic has come closer to the mainstream, for two good reasons:</p>
+<p>1)  Java traffics almost exclusively in Unicode, a set of thousands of characters from most of the languages of the world, rather than ASCII or any of its ISO-646 extensions, which are aimed mostly at the needs of Western European cultures.</p>
+<p>2)  Windows/CE follows the Java lead, though perhaps not quite so purely, in strongly favoring Unicode text over ASCII.</p>
+<p>It seems pretty obvious that a program dealing heavily with Unicode text will want to write it to files and read it back. True enough. What's less obvious is what the text should look like when it's stored in a file external to a program. You may be surprised to learn some of the choices that are currently available. You may be even more surprised to learn what choices are made for you by popular operating systems such as Windows.</p>
+<p>If the exterior representation of a file differs from the interior representation of a Unicode text stream, some agent obviously must make the change on the way in and out. That's where the Standard C++ library comes in. Clearly, it had better agree, when reading a file, with the agent who wrote the file. Otherwise the program will read garbage. Similarly, the program had better write a Unicode file in the format expected by its eventual consumers. Otherwise the consumers will read garbage.</p>
+<p>Thus, to manipulate Unicode files, you need to know what's going to happen by default, what your options are if you don't like the default, and how to invoke those options if you choose to exercise them.</p>
+
+<h4><FONT COLOR="#000080">File Representations</FONT></H4>
+
+<p>A file stores a sequence of eight-bit bytes. Period. This is a tremendous simplification over earlier times, when computers felt moved to transmit and store information in all sorts of atomic units. IBM introduced the eight-bit byte with System 360 in the early 1960s, but for many years afterward you could still find tapes, disks, and communication channels that dealt in multiples of six, seven, or nine bits &#151; to name just the most popular alternate sizes. The industry has settled on the eight-bit byte as a universal standard with a diffuse sigh of relief.</p>
+<p>Those of us who fought the interconversion wars of the 1960s and 1970s will not willingly go back to that particular flavor of Babel. We were equally happy to see IBM's proprietary EBCDIC code give way to the ANSI standard ASCII. We were happier still to see ASCII be subsumed under the ISO standard ISO 646. While we all are quick to admit that even ISO 646 has its limitations, we are more divided about what to do about it.</p>
+<p>Eight bits represents 256 distinct states, a fairly rich set of character codes by Western standards. It is, of course, nowhere near rich enough to meet the needs of all cultures. One approach to meeting a broader range of needs is to allow some of these 256 codes to change across cultures. ISO 646 essentially does so by keeping only the ASCII part reasonably constant and allowing most of the remaining codes to vary. But that is a piecemeal solution of limited utility. It results in files that need additional information to be interpreted correctly, and it doesn't supply all that many extra codes in the bargain.</p>
+<p>Unicode is an effort to do better. It uses 16 bits to represent a character code, allowing for up to 65,536 distinct codes. No need to recycle code values with that many choices. Inside a program, you store such code values in an integer object of type <B>short</B>, or <B>unsigned short</B>, or <B>wchar_t</B>. The last of these three types was introduced into Standard C for just such a purpose. It is intended to store a <I>wide character,</I> capable of representing all the distinct codes in a large character set. Please note that <B>wchar_t</B> is not required to be big enough to store a Unicode character &#151; an implementation can choose to make a "large" character set no bigger than 256 distinct codes. But if the compiler promises to translate wide-character constants into Unicode, you can be sure that <B>wchar_t</B> has at least 16 bits in its representation.</p>
+<p>Unless storage is really at a premium, the typical program probably doesn't care whether it stores characters in elements of type <B>char</B> or <B>wchar_t</B>. Indeed, Microsoft supplies the flexible type <B>TCHAR</B>, which can expand to either of the above. The VC++ libraries are heavily parametrized so that you can perform most common text operations on a <B>TCHAR</B> without regard to which type it actually stands for. This is in keeping with the design goal of wide characters &#151; within a program, you should be able to manipulate wide characters much the same as traditional single-byte characters.</p>
+<p>But what do you do outside a program? You're back in the world of eight-bit bytes, but now you have a 16-bit code to represent. Clearly, it takes two bytes to represent an arbitrary Unicode character, but that's hardly the whole story. Here are a few scenarios that can dictate different encodings of Unicode in a file:</p>
+
+<h4><FONT COLOR="#000080">Lip Service</FONT></H4>
+
+<p>Let's say you're obliged to use a 16-bit encoding within a program, for whatever reason, but all you really care about is ASCII. In other words, you must pay lip service to internationalization issues but you really don't care about them. In that case, you can adopt a simple rule for reading from a file. Just assume that the file contains one-byte ASCII and read one byte for each character. Append a high-order zero byte to the code you read in and you're done.</p>
+<p>Output is slightly messier. If you're really cavalier, you can just output the low-order byte of each character code and ignore any corruption that may occur. To be a bit tidier, you can refuse to write any character code whose high-order byte is nonzero. But in either case, you assume that each character inside the program can be represented as a single byte in the file.</p>
+
+<h4><FONT COLOR="#000080">Private Storage</FONT></H4>
+
+<p>Let's say you need to write files that are intended only for consumption at a later date by programs you write for the same computer architecture. In that case, you can write two bytes for each character and be done with it. Well, almost. You'd better write only binary files, unless you're sure your operating system will not corrupt arbitrary codes when writing to a text file. (Something that looks like a carriage return followed by a line feed on the way out may turn into just a line feed on the way back in, for instance.) And if you write a binary file, you'd better have some way of knowing where the file ends. (Some systems add arbitrary padding with nulls at the end of a binary file.)</p>
+<p>But if you get all that right, then you can just read two bytes for each character and be done with it. Well almost. You'd better be sure you read the bytes in the same order of significance as you wrote them. If, for example, you write a character by calling <B>write(fd, &amp;ch, 2)</B>, be sure to read the character back in by the parallel call <B>read(fd, &amp;ch, 2)</B>. Otherwise, you will get byte-swapped values, which are seldom what you want.</p>
+
+<h4><FONT COLOR="#000080">Semiprivate Storage</FONT></H4>
+
+<p>Let's say that you need to write files that are intended only for consumption at a later date by programs you write, but that the programs can run on multiple machine architectures. You can still write those two-byte codes transparently, but now you need to know whether you have to swap bytes when you read each code. Luckily for us all, the Unicode folks thought of that. They set aside two code values that do <I>not</I> represent characters:</p>
+
+<UL><LI>0xfffe means that the codes that follow are in the same byte order as this code that you just read.</LI>
+    <LI>0xfeff means that the codes that follow are in the reverse byte order as this code that you just read.</LI></UL>
+
+<p>(By the way, 0xffff is also set aside as a non-character value, a boon to all those C and Unix systems that like to use -1 to represent end-of-file, or <B>EOF</B>.)</p>
+<p>I'm sure you twigged to the fact that 0xfeff is just 0xfffe byte reversed (and conversely, of course). So all a writer has to do is emit a 0xfffe code, in native byte order, at the beginning of a Unicode file. It then serves for all time as an indicator, stored as part of the file contents, of the byte order for the contents of the file. A reader has to test each code (or the very first code read, at least) for one of these magic values, squirrel away a byte-swapping indicator as needed, and discard the code as a kind of shift indicator. Very clever and tidy.</p>
+
+<h4><FONT COLOR="#000080">Superportable</FONT></H4>
+
+<p>Let's say that you need to be able to read and write files that are as portable as possible across multiple systems. They should read and write properly as text files, even on systems that map end-of-line codes (and others) as I described above. Moreover, a file containing just ASCII codes should look like any other ASCII file. Impossible, you say? Not at all.</p>
+<p>A whole host of <I>multibyte encodings</I> meet this requirement. They represent each character in a file as a sequence of one or more bytes. Typically, the common ASCII codes represent themselves, as one-byte "sequences." More exotic codes take two or more bytes. The really good ones have no embedded null bytes, and the control codes never appear as part of a larger code sequence. Thus, newline always looks like newline in a file and null always looks like null in a character string stored in memory.</p>
+<p>Multibyte encodings fall into two general categories:</p>
+
+<UL><LI>State-dependent encodings have <I>shift codes</I> (like the byte-order codes above) that do not themselves represent characters. Rather, they alter the interpretation of the byte sequences that follow.</LI>
+    <LI>State-independent encodings can be interpreted with no state memory. To read such a code, however, typically requires that you know where the code sequence begins.</LI></UL>
+
+<p>Perhaps you've seen the terms JIS, Shift JIS, EUC, and UTF8. All of these are names for various multibyte codes. I won't describe them in any more detail here. I simply underscore that multibyte encodings are the ultimate solution to the problem of representing wide-character encodings, such as Unicode, as sequences of eight-bit bytes.</p>
+
+<h4><FONT COLOR="#000080">Code Conversion Facets</FONT></H4>
+
+<p>Now for the nuts and bolts. The Standard C++ library I wrote is fully equipped to deal with all the file representations I just described. A program that knows the file encoding can be jiggered to convert between that encoding and an internal stream of wide characters. All the work occurs when you extract characters from or insert characters into an ojbect of class <B>wstreambuf</B> (a synonym for the template specialization <B>basic_streambuf&lt;wchar_t&gt;</B>). And such operations happen automatically when you extract from the object <B>wcin</B> or insert to any of the objects <B>wcout</B>, <B>wcerr</B>, or <B>wclog</B> &#151; all declared in the header <B>&lt;iostream&gt;</B>.</p>
+<p>That's all well and good, but it's nice to know what happens by default. The C++ Standard pretty much requires the library to do much the same translation as the Standard C library supplies when you call the functions <B>mbtowc</B> and <B>wctomb</B>, both declared in <B>&lt;stdlib.h&gt;</B>. More precisely, the library effectively uses the "restartable" versions of these functions added with Amendment 1 to the C Standard. They are <B>mbrtowc</B> and <B>wcrtomb</B>, both declared in <B>&lt;wchar.h&gt;</B>.</p>
+<p>What these functions do is up to the implementation. Specifically, each implementation of Standard C is supposed to document the encoding it uses for wide characters, and the encoding it uses in the <B>"C"</B> locale for multibyte characters. That's the mapping to be used by the wide iostreams classes, at least in the "classic" locale where all Standard C++ programs begin executing.</p>
+<p>You might be surprised to learn that I usually don't know what this encoding is, even for a compiler to which I port the Dinkum C++ Library. I don't have to know and, like Sherlock Holmes, I resist like crazy learning any details that I consider extraneous to the work I want to focus on. It was not until recently that I even did the experiments to learn what Microsoft VC++ does. And I did the experiments only because I got email from customers who were surprised at the result.</p>
+<p>What I found was that VC++ adopts the Lip Service approach. Read a file as a wide stream and each byte becomes a distinct wide character. Write wide characters to a wide stream and only those representable as eight-bit ASCII write successfully. The rest cause a conversion error.</p>
+<p>But let's say you want to do something more. To communicate with a Windows/CE on an X86 architecture, you may be content with a file that serves as Private Storage. It is only readable by another computer with "little-endian" two-byte integers. You can get a C++ program to generate such a file by replacing the appropriate code-conversion facet in the locale used by the object that creates the file.</p>
+<p>If you don't understand all the jargon in that last sentence, don't worry. (But if you really want to know what's involved, see "Standard C/C++: The Facet <B>codecvt</B>," <I>CUJ,</I> December 1997.) Here's a simple recipe. <A HREF="list1.htm">Listing 1</A> shows the class <B>Simple_codecvt</B>. It is derived from class <B>codecvt&lt;wchar_t, char, mbstate_t&gt;</B>, the critter responsible for handling conversions to and from wide iostreams. Its whole purpose in life is to convince the code that cares (in <B>basic_fstream&lt;wchar_t&gt;</B>) to read and write wide characters as two-byte records, in native byte order.</p>
+<p>To create a file, with a name such as <B>"filename.txt"</B>, that generates Private Storage files, you write something like:</p>
+
+<pre>
+const char *fname = "filename.txt";	// or whatever
+locale loc = _ADDFAC(locale::classic(), new Simple_codecvt);
+wofstream myostr;
+
+myostr.imbue(loc);
+myostr.open(fname, ios_base::binary);
+if (!myostr.is_open())
+    cerr &lt;&lt; "can't write to " &lt;&lt; fname &lt;&lt; endl;
+</pre>
+
+<p>Essentially the same recipe works for concocting an object of class <B>wifstream</B> to read such files.</p>
+<p>If you want to work with Semiprivate Storage files, you have a bit more work to do. <A HREF="list2.htm">Listing 2</A> shows the class <B>Fancier_codecvt</B>. Use it in place of <B>Simple_codecvt</B> above and you should have no trouble reading files that declare their byte order up front with an 0xfffe code. But writing takes a bit more work. First, you have to fix a bug in the VC++ headers. In &lt;fstream&gt;, <B>basic_filebuf::overflow</B>, change the return statement from:</p>
+
+<pre>
+return (fwrite(_Str-&gt;begin(), _N, 1, _File) ==
+    _N ? _C : _Tr::eof()); }
+</pre>
+
+<p>to:</p>
+
+<pre>
+return (fwrite(_Str-&gt;begin(), 1, _N, _File) ==
+    _N ? _C : _Tr::eof()); }
+</pre>
+
+<p>The same error occurs in both V5.0 and V6.0. It effectively disallows a <B>codecvt</B> facet from converting any output element to other than a single byte.</p>
+<p>With this change, you can easily write files in native byte order, just as with the simpler code-conversion facet. But you can also write a self-identifying file by first writing the code 0xfffe, for a little-endian file, or 0xfeff, for a big-endian file. (In fact, both reading and writing will reestablish byte order every time one of these codes occurs, but that flexibility may not be palatable to other programs that read Unicode files.)</p>
+<p><A HREF="list3.htm">Listing 3</A> shows some of the test code I used to exercise these code converters. Be warned that both are just rough drafts. I haven't actually tried using them to exchange Unicode files with other systems. They may well contain bugs. But you can at least treat them as starting points if you want to experiment further with file conversions of this sort.</p>
+
+<p><i>P.J. Plauger is Senior Editor of <I>C/C++ Users Journal</I> and President of Dinkumware, Ltd. He is the author of the Standard C++ Library shipped with Microsoft's Visual C++, v5.0. For eight years, he served as convener of the ISO C standards committee, WG14. He remains active on the C++ committee, J16. His latest books are <I>The Draft Standard C++ Library</I>, <I>Programming on Purpose</I> (three volumes), and <I>Standard C</I> (with Jim Brodie), all published by Prentice-Hall. You can reach him at <B>pjp@plauger.com</B>.</i></p>
+
+<h4><a href="../../../source/1999/apr99/plauger.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

@@ -1,0 +1,392 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+          <TITLE>January 1996/Object-Oriented SDI-12 Communications/Listing 1</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H4>Listing 1: The SDI-12 class interface</H4>
+
+<PRE>
+#ifndef _SDI-12_H_
+#define _SDI-12_H_
+
+#include "dphport.h"    // POLLED SERIAL PORT OBJECT CLASS HEADER
+
+// CONSTANTS
+const int MAX_BUF_SIZE = 80; // size of one screen's width
+
+//-----------------------------------------------------------------------
+//-----------------------------------------------------------------------
+//   The SDI12_UART class inherits from the PolledSerialPort class in order
+//   to implement SDI-12 specific commands.  This leaves the serial port
+//   class unsullied by extraneous behavour which it shouldn't have to
+//   implement, and therefore it is free to be used by other classes or
+//   programs which need a plain serial port class.
+//        copyright David Perelman-Hall 1995
+//-----------------------------------------------------------------------
+//-----------------------------------------------------------------------
+
+class SDI12_UART : public PolledSerialPort
+{
+   friend ostream&amp; operator &lt;&lt; (ostream&amp; os, const SDI12_UART&amp; m) {
+      return os &lt;&lt; (const PolledSerialPort&amp;)m;
+   }
+
+   // CAN'T COPY--MAKES NO SENSE TO COPY A SERIAL PORT
+   SDI12_UART( const SDI12_UART&amp; );
+   SDI12_UART&amp; operator=( const SDI12_UART&amp; );
+
+   public:
+
+      // CTOR
+      SDI12_UART() : PolledSerialPort() {}
+
+      // DTOR
+      virtual ~SDI12_UART() {}
+
+      // USAGE WHICH EMPLOYS THE UART--THESE FOLLOWING FOUR FUNCTIONS
+      // MUST BE DEFINED IN ANY CLASS WHICH IS TO BE USED TO
+      // INSTANTIATE THE SDI-12 COMMUNICATION METHOD CLASS TEMPLATE
+      void SendCommand(const String&amp; command) const;
+      int GetTerminatedString( String&amp; str, int delayTime, char terminator, 
+                               int length=100 ) const;
+      int IsValid() const { return portIsOpen==1; }
+      void Setup( const String&amp; );
+};
+
+//-----------------------------------------------------------------------
+//-----------------------------------------------------------------------
+//   The template class below must be instantiated when constructing an
+//   SDI12_Logger object.  It gets instantiated with the class which
+//   actually does the talking to the SDI-12 sensor.  In the case of this
+//   application, it is the SDI12_UART class which does the talking, and 
+//   which inherits from a very simple polled (not irq-driven) serial port
+//   class intended to be used in standard PCs.  Other applications might
+//   implement the communication method code in firmware or EPROM, talking
+//   to a dedicated set of lines.  In that case, the CommunicationMethod
+//   object may not be a UART in a PC, and the template will need to be
+//   instantiated with a class which captures the dedicated line's
+//   communication method.
+//   The four functions which must be implemented in the Method class are:
+//
+//   The first 2 are used by the template class in TalkToSDI
+//   1) void SendCommand( const String&amp; command ) const;
+//   2) int GetTerminatedString( String&amp; str, int delayTime, char 
+        terminator, int replyLength ) const;
+//   
+//   The last 2 are used by the SDI12_Logger class
+//   3) int IsValid() const;
+//   4) void Setup( const String&amp; someSetupStuff );
+//        copyright David Perelman-Hall 1995
+//-----------------------------------------------------------------------
+//-----------------------------------------------------------------------
+
+template &lt; class Method &gt;class CommunicationMethod
+{
+   friend ostream&amp; operator &lt;&lt; (ostream&amp; os, const 
+CommunicationMethod&amp;ltMethod&gt;&amp; m) {
+      return os &lt;&lt; *(m.method);
+   }
+
+   // CAN'T COPY
+   CommunicationMethod( const CommunicationMethod&lt; Method &gt;&amp; );
+   CommunicationMethod&amp; operator=( const CommunicationMethod&lt; Method &gt;&amp; );
+
+   public:
+      // CTOR &amp; ASSIGNMENT
+      CommunicationMethod(): method( new Method() ) { assert( method!=0 ); }
+
+      // DTOR
+      virtual ~CommunicationMethod() { delete method; }
+
+      // USAGE
+      String TalkToSDI( const String&amp; command, int time=1 ) const;
+
+   protected:
+      // POINTER TO CLASS WHICH ACTUALLY DOES COMMUNICATING
+      Method *method; 
+};
+
+
+template &lt; class Method &gt;
+String CommunicationMethod&lt; Method &gt;::TalkToSDI( const String&amp; command,
+                                                 int time=10 )
+const
+{
+   cout &lt;&lt; "TalkToSDI sending out string [" &lt;&lt; command &lt;&lt; ']' 
+   &lt;&lt; " and waiting " &lt;&lt; time &lt;&lt; " seconds for reply" &lt;&lt; endl;
+
+   // SEND COMMAND STRING.  
+   // CLASS INSTANTIATING THE CommunicationMethod TEMPLATE CLASS 
+   // MUST IMPLEMENT SendCommand FUNCTION 
+   method-&amp;gtSendCommand( command );
+
+   // GET REPLY.
+   // CLASS INSTANTIATING THE CommunicationMethod TEMPLATE CLASS 
+   // MUST IMPLEMENT GetTerminatedString FUNCTION
+   String reply;
+   method-&amp;gtGetTerminatedString( reply, time, LF, MAX_BUF_SIZE );
+
+   // REMOVE BACK OF REPLY BEYOND THE DELIMITING &amp;ltCR&gt;&amp;ltLF&gt;   unsigned pos = reply.rfind( "\r\n" );
+   if( pos != NPOS )
+      reply.resize( pos );
+   else {
+      reply.resize(0); // null out the value as being invalid
+      return reply;
+   }
+
+   // PARSE OFF THE COMMAND FROM THE FRONT OF THE DATA
+   pos = reply.find( "!" );
+   if( pos != NPOS ) {
+      reply.remove( 0, pos+1 );
+   }
+
+   cout &lt;&lt; "TalkToSDI replied [" &lt;&lt; reply &lt;&lt; ']' &lt;&lt; endl;
+   return reply;
+}
+
+//-----------------------------------------------------------------------
+//-----------------------------------------------------------------------
+//   The SDI12_Logger class class inherits privately from the
+//   CommunicationMethod template class.  Inheritance from a template allows 
+//   for a wide family of communication methods.  Private inheritance models
+//   the "has-a" relationship instead of the "is-a" relationship, which
+//   means that the base class is not accessible to the users of the
+//   SDI12_Logger class.  This is good because SDI12_Loggers certainly
+//   are not communication methods.  Nevertheless, it simplifies use of 
+//   the communication method because of the inheritance.
+//        copyright David Perelman-Hall 1995
+//-----------------------------------------------------------------------
+//-----------------------------------------------------------------------
+
+
+class SDI12_Logger : private CommunicationMethod&lt; SDI12_UART &gt; 
+{
+   // READ IN AN SDI12_Logger FROM INPUT STREAM REFERENCE "istream&amp; is"
+   friend istream&amp; operator &gt;&gt; (istream&amp; is, SDI12_Logger&amp; sdiO) {
+      getline( is, sdiO.model );
+      is &gt;&gt; sdiO.address;
+      is &gt;&gt; sdiO.header;
+      is &gt;&gt; sdiO.measure;
+      return is;
+   }
+   // WRITE OUT AN SDI12_Logger ONTO OUTPUT STREAM REFERENCE "ostream&amp; os"
+   friend ostream&amp; operator &lt;&lt; (ostream&amp; os, const SDI12_Logger&amp; sdiO) {
+      os &lt;&lt; "SDI-12 MODEL....: " &lt;&lt; sdiO.model &lt;&lt; endl
+         &lt;&lt; "SDI-12 IDENTITY.: " &lt;&lt; sdiO.identity &lt;&lt; endl
+         &lt;&lt; "SDI-12 VALUE....: " &lt;&lt; sdiO.value &lt;&lt; endl
+         &lt;&lt; "SDI-12 HEADER...: " &lt;&lt; sdiO.header
+         &lt;&lt; "\t\tSDI-12 ADDRESS..: " &lt;&lt; sdiO.address &lt;&lt; endl
+         &lt;&lt; *(sdiO.method);
+      return os;
+   }
+
+   // CAN'T COPY
+   SDI12_Logger( const SDI12_Logger&amp; );
+   SDI12_Logger&amp; operator=( const SDI12_Logger&amp; );
+
+   public:
+
+     // ENUM DESIGNATING STATES APPLICABLE WHEN WAITING ON SERVICE REQUEST
+     enum SDI12_REPLY { REPLY_FAIL, REPLY_OK, REPLY_TIMEOUT };
+
+      // CTOR
+      SDI12_Logger()
+         : replyTerminal( "\r\n" ),
+         address( "0" ),
+         model( "unspecified" ),
+         value( "none"  ),
+         header( "none"  ),
+         measure( "M" ),
+         identity( "unidentified" ),
+         serviceRequestTime(-1),   // construct with known bad value
+         numberValues(-1)          // construct with known bad value
+         { method-&amp;gtLowerRTS(); }   // RTS low for NR Systems SDI-12 Verifier
+
+      // DTOR
+      virtual ~SDI12_Logger() {}
+
+      // SDI-12 USAGE
+      String Verify() const;
+      String Acknowledge() const;
+      String Measure( const String&amp; consecutive = "" ) const;
+      String Identify();
+      String Data( const String&amp; consecutive="0" );
+      SDI12_REPLY DataReady( const String&amp; );
+      int ParseReply( const String&amp; );
+
+      // CONST ACCESS TO DATA MEMBERS
+      const String&amp; Model() const { return model; }
+      const String&amp; Value() const { return value; }
+      const String&amp; Header() const { return header; }
+      const String&amp; MeasureCommand() const { return measure; }
+      const String&amp; Address() const { return address; }
+      int ServiceRequestTime() const { return serviceRequestTime; }
+      int NumberValues() const { return numberValues; }
+
+      // CLASS INSTANTIATING THE CommunicationMethod TEMPLATE CLASS 
+      // MUST IMPLEMENT THE IsValid MEMBER FUNCTION
+      int IsValid() const { return method-&amp;gtIsValid(); }
+
+      // CLASS INSTANTIATING THE CommunicationMethod TEMPLATE CLASS 
+      // MUST IMPLEMENT THE Setup MEMBER FUNCTION
+      void Setup( const String&amp; str ) { method-&amp;gtSetup( str ); }
+
+   private:
+      const String replyTerminal;
+      String address, model, value, header, measure, identity;
+      int serviceRequestTime, numberValues;
+};
+
+#endif //_SDI-12_H_
+
+
+#ifndef DPH_PORT_H
+#define DPH_PORT_H
+
+#include &amp;ltdos.h&gt;        // BORLAND STRINGS CLASS HEADER
+#include &amp;ltcstring.h&gt;    // BORLAND STRINGS CLASS HEADER
+#include "dphtime.h"    // TIME CLASS HEADER
+#include "dphlist.h"    // LIST TEMPLATE CLASS HEADER
+
+// #DEFINE String &amp; typedef String list template
+#define String string
+typedef ListOf&amp;ltString&gt; StringList;
+
+// TYPEDEF THE UNSIGNED INT FOR PORT USAGE
+typedef unsigned short WORD;
+
+// MASKS TO DETECT NUMBER OF EXISITING PORTS
+const BIOS_4PORTS_MASK = 2048;
+const BIOS_3PORTS_MASK = 1536;
+const BIOS_2PORTS_MASK = 1024;
+const BIOS_1PORTS_MASK = 512;
+const BIOS_0PORTS_MASK = 0;
+
+// UART REGISTER MASKS
+const unsigned BAUD300 = 384;       // DIVISOR FOR 300 BAUD OPERATION
+const unsigned BAUD1200 = 96;       // DIVISOR FOR 1200 BAUD OPERATION
+const unsigned BAUD2400 = 48;       // DIVISOR FOR 2400 BAUD OPERATION
+const unsigned BAUD4800 = 24;       // DIVISOR FOR 4800 BAUD OPERATION
+const unsigned BAUD9600 = 12;       // DIVISOR FOR 9600 BAUD OPERATION
+const unsigned _DATABITS8 = 3;      // MASK FOR  8 BITS OF DATA
+const unsigned _DATABITS7 = 2;      // MASK FOR  7 BITS OF DATA
+const STOPBITS1 = 1;
+const STOPBITS2 = 2;
+const _DLAB = 0x0080;      // MASK FOR DIVISOR LATCH ACCESS BIT
+const _THRE = 0x0020;      // MASK FOR TRANSMIT HOLDING REGISTER EMPTY BIT
+const _DTR = 0x0001;       // MASK FOR DATA TERMINAL READY
+const _RTS = 0x0002;       // MASK FOR REQUEST TO SEND
+const BREAK_ON = 64;       // MASK TO TURN ON BREAK BIT IN LCR
+const BREAK_OFF = 191;     // MASK TO TURN OFF BREAK BIT IN LCR
+
+
+//-----------------------------------------------------------------------
+//-----------------------------------------------------------------------
+//   class PolledSerialPort
+//   Implements the basics of a PC serial communications port, including
+//   setting port address, baud, parity, stop, data, and the ability
+//   to condition registers in the UART.  It does not make any use of IRQs.
+//   copyright David Perelman-Hall 1995
+//-----------------------------------------------------------------------
+//-----------------------------------------------------------------------
+
+class PolledSerialPort {
+   friend istream&amp; operator &gt;&gt; (istream&amp; is, PolledSerialPort&amp; sp);
+   friend ostream&amp; operator &lt;&lt; (ostream&amp; os, const PolledSerialPort&amp; sp);
+
+   // CAN'T COPY
+   PolledSerialPort(const PolledSerialPort&amp; p);
+   PolledSerialPort&amp; operator=(const PolledSerialPort&amp; p);
+
+   public:
+      // CTOR, DEFAULT SETS UP PORT W/OUT ADDRESS OR BAUD RATE
+      PolledSerialPort(WORD port=0, unsigned baud=0);
+
+		// DTOR
+		virtual ~PolledSerialPort() {}
+
+      // GET PORT SETTINGS
+      WORD Address() const { return baseAddress; }
+      WORD Data() const { return data; }
+      WORD Parity() const { return parity; }
+      WORD Stop() const { return stop; }
+      WORD Baud() const { return baud; }
+      const String&amp; BaudText() const { return baudAsText; }
+      const String&amp; PortText() const { return portAsText; }
+
+      // SET PORT SETTINGS
+      void SetBaud( const String&amp; baudStr );
+      void SetData( const String&amp; dataStr );
+      void SetStop( const String&amp; stopStr );
+      void SetParity(const String&amp; parityStr );
+      void SetPort( const String&amp; portStr );
+      void SetAddress( const WORD address ) { baseAddress=address; }
+      void SetBaudText( const String&amp; baud ) { baudAsText=baud; }
+      void SetPortText( const String&amp; port ) { portAsText=port; }
+
+      // REGISTER VALUES
+      WORD RBR() const { return baseAddress; }    // Receive Buffer
+      WORD THR() const { return baseAddress; }    // Transmit Hold
+      WORD DLAB() const { return baseAddress; }   // Divisor Latch Bit
+      WORD DLBM() const { return baseAddress+1; } // Divisor Latch Bit M
+      WORD IER() const { return baseAddress+1; }  // Interrupt Enable
+      WORD LCR() const { return baseAddress+3; }  // Line Control
+      WORD MCR() const { return baseAddress+4; }  // Modem Control
+      WORD LSR() const { return baseAddress+5; }  // Line Status
+      WORD MSR() const { return baseAddress+6; }  // Modem Status
+
+      // LINE USAGE
+      void RaiseDTR() const  {
+         unsigned char val=inportb(MCR()); 
+         outportb(MCR(), val|1);
+      }
+
+      void LowerDTR() const {
+         unsigned char val=inportb(MCR()); 
+         outportb(MCR(),val&amp;254);
+      }
+
+      void RaiseRTS() const {
+         unsigned char val=inportb(MCR()); 
+         outportb(MCR(),val|2);
+      }
+
+      void LowerRTS() const {
+         unsigned char val=inportb(MCR()); 
+         outportb(MCR(),val&amp;253);
+      }
+
+      // PORT USAGE
+      virtual void OpenPort(); // does work of talking to UART registers
+      virtual void ClearPort() const;
+      virtual void SetBaudRate();
+      int ReadyToSendChar() const { return (inportb(LSR())&amp; _THRE)==_THRE; }
+      int CharWaiting() const { return inportb(LSR()) &amp; 0x0001; }
+      void SendChar( const unsigned char&amp; ch ) const { outportb(THR(), ch); }
+      unsigned char ReadChar() const { return inportb(RBR()); }
+      void SendString( const String&amp; ) const;
+      void BreakOn() const;
+      void BreakOff() const;
+
+   protected:
+      static StringList portsInUse;
+      String baudAsText, portAsText;
+      WORD baseAddress, data, parity, stop, baud;
+      DPH_Time timer;
+      int portIsOpen;
+};
+
+#endif // DPH_PORT_H
+</PRE>
+     </BODY>
+</HTML>

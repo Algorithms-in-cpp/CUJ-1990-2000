@@ -1,0 +1,256 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>January 1999/The Journeyman's Shop</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocjan.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">The Journeyman's Shop: More on Error Handling</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Pete Becker</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>Reporting errors properly is an art form, at least to those who would be kind to their fellow programmers.</p>
+</BLOCKQUOTE>
+<HR>
+<BLOCKQUOTE>
+<p>A few years ago there was a comic strip called "Alley Oop." No, it wasn't about polymorphic highways. It was about a caveman. I don't remember much else about it, but one line always stuck in my mind. Oop at one point said that thinking about some problem reminded him of the guy who tried to eat a piece of 'gator tail: the more he chewed on it, the bigger it got. This discussion of error handling is doing the same thing. My initial plan for this column was to spend the first installment talking about errors, and then to move on to other topics. As I started writing that first installment, I realized that it was going to expand into at least two installments. As I write the second one, it's clear that the topic is even larger than that, and will spill over into next month as well <a href="#1">[1]</a>. If you like talking about error handling, then that's probably a good thing. If you don't like it, don't worry: it won't go beyond next month.</p>
+<p>Last month we talked about handling errors inside the function that detects them. The three possible approaches are terminating execution, fixing the problem, and ignoring the problem. If none of these is appropriate, then we can't handle the problem locally and need to report the problem to the calling function. The writer of the calling function then has to make the same choice: handle the problem by terminating execution, fixing it, or ignoring it; or notify that function's caller. This month we're going to look at the second alternative, notifying the calling function that something went wrong.</p>
+<p>Obviously, once we've decided to notify the calling function that something went wrong, we have to decide how to notify it. There are a number of techniques in use, and a bit later on we'll talk about several of them. Before doing that, though, we need to discuss what factors we ought to consider in choosing our reporting technique. This is in part an architectural decision, and may be dictated by decisions already made by the system architects. In particular, if we're writing a subsystem for the application and need to report a problem to another subsystem, the reporting mechanism has probably already been designed as part of the system architecture. However, if we're reporting errors within the subsystem that we're writing, we have a great deal more flexibility in our choice of technique. We can choose a technique that's different from the technique used to communicate problems between subsystems, so long as we confine our methods to our own subsystem and follow the prescribed conventions when we report problems to other subsystems.</p>
+<p>The first thing to think about is how much information we need to convey to the caller. Sometimes our function needs only to tell the caller that it could not do what it was asked to do. The standard C function <B>malloc</B> does this: when <B>malloc</B> can't allocate the amount of memory requested there are a number of possible reasons for the failure, but <B>malloc</B> simply reports that it failed. That's probably the right choice: giving the caller more information probably wouldn't help in recovering from the error. On the other hand, suppose we were writing a function that took a file name as an argument, opened the file, allocated a 30-byte buffer, and read 30 bytes from the file into the buffer. It might be important to the caller to know whether a failure occurred because the function could not open the file, because it could not allocate the buffer, or because it couldn't read 30 bytes from the file. If our function does not indicate which of these was the problem then our caller will have a much more difficult job trying to fix the problem.</p>
+<p>A word of caution, however: it's easy to overdesign an error handling system. You could end up producing something that's so complicated that users of your code will be tempted to ignore the error handling rather than figure out how to use it correctly. Don't give in to the temptation to produce the ultimate error handling system. That's almost certainly more than you need. Instead, consider what information is needed by the caller to properly handle the error condition that you are reporting. Provide all the information that's needed, and nothing more.</p>
+<p>To see this more clearly, let's look at <B>malloc</B> in a bit more detail. Its job is to allocate a block of memory of the requested size. It's possible to implement <B>malloc</B> so that it first checks the requested size against some maximum allowed size, and fails if the request is too large. If the request is for an allowable size, <B>malloc</B> then looks through the memory blocks that it has available to find one that's large enough to satisfy the request. If none is found, <B>malloc</B> fails. The specification for <B>malloc</B> does not distinguish between these two cases: both result in returning a null pointer. It would be possible to invent a more sophisticated error reporting mechanism for <B>malloc</B>, one that would indicate which of these cases caused the failure. From a user's perspective, however, this is rarely important. What matters is simply that <B>malloc</B> was unable to allocate the amount of memory requested, and that's all that should be reported to the caller <a href="#2">[2]</a>.</p>
+<p>The key to designing an error handling system is understanding the context that it will be used in. Provide all the information that's needed by the caller, and nothing more.</p>
+<p>Once you've decided what error information you want to transmit you need to decide how to transmit it. There are three basic techniques in common use: return a value that indicates that an error occurred, set a flag for the caller to check, or transfer execution to somewhere other than the normal return point. We'll talk about the last of these next time around. This month we're going to look at how to convey error information without disrupting the normal flow of the application.</p>
+<p>By far the most common technique for indicating that an error occurred is for a function to return a value that the caller recognizes as an error indicator. Although this seems like a simple technique, it's actually quite a bit more complicated than it looks.</p>
+
+<h4><FONT COLOR="#000080">Returning a Boolean Value</FONT></h4>
+
+<p>The minimal form of this technique is for a function to return a Boolean value that simply indicates success or failure. The standard C function <B>fclose</B> does this: it returns zero on success, and <B>EOF</B> on failure. If you're rigorously checking for failures in your code, calls to <B>fclose</B> should look something like this:</p>
+
+<pre>
+if (fclose(fp))
+    /* handle error here */
+</pre>
+
+<p>This technique is fairly easy to use. The only thing the caller has to watch out for is getting the sense of the test right: for <B>fclose</B>, a non-zero return value indicates failure; for some other function a zero return value might indicate failure, requiring that the result be negated in the test. In particular, in C++, a return type of <B>bool</B> as an indicator of success will require that the result be negated:</p>
+
+<pre>
+bool do_something();
+
+if (!do_something())
+    /* handle error here */
+</pre>
+
+<p>Don't underestimate the possibility of making coding mistakes with something as simple as this technique. Make sure the documentation for your function clearly spells out what the error indication is. For example, in describing <B>fclose</B>, the C standard says</p>
+
+<BLOCKQUOTE>
+<p>The <B>fclose</B> function returns zero if the stream was successfully closed, or <B>EOF</B> if any errors were detected.</p>
+</BLOCKQUOTE>
+
+<p>The documentation for our hypothetical <B>do_something</B> should be equally clear:</p>
+
+<BLOCKQUOTE>
+<p>The <B>do_something</B> function returns <B>true</B> if something was done, or <B>false</B> if nothing was done.</p>
+</BLOCKQUOTE>
+
+<h4><FONT COLOR="#000080">Returning a Special Value</FONT></H4>
+
+<p>Another common technique is used when a function is capable of returning a range of values. A special value out of this range is designated to indicate failure. Probably the most commonly used function that does this is <B>malloc</B>: it returns a pointer to the memory block that it allocated, or a null pointer if it was unable to satisfy the allocation request. Most of the time, interpreting the return value from such a function is no more complicated than interpreting the return value from a function that returns a Boolean success indicator:</p>
+
+<pre>
+if ((ptr = malloc(100)) == NULL)
+        /* handle error here */
+</pre>
+
+<p>There's a danger in this approach, however: it's possible that the special value that we've chosen is actually a legitimate value for the function to return. For example, the Win32 API defines a function, <B>SetFilePointer</B>, that sets a new read/write location in a file. Its prototype looks like this <a href="#3">[3]</a>:</p>
+
+<pre>
+unsigned SetFilePointer(
+    HANDLE file, long dist,
+    long *hdist, unsigned dir);
+</pre>
+
+<p><B>SetFilePointer</B> takes a 64-bit value, in a slightly peculiar form, as the offset to which the file pointer is to be set. The <B>dist</B> argument specifies the low 32 bits of the offset, and the <B>hdist</B> argument points to a <B>long</B> that holds the high 32 bits of the offset. If the <B>hdist</B> argument is a null pointer then the high 32 bits of the offset are considered all zeroes. If the function fails it returns <B>0xFFFFFFFF</B>. If it succeeds it returns the low 32 bits of the resulting offset, and puts the high 32 bits of the resulting offset in the location pointed to by <B>hdist</B> if <B>hdist</B> is not <B>NULL</B>. The trouble with this scheme is that <B>0xFFFFFFFF</B> can also be the correct result for a successful call. That is, getting back a value of <B>0xFFFFFFFF</B> does not mean that the seek failed, only that it might not have succeeded. You then must call <B>GetLastError</B> to determine whether this value actually means that an error occurred. We'll look at the idea behind <B>GetLastError</B> in a little more detail in a moment. For now, though, the point is that <B>0xFFFFFFFF</B> does not absolutely indicate that an error occurred. On the other hand, getting a return value other than <B>0xFFFFFFFFF</B> tells you that the call did succeed.</p>
+<p>In a case like this, where the special value that indicates error isn't really special, checking for errors is more complicated:</p>
+
+<pre>
+if (GetFilePointer(
+        hnd, 128, NULL, FILE_BEGIN)
+    == 0xFFFFFFFF &amp;&amp;
+    GetLastError() != NO_ERROR)
+    /* handle error here */
+</pre>
+
+<p>Aside from this complication, returning a special value is pretty much the same as returning a Boolean value: it tells you whether an error occurred, but doesn't tell you anything about what the error was. Just as with a Boolean value, you must be sure that users of your code know what the return code for an error is, so they can test for it properly.</p>
+
+<h4><FONT COLOR="#000080">Returning an Enumeration</FONT></H4>
+
+<p>A natural extension to both these techniques is to define more than one error value, and return the value that most closely describes what actually went wrong. This isn't much different from what we talked about earlier: instead of using a Boolean value to indicate failure, use an integer. If you need to combine multiple error codes with multiple valid return values, it's a bit harder. You must come up with a few more invalid values to use as error flags. That often doesn't require doing anything tricky, but you have to think about it carefully. In the case of <B>malloc</B>, for example, many implementations align pointers returned by <B>malloc</B> to 8-byte boundaries. This means that the lowest three bits in the pointer are available for indicating bad values. I don't recommend that you play this sort of game with pointers in your own code, however. My point is that with a bit of creativity you can find values that are easily distinguished from valid ones, and use those values to indicate that an error has occurred. On the other hand, in some cases it might be even easier to change the design a bit and use the return value solely to indicate success or failure, passing the actual results back to the caller in some other way.</p>
+<p>From the caller's perspective, calling a function that can return any of several values to indicate a failure is a bit more complicated than calling a function that has only one failure indicator. Instead of using an <B>if</B> statement as we did above, we may need to use a <B>switch</B> statement. For example, the Java library I've been working on for the past year includes a thread support package that's written in C. A function such as <B>sleep</B>, which is supposed to pause execution of the calling thread for the time specified in its argument, can return early if some other thread calls <B>interrupt</B> on the sleeping thread. In that case, <B>sleep</B> is supposed to throw an exception. This means that the C code that implements <B>sleep</B> must be able to indicate that the call succeeded, that it failed for any of several reasons that aren't relevant here, or that it failed to pause for the requested time because it was interrupted. The Java code that calls the C code interprets the return code and throws the appropriate exception:</p>
+
+<pre>
+public static void sleep(long millis, int nanos)
+    throws InterruptedException,
+           UnknownError
+{   // block calling thread for specified time
+    switch (NativeThread.
+      threadSleep(currentThread().mth, millis, nanos))
+    {
+case INTERRUPTED:
+     throw new InterruptedException();
+case UNKNOWN_ERROR:
+     throw new UnknownError();
+    }
+}
+</pre>
+
+<p>If you're considering providing multiple error codes you should also try to provide a simple way for the calling code to determine that an error occurred, in case the details are not important to the caller. In the case of <B>threadSleep</B> above, there is only one success code, so checking for success would be easy:</p>
+
+<pre>
+if (NativeThread.
+    threadSleep(currentThread().mth, millis, nanos) !=
+        SUCCESS)
+    /* handle error here */
+</pre>
+
+<p>If your function also has several possible success indicators things get a bit more complicated. In a function that simply counts items a valid count will never be less than zero, so you can use negative values to indicate errors:</p>
+
+<pre>
+if (count(data_items) &lt; 0)
+    /* handle error here */
+</pre>
+
+<p>Try to avoid making your return codes so detailed that they require your users to write complicated code to interpret them. If your documentation tells users that the values -1, - 2, -3, 7, 14, and 19 indicate errors and that any other value indicates success, you'll find your email account flooded with complaints <a href="#4">[4]</a>. Make it as easy as you can for users of your code to recognize error reports.</p>
+
+<h4><FONT COLOR="#000080">Returning Item Counts</FONT></H4>
+
+<p>A slightly more complicated technique for embedding error information in a return value is to return the number of items that were successfully handled. From the caller's perspective, this means checking whether the return value is equal to the number of items that should have been handled. For example, <B>fread</B>, from the standard C library, works this way:</p>
+
+<pre>
+struct data_item
+{
+    /* your data goes here */
+}
+
+#define DSIZE 20
+struct data_item data[DSIZE];
+if (fread(&amp;data, sizeof(data_item),
+          DSIZE, fp) != DSIZE)
+    /* handle error here */
+</pre>
+
+<p>Many of the functions in the standard C library use this technique <a href="#5">[5]</a>.</p>
+
+<h4><FONT COLOR="#000080">Setting Flags</FONT></H4>
+
+<p>Sometimes the best way to indicate that an error occurred is to set a flag for the caller to check later. For example, Java's class <B>PrintWriter</B> does this:</p>
+
+<pre>
+PrintWriter out =
+    new PrintWriter(
+        new BufferedWriter(
+            new FileWriter(
+              FileDescriptor.out)));
+out.print(3);
+</pre>
+
+<p>The last line converts the value 3 into a string and pushes the characters from that string one at a time into the <B>BufferedWriter</B>, which writes blocks of characters to the <B>FileWriter</B>, which sends them to <B>stdout</B> <a href="#6">[6]</a>. Both <B>BufferedWriter</B> and <B>FileWriter</B> throw exceptions if an attempted write fails. The <B>print</B> method in <B>PrintWriter</B> catches any exceptions that are thrown, and sets an internal flag to indicate that an error occurred. <B>PrintWriter</B> does not rethrow the exception. If we want to find out whether we succeeded in writing 3 to <B>stdout</B> we have to ask the <B>PrintWriter</B>:</p>
+
+<pre>
+if (out.checkError())
+    /* handle error here */
+</pre>
+
+<p>Note that this technique separates error checking from the operation that might have caused the error. This lets you perform a series of operations without checking for errors, and simply check at the end whether they all succeeded. For routine operations such as writing information to <B>stdout</B> this approach is usually appropriate:</p>
+
+<pre>
+out.print("Hello, ");
+out.println("world!");
+if (out.checkError())
+    /* handle error here */
+</pre>
+
+<p>The call to <B>checkError</B> will indicate whether something went wrong in the calls to <B>print</B> and <B>println</B>, but it won't indicate which one of them failed. In fact, most of us wouldn't bother checking for success at all in this case. But the flag is there if we want to look at it <a href="#7">[7]</a>.</p>
+<p>An error flag most of us are probably more familiar with is <B>errno</B>. Many of the functions in the standard C library indicate that an error occurred by setting <B>errno</B> to a non-zero value. You can check for errors by looking at <B>errno</B>, but there are a couple of things you have to watch out for. First, the value of <B>errno</B> is set to zero when your program starts executing, but no function ever sets it back to zero. So if you're going to call a function and you want to use <B>errno</B> to determine whether the call succeeded, you must set <B>errno</B> to zero before the call. Like this:</p>
+
+<pre>
+#include &lt;errno.h&gt;
+#include &lt;iostream.h&gt;
+
+void show_log(double val)
+{
+errno = 0;
+double d = log(val);
+if (errno != 0)
+    perror("Log error");
+else
+    printf("%d\n", d);
+}
+</pre>
+
+<p>Note that I've used the standard function <B>perror</B> to display an error message when <B>log</B> sets <B>errno</B> to a non-zero value. You can also use <B>strerror</B> to get a C-style string describing the error that occurred.</p>
+<p><B>errno</B> works just like the error flag in <B>PrintStream</B> that we looked at earlier, in that it allows you to postpone checking for errors until you've done several function calls. If any one of your functions failed, <B>errno</B> will contain the error code for the last one that failed. Be careful if you call several functions before checking, though: compilers vary a great deal as to which functions set <B>errno</B> and which ones don't. That's because the specification for <B>errno</B> is a bit fuzzy in the C standard. It says that some functions must set <B>errno</B> when an error occurs, and the specifications for those functions indicate what values they will set <B>errno</B> to for the various errors that may occur. However, the C standard also allows other functions to set <B>errno</B>, and it allows implementations to provide values in addition to those required by the standard. In practice, this means that you must check your compiler's documentation if you're going to use <B>errno</B> to detect errors. Otherwise you won't know which functions can set it, and you won't know what values it can take on <a href="#8">[8]</a>.</p>
+
+<h4><FONT COLOR="#000080">Providing Additional Information</FONT></H4>
+
+<p>A flag such as <B>errno</B> can also be used to supplement the information provided by a return value. Rather than cobble up an incomprehensible scheme for compressing several dozen bits of error information into a return value, you might want to stick to using a single value to indicate an error, and allowing the caller to look elsewhere if more information is needed. By separating detection of the error from reporting the details of the error, you make it possible for callers of your function to write simpler code when they are not concerned with the details of what went wrong, without depriving callers who need more data of the information they need.</p>
+<p>As we saw earlier, Win32 provides something similar with the function <B>GetLastError</B>. It's a lot like <B>errno</B> in one respect. Calling <B>GetLastError</B> gives you back a number indicating the most recent error that occurred in the thread you called it from. This gives the calling function a great deal of flexibility in handling errors reported by system calls. If the caller doesn't need to recover from the error it doesn't need to look at the detailed information:</p>
+
+<pre>
+HANDLE hnd;
+if ((hnd = GetStdHandle(
+             STD_OUTPUT_HANDLE))
+        == INVALID_HANDLE_VALUE)
+    exit(1);
+</pre>
+
+<p>If it needs to do more, it can:</p>
+
+<pre>
+HANDLE hnd;
+if ((hnd = GetStdHandle(
+             STD_OUTPUT_HANDLE))
+        == INVALID_HANDLE_VALUE)
+{
+    void *msg;
+    FormatMessage(
+        FORMAT_MESSAGE_ALLOCATE_BUFFER
+        | FORMAT_MESSAGE_FROM_SYSTEM,
+        NULL,
+        GetLastError(),
+        0,
+        &amp;msg,
+        0,
+        NULL);
+    printf("%s\n", (char *)msg);
+    exit(1);
+}
+</pre>
+
+<p>In general, this is a good approach <a href="#9">[9]</a>. Make it as easy as you can for functions that call your code to recognize that an error occurred. This makes it much more likely that the writer of the calling function will take the time to check for errors. That, in turn, will make your application much more robust.</p>
+
+<h4><FONT COLOR="#000080">Coming Up</FONT></H4>
+
+<p>Next month we'll bring this discussion of error handling to an end when we talk about callbacks, signals, <B>longjmp</B>, and exceptions.</p>
+
+<h4><FONT COLOR="#000080">References</FONT></H4>
+
+<p><a name="1"></a>[1]  Of course, none of us has ever run into this sort of problem with our software projects.</p>
+<p><a name="2"></a>[2]  Some memory-intensive applications require more sophisticated error reporting for memory management problems. The point here is not that such information is never needed, but that it should not be provided unless it is needed. As specified, <B>malloc</B> may not be the right tool for memory-intensive applications. That does not mean that the specification for <B>malloc</B> should be changed. Rather, it means that memory-intensive applications should not rely solely on <B>malloc</B> for memory management.</p>
+<p><a name="3"></a>[3]  I've removed the Windows-isms to make the code more recognizable to ordinary C programmers. In fact, <B>SetFilePointer</B> deals in <B>DWORD</B>s, <B>LONG</B>s, and <B>PLONG</B>s.</p>
+<p><a name="4"></a>[4]  An extreme example of this occurs in Microsoft's OLE or COM or ActiveX (What do you want to call it today?) Many of the support functions return a 32-bit value which you then decode with a macro to figure out whether the call succeeded.</p>
+<p><a name="5"></a>[5]  Without looking it up, what does the return value of <B>printf</B> tell you? Can you do anything useful with this information?</p>
+<p><a name="6"></a>[6]  It's not actually necessary to go through all this to write to <B>stdout</B> in Java. You can call <B>print</B> on the object <B>System.out</B> instead.</p>
+<p><a name="7"></a>[7]  Java requires that every function that calls a function that throws an exception must either enclose that call in a <B>try/catch</B> block to handle that exception, or declare itself as throwing that exception as well. That's a major annoyance when all you're trying to do is display a debugging message on the console, so <B>PrintWriter</B> wisely hides any exceptions from you when you use it.</p>
+<p><a name="8"></a>[8]  Using <B>errno</B> brings up another issue: since the C standard doesn't deal with multithreaded environments, <B>errno</B> is specified simply as a global value. In the presence of multiple threads, using this global value obviously doesn't work: another thread can change the value of <B>errno</B> before you get a chance to look at it. The solution is equally obvious: there must be a separate <B>errno</B> for each thread. That's actually a minor issue: every compiler I know of that supports multiple threads provides a per-thread <B>errno</B>.</p>
+<p><a name="9"></a>[9]  That is, separating the error indicator itself from the details of the error. The amount of noise involved in using Win32, on the other hand, is a significant distraction.</p>
+
+<p><i>Pete Becker is Technical Project Leader for Dinkumware, Ltd. He spent eight years in the C++ group at Borland International, both as a developer and manager. He is a member of the ANSI/ISO C++ standardization committee. He can be reached by email at <B>petebecker@acm.org</B>.</i></p>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

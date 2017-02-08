@@ -1,0 +1,146 @@
+
+
+
+
+<HTML><HEAD>
+
+<TITLE>February 1997/A Polled Timer Class/Listing 3</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4>Listing 3:	An executive that uses the timers</h4>
+
+<pre>
+#include "timer.h"
+
+TIMER timer;
+
+int done = 0;
+
+void EXECUTIVE::executive_loop(void)
+{
+  enum xmt_rcvr_states {x1_idle, waiting_prelim_type1,
+                        waiting_final_type1};
+  enum message_ids {none_id=0, prelim_type1_id=1,
+                    final_type1_id=2};
+
+  xmt_rcvr_states type1_state = x1_idle;
+
+  TIMER_HANDLE type1_timer = timer.open_timer(0.0); //expired timer
+  TIMER_HANDLE ping_timer = timer.open_timer(1.0);
+  TIMER_HANDLE ephemeris_record_timer = timer.open_timer(120.0);
+
+  while (!done) { //  main loop.
+    //  The clock stuff.
+    (void)timer.executive_tic();
+
+    //  request ephemeris every 2 minutes.
+    if (timer.expired(ephemeris_record_timer)) {
+      timer.close_timer(ephemeris_record_timer);
+      ephemeris_record_timer = timer.open_timer(120.0);
+      request_ephemeris();
+    }
+
+    //  ping the port1 (send a ping message) once a second.
+    if (timer.expired(ping_timer)) {
+      timer.close_timer(ping_timer);
+      ping_timer = timer.open_timer(1.0);
+      initiate_ping();
+    }
+    
+    //  Check message states and timers to make sure we
+    //  are not hanging.  If exe_timer is expired and the executive
+    //  is not in idle, then an error condition exists,  it is hung
+    //  on some part of a message process.
+    if (timer.expired(type1_timer)) {
+      switch (type1_state) {
+        case x1_idle:
+          break;  //  no problem if it's in idle.
+        case waiting_prelim_type1:
+          printf("Type1 timeout waiting_for_prelim_type1");
+          type1_state = x1_idle;
+          break;
+        case waiting_final_type1:
+          printf("Type1 timeout waiting_for_final_type1");
+          type1_state = x1_idle;
+          break;
+        default:
+          printf("type 1 in an unknown state.");
+          type1_state = x1_idle;
+      }
+    }
+
+    //  Check to see if the gps receiver is starting a new sec.
+    //   top_of_second() will return true once every sec.
+    if (top_of_second()){
+      if (type1_state == x1_idle) {
+        timer.close_timer(type1_timer);
+        type1_timer = timer.open_timer(0.3);
+        type1_state = waiting_for_prelim_type1;
+      }else {
+        //  A problem has occured. abort the messages, and reset.
+        printf("New type1 started without finishing previous one.");
+        send_type1_abort();
+        type1_state = x1_idle;
+        timer.close_timer(type1_timer);
+        type1_timer = timer.open_timer(0.0);
+      }
+    }
+
+    //  Check the port interface to see what message we are getting.
+    //  port1_message_received() will empty the input buffers and
+    //  construct an incoming message.  It will return message_id
+    //  when a message is complete and 0 (default) otherwise.
+    switch (port1_message_received()) {
+      case prelim_type1_id:
+        if (type1_state == waiting_for_prelim_type1) {
+          timer.close_timer(type1_timer);
+          type1_timer = timer.open_timer(0.3);
+          process_prelim_type1();
+          type1_state = waiting_for_final_type1;
+        }else {
+          //  A problem has occured. abort messages and reset.
+          printf("Received prelim_type1, but not waiting for it.");
+          send_type1_abort();
+          type1_state = x1_idle;
+          timer.close_timer(type1_timer);
+          type1_timer = timer.open_timer(0.0);
+        }
+        break;
+      case final_type1_id:
+        //  Type 1 final message.
+        if (type1_state == waiting_for_final_type1) {
+          timer.close_timer(type1_timer);
+          type1_timer = timer.open_timer(0.0);
+          process_type1_final();
+          type1_state = x1_idle;
+        }else {
+          //  A problem has occured. abort messages and reset.
+          printf("Received final_type1, but not waiting for it.");
+          send_type1_abort();
+          type1_state = x1_idle;
+          timer.close_timer(type1_timer);
+          type1_timer = timer.open_timer(0.0);
+        }
+        break;
+      default: ;
+    }// end switch.
+    
+  }//  end main loop.
+
+  //  Shutdown the timers.
+  timer.close_timer(type1_timer);
+  timer.close_timer(ping_timer);
+  timer.close_timer(ephemeris_record_timer);
+}
+
+//  The delay function stops any real-time execution.
+//  It is a real time pause.
+void delay(float sec)
+{
+  TIMER_HANDLE sleep = timer.open_timer(sec);
+  while (!timer.expired(sleep)) timer.executive_tic();
+  timer.close_timer(sleep);
+}
+
+//End of File
+</pre>
+</body></html>

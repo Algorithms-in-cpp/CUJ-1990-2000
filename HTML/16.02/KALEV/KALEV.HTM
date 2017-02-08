@@ -1,0 +1,487 @@
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+<TITLE>February 1998/Porting a C++ Application to Java</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<H2><A href="../tocfeb.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+<FONT COLOR="#FF0000">Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Porting a C++ Application to Java</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Danny Kalev</FONT></H3>
+<blockquote>
+<p>There's more to porting code to Java than just changing the keywords, as you might have
+guessed.</p></blockquote><hr>
+
+<blockquote>
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>A few years ago, when C++ came into fashion, I had to port legacy C code into
+C++. That was a straightforward process, but when I was asked to port C++ code
+into Java some months ago, it was a different story altogether. In this
+article, I will describe my experience migrating C++ to Java and discuss:</p>
+<UL><LI>the kind of design changes required to migrate code to Java,</LI>
+    <LI>the differences in C++ and Java including those not apparent from syntax,
+        and</LI>
+    <LI>whether it is better to migrate or redesign from scratch.</LI>
+</UL>
+
+<h4><FONT COLOR="#000080">The System to be Migrated</FONT></H4>
+
+<p>The
+original system, developed in C++, was a management system for VDOLive servers
+(i.e., a large database of video films stored on a disk that serves clients'
+requests to broadcast a film in real time). This system is used to control the
+server from virtually anywhere via a communication link. It enables the
+operator to start and stop the server's action, request performance statistics,
+disconnect clients, check clients' authorization to view a requested film, and
+report failures. The VDOLive Management system consists of several units: GUI,
+customers' database, proprietary communication infrastructure, and the
+messaging unit.<p>
+The original messaging unit was mainly a single large and complex C++ class
+with the addition of some low-level external C-style functions. Because the
+unit was installed on various platforms, portability was a high priority.
+However, the lack of compatibility among different C++ compilers, as well as
+operating systems, turned that into an unacceptable burden. It was decided,
+therefore, to port this subsystem to Java, maintaining the messaging protocol
+in its current form since all other units of the system remained intact.<p>
+The messaging protocol is a request-response type, consisting of a fixed header
+containing data fields such as message code, message time, cyclic redundancy
+check value, and size of accompanying data. Accompanying data can be of any
+type and size and may contain values such as film name, IP address, channel
+bandwidth, and log report file. These data values are grouped in units termed
+data items. Each item consists of three components: item code, item size, and
+data.<p>
+Because the entire message is transmitted as a continuous stream of bytes, the
+receiving side must know the exact size of the incoming message. It then
+reconstitutes the header and the data items (if they exist) from the incoming
+byte stream. The entire message object contains the header, its data items, and
+most importantly, accessors and mutators.<p>
+These accessors and mutators enable an application to:</p>
+<UL><LI>construct a message object from the incoming stream,</LI>
+    <LI>validate the message object,</LI>
+    <LI>read the message object's parts,</LI>
+    <LI>encrypt an outgoing message,</LI>
+    <LI>serialize the outgoing message object, and</LI>
+    <LI>append data items to the message object.</LI>
+</UL>
+Obviously, message objects are located on both the operator's system (the
+management tools) as well as on the server side.</p>
+
+<h4><FONT COLOR="#000080">The Design Process</FONT></H4>
+
+<p>At
+first, we tested some C++-to-Java automatic source converters, all of which
+failed badly. Then, we tried to manually convert some C++ code samples to Java
+in order to assess the time and resources required for the task. We soon
+realized that the migration project was not going to be a trivial one; even our
+tiny samples required considerable redesign, so two more colleagues helped me
+occasionally. The syntax resemblance between C++ and Java turned out to be
+merely superficial and, hence, very misleading. Most of the design changes were
+needed due to the lack of C++ features in Java or due to different syntactic
+requirements.</p>
+
+<h4><FONT COLOR="#000080">Design Considerations in Java</FONT></H4>
+
+<p>One
+of the most powerful mechanisms in Java is packages. It allows packing several
+logically related classes within a "capsule," similar to the namespace
+mechanism in C++ but richer and less complex:</p>
+<UL><LI>Name conflicts are avoided since each class is identified by its full
+        qualified name: packagename.classname, so you can safely use short and elegant
+        class names, such as Message rather than cumbersome prefixed names such as
+        CVdoMgrMessage.</LI>
+    <LI>Packages can be nested to categorize and group classes. (We did not need
+        this feature, but the JDK package hierarchy is a fine example of its use.)</LI>
+    <LI>Classes can be loaded from a remote server (assuming you have the
+        authorization to do so).</LI>
+    <LI>Packages are also used to control access. C++ contains both private,
+        protected, and public member access specifiers, but there is no easy way for a
+        class to grant access to other related but non-derived classes while
+        prohibiting access from non-related ones. For instance, our Message class
+        serialize method invokes its contained Item classes' serialize method. However,
+        it would be disastrous if a foreign class, which is not a part of our project,
+        were allowed to do so. Declaring Item.serialize protected or private won't do;
+        that would mean that Message itself could not invoke Item's serialize. The
+        elegant solution is to use the default access specifier in the Java package,
+        which allows each class within the same package access to all other classes of
+        that package (unless declared private or protected) while prohibiting it from
+        classes outside that package.</LI>
+</UL>
+<p>We therefore decided to pack all our project code within one package, mgr.</p>
+
+<h4><FONT COLOR="#000080">Converting Header Files to Packages</FONT></H4>
+
+<p>Java does not make use of header files so each class method is implemented within
+its class definition. On the other hand, the original C++ subsystem had three
+header files: A class declaration, a constants pool (macros, enums, and
+typedefs), and global function prototypes. The first and third header files
+were not needed anymore; the second was transformed into an interface (see
+below) within our package. We also decided to split the original C++ class into
+smaller, autonomous Java classes within a common package. Splitting classes is
+not easily done in C++ because you end up with a bulk of unrelated headers and
+implementation files, nested #includes and #ifdefs, and longer compilation
+time. I never tested it scientifically, but my impression is that an average
+class in C++ is bigger than an average Java class for that reason. Splitting
+the original C++ class into smaller components in Java enabled more efficient
+teamwork, a faster development and debugging process, and easier future
+maintenance. Recompilation is required only for the class that has actually
+been changed.<p>
+The original class was split into three basic components: the Message class and
+two more contained classes &#151; Header and Item, which had previously been "Plain
+Old Data" (POD) members of the original C++ class and were now promoted into
+independent classes. Three types of constructors were implemented in these
+classes: a default constructor, a "standard" constructor, and a
+"reconstituting" constructor. The latter reconstructs a message from a stream
+of incoming bytes.<p>
+The Message class (<A href="list1.htm">Listing 1</a>)
+ contains a single Header object and a varying
+number of Item objects in a dynamic Vector. (Fortunately, Java supplies a
+Vector class which has some of STL's vector functionality). Message takes care
+of coordinating Header data and its accompanying Item(s) into a single abstract
+entity. For instance, when a data item is appended to it, the Header object
+keeps track of the overall data size. This bookkeeping is one of the Message
+class's responsibilities. The Message class also has three constructors: a
+default constructor, which creates an empty Message object ready to be filled
+with data, say, from an operator's console; a standard constructor, which
+builds a Message object from the supplied arguments (required by the using
+application), and a "reconstituting" constructor, defined as before.<p>
+The Header class (<A href="list2.htm">Listing 2</a>)
+ is an abstraction of the header part of a message.
+It has a fixed size and its fields are located in fixed positions. The Header
+class contains information such as the total number of bytes that the
+accompanying data occupy, creation timestamp, and various flags. It has two
+constructors: one for an empty (new) message object and a reconstituting
+constructor that builds a header object of a previously serialized message.<p>
+The Item class (<A href="list3.htm">Listing 3</a>)
+ is an abstraction of a data item as defined
+previously, so each data item in a message is an object by itself. As mentioned
+earlier, each item can contain data of any type and size. To support this
+capability, the Item class must contain size and type member fields, thus
+enabling the receiver to reconstitute the item exactly as it was before being
+serialized and transmitted <a href="#1">[1]</a>. The third member is of type Object, which in
+Java means any type at all. Note that each object in Java is implicitly derived
+from Object, so generic methods can be declared as taking an argument of type
+Object. The actual type can be detected at run time by using the Java's
+instanceof operator. There is one caveat, however. Primitive types such as int
+or char are not considered objects in Java, so they have to be "wrapped" by a
+corresponding object: Integer and Character, respectively.</p>
+
+<h4><FONT COLOR="#000080">Implementation</FONT></H4>
+
+<p>With
+this design skeleton in mind, we began the implementation process, which turned
+into a continuous challenge. Many of the basic building blocks of C++ were
+either missing or had a different meaning in Java. Thus, we had to redesign or
+find a workaround to reconcile the discrepancies to achieve the same
+functionality as well as retain conformance with the messaging protocol.</p>
+
+<h4><FONT COLOR="#000080">Pointers</FONT></H4>
+
+<p>Consider the following snippet:</p>
+
+<pre>
+//C++
+long n=1000, *p = &amp;n;
+//get the first memory byte of n
+char firstByte = * ( (char *) p);
+</pre>
+<p>Pointer
+manipulations such as this were heavily used in the original C++ subsystem,
+since it had to serialize a message object into an array of bytes that would
+later be transmitted to the receiver. Reconstitution of the original object
+from an array of bytes arriving at the receiver's port was also required. Java,
+however, does not have a pointer type at all! It also allows only "safe" type
+casting, so casting a plain int into a byte array won't do. The messaging
+subsystem is communication-oriented, resulting in a lot of low-level
+manipulations of packing, transmitting, and unpacking bits in order to
+implement object persistence (i.e., writing an object into a file or a
+stream).<p>
+In C++, implementing object persistence is a rather easy task. Either you
+declare an operator char * (); or you use pointer manipulation as shown. In
+Java, however, you must use streams. Fortunately, Java supplies a rich
+hierarchy of streams. Two of these, DataInputStream and DataOutputStream, can
+do most of the low-level work of type casting, pointer arithmetic, and
+iteration for you. However, they cannot serialize a complete object all at once
+<a href="#2">[2]</a>. Instead, you must activate the same process on each and every data member,
+assuming it is of a primitive type. But what if a member is in itself an
+object, such as the Header member of Message? Then, the process must be
+performed recursively; each object defines its own serialize method, which
+writes the bytes of its members into a stream if they are of basic types.
+Otherwise, it sends a serialize request to the embedded object. The result of
+the process is a stream of aligned bytes, containing the binary representation
+of the entire Message object in memory, ready to be transmitted.</p>
+
+<h4><FONT COLOR="#000080">Enumerations</FONT></H4>
+
+<p>The original system used dozens of enums for message type, error codes, data item
+type, and transaction type, to name a few. Yet, enum types do not exist in
+Java. Two competing solutions were suggested. The first solution was a manually
+enumerated set of constants grouped in an interface, which is implemented by
+all classes in our hierarchy, as follows:</p>
+
+<pre>
+//C++
+enum transaction {
+                     select,
+                     insert,
+                     .
+                     .
+                     };
+//Java
+interface Transaction {
+static final int select = 0;
+static final int insert = 1;
+.
+.
+                     };
+</pre>
+<p>A
+more complicated solution, yet safer and easier for maintenance, is creating a
+base class (even an empty class will do) that represents the enum tag and from
+which other classes, each representing an entry in the tag, inherit:</p>
+
+<pre>
+//Java
+class Transaction {}
+class Select extends Transaction {}
+class Insert extends Transaction {}
+void performTransaction (Transaction actionCode)
+{
+    //runtime type identification
+    if (actionCode instanceof Select)
+    {
+        Db.select();
+    }
+    else if (actionCode instanceof Insert)
+    {
+        Db.insert();
+    }
+    .
+    .
+    .
+}
+</pre>
+<p>The
+second solution has three major drawbacks. Since each class in Java should be
+implemented within its own source file, we would have needed to use hundreds of
+tiny files containing null classes! Also, from the conceptual point of view,
+deriving these dozens or hundreds of null classes from a null base class seemed
+a cure worse than the disease. And, the excessive use of RTTI would impose
+severe performance penalties. Eventually, we chose the former solution in spite
+of its inelegance. (Java designers could have made this a lot easier had they
+chosen not to exclude enum types from the language.)</p>
+
+<h4><FONT COLOR="#000080">Preprocessor</FONT></H4>
+
+<p>Java
+has no preprocessor and hence no header files. Conditional compilation is
+therefore out of the question, but it is compensated by the fact that Java code
+is almost absolutely portable. Coding conventions in Java state that each class
+be written in a separate file, whose name should be identical to the class name
+it contains. Each class/interface is grouped in a dedicated package (which
+should also be identical to the folder in which the classes' source files are
+stored). This contributed to the decision to split the original subsystem into
+three independent entities as described previously.</p>
+
+<h4><FONT COLOR="#000080">Globals</FONT></H4>
+
+<p>Because Java is a pure OO programming language (as opposed to C++, which is a
+"multi-paradigm language that supports object-oriented and other useful styles
+of programming" <a href="#3">[3]</a>), neither functions (including main) nor variables may be
+declared outside an enclosing class/interface. The original subsystem, though,
+had hundreds of global symbols in the form of enums, consts, and macros
+accessible to all units of the Management system. The use of a base class
+containing all these symbols and inherited by the previous three classes was
+out of the question. It would have caused a massive reduplication of data to
+each and every object instance! Declaring this data static would have prevented
+reduplication, but it wasn't an ideal solution for other reasons, such as:</p>
+<UL><LI>The need to use a fully qualified name (e.g., Message.BYTE_TYPE rather
+        than BYTE_TYPE). This would mean a lot of tedious typing and a maintenance
+        burden if we had decided, for example, to change the name of that base class in
+        which these static data resided.</LI>
+    <LI>Deriving all our classes from one base class seems artificial and
+        misleading.</LI>
+</UL>
+<p>Using a public interface was a much better solution. We added an interface
+termed Codes in which all "global" symbols were declared. Each class in our
+project/package was declared as implementing that interface and hence was
+allowed to use all of these symbols directly (and safely). This is, in fact,
+the Java convention in such cases.</p>
+
+<h4><FONT COLOR="#000080">Minor Obstacles</FONT></H4>
+
+<p>These were the major difficulties encountered during our project. However, we also
+had to tackle other smaller obstacles.<p>
+The following is a list of minor incompatibilities between C++ and Java.
+They're minor in that they did not, in our case, require redesign or rethinking
+of our basic migration strategy, but they had to be dealt with as we carried
+out the migration.</p>
+<UL><LI>Multiple inheritance. Java designers tried to avoid the complexity of
+        multiple inheritance in C++. Java supports only the single inheritance model
+        <a href="#4">[4]</a>. This restriction may be limiting sometimes, but can be solved by
+        interfaces. Each class in Java is limited to inherit from one base class at
+        most, but may implement an unlimited number of interfaces. This, of course, is
+        not a perfect solution but was sufficient in our case.</LI>
+    <LI>Templates. One of the strongest features in C++ is generic programming,
+        which C++ supports with both templates and polymorphism. Java does not have
+        templates, but does have polymorphism. Since all Java objects are implicitly
+        inherited from class Object (like in Smalltalk), generic methods can use Object
+        as a wildcard argument for that purpose. For instance:</LI>
+</UL>
+<pre>
+      //C++
+	
+      template &lt;class T&gt;
+      swap ( T&amp; f, T&amp; s);
+	
+      //Java
+      swap( Object f, Object s);
+</pre>
+<UL><LI>const specifier. Final variables of a primitive type (int, char) were used as
+        constants within the Codes interface.</LI>
+    <LI>sizeof operator. Unfortunately, this does not exist in Java. For primitive
+        types, we used hard-coded values, which are the same on all platforms (at least
+        we had that much!). For objects, we manually calculated the object's size when
+        required.<LI>
+    <LI>Default arguments. They do not exist in Java. The most acceptable solution
+        (beside specifying all of the required arguments always) is overloading:</LI>
+</UL>
+
+<pre>
+      //full version
+      int send( int size, boolean confirm) {...}
+      //final arg omitted
+      int send( int size) { return send(size, true);}
+</pre>
+<UL><LI>Unsigned integers. byte, short, int, and long are always signed in Java.
+        However, char is a two-byte unsigned integer, so we used it in cases where a
+        signed int would break backward compatibility.</LI>
+</UL>
+<p>Besides the features lacking in Java, there are some superficial
+similarities that may be rather misleading. Java designers purposefully made
+Java syntax resemble C++ so as to ease the process of learning the new language
+<a href="#5">[5]</a>. But these similarities sometimes have entirely different meanings, which
+are not always easily tracked by inexperienced Java programmers:</p>
+<UL><LI>operator==. In C++, an equality check is performed on lvalues (e.g., the
+        contents of two objects). In Java, == compares via content for primitive types
+        only. If the types are objects, comparison is by reference, that is, == returns
+        true if and only if its operands both refer to the same object. Beware of
+        comparing Strings this way. Instead, use the equals method (or define it in
+        your classes).</LI>
+    <LI>Destructors. While constructors in Java work more or less like in C++, the
+        same is not true for destructors. In fact, they do not exist at all! You may
+        use the finalize method, which may be overridden in each class to do some
+        cleanup, but finalize is invoked when the garbage collector (gc) is activated
+        and not when the object lifetime ends. So, for objects that consume scarce
+        resources (such as threads, file locks, mutexes, or database connections) it's
+        a bad idea to release them in the finalize method. It may take hours and even
+        days before the gc is activated. Also note that a finalize method is not called
+        recursively (i.e., the derived object's finalize does not automatically invoke
+        its superclass's finalize). We therefore decided not to use finalize at all but
+        rather designed our code in such a way that it did not rely upon locking and
+        unlocking resources.</LI>
+</UL>
+
+<h4><FONT COLOR="#000080">Should You Migrate?</FONT></H4>
+
+<p>Learning a new programming language can be both interesting and fun, since you can
+compare them and think of how to improve one by borrowing features from the
+other. (C and C++ have been doing this for almost two decades.) Java has many
+advantages over C++, such as automatic garbage collection, bounds checking,
+rich standard libraries, packages, and most importantly for us, portability. On
+the other hand, due to the removal of crucial constructs such as pointers, bit
+fields, and memory management, Java may not be the ideal choice for low-level
+programming, as required in embedded systems, hardware drivers, and
+time-critical software. So, if you are contemplating migrating to Java, you
+should consider the following factors:</p>
+<UL><LI>What part of the original system is to be ported? If it is a full
+        migration, designing from scratch is a much better choice than sticking to the
+        original design. For partial migration, expect extra difficulties, as our
+        experience shows. If your goal is portability, however, it may well be
+        worthwhile.</LI>
+    <LI>If performance is of high priority (or your system is already pushed to its
+        limits), avoid Java.</LI>
+    <LI>For Web programming, Java is an almost ideal choice since it was designed
+        for that purpose in the first place.</LI>
+</UL>
+<p>Many features were excluded from Java for the sake of simplicity. We
+sometimes had the feeling that Java designers were interested more in easy
+compiler writing than easy programming. This is opposite from the C++ approach
+[<a href="#6">6</a>, p. 7]. The exclusion of enums is probably the best example for that. I
+suspect that as Java becomes more widespread, it will have to be extended.</p>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>The migration process was definitely not the kind of thing we all had been
+accustomed to when porting C code into C++. But the trouble was actually
+worthwhile. Our goal was to reach a state where one version of software would
+compile and run on all environments. In that respect, Java fulfilled its
+promise. Those of you who have experience with writing portable code in C++
+know what it means: conditional compilations, avoiding the use of enhanced
+features such as namespaces, and STL (and even exception handling since at
+least one compiler does not support it), and chasing nested #ifdefs and
+#includes.<p>
+Our goal was achieved but not without a price. We were aware that Java was
+inferior to C++ in terms of performance and anticipated a mediocre performance
+degradation (about double the original response time on average). There are
+some tricks to enhance performance <a href="#1">[1]</a>, but don't be misled into thinking
+you're ever going to get the speed of C++.<p>
+Java is not a "lightweight C++" or "a better C++." These two languages are
+indeed different programming languages, as I've attempted to show. In spite of
+the fact that these languages resemble one another, they impose disparate
+design strategies when it comes to programming in the real world.</p>
+
+<h4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1].
+You may wonder at the use of a switch statement on this type of an object,
+which may indicate poor design [reference 6, p. 306-308]. Indeed, we tried to
+use a more OO approach at first, but finally went on a type-field solution for
+three reasons:<p>
+	a. Lack of sizeof operator.<p>
+	b. Lack of RTTI support in Java for primitive types (as opposed to typeid in
+C++, which makes no such discrimination).<p>
+	c. Most important: performance. The average message object may contain dozens
+of data items. As a result, the reconstituting constructor may be invoked
+dozens of times on a single message object. We discovered that the use of RTTI
+would impose a severe performance penalty, which was unacceptable. In fact,
+many high-level OO features are avoided even in C++ when performance matters;
+such as virtual methods, typeid, and dynamic_cast&lt;&gt;. This is one of the
+differences between clean textbook code samples and real-world programming
+where compromises have to be made.<p>
+<a name="2"></a>[2]. The 1.1 and the current 1.1.4 JDK releases do support object persistence,
+but still we could not simply use the ObjectInputStream.writeObject method. It
+would breach backward compatibility with the messaging protocol, since the size
+and the layout of the byte stream produced are not identical to those produced
+by our original protocol. For instance, serialized arrays are not just the sum
+of their members' bytes but also contain a Java internal header part. So, even
+a one-char string may occupy more than four bytes. This demonstrates once more
+that designing from scratch is much easier than migrating legacy code.<p>
+<a name="3"></a>[3]. Bjarne Stroustrup's FAQ page at URL: http://www.research.att.com/~bs/ bs_faq.html<p>
+<a name="4"></a>[4]. Ken Arnold, and James Gosling. The Java Programming Languauge
+(Addison-Wesley, 1996).<p>
+<a name="5"></a>[5]. M. Grand. Java Language Reference (O'Reilly Associates, 1997).<p>
+<a name="6"></a>[6]. Bjarne Stroustrup. The C++ Programming Language, third ed.
+(Addison-Wesley, 1997).
+</p>
+<p><i>Danny Kalev is a system analyst and software engineer with several years
+of experience, specializing in C++ and OOD. He is an active member of the
+ANSI/ISO J16 C++ Standardization Committee. His current technical interests
+involve networking, compiler technology, artificial intelligence, and
+distributed data systems. He can be reached at danni@zoot.tau.ac.il.
+</i></p>
+
+<h4><a href="../../../source/1998/feb98/kalev.zip">Get Article Source Code</a></h4>
+
+</blockquote>
+</body></html>

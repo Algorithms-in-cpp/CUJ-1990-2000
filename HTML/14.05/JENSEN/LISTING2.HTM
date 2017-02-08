@@ -1,0 +1,172 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>May 1996/32-bit Memory Management in OS/2/Listing 2</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H4>Listing 2: The HeapManager implementation</H4>
+
+<PRE>
+
+/*
+ *  HEAPMGR.C
+ *  32-bit OS/2 heap management library.
+ *
+ */
+#define  INCL_DOSMEMMGR
+#define  INCL_DOSPROCESS
+#include &lt;os2.h&gt;
+
+#include &lt;stdio.h&gt;
+#include "heapmgr.h"
+
+/*
+ *  Completion of struct _heap
+ *
+ */
+HEAP {
+  size_t size,
+         free,
+         blocks;
+  void   *base;
+};
+
+/*
+ *  Round up to boundary
+ *  (does not round negative numbers correctly)
+ *
+ */
+#define ROUNDUP(num,bdry)  ((((num)+(bdry)-1)/(bdry))*(bdry))
+
+/* * * * * * *  create &amp; destroy heap  * * * * * * */
+
+HEAP *createHeap(size_t size)
+{
+  HEAP heap, *retval;
+
+  size = ROUNDUP(size,64*1024);  /*  DosAllocMem() rounds anyway  */
+
+  heap.size   = size;
+  heap.free   = size - 64;       /*  size less system control info  */
+  heap.blocks = 0;
+  heap.base   = 0;
+
+  if ( size == 0 || DosAllocMem(&amp;heap.base,size,PAG_READ | PAG_WRITE) )
+    return 0;
+
+  if ( DosSubSetMem(heap.base,
+                    DOSSUB_INIT | DOSSUB_SPARSE_OBJ | DOSSUB_SERIALIZE,
+                    size) ) {
+    DosFreeMem(heap.base);
+    return 0;
+  }
+
+  if ( !DosSubAllocMem(heap.base,(void **)&amp;retval,sizeof(heap)) ) {
+    heap.free -= sizeof(heap) + sizeof(int);
+    *retval = heap;              /*  place control struct in heap  */
+  }
+  else {   /*  shouldn't occur, DosSubAllocMem() shouldn't fail...  */
+    DosSubUnsetMem(heap.base);
+    DosFreeMem(heap.base);
+  }
+
+  return retval;
+}
+
+int destroyHeap(HEAP *heap)
+/*  Returns OS/2 error code as a negative number on failure,  */
+/*  otherwise returns the number of unfreed blocks.           */
+{
+  void   *base  = heap-&gt;base;    /*  after deallocation, HEAP content  */
+  size_t blocks = heap-&gt;blocks;  /*  can no longer be trusted          */
+  APIRET rc;
+                                             /*  free HEAP structure  */
+  if ( (rc = DosSubFreeMem(base,heap,sizeof(HEAP))) == 0 )
+    /*  clear system control info  */
+    if ( (rc = DosSubUnsetMem(base)) == 0 )
+      rc = DosFreeMem(base);                  /*  free heap memory  */
+
+  return !rc ? blocks : rc * -1;
+}
+
+/* * * * * * * *   alloc &amp; free  * * * * * * * * */
+
+void *allocMem(HEAP *heap, size_t size)
+{
+  size_t *p,
+          /*  user mem plus room to keep size  */
+         totsize = size+sizeof(size_t); 
+  if ( size == 0 ||
+       DosSubAllocMem(heap-&gt;base,(void **)&amp;p,totsize) )
+    return 0;
+
+  *p = size;                  /*  keep size in front of user area  */
+
+  DosEnterCritSec();
+  heap-&gt;free -= ROUNDUP(totsize,sizeof(int)) + sizeof(void *);
+  heap-&gt;blocks++;
+  DosExitCritSec();
+
+  return  p + 1;                /*  return a pointer to user area  */
+}
+
+int freeMem(HEAP *heap, void *blockP)
+{
+  void   *blckbase = (char *)blockP-sizeof(size_t);
+  size_t size      = *(size_t *)blckbase,
+         totsize   = size + sizeof(size_t);
+
+  /*  failure is sign of heap corruption  */
+  if ( DosSubFreeMem(heap-&gt;base,blckbase,totsize) )  
+    return FALSE;
+
+  DosEnterCritSec();
+  heap-&gt;free += ROUNDUP(totsize,sizeof(int)) + sizeof(void *);
+  heap-&gt;blocks--;
+  DosExitCritSec();
+
+  return TRUE;
+}
+
+/* * * * * * * * *   utilities   * * * * * * * * */
+
+size_t queryHeapSize(HEAP *heap)
+{
+  return heap-&gt;size;
+}
+
+size_t queryHeapFree(HEAP *heap)
+{
+  return heap-&gt;free;
+}
+
+size_t queryHeapBlocks(HEAP *heap)
+{
+  return heap-&gt;blocks;
+}
+
+void *queryHeapBase(HEAP *heap)
+{
+  return heap-&gt;base;
+}
+
+size_t queryBlockSize(void *blockP)
+{
+  return *(size_t *)((char *)blockP-sizeof(size_t));
+}
+/* End of File */
+</PRE>
+   </BODY>
+</HTML>

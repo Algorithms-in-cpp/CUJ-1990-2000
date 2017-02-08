@@ -1,0 +1,433 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>May 1996/Handling Multiple TCP Connections in C++</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><FONT COLOR="#FF0000"><A href="../tocmay.htm"><IMG src="../../toc.gif" WIDTH="54" HEIGHT="54"></A>
+Client/Server
+          Programming</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="Center"><FONT COLOR="#800000">Handling Multiple TCP Connections in C++</FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">Oleg Kiselyov</FONT></H3>
+          
+          <BLOCKQUOTE>
+               
+               <p>Just shoveling data around in a
+                    network takes a certain amount of bookkeeping. Here's some
+                    code to handle some of that tedium.</p></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <h4><FONT COLOR="#000080">Introduction</FONT></H4>
+               
+               <p>We often hear people say the world is
+                    getting smaller. Whether or not you agree, it's hard to deny
+                    that it's becoming increasingly interconnected. The
+                    proliferation of networks, both local and world-wide, is
+                    compelling more of us each year to engage in network
+                    programming, along with its forbidding complexities &#151; the
+                    need to handle multiple connections and asynchronous events.</p>
+               
+               <p> Fortunately, if you're a UNIX
+                    programmer, you needn't create this software from scratch.
+                    The building blocks have been around for years, in the form
+                    of the popular BSD sockets. UNIX further simplifies
+                    networking tasks by providing for multiple, concurrent
+                    processes, non-blocking I/O, and signals. Add a simple C++
+                    class library to encapsulate some of this functionality, and
+                     network programming becomes easier still.</p>
+               
+               <p> This article shows how to implement a
+                    very simple, but advanced, communication application: a TCP
+                    packet relay. As UNIX-centric as this article is, the TCP
+                    class hierarchy presented here is also relevant to other
+                    networking APIs. So is the handling of signals in C++
+                    programs.</p>
+               
+               <p> The code discussed in the article is
+                    based on a very high level of the UNIX API. Therefore, it
+                    works on both BSD and SVR4 flavors of UNIX with almost no
+                    changes. It is a regular, non-privileged, non-kernel
+                    application that uses only high-level interfaces available
+                    to any POSIX-compliant UNIX program. The code may appear to
+                    be multithreaded, but it actually uses nothing beyond 
+                    conventional socket and UNIX signal interfaces. This article
+                    reveals a few tricks:</p>
+               <UL><LI> a simple C++ class library to handle a hierarchy of
+                         BSD sockets, make active/passive TCP connections, and
+                         transfer data</LI>
+                    <LI> handling I/O asynchronously: nonblocking read/write
+                         and responding to I/O-related interrupts (signals)</LI>
+                    <LI> signal handling and C++ objects</LI>
+                    <LI> handling the peculiarities of TCP connections &#151; to be
+                         more precise, figuring out when to close a connection</LI>
+               </UL>
+               
+               <p>As mentioned above, this article is
+                    based on a simple application relaying TCP packets from one
+                    connection to another. The complete code can be obtained
+                    from the code disk and sources listed at the end of this
+                    article. In spite of its simplicity, the application can be
+                    used as it is as a proxy server, extender of IP addressing,
+                    firewall, and a high-level protocol sniffer.</p>
+               
+               <h4><FONT COLOR="#000080">Implementing the TCP
+               Hierarchy in C++</FONT></H4>
+               
+               <p>First things first. The application
+                    needs to make a connection, and once made, must be able to
+                    move data in and out of the open channel. That's what a
+                    socket hierarchy is for. The C++ classes discussed in this
+                    section mirror the socket hierarchy, and offer an easy
+                    shortcut to the otherwise tedious mantra of commands
+                    involved in making a connection.</p>
+               
+               <p> One of the bottom-level classes in
+                    the TCP hierarchy is IPaddress, which holds an internal
+                    representation of an IP address and can convert it to/from a
+                    human-readable form (see <A href="listing1.htm">Listing 1</a>)
+.
+                    This class stores the IP address as a big-endian binary
+                    number, in a long int. This is a conventional internal
+                    representation used by many functions of the socket API.
+                    Obviously, 64-bit computers and  IPng weren't in sight when
+                    the socket library was developed.</p>
+               
+               <p> Packing four bytes into a long int
+                    can create problems, in that different platforms think the
+                    most significant byte resides on different "ends"
+                    of the int. In a little-endian architecture, the most
+                    significant byte is the last one (that is, having the
+                    largest address in memory). Since the IP address
+                    representation needs to be the same across different
+                    platforms, network standards specify that the bytes of an IP
+                    address, port number, and other multi-byte quantities must
+                    be stored in most-significant-byte-first order (called
+                    network order).</p>
+               
+               <p> The concept of network order accounts
+                    for the functions htons, ntohs, htonl, and ntohl (typically
+                    implemented as macros in system include files), which
+                    convert short (2-byte) and long integers between host and
+                    network orders. The names are mnemonic: htons means
+                    host-to-network-short. (I wish we were spared this hassle.
+                    The kernel could've taken care of the network order by 
+                    itself. Anyway we don't usually have access to an IP packet.
+                    The C++ classes discussed here make up for this deficiency.
+                    They store all multi-byte data in their network order, and
+                    take care of necessary conversions.)</p>
+               
+               <p> The IPaddress class constructor forms
+                    an IPaddress object from an ASCII string, which can be
+                    either a standard "internet dot" IPaddress
+                    representation, or a host name:</p>
+
+<PRE>
+IPaddress addr1("16.1.0.2"), addr2("prep.ai.mit.edu"), addr3;
+</PRE>
+               
+               <p></p>
+               
+               <p>If a host name is given, the
+                    constructor looks it up (resolves it) using Domain Name
+                    Services (DNS). An IPaddress constructed with no argument at
+                    all (as in addr3 above) is a wildcard address. You can use
+                    this wildcard when constructing a listening (server) socket,
+                    to make the server accept connections from everyone. Casting
+                    an IPaddress object to a character string gives a 
+                    human-readable representation of the address. The cast
+                    operator first tries to find out a host name corresponding
+                    to the address. If it fails, it returns the internet-dot
+                    representation.</p>
+               
+               <p>Since a host can participate in many
+                    TCP connections at the same time, the packet relay needs
+                    another parameter, the TCP port number, to uniquely specify
+                    the source or destination of the connection. This combined
+                    IP address, port number, and IP protocol identification is
+                    called an internet socket address. It is represented as the
+                    C structure sockaddr_in in the socket library. Wrapping a 
+                    class SocketAddr around the structure makes it easier to
+                    construct a SocketAddr from an IP address and port number,
+                    and to convert it to something printable (see
+                    <A href="listing1.htm">Listing 1</a>)
+.</p>
+               
+               <p> Further up in the hierarchy is
+                    StreamSocket, a class that handles transmissions through a
+                    TCP stream. The class has member functions to read/write a
+                    block of data through the channel, and get a socket address
+                    of itself or its peer on the other side of the pipe. The
+                    class also has some specific functions to enable/disable
+                    non-blocking I/O and interrupts on packet arrival (more 
+                    about this below).</p>
+               
+               <p> Although StreamSocket handles all I/O
+                    flowing through the channel once it's open, the StreamSocket
+                    object does not have a useful constructor. This is because
+                    opening a channel (unlike an exchange through an already
+                    opened channel) is an asymmetric operation. Figuratively
+                    speaking, someone has to knock on the door, and someone has
+                    to be behind the door to open it. Class ConnectingSocket is
+                    the one who knocks. It creates a StreamSocket object by
+                    initiating an active connection to a given port of a given
+                    host:</p>
+
+<PRE>
+ConnectingSocket target_socket(SocketAddr(Target_host,Target_port));
+</PRE>
+               
+               <p><BR>
+                     This one statement is all it takes to open a connection.
+                    <A href="listing2.htm">Listing 2</a>
+shows a useful
+                    example of how the just-opened target_socket can be used. In
+                    this example, ConnectingSocket opens a channel on a port 7
+                    of the local host. This port always has an associated server
+                    "process" that accepts connections and then sends
+                    back any information it receives. As a matter of fact, this
+                    particular server process is built into the TCP stack
+                    itself. The TCP stack has other built-in server processes,
+                    which are useful for debugging connections. For example, the
+                    process associated with port 9 simply discards everything
+                    sent to it, but again, always accepts the connections. Port
+                    13 sends the current date and closes the connection. Port 19
+                    sends characters until you close the connection, etc. (You
+                    can peek at these ports from /etc/services file, or the
+                    services NIS map.)</p>
+               
+               <p> Of course, for a ConnectingSocket to
+                    succeed, the target host must already have a server process
+                    listening on the target port &#151; a process that would answer
+                    the knock and open the door. Otherwise ConnectingSocket will
+                    just ellicit that familiar "Connection refused"
+                    error.</p>
+               
+               <p> As shown above, some ports have
+                    built-in servers. To help in creating a custom server, I
+                    provide a Listen socket object:</p>
+
+<PRE>
+IPaddress wildcard_address;
+Listen listen_socket(SocketAddr(wildcard_address, listen_port));
+StreamSocket&amp; source_socket = *listen_socket.accept(1);
+if( check_peer_address(source_socket.get_peer_name()) )
+{
+  char date_now[40]; time_t t_loc;
+  cftime(date_now,0,(time(&amp;t_loc),&amp;t_loc));
+  source_socket.write(date_now,strlen(date_now)+1);
+}
+delete &amp;source_socket;
+</PRE>
+               
+               <p><BR>
+                     listen_socket's constructor merely prepares a specific port
+                    for listening. The actual listening begins when
+                    Listen::accept is called. At this point, execution of the
+                    program is suspended until somebody knocks on the door. The
+                    accept method then resumes and returns a dynamically
+                    allocated stream socket to use for communication with the
+                    connected peer. The listen_socket object is then available
+                    for listening again. Unless you want to limit connections to
+                    a single, specific host, you can usually give a wildcard
+                    IPaddress to the Listen socket constructor.</p>
+               
+               <p> I provide a function
+                    check_peer_address so a server can check if it really wants
+                    to talk to a host with which it has just connected. Note
+                    that the port numbers below 1,024 are privileged. A process
+                    must be a superuser (with an effective user ID of 0, to be
+                    more precise) to listen on a privileged port. Of course,
+                    only one process can listen on a single port.</p>
+               
+               <p> <A href="listing3.htm">Listing 3</A>
+                    shows the implementation of a few, non-trivial member
+                    functions. The full source code is available on-line as
+                    mentioned above, and on this month's code disk.</p>
+               
+               <h4><FONT COLOR="#000080">Blocking and
+               Non-blocking I/O</FONT></H4>
+               
+               <p>Unlike reading/writing an "ordinary"
+                    file (which always either succeeds or fails, with
+                    end-of-file being a special case), I/O on communication
+                    channels (pipes, terminal "files," and TCP
+                    channels, etc.) offers a third possibility: no data yet.
+                    This is different from EOF in that the channel is still
+                    open, and data may appear any moment. In that situation, a
+                    read operation normally blocks until there is something to
+                    read. When a packet relay is relaying information from one
+                    channel to another, it can't afford to block, because data
+                    can arrive on any channel at unpredictable moments. Besides,
+                    the program may want to do some useful processing in the
+                    meantime. There are two basic ways of handling this
+                    situation.</p>
+               
+               <p> One method of avoiding unexpected and
+                    unwanted blocks during I/O is to make sure that a read/write
+                    operation will succeed, before even attempting it. Using a
+                    select system call will obtain such a guarantee. In general,
+                    you tell select which channels (file descriptors) to watch,
+                    and provide a timeout interval. On return, the system
+                    eventually indicates which of the given channels, if any, 
+                    has some data to be read. For some reason, this is the most
+                    common method of arranging so-called "multithreaded
+                    I/O." Note, we are still in the realm of synchronous
+                    I/O, and so burdened with periodic calls to select to check
+                    for new data.</p>
+               
+               <p> A more elegant solution is to prevent
+                    I/O blocking in the first place. Any open UNIX file handle
+                    can be converted to a non-blocking mode. In this mode,
+                    read/write never blocks, even if no data is available (or
+                    the file is locked, etc.). If there is something to read, a
+                    read system call will get it. Otherwise, the call returns a
+                    special type of error telling us to try reading again later.
+                     Of course, polling on read is not a time-saving solution
+                    either. Fortunately, UNIX provides an option to notify a
+                    process when some open channel (any file, actually) needs
+                    attention. The system alerts a process by sending the
+                    process a SIGIO signal. Note, a process must specifically
+                    request that this signal (a.k.a. SIGPOLL on SVR4) be sent.</p>
+               
+               <p> Enabling/disabling of the
+                    non-blocking I/O and SIGIO requires setting/resetting
+                    certain flags associated with a file descriptor (socket
+                    handle in particular). See the implementation of member
+                    functions StreamSocket::enable_sigio and
+                    StreamSocket::set_blocking_io for examples (<A href="listing3.htm">Listing
+                         3</a>)
+. The UNIX API does not provide easy access to
+                    individual flag bits. Therefore, it's necessary to make a
+                    fcntl system call to obtain the entire word of flags, change
+                    the necessary bit, and store the updated word using fcntl
+                    function F_SETFL. Enabling SIGIO requires an additional step
+                    of telling the kernel which process is to receive the
+                    signal. UNIX thus provides an opportunity for a main program
+                    to assign different subprocesses as handlers for different 
+                    communication channels. However, I chose to handle I/O using
+                    "threads" rather than full-weight system
+                    processes. There is therefore only one process, which
+                    becomes the owner of all channels using fcntl's F_SETOWN
+                    call.</p>
+               
+               <h4><FONT COLOR="#000080">Interrupt-Driven I/O</FONT></H4>
+               
+               <p>Once communication channels are
+                    opened, relaying information between them takes surprisingly
+                    little effort. The program must install SIGIO signal
+                    handlers, tell the system it wants to receive the signal
+                    when I/O is pending, and do some foreground processing to
+                    let the signal handler relay packets when they arrive. The
+                    relay code has nothing to do in the foreground, so it calls 
+                    pause (thus giving up the CPU).</p>
+               
+               <p> Installing a SIGIO handler tells the
+                    system what to do when a signal arrives. To install a
+                    handler, the program calls a sigset (signal in the BSD
+                    universe) function, passes a signal ID (SIGIO), and the
+                    handler. The handler can be either a top-level function, or
+                    a static method of some class (as in my code). The handler
+                    is just a regular C/C++ function. It can call other 
+                    functions defined in the code and access global variables.
+                    The handler will be called asynchronously, whenever a SIGIO
+                    signal arrives, and this raises the whole specter of
+                    critical sections, race conditions, etc. For example, what
+                    if the kernel sends a new signal while the program is still
+                    handling the old one? Fortunately, we don't have to worry
+                    about this: any further SIGIO signals will be deferred until
+                    the handler returns. Obviously, care must be taken to set up
+                    signal handlers before enabling SIGIO.</p>
+               
+               <p> Whenever the communication channels
+                    have I/O activity pending, the kernel sends the process a
+                    SIGIO, thus calling the handler. The system doesn't indicate
+                    which particular channel needs attention though, so the
+                    handler has to check both. That is, it tries to read from
+                    each channel in turn, and if successful, relays the data
+                    read to the other channel. That's where the non-blocking I/O
+                     comes in handy. If a channel has nothing to read, the
+                    handler immediately gets a special return code, and turns to
+                    the other channel. Note, although any further SIGIO signals
+                    would be deferred until the handler finishes with the
+                    current one, it is still quite possible for new data to
+                    arrive while the handler is processing earlier data.
+                    Therefore, the handler must keep on checking the channels,
+                    and return only when it's absolutely certain both channels
+                    have nothing to handle.</p>
+               
+               <p> Special conditions such as errors and
+                    channel closing require more attention. For example, what to
+                    do when one channel is about to be closed (that is, we have
+                    read EOF) but the other one still has some data? Obviously,
+                    the relay software must try to relay this data before
+                    closing the channels. To ease the handling of particular
+                    situations like this, I implement SIGIO handling with a 
+                    simple finite state machine (FSM). Depending on its current
+                    state, the FSM performs some action on a specified socket,
+                    and depending on the result of the action (success, no data,
+                    EOF), switches to another state and makes another roll
+                    unless a stop state (with ID 0) has been reached. When it
+                    reaches the stop state, the signal handler returns (see
+                    <A href="listing4.htm">Listing 4</a>)
+. The elementary FSM
+                    actions are as follows: relay_socket, which reads from a
+                    socket and writes data to the other socket; setting and
+                    querying a loop_done flag; and setting a global "finished"
+                    flag. When the finished flag is set it tells the main "thread"
+                    the relay is finished and both channels should be closed.</p>
+               
+               <h4><FONT COLOR="#000080">Summary</FONT></H4>
+               
+               <p>I've demonstrated how to build a
+                    simple TCP packet relay using BSD sockets, non-blocking I/O,
+                    and C++ classes. This application can be adapted to a number
+                    of useful network operations. Furthermore, the TCP class
+                    hierarchy and C++ signal handling functionality should be
+                    relevant to other network APIs. Many of us can expect to
+                    find ourselves increasingly involved with computer networks,
+                     creating client/server applications, and becoming familiar
+                    with lower level features of our operating systems. With
+                    luck, this article will prevent you from going lower than
+                    you want.</p>
+               
+               <h4><FONT COLOR="#000080">Code Availability</FONT></H4>
+               
+               <p>Complete source code is available from
+                    the comp.sources.misc archive, and from the following ftp
+                    sites:</p>
+               <UL><LI> replicant.csci.unt.edu in pub/oleg/tcp_relay.shar</LI>
+                    <LI> ftp.mfi.com in pub/cuj</LI>
+               </UL>
+               
+               
+               
+               <p><I>Oleg Kiselyov works for a small
+                    software development company, Computer &amp; Information
+                    Sciences, Inc., in Denton, TX. He has been programming
+                    professionally for 16 years. He can be reached at
+                    oleg@ponder.csci.unt.edu.</I></p>
+               
+               <p></p> 
+
+<h4><a href="../../../source/1996/may96/kiselyov.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+     </BODY>
+</HTML>

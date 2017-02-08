@@ -1,0 +1,600 @@
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+<TITLE>May 1998/The Learning C/C++urve</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<H2><A href="../tocmay.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+<FONT COLOR="#FF0000">Columns</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">The Learning C/C++urve: Spring Cleaning</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Bobby Schmidt</FONT></H3>
+
+<BLOCKQUOTE>
+<p>From
+template metaprogramming to mea culpas to more arrays, Bobby airs a variety of
+dusty topics.</p></BLOCKQUOTE><hr>
+<BLOCKQUOTE>
+<p><B><I>Copyright &#169; 1998 Robert H. Schmidt</I></B></p>
+<p>As you read this, we are finally enjoying Spring in the Northern Hemisphere.
+Traditionally in the U.S., Spring is when we rid our homes of Winter's detritus
+and clutter. In the spirit of that tradition, I'll clean some of the
+metaphorical gunk out of my column's gutters before continuing on with my array
+foray.</p>
+
+<h4><FONT COLOR="#000080">Compile Time, and the Livin' Is Easy</FONT></H4>
+
+<p>I
+finally read Carlo Pescio's articles on template metaprogramming from the
+February 1997 CUJ and the July-August 1997 C++ Report. As I illustrate below,
+template metaprogramming treats templates as a metalanguage distinct from the
+underlying C++. This metalanguage lets the compiler perform calculations and
+logic that normally would occur at run time. In effect, the compiler itself
+becomes another run-time component of your program, a preprocessor that
+interprets and conceptually "executes" part of your design.<p>
+This is not a new idea. The same relationship exists between the C++ macro
+language and the rest of the C++ language. Your build system translates your
+#defines into "native" C++, then translates that C++ into object and executable
+code <a href="#1">[1]</a>.<p>
+Compared to macro metaprogramming, I see template metaprogramming offering some
+advantages:</p>
+<UL><LI>Because the template metalanguage is closer to the underlying C++
+        language, template metaprograms should be easier to predict, trace, and
+        debug.</LI>
+    <LI>Template arguments are subjected to strong type checking.</LI>
+    <LI>Templates allow recursion and therefore implicit looping.</LI>
+</UL>
+<p>This last point makes the technique novel and interesting. Consider a
+recursion that sums a sequence of whole numbers:</p>
+
+<pre>
+f(x) = x + f(x - 1)
+f(1) = 1
+</pre>
+<p>For
+the case of x = 3, the recursion expands as</p>
+
+<pre>
+f(3) = 3 + f(2)
+     = 3 + 2 + f(1)
+     = 3 + 2 + 1
+     = 6
+</pre>
+<p>In
+a template metaprogram, the recursion base f(x) becomes a generic template,
+while the recursion terminal f(1) becomes a specialization of that template:</p>
+
+<pre>
+//
+//    recursion base
+//
+//    f(x) = x + f(x - 1)
+//
+template&lt;int x&gt;
+struct f
+    {
+    static int const value =
+        x + f&lt;x - 1&gt;::value;
+    };
+     
+//
+//    recursion terminal
+//
+//    f(1) = 1
+//
+struct f&lt;1&gt; // specialization of generic f
+    {
+    static int const value = 1;
+    };
+     
+//
+//    example calculation
+//
+int const y = f&lt;3&gt;::value; // or y = 6
+</pre>
+<p>(I
+use the keyword struct here instead of my normal class for brevity only.)</p>
+
+<h4><FONT COLOR="#000080">How It All Works</FONT></H4>
+
+<p>To
+evaluate the expression f&lt;3&gt;::value, the compiler expands the generic
+template&lt;int x&gt; struct f instantiated with x = 3:</p>
+
+<pre>
+struct f&lt;3&gt;
+    {
+    static int const value =
+        3 + f&lt;3 - 1&gt;::value;
+    }
+</pre>
+<p>This
+expansion references f&lt;3 - 1&gt;, a.k.a. f&lt;2&gt;, requiring expansion of
+struct f instantiated for x = 2:</p>
+
+<pre>
+struct f&lt;3&gt;
+    {
+    static int const value =
+        3 + f&lt;2&gt;::value;
+    }
+     
+struct f&lt;2&gt;
+    {
+    static int const value =
+        2 + f&lt;2 - 1&gt;::value;
+    }
+</pre>
+<p>This
+second expansion references f&lt;2 - 1&gt; or f&lt;1&gt;, which has already
+been specialized:</p>
+
+<pre>
+struct f&lt;3&gt;
+    {
+    static int const value =
+        3 + f&lt;2&gt;::value;
+    }
+     
+struct f&lt;2&gt;
+    {
+    static int const value =
+        2 + f&lt;1&gt;::value;
+    }
+     
+struct f&lt;1&gt;
+    {
+    static int const value = 1;
+    }
+</pre>
+<p>The
+compiler then "runs" this template metaprogram, collapsing the "calls" down
+to</p>
+
+<pre>
+struct f&lt;3&gt;
+    {
+    static int const value =
+        3 + f&lt;2&gt;::value;
+    }
+     
+struct f&lt;2&gt;
+    {
+    static int const value = 2 + 1;
+    }
+</pre>
+<p>and
+finally</p>
+
+<pre>
+struct f&lt;3&gt;
+    {
+    static int const value = 3 + 2 + 1;
+    }
+</pre>
+<p>Given
+a reasonably optimizing compiler, the original statement</p>
+
+<pre>
+int const y = f&lt;3&gt;::value;
+</pre>
+<p>is
+thus equivalent to</p>
+
+<pre>
+int const y = 3 + 2 + 1;
+</pre>
+
+<h4><FONT COLOR="#000080">My Take</FONT></H4>
+
+<p>Note
+that the resulting C++ program does not calculate the sum at run time; instead
+the compiler calculates the sum at compile time. So the program uses the
+computing abilities of the compiler with no cost to its own executing code.
+This offers great utility to resource-constrained environments such as embedded
+systems &#151; programs in those environments can off-load part of their processing
+to the compiler.<p>
+I must admit that these techniques are a clever use of templates, taking them
+far beyond their normal utility as generic containers and algorithms.
+Unfortunately, metaprogramming relies on implementation limits not specified by
+the C++ Standard, and therefore must be considered non-portable.</p>
+<p>Example #1: for how high a starting value of x will the above
+metaprogram succeed? That is, how many levels of template recursion must a
+compiler handle? The answer is left up to each implementation. You hope your
+compiler can handle a large number of nested expansions, thereby maximizing the
+domain of x.</p>
+<p>Example #2: what if you accidentally try to expand f&lt;-1&gt;? The
+recursion could then spin off forever, since the terminal f&lt;1&gt; would
+never be invoked. In practice, the compiler should at very worst stop when it
+tries to expand beyond f&lt;INT_MIN&gt;. Unlike in Example #1, here you hope
+your compiler's limit of nested expansions is small, avoiding run-away
+compilation.<p>
+Even with these caveats, I think template metaprogramming warrants serious
+consideration as an unintended but useful addition to the C++ design tool set.
+If these techniques interest you, I encourage you to read Pescio's two
+articles, plus the additional material he cites in his footnotes.</p>
+
+<h4><FONT COLOR="#000080">Meyers...</FONT></H4>
+
+<p>In
+March I took such pain to spell out Scott Meyers' NULL replacement, only to
+publish a glaring error which of course Scott found first. In the middle column
+of page 79, change</p>
+
+<pre>
+operator char() const;
+operator int() const;
+operator unsigned() const;
+</pre>
+<p>to</p>
+
+<pre>
+operator char *() const;
+operator int *() const;
+operator unsigned *() const;
+</pre>
+<p>For
+reasons completely unknown, I submitted my original draft of that March column
+with many of the *s missing. The CUJ editors found most of my errors, but these
+slipped by all of us.</p>
+
+<h4><FONT COLOR="#000080">....And Myers</FONT></H4>
+
+<p>I'm
+thrilled to announce that C++ Committee member Nathan Myers has revealed
+himself as a Diligent Reader. For those unfamiliar with Nathan, know that he
+cites himself as "to blame for one new keyword in the core language: explicit
+<a href="#2">[2]</a>." In a touching display of professional restraint and fraternity, Nathan
+sent this gentle note to the editors of CUJ:<p>
+[This is for the "we have mail" column in CUJ. God Help Me.]<p>
+In the August 1997 issue, Bobby Schmidt's column "Me and My Arrow," discussing
+auto_ptr&lt;&gt;, explained the Standard C++ keyword "explicit." Unfortunately,
+the explanation may confuse your readers because it, and his examples, were
+wrong in almost every detail.<p>
+A concise and correct explanation of the feature may be found on Sean
+Corfield's web pages, &lt;http://www.ocsltd.com/&gt;, under /c++/cppexpl.html.
+My only comment on the rest of the column is "caveat emptor."<p>
+Ouch.<p>
+Oh now, don't fret, it's only a flesh wound. Besides, I'm sure Nathan holds
+only your best interests at heart. Having possibly erred now and again in his
+professional life, Nathan would surely not cast stones at a fellow traveller.
+Surely not.<p>
+It turns out that Nathan is right and I was wrong, at least in part. At the
+time I crafted my example, I did not have a compiler available that supported
+the explicit keyword, and clearly misread the C++ Standard's intent. Or maybe I
+read the C Standard by mistake.<p>
+Here's the real story: for types From and To defined as</p>
+
+<pre>
+class From
+    {
+public:
+    From();
+    };
+     
+class To
+    {
+public:
+    explicit To(From const &amp;);
+    };
+</pre>
+<p>the
+To constructor cannot be called implicitly by</p>
+
+<pre>
+From from;
+To to = from; // error
+</pre>
+<p>Instead
+the conversion must be made explicit (hence the keyword name), either with the
+so-called "direct initialization" syntax:</p>
+
+<pre>
+To to1(from);      // OK, direct initialization syntax
+To to2 = To(from); // ditto
+</pre>
+<p>or
+with a cast:</p>
+
+<pre>
+To to3 = (To) from;             // OK, explicit cast
+To to4 = static_cast&lt;To&gt;(from); // ditto
+</pre>
+<p>By
+forcing the conversion to be more obvious, such a mechanism prevents unintended
+creation of To objects. This has special merit in functions like</p>
+
+<pre>
+void func(To const &amp;);
+</pre>
+<p>where</p>
+
+<pre>
+func(from); // error
+</pre>
+<p>fails
+&#151; the compiler will not make the implicit constructor call to mint a temporary
+To object. You must instead make the construction explicit and overt by
+something like</p>
+
+<pre>
+func(To(from)); // OK
+</pre>
+<p>For
+the official score on all this, let your gaze fall upon section 12.3.1
+paragraph 2 of the C++ Standard. Or, as Nathan suggests, you can hit the web
+pages cited above.<p>
+Regarding Nathan's "caveat emptor" comment, I once again remind any and all
+that I'm not trying to publish shrink-wrap quality code here. My goal is to
+explore different design decisions and their possible consequences. Good design
+does not spring fully formed like Athena from the head of Zeus. It is instead
+the net result of many trials and many errors.<p>
+Unlike a professional photographer, I don't hide my bad shots in the darkroom.
+You get to see all the design possibilities that occur to me, weak and strong
+alike. I much prefer showing you the reality of the design journey, instead of
+a sanitized end result that makes my solution look infallible and leaves you
+wondering how it got that way.</p>
+
+<h4><FONT COLOR="#000080">SD '98 Redux</FONT></H4>
+
+<p>In
+contrast to last year's debacle in DC, the Software Development Conference in
+San Francisco this February proved quite enjoyable. CUJ's Marc Briand treated
+us to dinner at Rumpus; later, that mystery guy Stan Kelly-Bootle shouted us a
+nightcap at The View, the 39th-floor pub atop the downtown Marriott. Say what
+you will about the soggy San Francisco weather this winter &#151; the combination
+of sinister clouds, full moon, and art deco hotel architecture made for a
+luscious moody scene straight from Batman.<p>
+Within the show itself, I noted quite a few Diligent Readers attending my
+talks. Dan Saks and Scott Meyers had SRO crowds as well, showing that Java may
+be fashionable, but C++ is stylish. I certainly detected little of the Java
+rah-rah from last year's San Francisco conference, when the Java One and
+Software Development shows co-mingled.<p>
+During a panel discussion, Bjarne Stroustrup suggested that C++ beginners could
+learn string and vector before pointers and arrays. Some of us find this an
+unsavory teaching recipe, especially given the way most compilers diagnose
+template expansion errors. I also have to wonder why, after so many years of
+purposely building C++ atop C's frame, we are now supposed to act as if that
+frame doesn't exist when first teaching the language.<p>
+All in all, it was a fun show, and I very much look forward to returning. The
+show dates keep jumping all over the calendar &#151; while in February this year,
+they are in May next year (the week of the 9th). Dan Saks and I still want to
+write a talk we can deliver together, even in a mock adversary
+Point-Counterpoint style. If you have any suggestions for such a talk, let me
+know.</p>
+
+<h4><FONT COLOR="#000080">On with the Show</FONT></H4>
+
+<p>Last
+month I left you with template Array (shown in <A href="list1.htm">Listing 1</a>)
+ featuring both
+operator[] and operator T *. At the time I made a big deal about defining the
+index type of operator[] as size_t. Since writing that column, I've discovered
+that size_t may not be the best answer, thanks to an interesting facet of C++
+overload resolution.<p>
+Given the declaration</p>
+
+<pre>
+int a[10];
+</pre>
+<p>how
+do you think the compiler interprets the expression</p>
+
+<pre>
+int x = a[3];
+</pre>
+<p>Your
+first thought may be "the compiler applies the built-in [] operator to a,
+indexing to the 3rd element." But keep in mind that, in many contexts, the name
+of an array (a here) decays to a pointer to its first element (&amp;a[0]). So
+another possible interpretation is "the compiler converts a to the pointer
+&amp;a[0], then applies the built-in [] operator to produce (&amp;a[0])[3]."<p>
+Unless you happen to know how the Standard defines array behavior, you probably
+can't tell which path the compiler takes &#151; the subscripting nets out the same
+either way. But if we change the statements to</p>
+
+<pre>
+Array&lt;int, 10&gt; a;
+int x = a[3];
+</pre>
+<p>life
+is not so obvious. The compiler has two apparent paths:<p>
+<UL><LI>Apply operator[] to a directly, resulting in (a.operator[])(3). To match the
+        signed int argument 3 to the unsigned size_t parameter of operator[], the
+        compiler must convert the argument's  type.<p>
+    <LI>Convert a to a real pointer first via operator int *, then apply the
+        built-in [] to that pointer, resulting in (a.operator int  *())[3].</p>
+</UL>
+<p>On each path, the compiler needs to make some conversion from the original
+a[3] expression: either a conversion of the operator[] argument type, or a
+conversion of a into a pointer. Which conversion does the compiler choose?</p>
+
+<h4><FONT COLOR="#000080">Breaking the Tie</FONT></H4>
+
+<p>According
+to section 13.5.5 of the C++ Standard:</p>
+<p><i><blockquote>...a subscripting expression x[y] is interpreted as
+x.operator[](y) for a class object x of type T if T::operator[](T1) exists and
+if the operator is selected as the best match function by the overload
+resolution mechanism...</i></blockquote></p>
+<p>We next must examine the "overload resolution mechanism" to see if
+operator[] is in fact the best match. This mechanism is defined in section
+13.3.3's thickly worded rules for deciding tie breakers. The rules are
+mind-numbing in their complexity, and I am honestly amazed by compiler writers
+who can figure these rules out and properly implement them.<p>
+I'll level with you: the rules are so obtuse, I can't immediately tell which
+conversion is the best match. I can tell you that different compilers reach
+different conclusions. Of the systems available to me, the results are:</p>
+<UL><LI>Metrowerks CodeWarrior Pro 2 for Mac OS, and GNU C++ 2.7.2, choose
+        operator[].</LI>
+    <LI>Microsoft Visual C++ 5.0 for Windows, and the Edison Design Group's C++
+        front-end for Windows, reckon neither conversion  wins. Each gives a
+        compile-time diagnostic.</UL>
+</UL>
+<p>To paraphrase Mark Knopfler, "two translators claim they're conforming &#151;
+one of them must be wrong <a href="#3">[3]</a>." Rather than spend years analyzing the Standard,
+I'll instead change Array so that one operator is the clear winner.
+Possibilities:</p>
+<UL><LI>Remove operator[].</LI>
+    <LI>Remove operator T *.</LI>
+    <LI>Change the expression a[3] to a[3U].</LI>
+    <LI>Change the parameter type of operator[] from size_t to ptrdiff_t.</LI>
+</UL>
+<p>This last change is actually my recommended solution, and requires some
+explanation.</p>
+
+<h4><FONT COLOR="#000080">ptrdiff_t</FONT></H4>
+
+<p>ptrdiff_t
+is defined in the C++ Standard thusly:</u></b></p>
+<p><i><blockquote>When two pointers to elements of the same array object are
+subtracted, the result is the difference of the subscripts of the  two array
+elements. The type of the result is an implementation-defined signed integral
+type; this type shall be  the same type that is defined as ptrdiff_t in the
+&lt;cstddef&gt; header...</i></blockquote></p>
+<p>Because ptrdiff_t is a signed type, the subscript 3 in a[3] will match it.
+More generally, for an array of any length &lt;= the largest ptrdiff_t value, a
+ptrdiff_t will always be big enough to hold the array's index. The only problem
+I see comes if an array's length is too big to fit in a signed ptrdiff_t, but
+does fit in an unsigned size_t. In that case, some of the array's indices will
+also exceed the limits of a ptrdiff_t.<p>
+But really now, can an array in a conforming program be so long that ptrdiff_t
+can't hold its length? The C++ Standard, from what I can tell, makes no
+requirements on the largest size object an implementation must guarantee to
+support. However, the (C language) C9X Standard, in the section 5.2.4.1 list of
+translation limits, requires a conforming implementation to support "65,535
+bytes in an object (in a hosted environment only)."<p>
+If we chose to observe this same limit for C++, the largest single C++ array
+will be 65,535 bytes long. If the array's elements are each a single byte, the
+longest C++ array is then 65,535 elements. Can a ptrdiff_t safely handle index
+values up to 65,535?<p>
+Assume you have the maximum sized array</p>
+
+<pre>
+char a[65535];
+</pre>
+<p>According
+to the C++ Standard excerpt above, ptrdiff_t must be big enough to handle both
+the expressions &amp;a[65534] - &amp;a[0] and &amp;a[0] - &amp;a[65534], the
+differences between the boundaries of a. These difference range from -65534 to
++65534, requiring at least 17 bits.<p>
+Net result: if your system's ptrdiff_t is a signed integer type at least 17
+bits long, and you constrain your array objects to a maximum size of 65,535
+bytes, you can safely index any array with ptrdiff_t.<p>
+The modified Array definition becomes</p>
+
+<pre>
+template&lt;class T, ptrdiff_t N&gt;
+class Array
+    {
+    // ...
+public:
+    T &amp;operator[](ptrdiff_t const i)
+        {
+        return array_[i];
+        }
+    T const &amp;operator[]
+         (ptrdiff_t const i) const
+        {
+        return array_[i];
+        }
+    };
+</pre>
+<p>With
+this Array, all four of the earlier test compilers choose operator[] without
+ambiguity.</p>
+
+
+<h4><FONT COLOR="#000080">Copy Members</FONT></H4>
+
+<p>My
+final Array considerations this month are the copy constructor and copy
+assignment members left stubbed-out last month. Real arrays have no such
+operations &#151; you can't compile code like</p>
+
+<pre>
+int a[10];
+int b[10];
+a = b;         // error
+int c[10] = a; // error
+</pre>
+<p>This
+presents a real design dilemma. If we want to emulate real arrays, we must
+disable these two operations:</p>
+
+<pre>
+template&lt;class T, ptrdiff_t N&gt;
+class Array
+    {
+    // ...
+private:
+    Array(Array const &amp;);
+    Array &amp;operator=(Array const &amp;);
+    };
+</pre>
+<p>so
+that</p>
+
+<pre>
+Array&lt;int, 10&gt; a;
+Array&lt;int, 10&gt; b;
+a = b;                // error
+Array&lt;int, 10&gt; c = a; // error
+</pre>
+<p>won't
+compile. Unfortunately, this prevents Array objects from acting like most other
+C++ objects. The only way to then copy one Array to another is by something
+like</p>
+
+<pre>
+Array&lt;int, 10&gt; a, b;
+for (ptrdiff_t i(0); i &lt; sizeof(a); ++i)
+    a[i] = b[i];
+</pre>
+<p>For
+now, I'll stick with my strict emulation of real arrays, and disable Array
+copying. The resulting full Array definition appears as <A href="list2.htm">Listing 2</a>.
+</p>
+
+<h4><FONT COLOR="#000080">Up Next</FONT></H4>
+
+<p>Next
+month I'll run into other Array design difficulties I can't dismiss so easily.
+In fact, by the end of June's column, Array should drop some properties of real
+arrays in order to gain arguably more valuable properties of typical C++
+container objects.</u></b></p>
+<p>To foreshadow June's discussion, I leave you with this thought problem:
+given Array&lt;int, 10&gt; a, ponder what should be the correct type and value
+of &amp;a.</p>
+
+<h4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>1.
+See section 2.1 of the C++ Standard, or section 5.1.1.2 of the C9X Standard,
+for the canon of these translation phases.<p>
+<a name="2"></a>2. Quoted from &lt;http://www.cantrip.org/cpp.html&gt;.<p>
+<a name="3"></a>3. From the song Industrial Disease by Dire Straits.
+</p>
+
+<p><i>Bobby Schmidt is a freelance writer, teacher, consultant, and programmer.
+He is also a member of the ANSI/ISO C standards committee, an alumnus of
+Microsoft, and an original "associate" of (Dan) Saks &amp; Associates. In other
+career incarnations, Bobby has been a pool hall operator, radio DJ, private
+investigator, and astronomer. You may summon him at 14518 104th Ave NE Bothell
+WA 98011; by phone at +1-425-488-7696, or via Internet e-mail as
+rschmidt@netcom.com.
+</i></p>
+
+<h4><a href="../../../source/1998/may98/schmidt.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</body></html>

@@ -1,0 +1,254 @@
+<HTML>   
+     <HEAD>
+<TITLE>June 1999/Optimizations That Aren't (In a Multithreaded World)</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocjun.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Optimizations That Aren't (In a Multithreaded World)</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Herb Sutter</FONT></H3>
+
+
+<BLOCKQUOTE>
+<p>An "obvious" optimization can really lose ground when thread safety has to be ensured as well.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<p>Do you write multithreaded programs? Chances are that you do, or work in a group where others do. Multithreading is becoming more popular because it can make our programs more responsive, more efficient, and more scalable on multiprocessor machines. But even if you write only single-threaded programs, keep reading. If you work in a company (or share libraries) with other projects that are multithreaded, you're probably using multithread-safe builds or versions of some shared libraries. What I discuss here probably affects you today.</p>
+<p>The point of this article is that some widely-used library optimizations are effective in single-threaded mode, but can actually degrade performance if the library is built for possible multithreaded use. Here I'm talking about common optimizations that you may be using already, even if you don't know it, because they're present deep inside many widely used libraries. Here's more bad news: often the performance impact is severe, far heavier than it needs to be, even in some of today's most popular commercial libraries. Why? Because there's often more than one way to make code thread-safe, and some library writers pick methods that work all the time but degrade performance in specific situations. In particular, certain popular libraries still use general-purpose constructs like critical sections when more efficient alternatives would do &#151; it makes a big difference.</p>
+<p>And here's the worst news of all: above I wrote "if the library is built for possible multithreaded use." This means the degradation can affect you even if your program happens to be single-threaded. In this article, I explain one type of optimization, commonly employed in commercial libraries, that can turn out to be a false optimization; I also suggest an easy way to detect it. Using similar techniques, you can determine whether there are similar hidden pitfalls in the libraries you're using now. If you are affected, you'll also have the information you need to report the situation to your library vendor so they can correct the problem.</p>
+<p>Below I illustrate the general problem with a specific example: a string class that uses the COW (Copy On Write) optimization. But please note:</p>
+
+<UL><LI>COW isn't the only culprit. Everything I discuss applies to any transparent optimization involving two or more objects that can share information or state behind the scenes, where client code can't see. This includes, but is not limited to, shared implementation optimizations like COW.</LI>
+<LI>Strings aren't the only culprit. Optimizations like these can and have been used for many expensive-to-copy data structures, including collections and containers.</LI></UL>
+
+<p>My example code is in C++, but this discussion applies to any language. One reason I'm writing about this topic is that Standard C++ strings have acquired an undeserved "slow and inefficient" reputation in some circles. True, there certainly are needlessly inefficient implementations of the C++ <B>string</B> class on the market today; but I want to emphasize the "needlessly" part. There are high-quality implementations as well, and I want to show you how to tell them apart.</p>
+
+<h4><FONT COLOR="#000080">Introducing a Plain Old String</FONT></H4>
+
+<p>First, I show code examples that use a "plain old string," meaning a string class that doesn't perform any COW (or other shared-information) optimizations under the covers. Whenever you copy or assign this kind of string, the target string physically copies the source string's contents into its own internal buffer, growing its internal buffer if necessary. As soon as the copy or assignment operation is complete, you have two separate and independent string objects. The purpose of these examples is to show what client code must do to use such a string class safely in single- and multithreaded programs.</p>
+
+<h4><FONT COLOR="#000080">Using a Plain Old String: Single-Threaded</FONT></H4>
+
+<p>Say that we want our program to keep track of the last error message we encountered, and automatically decorate it with the time the message was generated. We might implement it using a global string value with helper functions to get and set the state:</p>
+
+<pre>
+// Example 1: A simple error
+// recording subsystem
+//
+String err;
+int count = 0;
+
+String GetError() {
+   return err;
+}
+
+String SetError(const String&amp; msg) {
+   err = AsString( ++count ) + ": ";
+   err += msg;
+   err += " (" + TimeAsString() + ")";
+  return err;
+}
+</pre>
+
+<p>As long as our program is single-threaded, we never have to worry about <B>GetError</B> or <B>SetError</B> being called at the same time on different threads, and all is well. For example, given:</p>
+
+<pre>
+String newerr = SetError( "A" );
+newerr += " (set by A)";
+cout &lt;&lt; newerr &lt;&lt; endl;
+// ...later...
+//
+newerr = SetError( "B" );
+newerr += " (set by B)";
+cout &lt;&lt; newerr &lt;&lt; endl;
+</pre>
+
+<p>The output would be something like:</p>
+
+<pre>
+1: A (12:01:09.65) (set by A)
+2: B (12:01:09.125) (set by B)
+</pre>
+
+<h4><FONT COLOR="#000080">Using A Plain Old String: Multithreaded</FONT></H4>
+
+<p>Although you may already have considerable expertise in thread-safety, please skim this section anyway; it forms the basis for the more detailed examples later on.</p>
+<p>Things are a bit different if our program is multithreaded. Functions like <B>GetError</B> and <B>SetError</B> might well be called at the same time from different threads. In that case, calls to these functions could be interlaced, and they will no longer work properly as originally written above. For example, consider what might happen if the following two pieces of code could be executed at the same time:</p>
+
+<pre>
+// thread A
+String newerr = SetError( "A" );
+newerr += " (set by A)";
+cout &lt;&lt; newerr &lt;&lt; endl;
+
+// thread B
+String newerr = SetError( "B" );
+newerr += " (set by B)";
+cout &lt;&lt; newerr &lt;&lt; endl;
+</pre>
+
+<p>There are many ways this can go wrong. Here's one: say that thread A is running and, inside the <B>SetError( "A" )</B> call, gets as far as setting <B>err</B> to <B>"1: "</B> before the operating system decides to preempt it and switch to thread B. Thread B executes completely, then thread A is reactivated and runs to completion. The output would be:</p>
+
+<pre>
+2: B (12:01:09.125) (set by B)
+2: B (12:01:09.125)A (12:01:09.195) (set by A)
+</pre>
+
+<p>It's easy to invent situations that produce even stranger output <a href="#1">[1]</a>, but in reality you'd be lucky to get anything this sensible. A thread's execution can be preempted anywhere &#151; including right in the middle of a <B>String</B> operation, such as <B>String::operator+=</B> itself. You're far more likely to see just intermittent crashes as <B>String</B> member functions on different threads attempt to update the same <B>String</B> object at the same time. (If you don't see this problem right away, try writing those <B>String</B> member functions and see what happens if their execution gets interleaved.)</p>
+<p>The way to correct this is to make sure only one thread can be working with the shared resources at a time. We prevent the functions from getting interlaced by "serializing" them with a critical section or mutex or similar device. But who should be responsible for doing the serialization? There are two levels at which we could do it. The main tradeoff is that the lower the level at which the work is done, the more locking needs to be done, and often needlessly. That's because the lower levels don't know whether acquiring a lock is really necessary for a given operation and so they have to do it every time, just in case. Excessive locking is a major concern because acquiring a mutex lock is typically an expensive operation on most systems, approaching or surpassing the cost of a general-purpose dynamic memory allocation.</p>
+<p>Here are our options:</p>
+<p>1.  (<I>Wrong</I>) Do locking within <B>String</B> member functions. With this approach, the <B>String</B> class itself assumes responsibility for the thread safety of all its objects. This is a bad choice for two (probably obvious) reasons: first, it doesn't solve the problem because it's at the wrong granularity. This method does ensure that <B>String</B> objects won't get corrupted (that is, they're still valid <B>String</B> objects as far as <B>String</B> is concerned). However, it can't do anything about the <B>SetError</B> function's interleaving: the <B>String</B> objects can still take on unexpected values as illustrated above. These values are not valid error messages as far as the Error module is concerned. Second, this method can seriously degrade performance because the locking would be done far more frequently than necessary &#151; at least once for every mutating <B>String</B> operation, and possibly even for nonmutating operations!</p>
+<p>2.  (<I>Right</I>) Do locking in the code that owns/manipulates a <B>String</B> object. This is always the correct choice. Not only is locking done only when it's really needed, but it's done at the right granularity. We lock "an operation," at the point where the operation is carried out. We don't lock a low-level <B>String</B> member function, but a high-level Error module message-formatting function. Further, the extra code to do the serialization of the error string is isolated in the Error module.</p>
+<p>3.  (<I>Problematic</I>) Do both. In the example so far, Option 2 alone is sufficient. Option 1 is so obviously a bad choice that you might be wondering why I'd even mention it. The reason is simple: later in this article I demonstrate why certain "optimizations" force us to make that performance-degrading choice and do all locking inside the <B>String</B> class. But because Option 1 by itself doesn't solve the whole problem, we may end up doing it, not instead of, but in addition to, Option 2. That's just plain bad news all around.</p>
+<p>In our example, implementing Option 2 means that the Error subsystem should take responsibility for serializing access to the <B>String</B> object that it owns. Here's a typical way to do it:</p>
+
+<pre>
+// Example 2: A thread-safe error recording subsystem
+//
+String err;
+int count = 0;
+CriticalSection cs; // to protect the err and count values
+String GetError() {
+   cs.Lock();	//--enter mutual exclusion block------
+   String ret = err;
+   cs.Unlock();	//--exit mutual exclusion block-------
+   return ret;
+}
+String SetError( const String&amp; msg ) {
+   cs.Lock();	//--enter mutual exclusion block------
+   err = AsString( ++count ) + ": ";
+   err += msg;
+   err += " (" + TimeAsString() + ")";
+   String ret = err;
+   cs.Unlock();	//--exit mutual exclusion block-------
+   return ret;
+}
+</pre>
+
+<p>Now all is well, because each function body is atomic as far as <B>err</B> and <B>count </B>are concerned and no interlacing will occur &#151; <B>SetError</B> calls are automatically serialized so that their bodies will not overlap at all.</p>
+<p>For more details about threads, critical sections, semaphores, race conditions, and related topics, see any good text on operating systems or multithreaded programming. For the rest of this article, I'll assume you know just the basics.</p>
+
+<h4><FONT COLOR="#000080">Adding COW "Optimization"</FONT></H4>
+
+<p>Copy-on-write (COW), a form of lazy copy, is probably the most well-known string optimization. COW applies to more than strings, but the motivation for using it with strings is straightforward: copying or assigning a plain old string usually involves a general-purpose dynamic memory allocation, which is typically an expensive operation (compared to, say, a function call), and doing the work of copying the contents of the string. At the same time, client code often makes copies of string objects, but then never modifies the copies. For example, client code can make a copy of a string object, perform some read-only operations such as printing it out or calculating its length, and then destroy the copy. When strings are used in this way, it seems wasteful to have made distinct copies only to find out later that they weren't needed.</p>
+<p>Unlike a plain old string, whenever you copy or assign a COW string, the target string won't immediately make a copy of the source string's contents. Instead, the target string will just point itself at the source string's internal buffer and continue sharing that internal representation for as long as possible. Read-only operations on either source or target string won't care, after all. Only when a possibly mutating operation is attempted on one of the strings will the string finally be forced to make a physical copy &#151; called a "lazy copy" because our lazy string does work only when it needs to. Although the rationale behind COW is easy to see, COW is not always effective, even in a single-threaded program. Whether it's really an optimization depends heavily on how string objects are used. See Rob Murray's discussion and empirical measurements in <I>C++ Strategies and Tactics</I> for more information about COW in the real (but single-threaded) world <a href="#2">[2]</a>.</p>
+<p>The real fun starts when you move to a (possibly) multithreaded environment. As it turns out, using COW can exact an unexpected performance penalty if thread safety is important, and an unnecessarily severe one in some popular commercial implementations.</p>
+
+<h4><FONT COLOR="#000080">Using a COW String: Multithreaded</FONT></H4>
+
+<p>Now let's return to our friend, the Error subsystem. Here's the problematic client code again:</p>
+
+<pre>
+// thread A
+String newerr = SetError( "A" );
+newerr += " (set by A)";
+cout &lt;&lt; newerr &lt;&lt; endl;
+
+// thread B
+String newerr = SetError( "B" );
+newerr += " (set by B)";
+cout &lt;&lt; newerr &lt;&lt; endl;
+</pre>
+
+<p>As before, we need to apply some sort of serialization (using, for example, a mutex lock) to avoid corrupting the Error module's internal strings and produce reasonable output. Again, there is the question of who should be responsible for doing the serialization. Consider the two levels again:</p>
+<p>1.  Do locking within <B>String</B> member functions. As before, this solution is at the wrong granularity and it can seriously degrade performance as a result of excessive mutex locking. What's different from before, however, is that this time this option is necessary anyway (see below).</p>
+<p>2.  Do locking in the code that owns/manipulates a <B>String</B> object. Again, this is necessary, otherwise we haven't solved the <B>SetError</B> interleaving problem.</p>
+<p>3.  (<I>Necessary</I>) Do both. This time the story isn't so good: Option 2 is necessary, but we have to do Option 1 too because the code that owns/manipulates a COW string can't enforce serialized access to its representation. Specifically, client code alone can never lock the right strings in the right way because it can't know which visible string objects might be sharing a representation at any given time.</p>
+<p>Look again at the thread-safe Error system code from Example 2. The locking that it does is still necessary but is now insufficient, because even though we serialize all access to the internal <B>err</B> error string object, the client threads are taking and manipulating copies of that object, and those copies might share representation. For example, thread A could be safely serialized inside its <B>SetError</B> call and manipulating the Error module's <B>err</B> string, at the same time as thread B (already past its safely serialized <B>SetError</B>) is appending to its <B>newerr</B> string. Note that <B>B</B>'s <B>newerr</B> string began life as a copy of the <B>err</B> string <a href="#3">[3]</a>. There's nothing obvious linking the internal <B>err</B> string and <B>B</B>'s external <B>newerr</B> string &#151; in fact, the Error subsystem has no way of even knowing any of the <B>newerr</B> strings exist, and vice versa. But suppose the two strings happen to be sharing representation, which is likely here. Now two threads could both be attempting to execute <B>String</B> member functions on the same string representation, even though everything outside <B>String</B> itself is safely serialized <a href="#4">[4]</a>.</p>
+<p>So it is not enough for the Error subsystem to perform its usual duty of care. In addition, COW <B>String</B> objects must always protect themselves. This always forces the string class to incur some overhead, but in practice the overhead can be disastrously expensive on some implementations. One developer I've heard from recently reports that he has a single-threaded test program which exercises his (popular) vendor's COW-based library features. The program executes in 18 to 20 seconds when the library is compiled for multithreaded use, and 0.25 seconds if it's compiled for single-threaded use. (The difference is greater than the numbers imply, because both times include program startup.) It's important to note here that this developer's test program was only single-threaded, not multithreaded, but because the library had been compiled for possible multithreaded use the problem affected him anyway because the library code had to protect itself against possibly-multithreaded use. If 20 programs share a library, and only one program is multithreaded, the library must be built for multithreaded use &#151; and any problem will affect all 20 programs.</p>
+
+<h4><FONT COLOR="#000080">Mild vs. Severe Inefficiencies</FONT></H4>
+
+<p>I've shown that a thread-safe COW implementation must always incur serialization overhead, but the question is how much. There's still a vast difference between "necessary" and "indefensible" overhead. To cut a (very) long story short, it turns out that a thread-safe COW implementation can be written in such a way that the only data to which access need be serialized is the reference count itself <a href="#5">[5]</a>. Implementations that serialize just the reference count can often be made much more efficient than general-purpose thread-safe solutions. Since the reference count is usually an integer, you usually don't need a mutex or critical section (which would be unavoidable with large data structures) to serialize access to it. You can get away with using the following atomic integer operations if they are available on your system: atomic increment, atomic decrement-and-test, and atomic comparison. These atomic integer operations still incur overhead because they're necessarily slower than plain integer operations. But they're still much faster than a more sophisticated construct like a critical section or a mutex. Often they can be implemented in a single native assembler instruction, or a short series of instructions.</p>
+<p>To give you a feel for the difference, I present alternative implementations for one member function of a C++-based <B>String</B> class. The <B>operator[]</B> member function returns a reference to a character at a given offet in the string <a href="#6">[6]</a>. A plain (non-COW) implementation would look something like the following, where <B>buf_</B> is a pointer to the string's representation:</p>
+
+<pre>
+// Plain (non-COW) operator[]
+//
+char&amp; String::operator[]( size_t n ) {
+    return *(buf_+n);
+}
+</pre>
+
+<p>A COW implementation looks pretty much the same, except that it must first ensure that the representation is unshared:</p>
+
+<pre>
+// COW operator[]
+//
+const char&amp; String::operator[]( size_t n ) {
+  EnsureUnique();
+  return *(data_-&gt;buf+n);
+}
+</pre>
+
+<p>(In <B>operator[]</B>'s case, there are also reasons why the function should return a non-const reference and why the representation should also be marked unshareable, but that's not directly relevant here so I'll omit it; see GotW #45 <a href="#5">[5]</a> for those details.)</p>
+<p>The key to the operation of all the different flavors of COW is what happens inside <B>EnsureUnique</B>. <A HREF="fig1.htm">Figure 1</A> shows a couple simplified implementations, which do not show "unshareable" flags and more sophisticated operations. In these examples <B>data_</B> points to the internal (and possibly shared) representation, which includes the reference count, <B>refs</B>. COW will always add overhead, especially, if it's to be made thread-safe, but these examples should show why there is no reason to use something as inefficient as a critical section when atomic integer operations alone will do.</p>
+
+<h4><FONT COLOR="#000080">Some Actual Numbers</FONT></H4>
+
+<p>The difference between "necessary" and "indefensible" overhead can be profound. Here's an example taken from GotW #45's test results. (The entire test harness source code can be downloaded from the GotW #45 page, or from the <I>CUJ</I> ftp site, if you'd like to try it on your system.) The particular test represented here makes copies of 50-character strings in a tight loop; one-third of the copies are never modified (the classic case for COW optimization, where the deep copy is entirely avoided), and the rest of the copied strings are modified exactly once each. Here are the results for five flavors of the <B>String</B> class (test code compiled using MSVC 5.0 SP3, running on a PentiumII under Windows98 &#151; smaller numbers are better):</p>
+
+<pre>
+String
+Implementation
+Strategy          Elapsed Time
+---------------   ----------------
+Plain             1726 msec
+Plain_FastAlloc    642 msec
+COW_Unsafe        1629 msec
+COW_AtomicInt     1949 msec
+COW_CritSec      10660 msec
+COW_Mutex        33298 msec
+</pre>
+
+<UL><LI>"Plain" is a plain non-COW string.</LI>
+<LI>"Plain_FastAlloc" is the same as Plain but using an optimized memory allocator instead of the default MSVC <B>new</B> allocator. (Note, however, that the latter is very good in its own right.)</LI>
+<LI>"COW_Unsafe" is an efficient but thread-unsafe COW string.</LI>
+<LI>"COW_AtomicInt" is an efficient thread-safe COW string that uses atomic integer operations for serializing access to the reference count.</LI>
+<LI>"COW_CritSec" is the same as AtomicInt but uses critical section locks instead of atomic integer operations.</LI>
+<LI>"COW_Mutex" is the same as AtomicInt but uses mutex locks instead of atomic integer operations.</LI></UL>
+
+<p>This is just one scenario, of course. It may or may not be typical of the way your program uses strings. My main purpose in sketching these results is to illustrate the following:</p>
+
+<UL><LI>Thread-safe COW is necessarily less efficient than thread-unsafe COW. In this test case, the thread safety overhead made the difference between COW's being an optimization and its being a pessimization.</LI>
+<LI>Poorly-implemented thread-safe COW (specifically COW_CritSec, which is implemented the same way as a certain popular string library) incurs a severe performance penalty. Note: If your platform lacks atomic integer operations, then you have no choice but to use a more heavyweight solution and COW becomes a severe pessimization for nearly all cases.</LI>
+<LI>It's not wrong to want to optimize, but here a far better (and simpler) optimization is to optimize the memory allocation, not the copying. Note also that optimizing the allocator has no thread safety implications. Moral: Don't guess. Measure. Optimize only after measuring where your bottlenecks really are. (Of course, you could always choose to perform both optimizations, but development time is never infinite; which one gives you more bang for the buck here?)</LI>
+<LI>Again, this test harness was single-threaded. You pay for the overhead whenever you use a library built for possible multithreaded use, whether you happen to need it or not. For more detailed measurements and discussion, see my Guru of the Week links <a href="#5">[5]</a>. One of the other points discussed there is that, especially for large strings, COW's advantage in this test environment is not that it avoids the cost of the memory allocations, but rather that it avoids the cost of copying the characters in the string &#151; a result you might find surprising.</LI></UL>
+
+<h4><FONT COLOR="#000080">The Pervasiveness of False Optimizations</FONT></H4>
+
+<p>You may be wondering whether these false optimizations really affect you. The chances are pretty good that they do. As a common example, if you use an OO language with a string class, you might well be affected. Historically, COW has long been a popular optimization in many libraries for all sorts of data structures, including strings. Because of this history, the Standard C++ <B>basic_string</B> template was deliberately specified in such a way that vendors would have the option of producing a conforming implementation that used COW. Perhaps unsurprisingly, most popular implementations that I'm familiar with have done so, even though COW incurs some of its own overhead <a href="#7">[7]</a>, is harder to code, and is a frequent source of subtle bugs and interactions <a href="#8">[8]</a>.</p>
+<p>We have had direct experience with this here at my company, PeerDirect. Because we write engines that maintain large and widely distributed database systems, everything we write has to be multithreaded. A few years ago we brought in a certain vendor's implementation of the Standard C++ library and tested it in a single-threaded environment. Imagine our surprise when we rebuilt the library with the multithreaded switch set, only to discover that many of our programs ran several times more slowly than before. After a little investigative work with a profiler (and the library source code), we found the culprit to be the <B>basic_string</B> class, which used COW optimization. We reported the problem, but today that library still uses COW &#151; and an unnecessarily inefficient implementation of COW at that. The vendor's name doesn't matter, because to my knowledge all of the most popular implementations of <B>basic_string</B> on Windows and other platforms use COW. Not all are this inefficient, but some are.</p>
+<p>If you're using libraries built for possible multithreaded use and performance matters to you, you can and should do the same thing we did: Run profiles of your code to determine the data structures you use most. (Do this by member function hit count, not necessarily by time spent in the function). Create sample programs that manipulate those data structures in a loop, and time those programs running with single- and multithreaded versions of the corresponding libraries. If there's a substantial difference, tell your vendor, especially if you can tell from the size of the difference whether it's even less efficient than it needs to be.</p>
+<p>Probably the biggest reason COW and similar "optimizations" are so prevalent is because, despite the volume of trade press about multithreaded code, it's far from clear how much we as an industry are really writing multithreaded business applications. If it became clear to library vendors that many of their customers were using multithreaded builds of their libraries, they would probably abandon dubious optimizations like COW. Unfortunately, COW is used routinely in library implementations &#151; not just for strings, but for many kinds of data structures that are expensive to copy. Although I've seen COW used most often with strings, vendors may choose to implement it for containers and other structures as well.</p>
+<p>And remember that the problem isn't just COW. Any shared-information optimization that joins two objects in some way "under the covers" will have the same problems.</p>
+
+<h4><FONT COLOR="#000080">Summary</FONT></H4>
+
+<p>There's nothing wrong with optimizing complex data structures. The bad news is that some very common optimization methods actually aren't always optimizations at all. They can exact performance penalties that will become continually more noticeable as more of us write multithreaded programs or share libraries with others who do. This is especially likely when library writers introduce needless inefficiencies because of inexperience with thread safety issues.</p>
+<p>The good news is that there are usually other optimizations that can give the same effect but retain acceptable performance in multithreaded mode. For example, in C++, providing optimized custom allocators via an overloaded operator <B>new</B> is nearly always the right way to deal with memory allocation performance issues.</p>
+<p>The trick is to use a true optimization, not a false optimization that optimizes library code only for single-threaded use.</p>
+
+<h4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1]  Even just interrupting a thread between its <B>SetError</B> call and the following <B>cout</B> statement could affect the ordering of the output (though not the contents). Exercise for the reader: What are the thread-safety issues relating to <B>cout</B> itself, both within the standard I/O subsystem and within the client code? Consider first the ordering of partial output.</p>
+<p><a name="2"></a>[2]  Rob Murray. <I>C++ Strategies and Tactics</I> (Addison-Wesley, 1993), pages 70-72.</p>
+<p><a name="3"></a>[3]  Or, equivalently, a copy of a copy of the <B>err</B> string, if the compiler didn't perform the return value optimization.</p>
+<p><a name="4"></a>[4]  Certain popular commercial libraries shipping today have variants of precisely this COW bug, where modifying one visible string also incorrectly modifies a different visible string because the libraries fail to perform the deep copy soon enough.</p>
+<p><a name="5"></a>[5]  For an exhaustive explanation of this and other aspects of COW and alternative thread-safe implementations, see GotW (Guru of the Week) issues #43, #44, and #45 at <B>www.peerdirect.com/resources</B>. GotW #45 includes a test harness with sample well-optimized source code for no less than seven different implementations of a limited <B>String</B> class &#151; five COW implementations and two non-COW implementations. This article summarizes and expands on some of the results.</p>
+<p><a name="6"></a>[6]  COW advocates may complain that the difference between COW and non-COW is most noticeable with possibly-mutating functions like <B>operator[]</B>. That's true, but this is the easiest function for showing a quick and clear example of the implementation differences between non-COW and various flavors of COW.</p>
+<p><a name="7"></a>[7]  Common sources of overhead include flags for ownership and reference counts.</p>
+<p><a name="8"></a>[8]  Getting the COW code right is more complex than you might think. The most experienced library writers I know have told me repeatedly that they've found their COW code to be a frequent source of bugs. These are people with decades of experience crafting quality libraries, not first-timers.</p>
+
+<p><i>Herb Sutter</B> (<B>hsutter@peerdirect.com</B>) is Chief Technology Officer at PeerDirect Inc. and the principal architect of their heterogeneous database replication product. He also represents Canada and PeerDirect at the ISO/ANSI C++ and SQL committees, and is the author of the forthcoming books "Peer Distributed Databases" and "C++ Guru of the Week" (Addison Wesley Longman).</i></p>
+
+<h4><a href="../../../source/1999/jun99/sutter.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

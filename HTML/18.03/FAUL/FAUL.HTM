@@ -1,0 +1,200 @@
+<HTML>   
+     <HEAD>
+<TITLE>March 2000/An Embedded Memory-Based SQL Class for C++</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocmar.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">An Embedded Memory-Based SQL Class for C++</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Ben Faul</FONT></H3>
+
+<BLOCKQUOTE>
+<p>SQL and C++ make a powerful combination, particularly if you don't have to do the combining yourself.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<H4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>When writing C++ programs, how many times have you stored data in arrays, linked lists, or collections, and then needed to retrieve data using some selection criteria? Solving this problem usually requires writing your own selection logic. If you plan on supporting logical expressions, get ready for some heavy-duty coding. What you really need is an object class that organizes your data <I>and</I> provides a method to retrieve data using something more powerful than simple iterators.</p>
+<p>This article presents a DLL (dynamic linked library), called <B>EMBSQL.DLL</B>, that implements a class providing both data storage and a method for manipulating the object's member data using SQL (structured query language) &#151; the virtually universal database language. Running on Windows 95/98/NT and fully self contained in memory, EMBSQL requires no commercial database package. Because the library uses shared memory, multiple programs easily share the same data through the SQL objects.</p>
+<p>To demonstrate the power of an SQL-enabled object, this article presents a sample stock quote server application. The server program reads stock quotes off the Internet and stores them in the embedded SQL object. A concurrent program acts as a client for users; it implements powerful query capabilities on the server's stock market data in less than 30 lines of C++ code. Both programs use the EMBSQL capabilities. Along the way, this article shows how to programmatically retrieve stock quotes from the Internet, how to share data in a dynamic link library, how to create and use virtual memory maintained in a memory-mapped file, how to use some basic SQL concepts.</p>
+
+<H4><FONT COLOR="#000080">Overview of EMBSQL</FONT></H4>
+
+<p><a href="fig1.htm">Figure 1</a>, EMBSQL Architecture, shows the relationship of the EMBSQL library to its client programs. After creating an instance of the EMBSQL class, called <B>CESql</B> (Class, Embedded SQL), an application stores data into the object for later update and retrieval through the object's <B>Sql</B> method. Using shared memory to store class data allows multiple processes to share data maintained by the <B>CESql</B> objects.</p>
+<p>However, sharing class data between processes complicates the EMBSQL design, because C++'s normal <B>new</B> and <B>delete</B> operators do not allocate shareable memory within the DLL. These methods allocate memory from the running process's private heap storage, regardless of whether the methods are called from within the main process executable or from within the DLL. Since memory allocated from a process's heap cannot be shared with other processes, the EMBSQL library employs a private memory manager.</p>
+<p>To set up shared memory for use inside the DLL, the variables managing the shared memory within the library are declared as being in a shared data segment. These variables are declared in the file <B>Malloc.cpp</B>, between the <B>#pragma data_seg()</B> directives. <a href="fig2.htm">Figure 2</a> shows the relevant portion of <B>Malloc.cpp</B>.</p>
+<p>Note that each variable shared in the DLL is initialized within the <B>#pragma</B> statements as well as declared. Initializing the variables guarantees that the linker will place them in the proper data segment. When linking the DLL, the linker must be told about the shared region <a href="#1">[1]</a>. To do this in Microsoft's Visual C++ Integrated Development Environment, simply select Project, then Settings. In the Project Options dialog at the bottom of the window, enter the following:</p>
+
+<pre>
+/SECTION:shared,rws
+</pre>
+
+<p>Now all processes using EMBSQL share the same pointers for memory management within the library. However, the standard C++ <B>new</B> and <B>delete</B> operators cannot be used to allocate the actual memory, since these methods allocate memory from the calling process's private heap. One way to overcome this would be to allocate memory from a large character array declared in the <B>SHARED</B> segment of the library. This scheme unfortunately causes the DLL to grow at least as physically large as the data block declared.</p>
+<p>EMBSQL overcomes these memory problems by implementing a private memory management scheme, and by allocating memory from a memory-mapped page file managed by the operating system's virtual memory manager <a href="#2">[2]</a>. When a process loads or unloads the EMBSQL DLL (or any DLL for that matter), it calls the library's <B>DllMain</B> function first. The EMBSQL DLL's <B>DllMain</B> function, located in <B>Malloc.cpp</B>, creates the memory-mapped file when the shared memory <B>memCounter</B> variable is zero. The library increments and decrements this counter as processes load and unload the library. <a href="fig3.htm">Figure 3</a> shows the portion of <B>Malloc.cpp</B> that implements the shared memory-mapped file and subsequent mappings to this file.</p>
+<p>The library's <B>DllMain</B> function calls the <B>CreateMappedFile(int size)</B> to obtain the shared memory file and mappings to it. The <B>size</B> parameter determines how much shared memory to allocate; it is set to the maximum file size by the first process loading and initializing the DLL. The name of the memory-mapped file is <B>embsqlmemory.tmp</B>, located in the system's <B>TEMP</B> directory.</p>
+<p>Subsequent processes loading the DLL also call the <B>CreateMappedFile</B> function in file <B>Malloc.cpp</B>. However, as the code fragment in <a href="fig3.htm">Figure 3</a> shows, subsequent entries into <B>DllMain</B> cause <B>CreateMappedFile</B> to be called with a <B>size</B> argument of zero, by virtue of <B>memCounter</B> being greater than one. In this case, <B>CreateMappedFile</B> merely maps the memory pointer to the shared memory file. Note the call to <B>MapViewOfFileEx</B> within <B>CreateMappedFile</B>, that happens when <B>CreateMappedFile</B> is called with a <B>size</B> argument of zero. The last parameter to <B>MapViewOfFileEx</B> is the address the virtual memory manager must use for the shared memory base. This variable, <B>sharedMemoryFile</B>, was initialized by the first process loading the DLL. If the address returned by <B>MapViewOfFileEx</B> does not match <B>sharedMemoryFile</B>, the DLL notifies the user of the memory alignment error through the <B>CESql</B> method <B>ReturnError</B>. Unless these shared memory file addresses match, the system will crash.</p>
+<p>To enable the EMBSQL library to create objects in shared memory, these objects' <B>new</B> and <B>delete</B> operators are overridden to invoke private <B>shared_malloc</B> and <B>shared_free</B> memory allocators instead of the customary <B>malloc</B> and <B>free</B>. <a href="fig4.htm">Figure 4</a> shows the definition for a class <B>SCString</B> (a shared <B>CString</B>), which defines its own shared-memory versions of <B>operator new</B> and <B>delete</B>. These operators serve as forwarding functions for <B>shared_malloc</B> and <B>shared_free</B> respectively. Objects of this class will be allocated entirely from within the shared memory managed by the EMBSQL library. Two other classes that client programs will use are allocated from shared memory as well: the <B>SCCollection</B> class and the <B>SCColumn</B> class.</p>
+<p>The class <B>SCCollection</B>, implemented in <B>Collection.cpp</B> (not shown), supports arrays of pointers into shared memory. <B>SCCollection</B> implements the tables and rows within the <B>CESql</B> object. These arrays are similar to C arrays, except that they dynamically shrink and grow as necessary. Array indexes always start at zero. Memory is allocated contiguously to the upper bound, even if some elements are null. The <B>CESql</B> object's ability to store elements into the array is limited only by the availability of shared memory. As with a C array, the access time for an <B>SCCollection</B>'s indexed element is constant and independent of the array size. The <B>SCCollection</B> mimics the operation of the MFC <B>CObArray</B> class <a href="#4">[4]</a>.</p>
+<p>The class <B>SCColumn</B>, implemented in <B>Column.cpp</B> (not shown), describes the columns within a table stored in shared memory. This class provides methods to access the name, type of column, and storage for the individual data items in the tables.</p>
+
+<H4><FONT COLOR="#000080">Instantiating a CESql Object</FONT></H4>
+
+<p>To manage your data with an embedded SQL object, you first create an object of the class <B>CESql</B>. Example:</p>
+
+<pre>
+embsql = new CESql();
+</pre>
+
+<p>The first instance of a <B>CESql</B> object causes the EMBSQL library to create the shared memory file used to store all embedded SQL class data. Subsequent creations of <B>CESql</B> objects cause the library to map onto the previously created shared memory file. After obtaining the <B>CESql</B> object, you access it using the <B>CESql</B>'s <B>Sql</B> function. This function provides the power of SQL to manipulate the data within the object.</p>
+<p>Function <B>Sql</B> takes a <B>CString</B> object and parses the input text within it as SQL. As the parser recognizes the SQL language <BR>
+elements, it constructs a simple execution stack. The stack is merely an array of <B>CString</B> objects representing operators and their operands, pushed onto the stack in the order they are recognized. After successfully parsing the input, the function <B>Sql</B> executes the stack. Stack execution is quite simple. An operator is popped from the top of the stack. Then, depending on the operator, one or more operands are popped, and the indicated operation performed. The operation result is pushed back onto the stack. After all operators are popped off the stack, the result of the operations remains. An easy way to view this stack is to enable stack tracing with the <B>CESql::PrintStack(BOOL enable)</B> method, setting <B>enable</B> to <B>true</B>.</p>
+<p>The file <B>parser.cpp</B> (not shown) implements the class <B>CESql</B> and its recursive descent parser <a href="#3">[3]</a>. File <B>Executestack.cpp</B> (not shown) implements the stack execution part of the recursive descent SQL parser.</p>
+
+<H4><FONT COLOR="#000080">Defining Tables</FONT></H4>
+
+<p>CESql</B>'s <B>Sql</B> method provides the mechanism for creating tables and table structures via the <B>CREATE TABLE</B> SQL command. An example provides the easiest way to describe the various commands that function <B>Sql</B> can interpret. Consider a collection of stock quotes. Each stock quote contains the following attributes: name of the stock, the time of the last quote, the last quoted price, the highest quoted price, the lowest quoted price, and the volume. A table, with each row representing a stock symbol, and each row containing several columns for the attributes of each stock, nicely organizes the data.</p>
+<p><a href="fig5.htm">Figure 5</a> shows how such a <B>"stocks"</B> table is created within the <B>CESql</B> object &#151; by passing a <B>CREATE TABLE</B> SQL command to the <B>Sql</B> method.</p>
+<p>An alphanumeric name followed by its type and size, where applicable, describes each row within the table. In <a href="fig5.htm">Figure 5</a> the <B>'float'</B> and <B>'char'</B> types are shown. Notice the <B>'char'</B> type also requires a size designation. Other types supported by function <B>Sql</B> are <B>'time'</B>, <B>'int'</B>, and <B>'unsigned'</B>. Once a table has been defined to the <B>CESql</B> object, the same <B>Sql</B> method performs record selection, insertion, modification, and deletion.</p>
+
+<H4><FONT COLOR="#000080">Adding Records</FONT></H4>
+
+<p>You can add records to the <B>CESql</B> object by passing an SQL <B>INSERT</B> command to the <B>Sql</B> method. The form of the <B>INSERT</B> command is:</p>
+
+<pre>
+INSERT INTO &lt;table-name&gt;
+   (&lt;column-name 1&gt;, &lt;column-name-2&gt;,...
+    &lt;column-name-N&gt;)
+   VALUES(&lt;value-1&gt;,&lt;value-2&gt;,...
+          &lt;value-N&gt;)
+</pre>
+
+<p>The uppercase words are keywords of the SQL language. <B>&lt;table-name&gt;</B> denotes the name of the table within the <B>CESql</B> object. <B>&lt;column-name-n&gt;</B> identifies alphanumeric names of the columns within <B>&lt;table-name&gt;</B>. The <B>&lt;value-n&gt;</B> fields describe values for the associated columns. A typical entry of a stock quote into the <B>"stocks"</B> table of the <B>CESql</B> object looks like this:</p>
+
+<pre>
+embsql-&gt;Sql("INSERT INTO stocks  \
+     (NAME, DATE, TIME, LAST, HIGHEST,
+      LOWEST, VOLUME) \
+     VALUES('IBM', '10/23/99',
+            '10:00AM', 123.23,125.12,
+            121.4,349000");
+</pre>
+
+<H4><FONT COLOR="#000080">Modifying Records</FONT></H4>
+
+<p>After populating the <B>CESql</B> object with data, one or more rows may require updating. The SQL <B>UPDATE</B> provides the ability to update data in the collection:</p>
+
+<pre>
+UPDATE &lt;table-name&gt; SET
+   (&lt;column-name-1&gt;=&lt;value-1&gt;,&lt;column-name-2&gt;=&lt;value-2&gt;...)
+      [WHERE &lt;expression&gt;]
+</pre>
+
+<p>The real power of the <B>CESql</B> object lies in its ability to use the SQL <B>WHERE</B> clause to constrain the operations on its member data. The <B>WHERE &lt;expression&gt;</B> construct in SQL supports operators for evaluating complex conditionals, with operator precedence. Supported operations include <B>+</B>, <B>-</B>, <B>/</B>, <B>*</B>, <B>=</B>, <B>&lt;</B>, <B>&lt;&gt;</B>, <B>&gt;</B>, <B>&gt;=</B>, <B>LIKE</B>, <B>NOT</B>, <B>AND</B>, and <B>OR</B> of column names and numeric and string literals. As an example, if IBM's lowest quote fell to $100.00, we could easily update its value in the <B>CESql</B> object with:</p>
+
+<pre>
+embsql-&gt;Sql("UPDATE stocks SET(LOW=100) WHERE NAME='IBM'");
+</pre>
+
+<H4><FONT COLOR="#000080">Deleting Records</FONT></H4>
+
+<p>The SQL <B>DELETE</B> command removes records from the <B>CESql</B> object when they are no longer required. The <B>DELETE</B> form looks like this:</p>
+
+<pre>
+DELETE FROM &lt;table-name&gt; [WHERE &lt;expression&gt;]
+</pre>
+
+<p>Here again, the real power of the <B>CESql</B> object lies in its ability to understand a <B>WHERE</B> clause. To delete all the data from the "stocks" table in the <B>CESql</B> object, use the command:</p>
+
+<pre>
+embsql-&gt;Sql("DELETE FROM stocks");
+</pre>
+
+<p>To delete all the rows from the example stock market table where the name is not IBM and the last price was less than $100.00 and volume was greater than 10,000 shares, use:</p>
+
+<pre>
+embsql-&gt;Sql("DELETE FROM stocks WHERE
+   NAME &lt;&gt; 'IBM' AND LAST &lt;100 AND
+   VOLUME &gt;10000");
+</pre>
+
+<H4><FONT COLOR="#000080">Selecting Data</FONT></H4>
+
+<p>The <B>SELECT</B> SQL command retrieves data from a table. Using the power of the <B>WHERE</B> clause, complex queries of your data are now a snap. No hard-coded logic required! The <B>SELECT</B> form of the <B>Sql</B> method is:</p>
+
+<pre>
+SELECT &lt;columns&gt; FROM &lt;table-name&gt;
+   [WHERE &lt;expression&gt;]
+</pre>
+
+<p><B>&lt;columns&gt;</B> specifies a comma-separated list of columns to select out of the table. If all columns are desired, use the <B>'*'</B> short-hand designator. In the stock quote program, the user could select out a list of all the names by using simply:</p>
+
+<pre>
+CCollection* results =
+embsql-&gt;Sql("SELECT NAME FROM stocks");
+</pre>
+
+<p>Or, to demonstrate a more complex operation, to retrieve the stocks whose high stock prices are 20% higher than the lowest price, the form would be:</p>
+
+<pre>
+CColumns* results =
+   embsql-&gt;Sql("SELECT * from stocks
+               where high &gt; 1.2 * low")
+</pre>
+
+<p>The results collection contains an array of pointers to rows in the table matching the <B>Sql</B> query.</p>
+
+<H4><FONT COLOR="#000080">Miscellaneous Helper Methods</FONT></H4>
+
+<p>The <B>CESql</B> object provides several helper methods that allow you to print records from the object, obtain a catalog of tables within the object, and query column definitions of specific tables. <a href="fig6.htm">Figure 6</a> shows sample usage of these methods.</p>
+<p>Lines 4-6 illustrate how the catalog of tables within the <B>CESql</B> object is printed.</p>
+<p>Line 7 shows how to retrieve the column specifications for a table. The method sets the number of columns in <B>nC</B> and returns the columns as an array in <B>cols</B>.</p>
+<p>Line 8 uses the <B>Sql</B> method to make the query.</p>
+<p>Lines 7-14 retrieve and print all rows of data from the <B>CESql</B> object.</p>
+<p>Line 16 prints any syntax error detected.</p>
+
+<H4><FONT COLOR="#000080">Example Use of Embedded SQL Objects</FONT></H4>
+
+<p>The following sample server and client applications demonstrate the power of using SQL-enabled objects in C++ programs. The server, called <B>Loadstocks.exe</B>, queries <B>quote.yahoo.com</B> for stock quotes. After retrieving the stock quotes from Yahoo, the server loads a <B>CESql</B> object with the information.</p>
+<p>A separate client application provides a user with the capability for SQL queries on the stock information maintained by the server, all without using hard-coded logic, or a commercial database. The client is implemented in 30 lines of C++ code.</p>
+
+<H4><FONT COLOR="#000080">Server Application</FONT></H4>
+
+<p>The file <B>loadstocks.cpp</B>, defined in <a href="list1.htm">Listing 1</a>, implements a stock quote server program. This program is implemented as an EMBSQL/Win32 console application. The compiled program, <B>Loadstocks.exe</B>, runs continuously. Every five minutes it reads stock quotes from Yahoo on the Internet. The program makes HTML queries to Yahoo's web server for the stock information. When the Yahoo web server returns the quote information, the program parses the quotes from the HTML and stores the information in a <B>CESql</B> table called <B>STOCKS</B>.</p>
+<p>The program takes a list of stock symbols as its arguments. To track IBM, Microsoft, UPS, and 3M, use the command line:</p>
+
+<pre>
+C&gt;loadstocks IBM MSFT UPS MMM
+</pre>
+
+<H4><FONT COLOR="#000080">Client Application</FONT></H4>
+
+<p>The file <B>quotes.cpp</B> in <a href="list2.htm">Listing 2</a> obtains an instance of a shared embedded SQL object, and then reads SQL commands from the keyboard. The <B>CESql</B> object executes these SQL commands as typed by the user then and displays the results on the console.</p>
+<p>After starting the server, <B>loadstocks.exe</B>, run <B>quotes.exe</B>. Then type some sample queries, for example:</p>
+
+<pre>
+C&gt;query
+embsql&gt;select * from stocks
+embsql&gt;select * from stocks where symbol='IBM' 
+embsql&gt;select * from stocks where (high &gt; 1.02 * low)
+</pre>
+
+<H4><FONT COLOR="#000080">Source Code</FONT></H4>
+
+<p>The full source code for the EMBSQL library, stock quote server, and client program are provided on the <I>CUJ</I> ftp site (see p. 3 for downloading instructions).</p>
+
+<H4><FONT COLOR="#000080">Notes and References</FONT></H4>
+
+<p><a name="1"></a>[1]  For a good discussion on using shared memory in dynamic link libraries, see Paul Carlson's article, "An Automated Shutdown DLL," <I>C/C++ Users Journal,</I> pp. 59-61, August 1999.</p>
+<p><a name="2"></a>[2]  For more information on the implementation and use of virtual memory-mapped shared files, see "Managing Memory-Mapped Files in Win32," by Randy Kath, <I>Microsoft Technical Note,</I> February 9, 1993.</p>
+<p><a name="3"></a>[3]  The design of the recursive descent parser was based on the work done by Alfred Aho and Jeffrey D. Ullman in their book on compiler design, <I>Principles of Compiler Design,</I> (Addison-Wesley, 1977), pp. 180-184.</p>
+<p><a name="4"></a>[4]  See the MSDN (Microsoft Software Developer Network) documentation for more information on the class <B>CObArray</B>.</p>
+
+<p><i><B>Ben M. Faul</B> is a senior engineer for the PlanetCalling division of eFusion. He has a bachelor's and a master's degree in computer science from the University of Southern Mississippi and Loyola-Marymount University. He has over ten years experience developing real-time stock-market, network, and systems management software in C and C++ on both PC and Unix platforms. In addition, he has a Jurisdoctorate degree from the University of West Los Angeles Law School and is a member of the California Bar Association. He may be reached at <B>bfaul@ix.netcom.com</B>.</i></p>
+
+<h4><a href="../../../source/2000/mar00/faul.zip">Get Article Source Code</a></h4>
+
+</blockquote></body></html>

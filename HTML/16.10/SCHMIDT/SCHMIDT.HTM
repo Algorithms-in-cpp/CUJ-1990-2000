@@ -1,0 +1,360 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>October 1998/The Learning C/C++urve</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tococt.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">The Learning C/C++urve: Penumbra</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Bobby Schmidt</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>Bobby cleans house, yielding up a mixed bag of musings on constness, calling sequences, and other C things.</p></BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+<p><B>Copyright &copy; 1998 Robert H. Schmidt</B><p>
+
+<p>In these last two "Learning C/C++urve" episodes, I finally rid my Mac's "Column Ideas" folder of orphaned topics and other detritus. Some of these ideas have waited in vain for the right column to come along, while others would never warrant a huge writeup. Don't expect a lot of narrative cohesion here; other than being about C and/or C++, these topics are mixed pretty randomly.</p>
+
+<h4><FONT COLOR="#000080">Not Again</FONT></H4>
+
+<p>I'd better get this out of the way first. Yes, it's Scott Meyers again. In a recent message, he brought up the "buy a vowel" email I quoted last month. He then got a bit contrite, admitting that he did not know about the implicit conversion of C++ string literals to <B>char *</B>. After excerpting a relevant portion of the C++ Standard, he ended with</p>
+<p><I>In other words, the type of </I><B>abc</B> <I>is</I> <B>const char[]</B><I>, but you can freely convert it to type </I><B>char *</B><I> without a cast. In other other words, the "</I><B>const</B><I>" part of the type of string literals is so impotent, it's doubtful all the Viagra in the world could help it.</I></p>
+<p><I>Sigh.</I></p>
+<p><I>Have a nice day,</I></p>
+<p><I>Scott</I></p>
+
+<p>As I wrote back:</p>
+<p>"It's not <I>totally</I> impotent you know. It does come into play for overload resolution. And I guess it means you can make these strings ROMable or put them in a read-only code segment with a clear conscience."</p>
+<p>Dan Saks and I recently hashed over Dan's obsession with categorizing all known species of constness. The idea of ROMability is central to Dan's notion of "physical constness," a subject he's covered in <I>CUJ</I>.</p>
+
+<h4><FONT COLOR="#000080">Wrestlemania: qsort vs. Classes</FONT></H4>
+
+<p>The Standard C++ library function <B>qsort</B> is declared as</p>
+
+<pre>
+void
+qsort(void *base,
+    size_t nelem,
+    size_t size,
+    int (*cmp)(void const *,
+               void const *));
+</pre>
+
+<p>In a nutshell, <B>qsort</B> steps through an array addressed by <B>base,</B> which contains <B>nelem</B> elements of <B>size</B> bytes each. <B>qsort</B> calls the function referenced by <B>cmp</B> to compare elements in the array. This comparison function must have a particular signature:</p>
+
+<UL><LI>accepts two pointer arguments</LI>
+    <LI>returns an <B>int</B></LI></UL>
+
+<p>A comparison function such as</p>
+
+<pre>
+int
+compare(void const *, void const *);
+</pre>
+
+<p>satisfies that signature, allowing the fairly useless</p>
+
+<pre>
+void f()
+    {
+    qsort(NULL, 0, 0, compare);
+    }
+</pre>
+
+<p>to compile.</p>
+<p>Now assume we decide to make <B>f</B> a member of some C++ class <B>T,</B> as in</p>
+
+<pre>
+class T
+    {
+public:
+    void f();
+    };
+</pre>
+
+<p>Further assume that <B>compare</B> is referenced only by <B>f.</B> Good encapsulation technique suggests that <B>compare</B> should be a private member of <B>T,</B> accessible only to <B>f:</B></p>
+
+<pre>
+class T
+    {
+public:
+    void f();
+private:
+    int compare(void const *,
+        void const *);
+    };
+</pre>
+
+<p>The definition of <B>f</B> becomes</p>
+
+<pre>
+void T::f()
+  {
+  qsort(NULL, 0, 0, compare);
+  }
+</pre>
+
+<p>If I try to compile this with an older version of CodeWarrior, I get the message</p>
+
+<pre>
+cannot convert
+'int (*)(T * const, const void *,
+         const void *)' to
+'int (*)(const void *, const void *)'
+</pre>
+
+<p>Apparently the compiler thinks <B>compare</B> has three parameters, meaning <B>compare</B> doesn't match the signature <B>qsort</B> is expecting. The two <B>const void *</B> parameters the compiler cites are obvious, but what is this <B>T * const</B>?</p>
+<p>The answer: <B>compare's</B> hidden and implicit <B>this</B> pointer. Remember, non-static member functions like <B>compare</B> have a hidden parameter <B>this</B>, of type "constant pointer to the containing class". In our case, the containing class is <B>T,</B> so the type of <B>this</B> is "constant pointer to <B>T</B>", or <B>T * const</B>. <a href="#1">[1]</a></p>
+<p>For the <B>qsort</B> call to work, <B>compare</B> must have a matching signature. The obvious solution is to declare <B>compare</B> as static. But consider instead an extra overload of <B>qsort:</B></p>
+
+<pre>
+void
+qsort(void *base, size_t nelem, size_t size,
+   int (*cmp)(T * const, void const *, void const *));
+</pre>
+
+<p>Now the <B>cmp</B> signature <B>qsort</B> expects appears to match the signature of <B>compare</B> ... or does it? Once again, I compile. This time I get a most baffling error message:</p>
+
+<pre>
+cannot convert
+  'int (*)(T * const, const void *,
+      const void *)' to
+  'int (*)(T * const, const void *,
+      const void *)'
+</pre>
+
+<p>This makes no sense &#151; it's as if the compiler cannot convert a data type to itself! Clearly there must be some problem other than <B>compare</B>'s parameters.</p>
+<p>My latest version of CodeWarrior Pro gives a different but no more illuminating message:</p>
+
+<pre>
+function call
+'qsort(long, int, int, void)'
+does not match
+'qsort(void *, unsigned long,
+    unsigned long,
+    int (*)(const void *,
+        const void *))'
+</pre>
+
+<p>Now there's no mention of the hidden <B>this</B> parameter. Further, the message implies the last <B>qsort</B> argument has type <B>void!</B></p>
+<p>Let's visit the Evil Empire. MSVC version 5 tells me</p>
+
+<pre>
+cannot convert parameter 4 from
+    'int (const void *,
+        const void *)' to
+    'int (*)(class T *, const void *,
+        const void *)'
+</pre>
+
+<p>Sigh ... apparently MSVC doesn't want <B>compare</B> to take a <B>T *</B> argument. If I change <B>compare</B> accordingly and recompile, MSVC bleats</p>
+
+<pre>
+cannot convert parameter 4 from
+    'int (const void *,
+        const void *)' to
+    'int (*)(const void *,
+        const void *)'
+</pre>
+
+<p>What does this mean? Aren't functions supposed to decay to pointers when they're passed as arguments?</p>
+<p>I'll leave this as an exercise for the reader, and revisit the problem next month. Hint: change the <B>qsort</B> call to</p>
+
+<pre>
+qsort(NULL, 0, 0, &amp;compare);
+</pre>
+
+<p>and ponder the resulting compiler diagnostic.</p>
+
+<h4><FONT COLOR="#000080">Underscores</FONT></H4>
+
+<p>I always knew that the C9X Standard reserved certain patterns of identifier names for the implementation. The specific rule (from section 7.1.3):</p>
+
+<BLOCKQUOTE>
+<p>Each [Standard] header ... optionally declares or defines ... identifiers which are always reserved either for any use or for use as file scope identifiers.</p>
+<p>&#151; All identifiers that begin with an underscore and either an uppercase letter or another underscore are always reserved for any use.</p>
+<p>&#151; All identifiers that begin with an underscore are always reserved for use as macros and as identifiers with file scope in both the ordinary and tag name spaces.</p>
+</BLOCKQUOTE>
+
+<p>As an example: the compiler can use names like <B>__acme</B> or <B>_Acme</B> for anything it wants, and names like <B>_acme</B> for macros and "global" variables and functions.</p>
+<p>That's too much for me to remember. To keep life simple, I use these two rules instead:</p>
+
+<UL><LI>All leading underscores are forbidden.</LI>
+    <LI>All other underscores are okay.</LI></UL>
+
+<p>The first rule is overly restrictive but safe. The second rule is safe too &#151; at least in C9X.</p>
+<p>For some reason, I had always believed the C++ rules were the same or very similar. Oops. Here's the relevant part of the C++ Standard (section 17.4.3.1.2, if you simply must know):</p>
+
+<BLOCKQUOTE>
+<p>Certain sets of names and function signatures are always reserved to the implementation:</p>
+<p>&#151; Each name that contains a double underscore <B>__</B> or begins with an underscore followed by an uppercase letter is reserved to the implementation for any use.</p>
+<p>&#151; Each name that begins with an underscore is reserved to the implementation for use as a name in the global namespace.</p>
+</BLOCKQUOTE>
+
+<p>Note the big change: where the C9X Standard explicitly reserves names beginning with <B>__</B>, the C++ Standard reserves names containing <B>__</B>. Thus, names like <B>__acme</B> are still reserved, but so are <B>acme__</B> and even <B>ac__me</B>.</p>
+<p>This was news to me. I guess I should turn in my C++ merit badge. I'm definitely revising my personal naming rules, for both C and C++:</p>
+
+<UL><LI>All leading underscores and all double underscores are forbidden.</LI>
+    <LI>All other underscores are okay.</LI></UL>
+
+<p>I'm afraid to ask Scott if he knew this one. If he did, we're now even. I asked Dan, who said he already knew. Show off.</p>
+
+<h4><FONT COLOR="#000080">Construction Basics</FONT></H4>
+
+<p>As a general rule, you should favor copy construction over default construction followed by assignment. That is, given the choice between</p>
+
+<pre>
+//
+// Example #1
+//
+T x1(x2); // calls T copy constructor
+</pre>
+
+<p>and</p>
+
+<pre>
+//
+// Example #2
+//
+T x1;    // calls T default constructor
+x1 = x2; // calls T copy assignment operator
+</pre>
+
+<p>use the former where possible. Why? Example #2 makes two calls to <B>T</B> members, while #1 makes but one. Net result: you will generally find the first example to be faster and (for inlined code) smaller <a href="#2">[2]</a>.</p>
+<p>Or maybe not. I've found beginning C++ programmers often implement copy constructors as</p>
+
+<pre>
+//
+//    Example #3
+//
+T::T(T const &amp;that)
+    {
+    //
+    // At this point, '*this' data members and base-class
+    // subobjects have been default constructed.
+    //
+    *this = that; // same as (*this).operator=(that);
+    //
+    // Net result: subobjects are default-constructed,
+    // then immediately overwritten by assignment,
+    // effectively wasting the default construction.
+    //
+    }
+</pre>
+
+<p>This does make code maintenance easier, since changes to the "object copy" logic are encapsulated in one place (<B>operator=</B>). However, the speed gain mentioned earlier is now gone. To restore this gain, avoid assignment altogether:</p>
+
+<pre>
+//
+//    Example #4
+//
+T::T(T const &amp;that) :
+        T_base(that.T_base),
+        m1_(that.m1_),
+        m2_(that.m2_),
+    {
+    // No calls to default constructors or
+    // assignment operators.
+    }
+</pre>
+
+<p>Here <B>T</B> is derived from class <B>T_base,</B> and has data members <B>m1_</B> and <B>m2_.</B> Each of these three <B>T</B> subobjects is initialized by its copy constructor; those copy constructors in turn may call others, and so on. Therefore to maximize constructor efficiency, you should write all copy constructors this way.</p>
+<p>As noted earlier, such design does make for more code maintenance hassle. If you later add a third data member <B>m3_</B> to <B>T,</B> you need to update both <B>T's</B> copy constructor and copy assignment operator:</p>
+
+<pre>
+T::T(T const &amp;that) :
+        // ...
+        m3_(that.m3_) // new
+    {
+    }
+     
+T &amp;T::operator=(T const &amp;that)
+    {
+    // ...
+    m3_ = that.m3_; // new
+    // ...
+    }
+</pre>
+
+<p>If you kept the copy constructor implemented as in Example #3, you'd need to update just the assignment operator; the copy constructor would be self-maintaining.</p>
+<p>If <B>T</B> has no subobjects of class type, and thus makes no real constructor calls, then Example #3 may be preferable to the more "optimized" version. The generated code should be the same or very close, and the source code is easier to maintain.</p>
+<p>If you choose this route, consider adding an auxiliary copy function:</p>
+
+<pre>
+void T::copy(T const &amp;that)
+    {
+    m1_ = that.m1_;
+    m2_ = that.m2_;
+    // ... and so on
+    }
+     
+T::T(T const &amp;that)
+    {
+    copy(that);
+    }
+     
+T &amp;T::operator=(T const &amp;that)
+    {
+    if (this != &amp;that)
+        copy(that);
+    return *this;
+    }
+</pre>
+
+<p>This way, the copy constructor avoids the extra (unneeded) overhead of the copy assignment's <B>if</B> and <B>return</B> statements.</p>
+<p>Exceptions:</p>
+
+<UL><LI>If <B>T</B> has const members, you must construct them in the member initialization list, as shown in Example #4. Once a const member is constructed, it can't be changed <a href="#3">[3]</a>.</LI>
+    <LI>If <B>T</B> has reference members, you also must use the style of  Example #4. Like const members, reference members can't be  changed <a href="#4">[4]</a>.</LI></UL>
+
+<h4><FONT COLOR="#000080">const != Permanent</FONT></H4>
+
+<p>A while back, Diligent Reader Artur Wisz sent me an example he was sure should not compile. Distilled, the example is</p>
+
+<pre>
+void f()
+    {
+    X const *x = new X;
+    delete x;
+    }
+</pre>
+
+<p>Artur asserts that, because <B>x</B> references a const object, he should not be allowed to delete that object &#151; yet his compiler allows him to delete it anyway, a property he finds dangerous.</p>
+<p>Dangerous perhaps, but inevitable. While this may at first appear suspicious, it really follows from other C++ behavior. Consider the related example</p>
+
+<pre>
+void f()
+    {
+    X const x; // object, not pointer
+    }
+</pre>
+
+<p>When <B>x</B> goes out of scope, you expect its storage to be freed and its destructor to be called, even though <B>x</B> is a const object. Calling <B>delete</B> on an object's pointer just makes the destruction explicit. Besides, if you couldn't invoke <B>delete</B> on <B>x</B> in the first example, how would you ever destroy and free <B>*x</B>?</p>
+<p>By declaring a class object as const, all you really do is restrict how that object can be accessed: you can call only const member functions on it, you can't pass it by non-const reference, and so on. You are not saying the object is indestructible. Declaring something const is not synonymous with putting it in ROM.</p>
+<p>A few days after I answered his question, Artur sent me this followup:</p>
+<p><I>Yes, your explanation has convinced me well. But it implies that passing a const object as a function parameter is not 100% safe &#151;the object might silently disappear. I wasn't aware of that. I guess this is the way it's got to be. Thanks a lot.</I></p>
+<p>What Artur really means is that, when passing a pointer to a const object, the pointed-to object might disappear &#151; and he's right. Whether the function should delete the object is another matter.</p>
+<p>This is a good reason to avoid passing pointers. Where possible, I prefer to pass references, thereby avoiding the whole question of object ownership. If I must pass around dynamically-allocated data, I'll wrap that data in a class and pass references to that class instead; the desired semantics are much easier to get right, and the programs are typically easier to understand <a href="#5">[5]</a>.</p>
+
+<h4><FONT COLOR="#000080">Coming Up</FONT></H4>
+
+<p>The final "Learning C/C++urve" will feature more detritus, reader feedback on C++ threads and <B>ptrdiff_t</B>, and a lead-in to my new format.</p>
+
+<h4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1]  News Flash! This is no longer strictly true; details next month.</p>
+<p><a name="2"></a>[2]  In the presence of aggressive code optimization, you may actually find little or no net difference. For the purposes of this discussion, I'm assuming optimization is disabled.</p>
+<p><a name="3"></a>[3]  Yes yes, you can probably change a const object by casting. But I'm talking about well-formed code here &#151; no nasty casts allowed.</p>
+<p><a name="4"></a>[4]  Casts cannot rescue you here. Slimy hacks into the object's storage can; look to Usenet for guidance. This exposes one key difference between C++ and Java &#151; the latter treats references much like C++ pointers, allowing them to be reassigned at run time.</p>
+<p><a name="5"></a>[5]  If you need persuasion, consider the merits of C++ strings vs. C <B>char</B> arrays/pointers. I honestly believe that, were quoted string     literals of type <B>string</B>, we'd have relatively little use for <B>char *s </B>anymore.</p>
+
+<p><i>Bobby Schmidt is a freelance writer, teacher, consultant, and programmer. He is also an alumnus of Microsoft, a speaker at the Software Development and Embedded Systems Conferences, and an original "associate" of (Dan) Saks &amp; Associates. In other career incarnations, Bobby has been a pool hall operator, radio DJ, private investigator, and astronomer. You may summon him on the Internet via <B>rschmidt@netcom.com</B>.</i></p>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

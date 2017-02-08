@@ -1,0 +1,283 @@
+<HTML>   
+     <HEAD>
+<TITLE>August 2000/The Journeyman's Shop</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocaug.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">The Journeyman's Shop: Unraveling Multithreading</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Pete Becker</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Sometimes you have to spend a lot of time on just a little bit of code, to avoid spending much more time not knowing where to begin debugging.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<BLOCKQUOTE>
+<p>WARNING: the Surgeon General has determined that multithreaded programming is hazardous to your health.</p>
+</BLOCKQUOTE>
+
+<p>It's easy to write a multithreaded program that seems to work correctly, but it's very difficult to write a multithreaded program that actually works correctly. The difference between the two can be many days of frustration and a big aspirin bill.</p>
+<p>Unlike a program that uses floating-point math <a href="#1">[1]</a>, a multithreaded program really is non-deterministic. That's its greatest strength and its greatest weakness. In a properly written multithreaded program, when one thread has to wait for someone to type a few words on the keyboard, processing doesn't grind to a halt; the other threads continue to run, computing the billionth digit of p or generating the index to the tome that you're writing about quaternions, octonions, and hexadecimalians, and why they should be part of the C++ Standard. In a poorly written multithreaded program, threads interact in undesirable ways, producing, if you're lucky, a program crash, and if you're unlucky, garbled output.</p>
+
+<H4><FONT COLOR="#000080">Why Multithreaded Programming Is Hard</FONT></H4>
+
+<p>The first difficulty that a programmer must face when writing a multithreaded program is unlearning the notion of linear execution. That's a notion that's been programmed into all of us since we first touched a keyboard. In a multithreaded program, the code sequences that run in separate threads are interleaved in unpredictable ways. We all know what output to expect from this code snippet:</p>
+
+<pre>
+for (;;)
+   std::cout &lt;&lt; "Hello from"
+                "the FIRST thread\n";
+</pre>
+
+<p>and we all know what output to expect from this code snippet:</p>
+
+<pre>
+for (;;)
+   std::cout &lt;&lt; "Hello from"
+               "the SECOND thread\n";
+</pre>
+
+<p>If each of these snippets runs in its own thread, though, we don't know what the output of the program will be. This is true even if we assume that each text string is written as a unit, without interference from the other <a href="#2">[2]</a>. All we can say is that the output will be some sequence of repetitions of the two text strings.</p>
+<p>This interleaving affects all shared resources, not just output streams. In particular, program data that is shared between threads can be modified in surprising ways if you aren't careful. In fact, much of the complexity in writing multithreaded programs arises from the need to control modifications of shared data.</p>
+<p>The second difficulty in writing multithreaded code is the uncertainty inherent in testing it. Experienced testers know how to avoid combinatorial explosions when designing test cases for ordinary code. But the interleaving of code sequences in a multithreaded program makes the size of the testing task inherently combinatorial. It's easy to test a simple function that chooses one of three different execution paths depending on the value of a static variable. Suppose that function updates the static variable to indicate which path to take the next time through. If the function can be called once from each of two threads simultaneously, instead of three execution paths it has fourteen. Toss in a third thread and I suspect that the number is over a hundred. And even if we could enumerate all the possible paths, we still couldn't write a set of test cases to exercise all of them, because they arise from uncontrollable variations in the timing of the system that the code runs on. So instead of carefully focused testing, we resort to random testing, by running the program for as long as we can afford to, looking for mistakes <a href="#3">[3]</a>. In addition, we put more emphasis on code reviews, to avoid putting mistakes into the code in the first place.</p>
+<p>In the hope of avoiding these difficulties, newcomers to multithreaded programming sometimes become overly aggressive in their efforts to prevent thread conflicts. They adopt a policy of lock early, lock often in order to prevent simultaneous access to shared data, in the hope that this will prevent problems. This approach causes problems of its own, however. First, unnecessary locks slow the program down, often by an order of magnitude or more. And second, such aggressive locking can easily lead to a deadlock, where one thread is waiting for a resource that another thread has locked, and the other thread is waiting for a resource that the first thread has locked.</p>
+
+<H4><FONT COLOR="#000080">Understanding the Problem</FONT></H4>
+
+<p>Here in The Journeyman's Shop we think it's important to understand a problem before we try to solve it. Locking a resource is often the right solution to a multithreading problem, but it must be done in the right place. Writing multithreaded applications that are robust requires identifying the places that need locks; writing multithreaded applications that are reasonably fast requires identifying the places that don't need them.</p>
+<p>One of the lessons that we've learned about designing robust classes is that every class should have an invariant: some set of properties that users of the class can rely on. For example, the member function <B>size</B> in the C++ Standard container classes tells you how many elements the container holds. For the implementer of a class, however, the role of the invariant is different. On entry into a public member function the invariant must be true, and on exit from that member function it must also be true. During execution of the member function it need not be true, and, indeed, often cannot be true. Adding an element to a container often involves two operations: putting the element into the container's internal data structure, and adjusting the internal record of the container's number of elements. Regardless of the order in which these two operations are performed, there is a point in the code at which the member function <B>size</B> does not tell you how many elements the container holds. By the time the add operation is finished, however, the internal data should be consistent, and the invariant again valid, so that the class presents a uniform appearance to its users.</p>
+<p>Shared data in a multithreaded application presents similar problems and should be approached in the same way: identify what the shared data represents, in the form of an invariant, and make sure that any violations of that invariant are temporary and are not visible to users of that data. We have three basic tools that we can use here: static initialization, atomic operations, and mutexes.</p>
+
+<H4><FONT COLOR="#000080">Static Initialization</FONT></H4>
+
+<p>Static initialization occurs before any program code runs <a href="#4">[4]</a>. For shared data that can be initialized statically, establish the invariant by that static initialization. As long as the program doesn't modify that data the invariant will remain true, and there is no possibility of a thread seeing a violation of the invariant. Static initialization of read-only data is the cheapest form of thread safety.</p>
+
+<H4><FONT COLOR="#000080">Atomic Operations</FONT></H4>
+
+<p>Once we start modifying shared data we have to think carefully about possible violations of the data's invariant. Violations can be subtle. For instance, a thread switch can occur between the time that the low byte of a two-byte value is stored and the time that the high byte is stored. In that case, overwriting the value <B>0xffff</B> with the value <B>0x0000</B> would cause the value <B>0xff00</B> to be stored initially in memory. If a thread switch occurred before the write of the next byte changed that value to <B>0x0000</B>, the new thread would see the value as <B>0xff00</B>. If the invariant for this data is that it holds <B>0xffff</B> to indicate failure and <B>0x0000</B> to indicate success, what will the new thread do in response to the value <B>0xff00</B>? The problem here is that writing this two-byte value is not atomic.</p>
+<p>Atomic operations are operations that are guaranteed to finish without allowing a thread switch. Some built-in data types actually are written atomically, but that varies between systems. In general you can't count on being able to write even something as small as a <B>char</B> variable atomically. However, C provides a <B>typedef</B>, <B>sig_atomic_t</B>, for an integral type that can be updated atomically. The C standard doesn't provide any mechanism for determining the allowed range of values for a <B>sig_atomic_t</B>, so you should restrict the value that you store in a variable of this type to the range <B>0</B> to <B>127</B> <a href="#5">[5]</a>. Further, to prevent the compiler from assuming that it knows the value currently stored in a variable of this type, you should declare it to be <B>volatile</B>. If your data will fit, a variable of type <B>volatile sig_atomic_t</B> provides the cheapest form of thread safety for data that can vary at run time.</p>
+<p>Having a small type that can be written to atomically may not sound like much, but it's the cornerstone of all multithreaded applications. Even when the application uses higher-level constructs like mutexes and condition variables, down underneath there's always some form of atomic variable. Still, there are often more complex operations than storing that we need to do atomically. In particular, if the new value to be stored in a shared variable depends on the previous value, then atomic writes are not sufficient.</p>
+<p>For example, if we want to know how many times a particular function has been called, we can provide a static variable to hold the count and increment its value inside the function. In a multithreaded program, this may produce an inaccurate result, because incrementing a variable may not happen atomically. If the compiler generates code that loads the value into a register, adds one to the value in the register, and then stores the value, there's a window where a thread switch can cause incorrect results.</p>
+<p>Suppose the initial value of the variable is zero and a thread switch occurs after the load but before the addition. The second thread, executing the same increment instructions, loads the value zero, adds one to it, and stores the resulting value of one back into the variable. When the original thread resumes execution, the register still holds the value zero. The thread adds one to it, producing the value one, and stores that value into the variable. We've executed the function twice, but the counter shows only one execution.</p>
+<p>To help avoid this sort of problem, thread packages typically provide functions that perform low-level operations, such as incrementing a variable, atomically. Under Win32, for example, there is a family of functions with names like <B>InterlockedIncrement</B>. Each of these functions produces its result while blocking other calls of the same function on the same variable. So in our function call counter, we get the correct result by using <B>InterlockedIncrement</B> instead of the usual <B>operator ++</B>.</p>
+<p>We talked earlier about static initialization. There are times when we cannot initialize data statically, but once initialized the data won't be changed. This is a common situation in a C library, where it may be desirable to avoid allocating data until it is actually used, but once it has been allocated we want to keep it until the application terminates. In a single-threaded program we'd use a static pointer initialized to null. Code that uses the data checks the pointer, and if it's null, calls an initialization function that allocates the data, initializes it, and stores the address of the allocated block in the pointer. In a multithreaded program, this code becomes dangerous. Suppose one thread sees a null pointer and calls the initialization function, and then a thread switch occurs. The new thread will also see a null pointer and also call the initialization function. That may or may not cause a problem, but at the very least it's inefficient.</p>
+<p>If we change the initialization code to save the pointer immediately after the allocation, we narrow the window during which another thread will see a null pointer. But we introduce a new problem: we now have a pointer to data that has not yet been initialized, so the second thread, instead of reinitializing the data, uses invalid data. Both of these actions are, of course, errors. We solve them through the use of a "once-function." Some thread packages provide once-functions as part of the package, but building one ourselves is a useful exercise to help understand the problems that multithreaded programs can encounter. The problem to solve is how to avoid the two errors that we saw in the last paragraph. We have to call our initialization function exactly once, and we must make sure that any thread depending on the results of that function cannot continue to run until the initialization has been completed. We need some sort of shared data that tells us what state the initialization is in.</p>
+<p>There are three possible states in this initialization problem: we haven't done any initialization, we're running the initialization function, or the initialization function has completed. We'll encode these three states with the value zero, one, and two, respectively. Now let's think about what we have to do in each of these three states. If we're in state zero when the once-function is called, the initialization function has not been run, so we change the state to state one and run the initialization function; when it completes we change to state two. If we're in state one when the once-function is called, the initialization function is running, so we wait until it has finished and return. If we're in state two when the once-function is called, the initialization function has completed, so we return. If we write this function without regard to possible thread conflicts it looks like this:</p>
+
+<pre>
+void
+do_once(long *control,
+   void (*func)(void))
+{ /* execute func once,
+     not thread safe */
+if (*control == 2)
+   ;
+else if (*control == 0)
+   {
+   *control = 1;
+   func();
+   *control = 2;
+   }
+else
+   while (*control != 2)
+      ;
+}
+</pre>
+
+<p>There's a problem here that should be obvious by now: there's a window between the code that tests whether the state is zero and the code that changes the state to one. If a thread switch occurred during this interval, a second thread could also see a state of zero, and both threads would run the function <B>func</B>. We can eliminate this window with an atomic read and update:</p>
+
+<pre>
+void
+do_once(long *control,
+   void (*func)(void))
+{ /* execute func once,
+     slightly flawed */
+if (*control == 2)
+   ;
+else if (InterlockedExchange
+            (control, 1) == 0)
+   {
+   func();
+   *control = 2;
+   }
+else
+   while (*control != 2)
+      ;
+}
+</pre>
+
+<p>The Win32 function <B>InterlockedExchange</B> stores its second argument in the address pointed to by its first argument and returns the old value, while locking out any other calls to <B>InterlockedExchange</B> on the same variable. This closes the window by preventing a thread switch between the time the code looks at the old value and the time it stores the new value.</p>
+<p>There's still a problem, though. Suppose that a thread calls this function and sees that the control variable is not two, and then a thread switch occurs. Another thread then sees that the control variable is not two, executes the <B>InterlockedExchange</B>, calls <B>func</B>, and sets the control variable to two. Now another thread switch occurs, and the first thread executes the <B>InterlockedExchange</B>. That sets the control variable to one and returns the previous value of two, and execution falls through to the <B>while</B> loop, waiting for some thread to set the control variable to two. That will never happen, and further, any other threads that call this function will also end up in the <B>while</B> loop, spinning forever. Deadlocked.</p>
+<p>The problem here occurs because we blindly changed the value of the control variable to one with the call to <B>InterlockedExchange</B>, even though there was a possibility that <B>func</B> had already been run. The solution is to check for this case, and fix it:</p>
+
+<pre>
+void
+do_once(volatile long *control,
+   void (*func)(void))
+{   /* execute func once */
+long old;
+if (*control == 2)
+   ;
+else if ((old = InterlockedExchange
+                  (control, 1)) == 0)
+   {
+   func();
+   *control = 2;
+   }
+else if (old == 2)
+   *control = 2;
+else
+   while (*control != 2)
+      ;
+}
+</pre>
+
+<p>This code ought to raise two questions in your mind: first, it rather glibly tests and assigns values to the control variable, mostly without regard to the possibility that another thread will also be updating that variable. That's a legitimate concern. I've made an assumption here: that changing the value of the control variable from zero to one in the call to <B>InterlockedExchange</B> will not produce an intermediate value of two. If you're using some processor that does bit-by-bit manipulations to store values, this assumption might not hold. I'm comfortable with it.</p>
+<p>Second, there's that final <B>else</B> branch that sits in a tight loop waiting for the control variable to be set to two. That's known as a "spinlock," and despite its apparent inefficiency, it is sometimes the best way to wait for a change of state. On a multiprocessor system, sitting in a tight loop for a brief delay may be faster than switching threads to allow some other thread to run during the delay. On a single processor system, though, a spinlock wastes time. Since the original version of this code was designed for use in programs that frequently run on single-processor systems, I didn't use a spinlock. The actual code looks like this:</p>
+
+<pre>
+void
+do_once(volatile long *control,
+   void (*func)(void))
+{    /* execute func once */
+long old;
+if (*control == 2)
+   ;
+else if ((old = InterlockedExchange
+                  (control, 1)) == 0)
+   {
+   func();
+   *control = 2;
+   }
+else if (old == 2)
+   *control = 2;
+else
+   while (*control != 2)
+      Sleep(1);
+}
+</pre>
+
+<p>If you're not convinced that this code does what it's supposed to do, study it again. And again. And again. If you're still not convinced, write to me. It could be wrong. I spent about six hours working on it, over the course of several days. Most of that time was spent simply staring at the code and trying to think of perverse sequences of execution that would make it fail. I think it's right, but that's the trouble with multithreaded programming: you can't ever be sure.</p>
+
+<H4><FONT COLOR="#000080">Mutexes</FONT></H4>
+
+<p>Finally, if static initialization and atomic operations aren't powerful enough to make your application work correctly, you need to use a mutex. A mutex is a way of preventing blocks of code from running simultaneously. Once you've identified all of the code blocks that depend on the invariant for a piece of shared data, you can surround each block with a mutex lock and an unlock. That's a heavyweight solution. It's often necessary, but it's important to explore lighter-weight alternatives first. Once you've decided that a mutex is the appropriate solution, all you need to do is create the mutex, add calls to lock it on entry into each code block that needs protection and to unlock it at the end of the block, and finally, dispose of it when you don't need it any longer. Here's an example using <B>pthread</B>s to implement the execution counter we discussed earlier:</p>
+
+<pre>
+pthread_mutex_t counterlock =
+   PTHREAD_MUTEX_INITIALIZER;
+int count = 0;
+
+void counted_func(void)
+{   /* count calls */
+pthread_mutex_lock(&amp;counterlock);
+++count;
+pthread_mutex_unlock(&amp;counterlock);
+}
+</pre>
+
+<p>One of the conveniences of <B>pthread</B>s that isn't available under Win32 is the static initializer for mutexes. There's no tricky code to write if the default form of initialization does what you need. If you want something other than the default settings, then you need to call <B>pthread_mutex_init</B>. Of course, if you do that, you have to make sure that you call the initialization code only once. That's another use for the once-function that we looked at earlier. Once-functions are supported directly in <B>pthread</B>s, so the tricky parts have already been done. But for code that's intended to be portable, you'll need to write your own once-function for use on platforms that don't have it built in.</p>
+<p>Let's look at how to create and use a mutex under Win32, in order to see how the once-function fits in:</p>
+
+<pre>
+long count_inited = 0;
+CRITICAL_SECTION mutex;
+int count = 0;
+
+static void cleanup(void)
+{  /* clean up the mutex when done */
+DeleteCriticalSection(&amp;mutex);
+}
+
+static void init_count(void)
+{  /* iniitalize the mutex */
+InitializeCriticalSection(&amp;mutex);
+atexit(cleanup);
+}
+
+void counted_func(void)
+{   /* count calls */
+do_once(&amp;count_inited, init_count);
+EnterCriticalSection(&amp;mutex);
+++count;
+LeaveCriticalSection(&amp;mutex);
+}
+</pre>
+
+<p>Of course, the biggest advantage that mutexes have over atomic operations is that they can surround large pieces of code. We looked earlier at the problems involved in initializing a pointer that points to shared data. We could use the technique that we used above to perform the initialization exactly once, or, with a bit of care, we could wrap the initialization itself in a mutex.</p>
+
+<pre>
+static data *data_ptr = NULL;
+void initialize_and_use(void)
+{   /* initialize and use data_ptr */
+if (data_ptr == NULL)
+   {/* get the mutex and initialize */
+   EnterCriticalSection(&amp;data_mutex);
+   if (data_ptr == NULL)
+      {   /* initialize the data */  
+      data *ptr = malloc(sizeof(data));
+      /* initialization goes here */
+      data_ptr = ptr;
+      }
+   LeaveCriticalSection(&amp;data_mutex);
+   }
+/* use data_ptr here */
+}
+</pre>
+
+<p>Yes, that's right: we have to test <B>data_ptr</B> twice in order to make sure that we initialize it only once. The first test is for efficiency: once we've initialized the pointer we don't need to initialize it again, so we save time by skipping the controlled block. If we don't skip it, there's a narrow window for a thread switch between the time we get the value of <B>data_ptr</B> for that test and the time when we get the mutex lock, so there's a possibility that some other thread will get in ahead of us and do the initialization. That's why we do the second test: only one thread can execute the inner block of code at a time, and that's the only place where the value of <B>data_ptr</B> is ever changed, so if the pointer is null inside the controlled block, we know that we're responsible for initializing it. This idiom is quite common in Java code, because Java does not provide once-functions.</p>
+
+<H4><FONT COLOR="#000080">Ensuring Program Correctness</FONT></H4>
+
+<p>We've looked at some basic tools for maintaining invariants for shared data. You cannot write multithreaded programs that work correctly without being familiar with these tools. But just as knowing how to use a hammer and a saw doesn't qualify you to build a house, knowing how to use the basic tools of multithreaded programming doesn't qualify you to write a multithreaded program. As I suggested earlier, it's critical to get the right protection mechanisms in the right places. Too little protection makes the application unreliable; too much makes it slow. There's an art to multithreaded architecture, and I can't do it justice in a space as short as this. But generally speaking, put mutexes as far down in the call chain as you can while still protecting all of the data that needs protection. If you put a mutex too far down, where it doesn't protect all the data, then you'll have to add another one higher up, and your application pays the price of having to go through two mutex locks for each data access instead of one. If you put a mutex too far up, where it protects more than it needs to, you lock out other threads for longer than necessary, and lose some of the benefits of multithreading.</p>
+<p>For an example of this problem of providing both safety and efficiency, let's go back to a variation of the code that we started out with:</p>
+
+<pre>
+void f(std::string name)
+{   // write some data
+for (;;)
+   std::cout &lt;&lt; "In the " &lt;&lt; name
+             &lt;&lt; " thread\n";
+}
+</pre>
+
+<p>If an application calls this function from two different threads, what will the output look like? I said earlier that we could assume that each text string is written as a unit. That's because each inserter locks a mutex before it begins writing data and unlocks it when it has finished. But each line of output in this program requires three inserter calls, and we haven't done anything to prevent thread switches between those calls. So it wouldn't be at all surprising if the first two lines of output were</p>
+
+<pre>
+In the In the SECOND FIRST thread
+In the thread
+</pre>
+
+<p>Clearly, we need to add a mutex to keep the output threads clean. The right place to put this mutex is around the statement that inserts into <B>std::cout</B>. Like this:</p>
+
+<pre>
+Mutex mutex;
+void f(std::string name)
+{   // write some data
+for (;;)
+   {   // protect the data
+   Lock lock(mutex);
+   std::cout &lt;&lt; "In the " &lt;&lt; name
+             &lt;&lt; " thread\n";
+   }
+}
+</pre>
+
+<p>Here I've assumed the existence of two classes, <B>Mutex</B> and <B>Lock</B>. <B>Lock</B>'s constructor locks the <B>Mutex</B> object, and its destructor, executed at the end of the block, unlocks it. If we added more code that inserted into <B>std::cout</B> in the inner block, all of that code would be inside the mutex lock as well, and would always be grouped together in the output stream.</p>
+<p>You may be troubled by the fact that there are two locks here: the one we wrote in our code, and the one provided by the standard library in the inserters themselves. That's definitely inefficient. The outer lock is all that's needed in this case, and the inner one is redundant. That's one of the compromises that comes out of library design. The locks in the library don't help you write your application correctly. You have to put in your own locks to do that. The library locks protect the library itself from accidental misuse; if they weren't there then the example code snippets that we started out with would result in garbled output and possibly crashing programs. Library vendors choose to make the code somewhat less efficient in order to avoid having to answer all those technical support calls from programmers who are writing their first multithreaded program and want to know why their multithreaded version of "Hello, world" doesn't work right. With some careful thought, though, you ought to be able to get your version of "Hello, world," and programs that are a great deal more complex, to work right.</p>
+
+<H4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1]  We'll resume our investigation of floating-point math next month.</p>
+<p><a name="2"></a>[2]  That's a reasonable assumption to make. Most <B>iostream</B> libraries put thread locks around insertion operations.</p>
+<p><a name="3"></a>[3]  A multi-processor system is critical to the success of this approach. On a single-processor system threads run sequentially, and you may get a thousand thread switches per second, creating an upper limit of a thousand tests per second. Calling the function under test several times without a thread switch is simply killing time. On a multi-processor system threads run simultaneously on each processor, and every call to the function under test involves a possible conflict with another thread.</p>
+<p><a name="4"></a>[4]  Static initializers are typically stored in the executable file in a form that the program loader will use to initialize data regions in memory before turning control over to the program itself.</p>
+<p><a name="5"></a>[5]  C99 provides two macros, <B>SIG_ATOMIC_MIN</B> and <B>SIG_ATOMIC_MAX</B>, that give the actual range for values of type <B>sig_atomic_t</B>.</p>
+
+<p><b><i>Pete Becker</B> is Technical Project Leader for Dinkumware, Ltd. He spent eight years in the C++ group at Borland International, both as a developer and manager. He is a member of the ANSI/ISO C++ standardization committee. He can be reached by email at <B>petebecker@acm.org</B>.</i></p>
+
+</blockquote></body></html>

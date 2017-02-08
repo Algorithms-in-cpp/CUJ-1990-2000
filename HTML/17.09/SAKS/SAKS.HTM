@@ -1,0 +1,395 @@
+<HTML>   
+     <HEAD>
+<TITLE>September 1999/C++ Theory and Practice</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocsep.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">C++ Theory and Practice: Isolating Design Decisions, Part 2</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Dan Saks</FONT></H3>
+
+<BLOCKQUOTE>
+<p>You don't have to make each class highly reusable from the outset. An incremental approach is often faster and quite good enough.</p>
+</BLOCKQUOTE>
+
+<hr>
+<BLOCKQUOTE>
+
+<p><i>Copyright &copy; 1999 by Dan Saks</i></p>
+<p>For the most part, program design is about figuring out how to carve up a relatively complicated task into a bunch of simpler tasks. In C++, as in any other language that supports object-oriented programming, the favored approach usually involves carving up programs into classes.</p>
+<p>The general principle that guides us in decomposing programs into classes is that classes should represent abstractions. In other words, each class should hide some of the program's details from the rest of the program. By hiding details, each class lets you act in many ways as if the program is simpler than it really is. That is, abstraction fosters an illusion of simplicity, which is usually good because it makes the program more manageable.</p>
+<p>Although each class should hide something, it shouldn't try to hide too much all by itself. A class that takes on too much is still an improvement over no class at all because it simplifies the program around it. Unfortunately, the class itself remains a complex entity that will be hard to manage.</p>
+<p>Of course, the way to simplify a large, complex class is to farm out most of its work to smaller, simpler classes. Then again, it's possible to go too far splitting larger classes into smaller classes. If you do go too far, you get complexity in another dimension. A program composed of too many classes can easily become a tangle of complex interactions.</p>
+<p>Much of the art of class design is in deciding just how much or how little each class should do. Last month, I suggested a simple, first-order principle for decomposing programs into classes:</p>
+
+<UL<LI>Hide each design decision in a separate class.</LI></UL>
+
+<p>I started to show you how to apply this principle in xr, the cross-reference generator program that's my surrogate practical example. Let's pick up again just a bit before...</p>
+
+<h4><FONT COLOR="#000080">Where I Left Off</FONT></H4>
+
+<p>xr reads text from standard input and writes a cross-reference listing to standard output. The output is an alphabetized list of the words that appeared in the input. Each line in the output contains one word followed by the sequence of unique line numbers on which that word appeared in the input.</p>
+<p>xr uses a binary tree to accumulate the words in alphabetical order. Each node in the tree holds a word and its corresponding sequence of line numbers. More precisely, each node in the tree contains a pointer to the null-terminated character array representing a word, and pointers to the head and tail of a linked list representing the sequence of line numbers for that word.</p>
+<p>The program uses a class called <B>cross_reference_table</B> to encapsulate the tree. (See "C++ Theory and Practice: Partitioning with Classes," <I>CUJ,</I> February 1999.) <B>table.h</B> in <a href="list1.htm">Listing 1</a> contains the <B>cross_reference_table</B> class and inline member function definitions. <B>table.cpp</B> in <a href="list2.htm">Listing 2</a> contains the non-inline definitions for the <B>cross_reference_table</B> class.</p>
+<p>The nodes in the tree are all of type <B>tree_node</B>, a structure declared in <a href="list1.htm">Listing 1</a> as a private member of class <B>cross_reference_table</B>. The complete definition for <B>tree_node</B> appears in <a href="list2.htm">Listing 2</a> as:</p>
+
+<pre>
+struct
+cross_reference_table::tree_node
+    {
+    deep_pointer&lt;char&gt; word;
+    deep_pointer&lt;list_node&gt;
+        first, last;
+    deep_pointer&lt;tree_node&gt;
+        left, right;
+    };
+</pre>
+
+<p>(<B>deep_pointer</B> is a class template. For any type <B>T</B>, a <B>deep_pointer&lt;T&gt;</B> behaves just like a <B>T *</B> except that a <B>deep_pointer&lt;T&gt; const</B> behaves like a <B>T const *const</B>. See "C++ Theory and Practice: Thinking Even Deeper," <I>CUJ,</I> July 1999.)</p>
+<p>On the surface, the <B>cross_reference_table</B> class has a single, well-defined job, namely, to hide the structure of the table from the rest of the program. However, each pointer type in the <B>tree_node</B> structure actually corresponds to a distinct design decision:</p>
+<p>1.  Conceptually, member <B>word</B> represents a character string. But its declaration reveals that it's implemented as a pointer to the zeroth character of a null-terminated character sequence stored in a dynamically allocated array of <B>char</B>.</p>
+<p>2.  Together, the members <B>first</B> and <B>last</B> represent a sequence of line numbers. However, their declaration reveals that the sequence is implemented as a pair of pointers, one to the first node and one to the last node in a singly linked, null terminated list of <B>list_node</B>s. (Elsewhere in <a href="list2.htm">Listing 2</a>, you'll find that each <B>list_node</B> contains one number of a sequence.)</p>
+<p>3.  The pointers <B>left</B> and <B>right</B> each represent a subtree of the binary tree that alphabetizes the words.</p>
+<p>The rule of thumb &#151; hide each design decision in a separate class &#151; suggests that xr needs three classes (one for each design decision) instead of the one it already has. These classes need not be completely separate from each other. It could be that one class uses the others to offload work. That, in fact, is the way I suggest doing it.</p>
+<p>Rather than declare <B>tree_node</B>'s member <B>word</B> as:</p>
+
+<pre>
+deep_pointer&lt;char&gt; word;
+</pre>
+
+<p>xr should use a type for the abstract concept of a variable-length character string. It could use the standard library's <B>string</B> class or use one written specifically for this application if need be. In either event, the declaration of member <B>word</B> should be something like:</p>
+
+<pre>
+string word;
+</pre>
+
+<p>Similarly, the two pointer members:</p>
+
+<pre>
+deep_pointer&lt;list_node&gt; first, last;
+</pre>
+
+<p>should be wrapped up into a single object of an abstract type representing a line number sequence. Using a class called <B>line_number_sequence</B>, you can replace both pointers with one member:</p>
+
+<pre>
+line_number_sequence lines;
+</pre>
+
+<p>Applying both of these abstractions to <B>tree_node</B>, you get:</p>
+
+<pre>
+struct
+cross_reference_table::tree_node
+    {
+    string word;
+    line_number_sequence lines;
+    deep_pointer&lt;tree_node&gt;
+        left, right;
+    };
+</pre>
+
+<p>This definition reflects the program's design much better than the previous <B>tree_node</B> definition. Even without any comments, it says "each node in the cross-reference table's tree associates a string with a corresponding line number sequence."</p>
+
+<h4><FONT COLOR="#000080">A Line Number Sequence Class</FONT></H4>
+
+<p>Rather than introduce both a string and a <B>line_number_sequence</B> class at once, I think it's more instructive to approach one new class at a time. Let's start with the <B>line_number_sequence</B> class. You'll need to create <B>sequence.h</B> and <B>sequence.cpp</B>, which you can do mostly by stealing code from <B>table.h</B> and <B>table.cpp</B>.</p>
+<p>Using just the (soon to be defined) <B>line_number_sequence</B> class, the definition for <B>tree_node</B> in <B>table.cpp</B> becomes:</p>
+
+<pre>
+struct
+cross_reference_table::tree_node
+    {
+    deep_pointer&lt;char&gt; word;
+    line_number_sequence lines;
+    deep_pointer&lt;tree_node&gt;
+        left, right;
+    };
+</pre>
+
+<p>This definition will compile only if a definition for <B>line_number_sequence</B> appears earlier in the compilation, so you should add the directive:</p>
+
+<pre>
+#include "sequence.h"
+</pre>
+
+<p>somewhere in <B>table.h</B> prior to <B>tree_node</B>'s definition.</p>
+<p>To start writing <B>sequence.h</B>, cut the members <B>first</B> and <B>last</B> from <B>tree_node</B> in <B>table.cpp</B> and paste them in as private members of the <B>line_number_sequence</B> class in <B>sequence.h</B>:</p>
+
+<pre>
+class line_number_sequence
+    {
+public:
+    // ???
+private:
+    deep_pointer&lt;list_node&gt;  first, last;
+    };
+</pre>
+
+<p>The declarations for <B>first</B> and <B>last</B> will compile only if <B>deep_pointer</B> is already defined. Adding:</p>
+
+<pre>
+#include "deep.h"
+</pre>
+
+<p>before the <B>line_number_sequence</B> class definition takes care of that.</p>
+<p>The declarations for <B>first</B> and <B>last</B> also require a prior declaration for <B>list_node</B>. The definition for <B>list_node</B> already appears in <B>table.cpp</B> (<a href="list2.htm">Listing 2</a>), but it doesn't belong there anymore. <B>list_node</B> is an implementation detail of line number sequences, so you should package it with the <B>line_number_sequence</B> class.</p>
+<p>You could move <B>list_node</B>'s definition to <B>sequence.h</B>, but that's overkill. <B>line_number_sequence</B>'s members <B>first</B> and <B>last</B> have type "(deep) pointer to <B>list_node</B>", which requires only a declaration for <B>list_node</B>, not a complete definition. The incomplete type declaration:</p>
+
+<pre>
+struct list_node;
+</pre>
+
+<p>is sufficient for the header. (See "C++ Theory and Practice: Partitioning with Namespaces, Part 2," <I>CUJ,</I> May 1998 for more on incomplete types.)</p>
+<p>Since <B>list_node</B> is an implementation detail, it should be a private member of the <B>line_number_sequence</B> class. (See "C++ Theory and Practice: Partitioning with Classes," <I>CUJ,</I> February 1999 for a discussion of incomplete types as class members.) <a href="list3.htm">Listing 3</a> shows the <B>sequence.h</B> header with everything except the <B>line_number_sequence</B> member function declarations in place. <a href="list4.htm">Listing 4</a> shows <B>table.cpp</B> with the changes thus far.</p>
+<p>The complete definition for <B>list_node</B> should appear in <B>sequence.cpp</B> as:</p>
+
+<pre>
+struct
+line_number_sequence::list_node
+    {
+    unsigned number;
+    deep_pointer&lt;list_node&gt; next;
+    };
+</pre>
+
+<[>The relationship between <B>list_node</B> and <B>line_number_sequence</B> is now the same as the relationship between <B>tree_node</B> and <B>cross_reference_table</B>.</p>
+
+<h4><FONT COLOR="#000080">Constructing Line Number Sequences</FONT></H4>
+
+<p>Now let's figure out what member functions the <B>line_number_sequence</B> class needs. Some object-oriented design purists might suggest that you should rock back on your chair at this point, look up at the ceiling and think up all of the fundamental operations that would be appropriate for a general-purpose sequence class. I don't want to do that here.  My objective in this exercise is just to partition what I already have without embellishing its behavior. Let's get a clear picture of what we have before we entertain generalizing it.</p>
+<p>Rather than read through <B>table.cpp</B> looking for ideas on what the <B>line_number_sequence</B> member functions should be, you can get help from your compiler. Just compile <B>table.cpp</B> (as in <a href="list4.htm">Listing 4</a>) and look at the diagnostics.</p>
+<p>The first diagnostic occurs in the part of <B>cross_reference_table::add_tree</B> that creates a new <B>tree_node</B> for word <B>w</B> found on input line number <B>n</B>:</p>
+
+<pre>
+if (t == NULL)
+    {
+    t = new tree_node;
+    t-&gt;word = new char [strlen(w) + 1];
+    strcpy(t-&gt;word, w);
+    t-&gt;first = new list_node;
+    ***^error***
+    t-&gt;first-&gt;number = n;
+    t-&gt;first-&gt;next = NULL;
+    t-&gt;last = t-&gt;first;
+    t-&gt;left = t-&gt;right = NULL;
+    }
+</pre>
+
+<p>Every compiler I used complained that <B>first</B> is not a member of <B>tree_node</B>, which is quite true. The next three statements in the program contain similar errors. <B>first</B> and <B>last</B> have been replaced by a single member called <B>lines</B>. </p>
+<p>The four statements with errors are doing something with a line number sequence. Once we figure what that something is, we can wrap the statements inside a public <B>line_number_sequence</B> member function and use that function instead.</p>
+<p>Again, the body of this entire <B>if</B> statement creates a new <B>tree_node</B> for word <B>w</B> found on input line number <B>n</B>. The statement:</p>
+
+<pre>
+t = new tree_node;
+</pre>
+
+<p>allocates storage for that <B>tree_node</B>. The new-expression also calls a constructor. In this case, <B>tree_node</B> (<a href="list4.htm">Listing 4</a>) has no explicitly-declared constructors, so the compiler generates a default constructor. That generated constructor in turn invokes the default constructors for each member.</p>
+<p>Most of <B>tree_node</B>'s data members are <B>deep_pointer</B>s.  <B>deep_pointer</B> has a default constructor that does nothing (it leaves the pointer uninitialized). <B>tree_node</B>'s only other data member is a <B>line_number_sequence</B>, which also has no explicitly-declared constructors, and so once again, the compiler generates one. But all of <B>line_number_sequence</B>'s data members are <B>deep_pointer</B>s, so <B>line_number_sequence</B>'s generated default constructor does nothing as well. The net result of all this is that <B>tree_node</B>'s generated default constructor does nothing.</p>
+<p>Thus, <B>tree_node</B>'s generated default constructor doesn't really initialize anything. After construction, all of <B>tree_node</B>'s data members remain uninitialized. It's up to the statements in <B>add_tree</B> that follow:</p>
+
+<pre>
+t = new tree_node;
+</pre>
+
+<p>to actually place meaningful values into the <B>tree_node</B>'s data members. The next two statements:</p>
+
+<pre>
+t-&gt;word = new char [strlen(w) + 1];
+strcpy(t-&gt;word, w);
+</pre>
+
+<p>fill in the <B>tree_node</B>'s word member to point to a copy of <B>w</B>. The next four statements (the ones causing the compilation errors):</p>
+
+<pre>
+t-&gt;first = new list_node;
+t-&gt;first-&gt;number = n;
+t-&gt;first-&gt;next = NULL;
+t-&gt;last = t-&gt;first;
+</pre>
+
+<p>fill in the <B>tree_node</B>'s line number sequence to contain the single line number <B>n</B>. Finally,</p>
+
+<pre>
+t-&gt;left = t-&gt;right = NULL;
+</pre>
+
+<p>fills in the left and right subtree pointers.</p>
+<p>Apparently, the four statements that caused the compilation errors are doing work that should have been done by a <B>line_number_sequence</B> constructor. <B>tree_node</B>'s <B>lines</B> data member contains random noise until these statements put something meaningful there. Since these statements require access to private members of the <B>line_number_sequence</B> class, the thing to do is to move them into the body of a <B>line_number_sequence</B> constructor, defined as:</p>
+
+<pre>
+line_number_sequence::line_number_sequence(unsigned n)
+    {
+    first = new list_node;
+    first-&gt;number = n;
+    first-&gt;next = NULL;
+    last = first;
+    }
+</pre>
+
+<p>This is not a default constructor &#151; it requires an argument.</p>
+<p>The code in the body of <B>add_tree</B> must be able to call that constructor. However, there's no way to call a constructor as if it were just another member function. That is, you cannot write a call such as:</p>
+
+<pre>
+t-&gt;lines.line_number_sequence(n);
+</pre>
+
+<p>Okay, you can, but it won't compile.</p>
+<p>Once again, compiler diagnostics can give you a hint as to what to do. If you add a declaration for the constructor to the <B>line_number_sequence</B> class, as in:</p>
+
+<pre>
+class line_number_sequence
+    {
+public:
+    line_number_sequence(unsigned n);
+private:
+    deep_pointer&lt;list_node&gt;
+        first, last;
+    };
+</pre>
+
+<p>and compile <B>table.cpp</B> again, you should get a diagnostic at the new-expression:</p>
+
+<pre>
+if (t == NULL)
+    {
+    t = new tree_node;
+                  ***^error***
+    ...
+</pre>
+
+<p>The compiler complains that either <B>tree_node</B> doesn't have a default constructor or that the compiler can't generate one.</p>
+<p>A generated default constructor invokes the default constructors for all of its bases and members. In this case, one of <B>tree_node</B>'s members, <B>lines</B>, is a <B>line_number_sequence</B>. Now that <B>line_number_sequence</B> has an explicitly-declared non-default constructor, it does not have a compiler-generated default constructor. The compiler can't generate a default constructor for <B>tree_node</B> because <B>tree_node</B> has a data member without a default constructor.</p>
+<p>Okay, so let's write a default constructor for <B>tree_node</B>. Simply extend the definition for <B>tree_node</B> in <B>table.cpp</B> as follows:</p>
+
+<pre>
+struct
+cross_reference_table::tree_node
+    {
+    tree_node();
+    deep_pointer&lt;char&gt; word;
+    line_number_sequence lines;
+    deep_pointer&lt;tree_node&gt;
+        left, right;
+    };
+
+cross_reference_table::
+tree_node::tree_node()
+    {
+    }
+</pre>
+
+<p>Now, if you compile this code once again, the new-expression compiles just fine, but the compiler complains about the definition of the <B>tree_node</B> constructor. The constructor has no member-initializers, so the compiler generates a call to the default constructor for each of <B>tree_node</B>'s data members. Once again, <B>tree_node</B>'s <B>lines</B> member has no default constructor, so this constructor is in error.</p>
+<p>You can placate the compiler by adding a member initializer to the <B>tree_node</B> constructor to initialize the <B>lines</B> member:</p>
+
+<pre>
+cross_reference_table::tree_node::tree_node(unsigned n)
+    : lines(n)
+    {
+    }
+</pre>
+
+<p>You must change the declaration for this constructor (inside the class definition) accordingly.</p>
+<p>Now, when you construct a <B>tree_node</B>, you must pass the initial line number for the line number sequence within the <B>tree_node</B>.  Therefore, you must add a constructor argument list to any new-expression that creates a <B>tree_node</B>:</p>
+
+<pre>
+t = new tree_node (n);
+</pre>
+
+<p>The code in <B>add_tree</B> that creates a new <B>tree_node</B> containing word <B>w</B> and line number <B>n</B> now looks like:</p>
+
+<pre>
+if (t == NULL)
+    {
+    t = new tree_node (n);
+    t-&gt;word = new char [strlen(w) + 1];
+    strcpy(t-&gt;word, w);
+    t-&gt;left = t-&gt;right = NULL;
+    }
+</pre>
+
+<p>which looks a bit simpler than the original code.</p>
+
+<h4><FONT COLOR="#000080">Other Line Number Sequence Operations</FONT></H4>
+
+<p>Now let's see what other member functions the <B>line_number_sequence</B> class needs. If you incorporate the <B>line_number_sequence</B> as just described and recompile <B>table.cpp</B>, you should see a flurry of compiler diagnostics associated with this code appearing near the end of <B>add_tree</B>:</p>
+
+<pre>
+else if (n != t-&gt;last-&gt;number)
+    {
+    t-&gt;last-&gt;next = new list_node;
+    t-&gt;last = t-&gt;last-&gt;next;
+    t-&gt;last-&gt;number = n;
+    t-&gt;last-&gt;next = NULL;
+    }
+</pre>
+
+<p>Again, the problem is that <B>tree_node</B> no longer has members named <B>first</B> and <B>last</B>.</p>
+<p>This code executes when <B>add_tree</B> determines that the word it was asked to add to the table is already in the table. In that case, <B>add_tree</B> simply adds a new line number to the existing line number sequence for that word. However, that number might already be in the sequence because the word has already appeared on the current line. The condition of the <B>if</B> statement verifies that the number is not already in the sequence. There's no need to search the entire sequence for a duplicate number. The line numbers arrive in non-decreasing order and they're placed at the end of the sequence, so if there is a duplicate, it can be only at the end.</p>
+<p>Here again, the <B>line_number_sequence</B> class must provide one or more public member functions that will support what <B>add_tree</B> needs to do. I can think of two alternate designs that reflect different views of what a sequence is.</p>
+<p>One approach is to provide two member functions in the <B>line_number_sequence</B> class. One member is:</p>
+
+<pre>
+bool contains(unsigned n) const;
+</pre>
+
+<p>which returns <B>true</B> if the sequence contains <B>n</B>. The other member is:</p>
+
+<pre>
+void add(unsigned n);
+</pre>
+
+<p>which adds <B>n</B> to the sequence. Using this approach the code in <B>add_tree</B> becomes:</p>
+
+<pre>
+else if (!t-&gt;lines.contains(n))
+    t-&gt;lines.add(n);
+</pre>
+
+<p>This design suggests that you might someday want to allow a sequence to contain duplicates.</p>
+<p>The other approach is to provide just an <B>add</B> member function that does not allow duplicates. Using this approach the code in <B>add_tree</B> becomes simply:</p>
+
+<pre>
+else
+    t-&gt;lines.add(n);
+</pre>
+
+<p>This design suggests that you believe a sequence is much like a set in that it cannot contain duplicates. Adding a number to a sequence that already contains the number does nothing.</p>
+<p>I'm not sure the added flexibility of the first design is worth making the <B>line_number_sequence</B> interface more complicated, so I'm going to opt for the second design for now. However, I will revisit this decision in the future.</p>
+<p>The only other code in <B>table.cpp</B> that still refers to <B>first</B> or <B>last</B> as if they were members of <B>tree_node</B> is in <B>put_tree</B> (<B>table.cpp</B> in <a href="list2.htm">Listing 2</a>):</p>
+
+<pre>
+list_node const *p;
+for (p = t-&gt;first; p! = NULL; p = p-&gt;next)
+    printf(" %4d", p-&gt;number);
+</pre>
+
+<p>This code is simply writing each number in a sequence to standard output. You can move all of this to the body of the final <B>line_number_sequence</B> member function:</p>
+
+<pre>
+void put() const;
+</pre>
+
+<p>and place the call:</p>
+
+<pre>
+t-&gt;lines.put();
+</pre>
+
+<p>in the body of <B>put_tree</B>.</p>
+<p>A complete version of <B>sequence.h</B> appears in <a href="list5.htm">Listing 5</a>. The corresponding version of <B>sequence.cpp</B> appears in <a href="list6.htm">Listing 6</a>. A complete version of <B>table.cpp</B> that uses the <B>line_number_sequence</B> class appears in <a href="list7.htm">Listing 7</a>.</p>
+
+<h4><FONT COLOR="#000080">Now What?</FONT></H4>
+
+<p>I think the version of <B>table.cpp</B> in <a href="list7.htm">Listing 7</a> is a modest improvement over the one in <a href="list2.htm">Listing 2</a>. By turning line number sequences into an abstraction, the code for both <B>add_tree</B> and <B>put_tree</B> is a bit shorter and a bit clearer.</p>
+<p>I have not yet finished applying the principle that each class should hide a separate design decision. The <B>line_number_sequence</B> class hides the list implementation of a sequence, but the <B>cross_reference_table</B> class still encapsulates the structure of strings (as arrays) as well as the alphabetizing of those strings (in a binary tree). More refinements are yet to come. Stayed tuned. </p>
+
+<p><i><B>Dan Saks</B> is the president of Saks &amp; Associates, which offers training and consulting in C++ and C. He is active in C++ standards, having served nearly seven years as secretary of the ANSI and ISO C++ standards committees. Dan is coauthor of </i>C++ Programming Guidelines<i>, and codeveloper of the Plum Hall Validation Suite for C++ (both with Thomas Plum). You can reach him at 393 Leander Dr., Springfield, OH 45504-4906 USA, by phone at +1-937-324-3601, or electronically at <B>dsaks@wittenberg.edu</B>.</i></p>
+
+<h4><a href="../../../source/1999/sep99/saks.zip">Get Article Source Code</a></h4>
+
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

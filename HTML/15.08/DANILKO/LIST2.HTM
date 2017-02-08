@@ -1,0 +1,374 @@
+
+
+
+
+<HTML><HEAD>
+
+<TITLE>August 1997/Named Pipes Under Windows 95/Listing 2</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4>Listing 2:	CommsChannel implementation</h4>
+
+<pre>
+#define STRICT
+
+#include &lt;windows.h&gt;
+#include &lt;memory.h&gt;
+#include &lt;stdlib.h&gt;
+
+
+#include "channel.hpp"
+
+struct CommsData {
+   int   bufferSize;
+   int   fsStart;
+   int   fsNext;
+   bool  fsEmpty;
+   int   tsStart;
+   int   tsNext;
+   bool  tsEmpty;
+   int   fsOffset;
+   int   tsOffset;
+   };
+
+// general delayed open
+CommsChannel::CommsChannel() : opened(false), error(objectClosed) {
+   }
+
+// server open
+CommsChannel::CommsChannel(string name, int size) :
+      opened(false) {
+   open(name, size);
+   }
+
+// client open
+CommsChannel::CommsChannel(string name) : opened(false) {
+   open(name);
+   }
+
+CommsChannel::statusEnum
+CommsChannel::open(string name, int size) {
+   if (opened) {
+      return objectAlreadyOpen;
+      }
+
+   channelName = name;
+   opened = true;
+   error = ok;
+   string mapName =
+       "CommsChannel-" +  channelName;
+   string mutexName =
+       "CommsChannelMutex-" + channelName;
+   string fsNotEmptySemName =
+       "CommsChannelFsNotEmptySem-" + channelName;
+   string fsNotFullSemName =
+       "CommsChannelFsNotFullSem-" + channelName;
+   string tsNotEmptySemName =
+       "CommsChannelTsNotEmptySem-" + channelName;
+   string tsNotFullSemName =
+       "CommsChannelTsNotFullSem-" + channelName;
+
+   // get and own the mutex first so there isn't a race condition
+   error = ok;
+   generalMutex = NULL;    // need to be NULL so can close on error
+   fsNotEmptySem = NULL;
+   fsNotFullSem = NULL;
+   tsNotEmptySem = NULL;
+   tsNotFullSem = NULL;
+   data = NULL;
+   handle = NULL;
+
+   if (((generalMutex = CreateMutex(
+           NULL, true, mutexName.c_str())) == NULL) ||
+        (GetLastError() == ERROR_ALREADY_EXISTS) ) {
+      error = mutexCreationError;
+      }
+   else if (((fsNotEmptySem = CreateSemaphore( /* start out empty */
+                NULL, 0, 1, fsNotEmptySemName.c_str())) == NULL) ||
+            (GetLastError() == ERROR_ALREADY_EXISTS) ) {
+      error = mutexCreationError;
+      }
+   else if (((fsNotFullSem = CreateSemaphore( /* start not full */
+                NULL, 1, 1, fsNotFullSemName.c_str())) == NULL) ||
+            (GetLastError() == ERROR_ALREADY_EXISTS) ) {
+      error = mutexCreationError;
+      }
+   else if (((tsNotEmptySem = CreateSemaphore( /* start out empty */
+                NULL, 0, 1, tsNotEmptySemName.c_str())) == NULL) ||
+             (GetLastError() == ERROR_ALREADY_EXISTS) ) {
+      error = mutexCreationError;
+      }
+   else if (((tsNotFullSem = CreateSemaphore( /* start not full */
+                NULL, 1, 1, tsNotFullSemName.c_str())) == NULL) ||
+            (GetLastError() == ERROR_ALREADY_EXISTS) ) {
+      error = mutexCreationError;
+      }
+
+   if (error == ok) {
+      handle = CreateFileMapping(
+                 (HANDLE)0xffffffff, NULL, PAGE_READWRITE, 0,
+                 sizeof(CommsData) + (size + 4) * 2,
+                 mapName.c_str());
+      if (handle == NULL) {
+         error = channelCreationError;
+         }
+      else if (GetLastError() == ERROR_ALREADY_EXISTS) {
+         // someone has already opened this channel!
+         error = channelAlreadyExists;
+         }
+      }
+
+   if (error == ok) {
+      data = (CommsData*)MapViewOfFile(
+                           handle, FILE_MAP_WRITE, 0, 0, 0);
+      if (data == NULL) {
+         error = channelMappingError;
+         }
+      else {
+         // initialise things
+         server = true;
+
+         // align on double word boundary
+         data-&gt;fsOffset = (sizeof(CommsData) + 3) &amp; 0xfffffffc;
+         data-&gt;tsOffset = (data-&gt;fsOffset + size + 7) &amp; 0xfffffffc;
+         fsBuffer = reinterpret_cast&lt;char*&gt;(data + data-&gt;fsOffset);
+         tsBuffer = reinterpret_cast&lt;char*&gt;(data + data-&gt;tsOffset);
+
+         data-&gt;bufferSize = size;
+         data-&gt;fsStart = 0;
+         data-&gt;tsStart = 0;
+         data-&gt;fsNext = 0;
+         data-&gt;tsNext = 0;
+         data-&gt;fsEmpty = true;
+         data-&gt;tsEmpty = true;
+         }
+      }
+
+   if (error != ok) {
+      if (data) {UnmapViewOfFile(data);}
+      if (handle) {CloseHandle(handle);}
+      if (fsNotEmptySem) {CloseHandle(fsNotEmptySem);}
+      if (fsNotFullSem) {CloseHandle(fsNotFullSem);}
+      if (tsNotEmptySem) {CloseHandle(tsNotEmptySem);}
+      if (tsNotFullSem) {CloseHandle(tsNotFullSem);}
+      if (generalMutex) {
+         ReleaseMutex(generalMutex);
+         CloseHandle(generalMutex);
+         }
+      }
+   else {
+      ReleaseMutex(generalMutex);
+      }
+
+   return error;
+   }
+
+CommsChannel::~CommsChannel() {
+   close();
+   }
+
+CommsChannel::statusEnum
+CommsChannel::close() {
+   if (!opened) {
+      return objectClosed;
+      }
+
+   if (!error) {
+      UnmapViewOfFile(data);
+      CloseHandle(handle);
+      ReleaseMutex(generalMutex);
+      CloseHandle(generalMutex);
+      }
+   error = objectClosed;
+   opened = false;
+   return ok;
+   }
+
+// not shown: client side open() function
+// ... 
+
+
+int
+CommsChannel::write(char* buffer, int size,
+                bool chunk, DWORD timeout) {
+   int roomAvailable;
+   int status = -1;
+   bool wasEmpty;
+   if (error &lt; 0) { // if bad channel don't get mutex
+      return -1;
+      }
+   char* channel = server ? fsBuffer : tsBuffer;
+   int&amp; start = server ? data-&gt;fsStart : data-&gt;tsStart;
+   int&amp; next = server ? data-&gt;fsNext : data-&gt;tsNext;
+   bool&amp; empty = server ? data-&gt;fsEmpty : data-&gt;tsEmpty;
+   HANDLE&amp; notEmptySem = server ? fsNotEmptySem : tsNotEmptySem;
+   HANDLE&amp; notFullSem = server ? fsNotFullSem : tsNotFullSem;
+
+   roomAvailable = blockOnChannel(size, chunk, timeout, false,
+                     generalMutex, notFullSem, start, next);
+
+   if (!error) {
+      // have mutex and semaphore at this point and know not full
+      wasEmpty = (start == next);      // remember if channel
+                                       //  was empty
+      size = min(size, roomAvailable); // can only write
+      status = size;                   //  what's available
+      int moveSize = min(size, data-&gt;bufferSize - next);
+      memcpy(&amp;channel[next], buffer, moveSize);
+      next += moveSize;        // if copy done then start updated
+      size -= moveSize;
+      if (size &gt; 0) {
+         memcpy(channel, &amp;buffer[moveSize], size);
+         next = size;         // next wasn't quite right
+         }
+
+      if (next == start) {    // update the full/empty indicators
+         // must keep the not-full semaphore because it is
+         //  no longer true
+         }
+      else {
+         ReleaseSemaphore(notFullSem, 1, NULL);
+         }
+
+      if (wasEmpty &amp;&amp; (status &gt; 0)) { // we've written something
+         // so now must release the not-empty semaphore because
+         // it is now true
+         ReleaseSemaphore(notEmptySem, 1, NULL);
+         empty = false;
+         }
+      }
+
+   // Release the mutex!
+   ReleaseMutex(generalMutex);
+
+   return status;
+   }
+
+
+int
+CommsChannel::blockOnChannel(int size, bool chunk, DWORD timeout,
+                bool reading, HANDLE&amp; mutex, HANDLE&amp; semaphore,
+                int&amp; start, int&amp; next) {
+
+   DWORD    timeStart = GetTickCount();
+   DWORD    timeLeft = timeout;
+   DWORD    timePassed;
+   DWORD    waitResult;
+   int      amount;
+   bool     enoughData = false;
+   HANDLE   twoHandles[2] = {mutex, semaphore};
+
+   do {
+      waitResult =
+          WaitForMultipleObjects(2, twoHandles, true, timeLeft);
+
+      if (waitResult == WAIT_FAILED) {
+         error = waitError;
+         }
+      else if (waitResult == WAIT_TIMEOUT) {
+         error = waitTimeout;
+         }
+      else {
+         // we are in with the mutex
+         error = ok;
+         }
+
+      if (!error) {
+         // now we have the mutex and know that the buffer
+         // is not empty
+         if (reading) {
+            if (start == next) {amount = data-&gt;bufferSize;}
+            else if (next &gt; start) {amount = next - start;}
+            else {amount = data-&gt;bufferSize - start + next;}
+            }
+         else {
+            if (start == next) {amount = data-&gt;bufferSize;}
+            else if (start &gt; next) {amount = start - next;}
+            else {amount = data-&gt;bufferSize - next + start;}
+            }
+         if (!chunk || amount &gt;= size) {
+            // have enough data - get out of the loop
+            enoughData = true;
+            }
+         else {
+            // not enough data - have to reblock
+            ReleaseSemaphore(semaphore, 1, NULL);
+            ReleaseMutex(mutex);
+            Sleep(0);                        // force yield
+            if (timeout != INFINITE) {
+               // Don't accumulate instead recalculate for precision
+               DWORD timeNow = GetTickCount();
+               if (timeNow &lt; timeStart) {
+                  // this doesn't seem too portable but I guess a
+                  // DWORD will never change!!
+                  timePassed = (timeNow + (0xffffffffL - timeStart));
+                  }
+               else {
+                  timePassed = timeNow - timeStart;
+                  }
+               timeLeft = timeout - timePassed;
+               }
+
+            }
+         }
+
+      } while (!error &amp;&amp; !enoughData &amp;&amp; (timeout &gt; timePassed));
+
+   if (!error) {
+      if (enoughData) {
+         return amount;
+         }
+      else {
+         // ran out of time
+         error = waitTimeoutChunkTooSmall;
+         return -1;
+         }
+      }
+   else {
+      return -1;
+      }
+   }
+
+// not shown: read() member function, roomToWrite(), bytesToRead()
+// ...
+
+string
+CommsChannel::noName = "No Name";
+const string&amp;
+CommsChannel::name() const {
+   if (!opened) {
+      return noName;
+      }
+   else {
+      return channelName;
+      }
+   }
+
+BOOL WINAPI
+DllEntryPoint(HINSTANCE,DWORD,LPVOID);
+
+__declspec(dllexport) BOOL WINAPI
+DllEntryPoint(HINSTANCE /*myHandle*/,
+              DWORD reason,
+              LPVOID    /*reserved*/) {
+   bool success = true;
+
+   switch (reason) {
+      case DLL_PROCESS_ATTACH:
+         break;
+      case DLL_THREAD_ATTACH:
+         break;
+      case DLL_THREAD_DETACH:
+         break;
+      case DLL_PROCESS_DETACH:
+         break;
+      default:
+         success = false;
+         break;
+      }
+
+   return success;
+   }
+
+//End of File
+</pre>
+</body></html>

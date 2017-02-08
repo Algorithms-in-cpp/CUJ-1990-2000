@@ -1,0 +1,157 @@
+<HTML><HEAD>
+<TITLE>February 1995/Programming Flash Memory/Listing 7</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 7 <I>Main programming routine</A></I></h4>
+<pre>/**********************************************************************
+Write data to the Flash Memory. Returns non-zero on success; on error
+zero is returned and fm_err contains failure data. The pDst and length
+parameters should be word aligned.
+
+The pScrBuf parameter determines the fate of words erased in a sector but
+not written with new data:
+       if (pScrBuf == NULL), then writes to partial sectors leave the
+              unwritten words of those sectors erased &amp; unwritten.
+       if (pScrBuf! = NULL), then *pScrBuf is assumed to point to at least
+              FMINFO.SectorSize bytes, and unwritten (but erased) words
+              in partially written sectors will be saved (in the scratch
+              buffer) and re-written, maintaining their prior values.
+**********************************************************************/
+
+fm_write(pbase, pDst, pSrc, length, pScrBuf)
+unsigned short *pbase;           /* ptr to the base of the Flash memory */
+unsigned short *pDst;            /* where to write in Flash Memory space */
+unsigned short *pSrc;            /* bytes from here are copied to Flash */
+size_t length;                   /* copy this many bytes from pSrc to pDst */
+unsigned short *pScrBuf;         /* scratch buffer for partial sector writes */
+{
+       size_t wri_len;          /* # partial sector bytes of user data */
+       size_t keep_before;      /* # partial sector bytes prior to user data */
+       size_t keep_after;       /* # partial sector bytes after user data */
+       size_t offset;           /* word offsets for various uses */
+       size_t SectorAddrMask;   /* converts ptr to offset within a sector */
+       unsigned short *pSector; /* ptr to even sector boundary */
+       char errcode;            /* non-zero indicates a parameter error */
+
+       /* share this with other routines in this module: */
+       pBase = pbase;
+
+       /* clear out error structure: */
+       memset(&amp;fm_err, 0, sizeof(fm_err));
+
+       /* reset the chip and load FMInfo with info about it: */
+       if (!fm_status(pBase, (FMINFO *) 0))
+              return 0;
+
+       /* check input parameters for word alignment and overflow: */
+       errcode = 0;
+       if (((size_t) pDst &amp; 1) || (length &amp; 1))
+              errcode = 6;
+
+       else if (pDst + (length &gt;&gt; 1) pBase + (FMInfo.TotalSize&gt;&gt; 1))
+              errcode = 7;
+
+       /* these errors return length in pieces in the exp and act fields: */
+       if (errcode)
+       {       fm_error(pDst, (unsigned short) length &gt;&gt; 8,
+                          (unsigned short) length &amp; 0xFFFF, errcode);
+              return 0;
+       }
+
+       /* this masks off address bits indicating offsets into a sector: */
+       SectorAddrMask = FMInfo.SectorSize - 1;
+
+       /* see if we are starting on an even sector boundary: */
+       keep_before = ((size_t) pDst) &amp; SectorAddrMask;
+
+       /* if the first sector is a partial, do it separately: */
+       if (keep_before)
+       {
+              /* get a pointer to the start of the sector: */
+              pSector = pDst - (keep_before)) 1);
+
+              /* compute # bytes in this sector being written by user: */
+
+              wri_len = FMInfo.SectorSize - keep_before;
+              if (length &lt; wri_len)
+                     wri_len = length;
+
+              /* compute # bytes to keep after area being written: */
+              keep_after = FMInfo.SectorSize - keep_before - wri_len;
+
+              /* read existing Flash sector into scratch buffer: */
+              if (pScrBuf)
+                     memcpy(pScrBuf, pSector, FMInfo.SectorSize);
+
+              /* erase the sector: */
+              if (!fm_sector_erase(pDst, pDst))
+                     return 0;
+
+              /* copy the user's data to Flash: */
+              if (!fm_cpy(pDst, pSrc, wri_len))
+                     return 0;
+
+              /* restore data in sector before user's data: */
+
+              if (pScrBuf)
+                     if (!fm_cpy(pSector, pScrBuf, keep_before))
+                            return 0;
+
+              /* restore data in sector after user's data: */
+              if (pScrBuf &amp;&amp; keep_after)
+              {        offset = (wri_len + keep_before) &gt;&gt; 1;
+                     if (!fm_cpy(pSector + offset,
+                               pScrBuf + offset, keep_after))
+                            return 0;
+              }
+
+              /* bump pointers: */
+              pDst += (wri_len &gt;&gt; 1);
+              pSrc += (wri_len &gt;&gt; 1);
+              length -= wri_len;
+
+              /* quit if done: */
+              if (!length)
+                     return 1;
+       }
+
+       /* see if we are ending on an even sector boundary: */
+       wri_len = length &amp; SectorAddrMask;
+
+       /* handle partial final sector: */
+       if (wri_len)
+       {
+              /* get a pointer to the start of the final sector: */
+              pSector = pDst + ((length - wri_len) &gt;&gt; 1);
+
+              /* compute # bytes to keep after area being written: */
+              keep_after = FMInfo.SectorSize - wri_len;
+
+              /* read partial existing Flash sector into scratch buffer: */
+              if (pScrBuf)
+                     memcpy(pScrBuf, pSector + (wri_len &gt;&gt; 1), keep_after);
+       }
+       /* erase the remaining sector(s): */
+
+       if (!fm_sector_erase(pDst, pDst + (length &gt;&gt; 1) - 1))
+              return 0;
+
+       /* copy the user's data to Flash: */
+       if (!fm_cpy(pDst, pSrc, length))
+              return 0;
+
+       /* restore data in sector after user's data: */
+       if (wri_len &amp;&amp; pScrBuf &amp;&amp; keep_after)
+       {       offset = wri_len &gt;&gt; 1;
+              if (!fm_cpy(pSector + offset, pScrBuf, keep_after))
+                     return 0;
+       }
+
+       /* return happy: */
+       return 1;
+}
+/* End of File */</pre>
+
+</BODY>
+</HTML>

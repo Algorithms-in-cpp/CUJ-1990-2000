@@ -1,0 +1,280 @@
+<HTML><HEAD>
+<TITLE>July 1999/Wrapping the Windows ODBC API/Figure 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Figure 1: The main ODBC classes ODBCEnvironment, ODBCConnection, and ODBCStatement</A></h4>
+<pre>
+// Base class for all ODBC classes
+class ODBCBase
+{            
+protected:
+ 
+   // Error handling status
+   RETCODE retcode;        // Last RETCODE 
+   long    nativeerror;    // Last native error
+   char    errorstate[16]; // Last error state
+   BOOL    errorHandlingEnabled;
+ 
+   ODBCBase() 
+      : retcode(SQL_SUCCESS), errorHandlingEnabled(TRUE),
+        nativeerror(0)
+   {*errorstate=0;}
+          
+public:
+
+   ~ODBCBase(){}
+         
+    RETCODE Retcode() const { return retcode; }        
+    LPCSTR  GetErrorState() const  { return errorstate  ; }
+    long    GetNativeError() const { return nativeerror; }
+    void    ClearLastError() 
+    { nativeerror=0; *errorstate=0; retcode=SQL_SUCCESS; }
+ 
+    // Enable/disable calling the ReportODBCProblem function 
+    // for each error
+    void    EnableErrorHandling(BOOL enable) 
+    { errorHandlingEnabled=enable; }
+    BOOL    IsErrorhandlingEnabled() const   
+    { return errorHandlingEnabled; }
+
+private:
+
+    operator = (const ODBCBase &amp; d);  // Disable operator equal
+    ODBCBase(const ODBCBase &amp;);       // Disable copy constructor
+};
+
+
+// Environment class is private and is used only by 
+// class ODBCConnection          
+class ODBCEnvironment : public ODBCBase      
+{
+   HENV hEnvironment; // ODBC Environment handle
+
+protected:
+ 
+   ODBCEnvironment();
+  
+public: 
+  
+   ~ODBCEnvironment();
+  
+protected:
+ 
+   BOOL AllocEnv();
+   BOOL FreeEnv();
+  
+   BOOL Valid()  const { return hEnvironment!=SQL_NULL_HENV; }
+   HENV Handle() const { return hEnvironment; }
+
+   BOOL 
+   ErrorInformation(LPCSTR msg,BOOL disableTemporarily=FALSE);
+  
+   friend class ODBCConnection;
+};
+          
+
+// ODBC Connection class          
+class ODBCConnection : public ODBCBase
+{
+   ODBCEnvironment &amp; Environment;
+   static int CountConnections;
+
+   HDBC hConnection;
+   int  CountStatements;  
+   BOOL Connected;
+
+public:
+ 
+   ODBCConnection();
+  ~ODBCConnection(); 
+
+   BOOL AllocConnect();
+   BOOL FreeConnect();
+
+   BOOL 
+   Connect(LPCSTR ConnectionString, 
+      CString * FinalConnectionString=NULL, HWND ParentWnd=NULL,
+      BOOL DisableErrorHandlingWhileConnecting=FALSE);
+   BOOL Disconnect(); 
+
+   BOOL Valid() const { return hConnection!=SQL_NULL_HDBC; }
+   HDBC Handle() const { return hConnection; }
+   BOOL IsConnected() const 
+   { return hConnection!=SQL_NULL_HDBC &amp;&amp; Connected; }   
+                                       
+   BOOL 
+   SetConnectOption(unsigned short fOption, 
+      unsigned long vParam);                                    
+   BOOL 
+   SetConnectOption(unsigned short fOption, LPSTR str);                                    
+   BOOL 
+   GetConnectOption(unsigned short fOption, 
+      unsigned long * vParam);
+   BOOL 
+   GetConnectOption(unsigned short fOption, 
+      LPSTR str, int size);
+                                 
+   BOOL GetInfo(unsigned short fInfoType,LPSTR str, int size);
+   BOOL GetInfo(unsigned short fInfoType,short * num)
+   { return GetInfo(fInfoType,(LPSTR)num,sizeof(num)); }
+   BOOL GetInfo(unsigned short fInfoType,DWORD &amp; num)          
+   { return GetInfo(fInfoType,(LPSTR)num,sizeof(num)); }
+                                                
+   BOOL EnableTransactions(BOOL On)
+   { return SetConnectOption(SQL_AUTOCOMMIT, 
+               On ? SQL_AUTOCOMMIT_OFF : SQL_AUTOCOMMIT_ON);}
+   BOOL Transact(unsigned short fType);     
+   BOOL Commit() { return Transact(SQL_COMMIT);}
+   BOOL Rollback() { return Transact(SQL_ROLLBACK);}
+       
+ private:                           
+                            
+   void AddStmt() 
+   { CountStatements++; ASSERT(CountStatements&gt; 0);} 
+   void DelStmt() 
+   { CountStatements--; ASSERT(CountStatements&gt;=0);}
+
+   static ODBCEnvironment &amp; GetStaticEnv();
+
+protected:
+
+   BOOL 
+   ErrorInformation(LPCSTR msg,BOOL disableTemporarily=FALSE);
+
+   friend class ODBCStatement;
+};                 
+
+                   
+// ODBC Statement class
+class ODBCStatement : public ODBCBase   
+{
+   HSTMT hStatement;          // Statement handle 
+   CString LastCommand,Description; // Information for errors          
+   ODBCConnection * pConnection; // Database connection object
+   int NumErrors,NumWarnings; // Number of errors that 
+                              // have occurred
+   int  CurrentCol;  // What column are we positioned on
+   long CurrentRow;  // What row are we positioned on
+  
+public:
+  
+   ODBCStatement(ODBCConnection * pCon, LPCSTR description=NULL);
+   ODBCStatement(HSTMT hstmt, LPCSTR description=NULL);  
+   ODBCStatement(LPCSTR description=NULL);
+   ~ODBCStatement(); 
+  
+   BOOL AllocStmt(ODBCConnection * pCon); 
+   BOOL AllocStmt(HDBC hCon);         
+  
+   BOOL FreeStmt(unsigned short option=SQL_DROP); 
+  
+   BOOL  Valid()  const   { return hStatement!=SQL_NULL_HSTMT; }
+   HSTMT Handle() const   { return hStatement; }    
+     
+   BOOL 
+   SetStmtOption(unsigned short fOption, unsigned long vParam);                                    
+   BOOL SetStmtOption(unsigned short fOption, LPSTR str);                                    
+   BOOL 
+   GetStmtOption(unsigned short fOption, unsigned long * vParam);
+   BOOL 
+   GetStmtOption(unsigned short fOption, LPSTR str, int size);
+                    
+   BOOL SetCursorName(LPSTR name);
+   BOOL GetCursorName(LPSTR name, int size);                  
+  
+   BOOL 
+   ExecDirect(LPCSTR SqlCommand, 
+      BOOL DisableErrorNotification=FALSE);
+   BOOL Execute(BOOL DisableErrorNotification=FALSE);
+   BOOL 
+   Prepare(LPCSTR SqlCommand, 
+      BOOL DisableErrorNotification=FALSE);
+   BOOL 
+   Fetch(BOOL GenerateWarningIfNoDataFound=FALSE, 
+      BOOL DisableErrorNotification=FALSE);
+  
+   BOOL 
+   SetPos(unsigned short irow, 
+      unsigned short fOption=SQL_POSITION, 
+      unsigned short fLock=SQL_LOCK_NO_CHANGE);
+
+   enum 
+   EGetData { GD_FALSE, GD_TRUE, GD_NULL_DATA, GD_MORE_DATA, 
+      GD_NO_MORE_DATA };
+   EGetData 
+   GetDataHelper(int column, short paramType, LPVOID str, 
+      long size, long * pcbValue = NULL);// Helper
+   EGetData 
+   GetDataBinary(int column, LPVOID buff, long size,
+      long * pcbValue=NULL);  
+   EGetData 
+   GetData(int column, LPSTR str, long size, 
+      long * pcbValue=NULL);
+   // not shown: GetData functions for various types ...
+
+   BOOL 
+   BindColHelper(int column, short paramType, LPVOID buff, 
+      long len, long * pcbValue=NULL);
+   BOOL 
+   BindColBinary(int column, LPVOID buff, long len, 
+      long * pcbValue=NULL);  
+   BOOL 
+   BindCol(int column, LPSTR buff, long len, 
+      long * pcbValue=NULL);
+   // not shown: BindCol functions for various types ...
+
+   BOOL 
+   BindParameterHelper(int index, short paramType, 
+      short sqlType, LPCVOID buff, long len=0, 
+      long * pcbValue=NULL);
+   BOOL 
+   BindParameterLongBinary(int index, LPCVOID buff, 
+      long * pcbValue);     
+   BOOL 
+   BindParameterLongChar(int index, LPCSTR buff, 
+      long * pcbValue=NULL);
+   BOOL 
+   BindParameterBinary(int index, LPCVOID buff, long * pcbValue);
+   BOOL 
+   BindParameter(int index, LPCSTR buff, long * pcbValue=NULL);
+   // not shown: BindParameter functions for various types ...
+
+   BOOL RowCount(long * count);  // Number of rows affected 
+                                 // by last statement     
+   BOOL NumResultCols(short * count); // Number of columns 
+                                      // in result set
+   BOOL NumParams(short * count); // Number of parameters 
+                                  // in SQL statement 
+
+   BOOL 
+   ColAttributes(int column, unsigned short descType, 
+      long * value);
+   BOOL 
+   ColAttributes(int column, unsigned short descType,
+      LPSTR buff,int len);
+  
+   BOOL GetColumnName(int column,LPSTR buff, int len);
+   BOOL GetColumnType(int column,long * type);
+                                                         
+   int  GetNumErrors();   // Calling it resets counter to 0
+   int  GetNumWarnings(); // Calling it resets counter to 0
+   void ResetErrorCounters() { NumErrors=NumWarnings=0; }
+           
+   const CString &amp; GetLastCommand() const { return LastCommand; }
+   const CString &amp; GetDescription() const { return Description; }
+
+protected:
+                        
+   BOOL 
+   ErrorInformation(LPCSTR msg,BOOL disableTemporarily=FALSE);
+   BOOL AdditionalInformation(CString &amp; str);
+
+   void ShowColumnInformation(LPCSTR message, int column);
+   void ShowParamInformation(LPCSTR message, int index);
+               
+};
+
+</pre>
+</BODY>
+</HTML>

@@ -1,0 +1,735 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>April 1996/The Column that Needs a Name</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><A href="../tocapr.htm"><IMG src="../../toc.gif" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#ff0000">
+          Columns</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">The Column that Needs a
+          Name</FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000"> Dan Saks</FONT></H3>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">Recovering from Parsing
+          Errors</FONT></H3>
+          
+          <BLOCKQUOTE>
+               
+               <p>Adding error handling to even a simple
+                    parser can turn your code to spaghetti if you're not
+                    careful. This month Dan shows how to create clean
+                    error-handling code with C++ exceptions.<BR>
+                     &copy; 1996 by Dan Saks</p></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <p>Last month, I completed the design and
+                    implementation of a program that translates C++ declarations
+                    into English (see "Parsing C++ Declarations, Parts 1
+                    and 2," CUJ, February and March, 1996). Well, sort of.
+                    The program, called decl, behaves as advertised. decl parses
+                    a fairly wide variety of C++ declarations and, as far as
+                    I've been able to tell, accurately translates them into
+                    English. It even detects and diagnoses syntax errors.
+                    However, it doesn't cope with errors nearly as well as I
+                    would like. I can think of a few ways in which the program
+                    could do a better job with only modest effort on my part.
+                    I'd like to take on one of those improvements this month.</p>
+               
+               <p> My current concern is that the
+                    program does not recover from errors. When fed an erroneous
+                    declaration, decl posts an error message and terminates
+                    execution. Although it's not hard to restart the program, I
+                    think most users would take it as a kindness if the program
+                    would accept more declarations even after an error. There
+                    are several different ways to make this happen.</p>
+               
+               <h4><FONT COLOR="#000080">The Status Quo</FONT></H4>
+               
+               <p>All the parsing functions report
+                    errors by calling the parser::error function, shown in
+                    <A href="listing1.htm">Listing 1</a>.
+ parser::error simply
+                    writes an error message to the parser's output stream, and
+                    then calls the standard exit function, which terminates
+                    execution after closing the input and output streams. exit
+                    translates the status EXIT_FAILURE (defined in &lt;stdlib.h&gt;)
+                    into something that indicates unsuccessful program
+                    termination to the host environment.</p>
+               
+               <p> The exit function does a bit more in
+                    C++ than it does in C, namely, it invokes the destructors
+                    for all statically-allocated objects before terminating
+                    execution. In fact, it's the destructors that flush and
+                    close the stream objects. On the other hand, exit does not
+                    invoke destructors for automatically allocated (local)
+                    objects. However, in the case of the decl program, this is
+                    not a practical problem.</p>
+               
+               <p> Granted, the decl program uses plenty
+                    of local objects. Some are scalar objects, with types such
+                    as bool or token::category (an enumeration), which have
+                    trivial destructors. A trivial destructor is one that does
+                    nothing, and therefore a compiler's optimizer can eliminate
+                    it.</p>
+               
+               <p> Other local objects have class types,
+                    such as string and token, with non-trivial destructors that
+                    release dynamic memory. Although skipping the calls to these
+                    destructors causes memory leaks, these leaks are a problem
+                    only if the program continues running. But in this case the
+                    program stops running. In a typical hosted environment,
+                    program termination releases all of the program's memory to
+                    the operating system. In practice, the momentary leaks
+                    caused by exit do no lasting harm.</p>
+               
+               <h4><FONT COLOR="#000080">Restarting after an
+               Error</FONT></H4>
+               
+               <p>Let's look at the error recovery
+                    problem through the following example.</p>
+
+<PRE>
+int T::*f() const;
+</PRE>
+               
+               <p></p>
+               
+               <p>is a valid declaration, which decl
+                    pronounces as</p>
+               
+               <p></p>
+
+<PRE>
+f is ...
+const member function returning ...
+pointer to member of T with type ...
+int
+</PRE>
+               
+               <p></p>
+               
+               <p>Changing the left parenthesis in the
+                    declaration to a left bracket, as in</p>
+               
+               <p></p>
+
+<PRE>
+int T::*f[) const;
+</PRE>
+               
+               <p></p>
+               
+               <p>causes a syntax error. Currently, decl
+                    reports</p>
+               
+               <p></p>
+
+<PRE>
+error : ']' expected
+</PRE>
+               
+               <p></p>
+               
+               <p>and halts.</p>
+               
+               <p>You might argue that the error message
+                    should be</p>
+
+<PRE>
+error : '(' expected
+</PRE>
+               
+               <p></p>
+               
+               <p>because we accidentally (on purpose)
+                    typed a left bracket instead of a left parenthesis. But we
+                    know this only because we looked ahead and saw the trailing
+                    const, which suggests a member function declaration rather
+                    than an array declaration. However, the decl parser, like
+                    many C++ compilers, doesn't look that far ahead. decl's
+                    simple left-to-right parse decides to parse an array
+                    declarator because it sees a left bracket. As far as decl is
+                    concerned, the right parenthesis is the error, not the left
+                    bracket.</p>
+               
+               <p>Even though the error message doesn't
+                    bother me, the program's abrupt termination does. Changing
+                    decl to resume parsing is really two separate, but related,
+                    problems:</p>
+               
+               <p>1. How does the program transfer
+                    control from a deeply nested function call back out to the
+                    function that starts parsing a new declaration?</p>
+               
+               <p> 2. How does the scanner position the
+                    input to find a clean starting point for the next
+                    declaration?</p>
+               
+               <p> Let's consider these questions in
+                    terms of the previous example.</p>
+               
+               <p>The parser constructor initiates the
+                    parse for each declaration by calling simple_declaration.
+                    simple_declaration calls decl_specifier_seq. Given the
+                    erroneous declaration</p>
+
+<PRE>
+int T::*f[) const;
+</PRE>
+               
+               <p></p>
+               
+               <p>decl_specifier_seq eats up the int and
+                    returns to simple_declaration when it sees T.
+                    simple_declaration then calls declarator, which calls
+                    ptr_operator, which consumes the T::* and returns to
+                    declarator. declarator always follows a call to ptr_operator
+                    with a call to itself. At this point, the active function
+                    calls (those that have not yet returned) are</p>
+
+<PRE>
+parser (the constructor)
+simple_declaration
+declarator
+declarator
+</PRE>
+               
+               <p></p>
+               
+               <p>and the current token is f.</p>
+               
+               <p>Now, declarator calls
+                    direct_declarator, which advances the scanner to the left
+                    bracket and calls array_suffix. Finally, array_suffix spots
+                    the erroneous right parenthesis. The function calls are now
+                    six deep: the four calls listed above plus</p>
+
+<PRE>
+direct_declarator
+array_suffix
+</PRE>
+               
+               <p><BR>
+                     As with all other parsing functions, array_suffix reports
+                    the error by calling error. If error were to return to
+                    array_suffix, then array_suffix would continue parsing with
+                    the next token, namely, const. But then parser would be out
+                    of sync with the input. parser would issue at least one more
+                    error message, and maybe more, as it fumbled along trying to
+                    find some input it could recognize. This small flurry of
+                    error messages is an all-too-familiar occurrence with most C
+                    and C++ compilers.</p>
+               
+               <p> Most compilers try to salvage a
+                    damaged declaration, and resume parsing as soon after the
+                    error as possible. In so doing, they must determine if the
+                    error occurred because of missing tokens, extra tokens, or
+                    misspelled tokens. In general, it's a tough problem, and
+                    parsers often guess wrong.</p>
+               
+               <p> With a simple interactive tool such
+                    as decl, there's no need to try to salvage the declaration.
+                    None of the later declarations depend on the results of
+                    earlier declarations. Therefore, decl should do the best it
+                    can to start afresh with the next declaration. In
+                    particular, it should escape from all those parsing function
+                    calls back to the parser constructor without parsing any
+                    more of the offending declaration. At the same time, the
+                    scanner should discard the remaining tokens of the
+                    declaration. Thus, when the constructor loops around and
+                    calls simple_declaration again, there shouldn't be any
+                    residual input debris to interfere with parsing the next
+                    declaration.</p>
+               
+               <p> Of the two problems:</p>
+               
+               <p>1. escaping from deeply-nested
+                    function calls, and</p>
+               
+               <p> 2. discarding tokens,</p>
+               
+               <p> solving the latter is easier, so
+                    we'll solve it first.</p>
+               
+               <h4><FONT COLOR="#000080">Discarding Tokens</FONT></H4>
+               
+               <p>I suspect that most decl users would
+                    enter one declaration per line. Therefore, decl would
+                    probably behave pretty reasonably if, after an error, the
+                    scanner would just discard the remainder of the current
+                    input line. Then the next call to scanner::get would begin
+                    scanning with the first character of the next line.</p>
+               
+               <p> On the other hand, decl does accept
+                    more than one declaration per line. For example, given</p>
+
+<PRE>
+int *int p; const int *const q;
+</PRE>
+               
+               <p></p>
+               
+               <p>there's no need to skip the second
+                    declaration just because of an error in the first. So
+                    discarding characters to the next semicolon also seems
+                    reasonable.</p>
+               
+               <p>I decided to do it both ways. I added
+                    a new scanner member function called reset which discards
+                    input characters up to and including the next semicolon or
+                    newline, whichever comes first. As a precaution against an
+                    infinite loop, reset also stops discarding characters if it
+                    encounters EOF. An implementation for scanner::reset appears
+                    in <A href="listing2.htm">Listing 2</a>.
+</p>
+               
+               <p> scanner::reset also sets the
+                    scanner's private data members previous_token,
+                    current_token, and next_token to the default token value.
+                    This gives them the same value they had after completion of
+                    the scanner constructor.</p>
+               
+               <h4><FONT COLOR="#000080">Retreating from
+               Nested Calls</FONT></H4>
+               
+               <p>Once it's discovered an error, decl
+                    should transfer control back to the parser constructor so it
+                    can start parsing the next declaration from the top. To do
+                    this, decl must retreat from all the active parsing function
+                    calls without actually parsing anything. I will look at
+                    three different solutions to this problem.</p>
+               
+               <p> The first solution requires that
+                    every parsing function return an error indicator to inform
+                    its caller that it caught an error. Each caller so informed
+                    must immediately return the same error indicator to its
+                    caller, without any further parsing.</p>
+               
+               <p> Presently, every parsing function
+                    returns a string containing the translation for part of the
+                    declaration. One tactic for implementing error indicators is
+                    to redeclare every parsing function so that it returns a
+                    boolean, where false indicates an error. Then each parsing
+                    function would have to return the translation string through
+                    a parameter of type string &amp; (reference to non-const
+                    string).</p>
+               
+               <p> For example, without error recovery,
+                    the declaration for the declarator parsing function looks
+                    like:</p>
+
+<PRE>
+string declarator();
+</PRE>
+               
+               <p></p>
+               
+               <p>and a typical call looks like:</p>
+               
+               <p></p>
+
+<PRE>
+string d = declarator();
+</PRE>
+               
+               <p></p>
+               
+               <p>Using a boolean return value as above,
+                    the declaration becomes:</p>
+               
+               <p></p>
+
+<PRE>
+bool declarator(string &amp;);
+</PRE>
+               
+               <p></p>
+               
+               <p>and a typical call expands to:</p>
+               
+               <p></p>
+
+<PRE>
+string d;
+if (!declarator(d))
+    return false;
+</PRE>
+               
+               <p><BR>
+                     In general, using a separate boolean return is a good
+                    approach, but for this program, it's overkill. The parsing
+                    functions do not return arbitrary strings &#151; the translation
+                    strings have a restricted format. Thus, you can easily
+                    select a distinct string value as the error indicator, with
+                    confidence that decl will never mistake the error string for
+                    a valid translation string.</p>
+               
+               <p> Using an error string, you can keep
+                    the parsing function declarations as they were without the
+                    error recovery. However, you must rewrite the typical call
+                    to look something like:</p>
+
+<PRE>
+string d = declarator();
+if (d == an_error)
+    return an_error;
+</PRE>
+               
+               <p></p>
+               
+               <p>Whether you use a boolean or a string
+                    as the return type, adding this style error recovery
+                    increases the parser's source code by about 15%.</p>
+               
+               <p><A href="listing3.htm">Listing 3</A>
+                    shows the complete decl parser with error recovery using a
+                    string as the error indicator. The parser class declares the
+                    error string, an_error, as a private static const data
+                    member. The corresponding data member definition:</p>
+
+<PRE>
+const string parser::an_error = "?";
+</PRE>
+               
+               <p></p>
+               
+               <p>appears immediately after the parser
+                    class definition.</p>
+               
+               <p>All the parsing functions return a
+                    string (either a valid translation string or an_error)
+                    except error and must_be. In the original decl parser sans
+                    error recovery, error (<A href="listing1.htm">Listing 1</a>)
+
+                    had a void return. It didn't return a value because it
+                    didn't even return. error's call to exit sent control back
+                    to the host environment. The error function in
+                    <A href="listing3.htm">Listing 3</a>
+no longer calls exit;
+                    it calls input.reset() instead. So now error returns to its
+                    caller, but still has nothing to return.</p>
+               
+               <p> The previous incarnation of must_be
+                    also returned void. Now it returns a bool, where false means
+                    it found a syntax error. Why use bool instead of string?
+                    Unlike the other parser functions, must_be does not return a
+                    translation string. Consequently, you would need yet another
+                    private data member</p>
+
+<PRE>
+static const string not_an_error;
+</PRE>
+               
+               <p></p>
+               
+               <p>as the return value when must_be does
+                    not detect an error. That would be silly. A bool does the
+                    job just fine.</p>
+               
+               <h4><FONT COLOR="#000080">Jumping Out of Nested
+               Calls</FONT></H4>
+               
+               <p>A parser with return values as error
+                    indicators works pretty well, but it is obviously more
+                    complicated than a parser that just exits on an error. The
+                    error analysis makes the translation from grammar rules to
+                    parsing functions more difficult, and raises the odds that
+                    you'll make a mistake in the process.</p>
+               
+               <p> The Standard C library header &lt;setjmp.h&gt;
+                    provides a relatively simple mechanism for escaping from
+                    many levels of active function calls. &lt;setjmp.h&gt;
+                    defines a macro, setjmp, which takes a "snapshot"
+                    of a program, and a function, longjmp, which restores a
+                    program to its state at the time of a previous snapshot. &lt;setjmp.h&gt;
+                    also defines a type, jmp_buf, for declaring objects that can
+                    store a snapshot.</p>
+               
+               <p><A href="listing4.htm"> Listing 4</A>
+                    shows the decl parser rewritten using setjmp and longjmp to
+                    recover from parsing errors. The parser class definition in
+                    <A href="listing4.htm">Listing 4</a>
+declares a private
+                    member, restart, of type jmp_buf. The parser constructor
+                    calls</p>
+
+<PRE>
+setjmp(restart);
+</PRE>
+               
+               <p></p>
+               
+               <p>to store the state of the program in
+                    restart. This establishes the point where the parser will
+                    resume execution after an error.</p>
+               
+               <p>The error function in
+                    <A href="listing4.htm">Listing 4</a>
+is the same as in
+                    <A href="listing3.htm">Listing 3</a>,
+ except for the
+                    additional call to</p>
+
+<PRE>
+longjmp(restart, 1);
+</PRE>
+               
+               <p></p>
+               
+               <p>at the end. This call transfers
+                    control back to the statement after the setjmp call that
+                    took the snapshot that's stored in restart. In fact, longjmp
+                    fools the program into thinking it's just returning from
+                    setjmp.</p>
+               
+               <p>longjmp never returns to its caller.
+                    Therefore, its return type is void. However, setjmp returns
+                    an int whose value indicates whether it is returning from a
+                    call to itself or from a call to longjmp. When the program
+                    calls setjmp directly, setjmp returns zero. When setjmp
+                    returns from an ersatz call induced by a call to longjmp, it
+                    returns a non-zero value. The second argument to longjmp
+                    becomes the return value for setjmp. However, longjmp cannot
+                    trick setjmp into returning zero. If longjmp's second
+                    argument is zero, setjmp returns 1.</p>
+               
+               <p> As interesting as all this is, the
+                    decl program doesn't need to to look at setjmp's return
+                    value. The parser constructor simply ignores it.</p>
+               
+               <p> Using longjmp requires considerably
+                    less programming effort than using error return values.
+                    Other than error and the constructor, all of the parser
+                    member functions are exactly the same as they were without
+                    any error recovery whatsoever. However, using longjmp does
+                    have a serious drawback in C++ programs: longjmp does not
+                    invoke destructors for automatic (local) objects in the
+                    active functions that it terminates.</p>
+               
+               <p> For instance, many parsing functions
+                    contain local string objects. If a longjmp call terminates a
+                    parsing function as it transfers control back to the parser
+                    constructor, it does not invoke the destructors for the
+                    string objects automatically-allocated by that function.</p>
+               
+               <p> Bypassing destructors often results
+                    in memory leaks and other resource-management problems. The
+                    destructors don't get the opportunity to release previously
+                    allocated resources. Moreover, a longjmp that bypasses
+                    destructors can wreak havoc with a program's
+                    exception-handling mechanism. Thus, a program that tries to
+                    use longjmp to bypass destructors has undefined behavior.</p>
+               
+               <p> Here's a case in point. I compiled
+                    <A href="listing4.htm">Listing 4</a>
+using Borland C++
+                    4.5, and linked with the scanner appearing in Listing 2 from
+                    last month. By default, Borland compiles with exception
+                    handling enabled. When I executed the resulting decl
+                    program, it terminated with the message</p>
+
+<PRE>
+Null pointer assignment
+</PRE>
+               
+               <p>whenever it detected a syntax error
+                    and called longjmp. When I recompiled the program with
+                    exception handling disabled (the -x- command line option),
+                    the program appeared to run properly, recovering quite
+                    nicely from syntax errors. No doubt, the poor program
+                    suffers from internal bleeding every time it detects an
+                    input error, but it puts up a very brave front.</p>
+               
+               <h4><FONT COLOR="#000080">Throwing an Exception</FONT></H4>
+               
+               <p>You can avoid the memory leaks and
+                    undefined behaviors of longjmp by using exception handling
+                    instead. Rather than digress into a general discussion of
+                    exception handling, I'll present just enough to solve the
+                    problem at hand. I'll fill in more details in the
+                    not-too-distant future. Using exception handling requires
+                    only a handful of changes to the decl parser in
+                    <A href="listing4.htm">Listing 4</a>.
+</p>
+               
+               <p> First, change the longjmp call in
+                    parser::error to a throw expression. Since this is the only
+                    exception that the program catches, the type and value that
+                    it throws don't matter all that much. It could throw an int,
+                    as in</p>
+
+<PRE>
+throw 1;
+</PRE>
+               
+               <p></p>
+               
+               <p>or a null terminated string, as in</p>
+               
+               <p></p>
+
+<PRE>
+throw "?";
+</PRE>
+               
+               <p><BR>
+                     The parser catches the exception with a handler in the
+                    parser constructor. The throw type is important only in that
+                    the formal parameter type in the handler's catch clause must
+                    match the throw type. For example, if the program throws an
+                    int, any of the following catch clauses can catch it:</p>
+
+<PRE>
+catch (int i)
+catch (int &amp;i)
+catch (const int &amp;i)
+</PRE>
+               
+               <p><BR>
+                     The matching rules for exceptions are much stricter than
+                    for function parameter passing. A catch clause such as</p>
+
+<PRE>
+catch (long n)
+</PRE>
+               
+               <p></p>
+               
+               <p>will not catch a thrown int, even
+                    though int promotes to long in other contexts.</p>
+               
+               <p>I used neither int nor string as the
+                    throw type. I thought it best not to confuse the throw type
+                    with other types in the program, so I defined</p>
+
+<PRE>
+struct recoverable_error { };
+</PRE>
+               
+               <p></p>
+               
+               <p>as a private member of the parser
+                    class. The throw expression in the error function is thus</p>
+               
+               <p></p>
+
+<PRE>
+throw recoverable_error();
+</PRE>
+               
+               <p><BR>
+                     The operand recoverable_error() creates a temporary object
+                    of type recoverable_error using a compiler-generated default
+                    constructor. recoverable_error has no data members, so
+                    there's not much for that constructor to do. You cannot
+                    write the throw as just</p>
+
+<PRE>
+throw recoverable_error;
+</PRE>
+               
+               <p></p>
+               
+               <p>because a throw-expression throws
+                    objects, not types.</p>
+               
+               <p><A href="listing5.htm">Listing 5</A>
+                    shows the decl parser with error recovery implemented using
+                    exception handling. Aside from the definition for
+                    parser::recoverable_error and the throw-expression in
+                    parser::error, the only changes from<A href="listing4.htm">
+                         Listing 4</a>
+are in the parser constructor. Let's look
+                    there.</p>
+               
+               <p> The while loop that repeatedly calls
+                    simple_declaration is now wrapped inside the
+                    compound-statement of a try-block, so it looks something
+                    like:</p>
+
+<PRE>
+try
+    {
+    while (...)
+        {
+        string s =
+        simple_declaration();
+        ...
+        }
+    }
+catch (const recoverable_error &amp;re)
+    {
+    }
+</PRE>
+               
+               <p></p>
+               
+               <p>If any function called directly or
+                    indirectly from the try-block's compound-statement throws an
+                    exception of type parser::recoverable_error, the try-block's
+                    handler (starting with the keyword catch) will catch it.</p>
+               
+               <p> The declaration in the handler's
+                    catch clause declares reference re as its formal parameter.
+                    When this handler catches an exception, re binds to a copy
+                    of the thrown object so that the handler can access the
+                    thrown value. But in this case, the handler doesn't care
+                    what that value is. The parser throws exceptions to transfer
+                    control, not to transmit a value. Therefore, the handler
+                    could omit the formal parameter name re from the
+                    declaration.</p>
+               
+               <p> After the handler catches the
+                    exception, it should transfer control back to the start of
+                    the constructor, so the flow will reenter the try-block and
+                    parse another declaration. Therefore, I wrapped the entire
+                    try-block in a larger, seemingly infinite loop. Of course, I
+                    don't want the loop repeating forever, so I also added a
+                    break as the last statement of the try-block's compound
+                    statement. (Refer to <A href="listing5.htm">Listing 5</a>.
+)
+                    Thus, if the while loop terminates normally (by reaching the
+                    end of the input), control falls to the break, which
+                    terminates the outer loop.</p>
+               
+               <p> I'm reasonably pleased with this
+                    parser. Integrating the exception handling required very
+                    little effort on my part, and the resulting program seems
+                    well-behaved. Adding exception handling seems to increase
+                    the size of the executable image by 10-15%, but I have yet
+                    to explore compile options to reduce the size.</p>
+               
+               <p> We will explore exception handling in
+                    greater depth over the coming year.</p>
+               
+               <p><I>Dan Saks is the president of Saks &amp;Associates,
+                    which offers consulting and training in C++ and C. He is
+                    secretary of the ANSI and ISO C++ committees. Dan is
+                    coauthor of C++ Programming Guidelines, and codeveloper of
+                    the Plum Hall Validation Suite for C++ (both with Thomas
+                    Plum). You can reach him at 393 Leander Dr., Springfield OH,
+                    45504-4906, by phone at (513)324-3601, or electronically at
+                    dsaks@wittenberg.edu.</I></p>
+
+<h4><a href="../../../source/1996/apr96/saks.zip">Get Article Source Code</a></h4>
+
+ </BLOCKQUOTE>
+     </BODY>
+</HTML>

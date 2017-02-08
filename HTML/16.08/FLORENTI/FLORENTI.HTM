@@ -1,0 +1,215 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>August 1998/Creating Simple Persistent Objects</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocaug.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Creating Simple Persistent Objects</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Alberto Florentin</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Persistent objects aren't all that hard to implement, but they do take a bit of, well, persistence.</p></BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>About two years ago, I wrote a program to simulate the oscillation of a spring for physics students. I wanted to turn this program into an "authoring" program, which would allow a teacher (not a programmer) to prepare a sequence of simulations for students. The authoring program would enable the teacher to control initial values and other parameters. It needed to pass various data structures from the user interface (initially Delphi) to the simulator, which was implemented as a DLL. Each simulation would also be accompanied with text, might have a multiple-choice question, or show a graphic.</p>
+
+<p>I saved all this information in a Paradox database, which already had appropriate fields for the text and graphics. However, saving the various numeric parameters required a field for each of them. Despite saving a lot of flags in the bits of a long integer, the record turned out to have a messy 30 fields, of which 25 were parameters. Worse, even though those values started and ended as organized data structures, they had to be moved individually in and out of database fields. Debugging and extending this part of the program was quite difficult <a href="#1">[1]</a>.</p>
+
+<p>When I next had to write a similar authoring program, I tried to find a more flexible mechanism that would write to the database any needed object with a minimum of coding. I also wanted to avoid disorganized storage of information among various database fields; I wanted to maintain type safety; and I wanted reusability in the sense that I could easily add new object types in a new application. What I came up with was a simple object persistence technique.</p>
+<h4><FONT COLOR="#000080">An Approach to Persistence</FONT></H4>
+
+<p>My persistence technique relies on a combination of templates, RTTI (Run Time Type Information), and the <B>map</B> container from STL (Standard Template Library). I write each of the objects I need to one Blob (Binary Large Object) field <a href="#2">[2]</a>. Once I've written an object to a Blob field, I can later get a copy of it and find out its type.</p>
+
+<p>I easily extended the mechanism to write my objects to a disk file, and read them back sequentially. Since this is a more standard solution, I am going to present that technique here <a href="#3">[3]</a>.</p>
+
+<h4><FONT COLOR="#000080">User Interface to Persistence</FONT></H4>
+
+<p>The program in <A HREF="list1.htm">Listing 1</A> demonstrates the use of the simple object I/O mechanism. You need two classes, declared in the header file <B>UIOObj.h</B> (<A HREF="list2.htm">Listing 2</A>), that do the I/O for your objects. One is <B>TIOObjectBase</B>. The other is a class template derived from <B>TIOObjectBase</B>:</p>
+
+<pre>
+template&lt;class T&gt; class TIOObject
+</pre>
+
+<p>The template parameter <B>T</B> is a placeholder for the types (<B>struct</B>s or classes) for which you want to provide file I/O. As a template, <B>TIOObject</B> creates (instantiates) a different class for every type of object you use.</p>
+
+<p><B>TIOObject</B> has one public constructor with one argument of the same type as the template parameter, the object that you want to write.</p>
+
+<h4><FONT COLOR="#000080">Writing Simple Objects</FONT></H4>
+
+<p>Look at the <B>writeFile</B> function (<A HREF="list1.htm">Listing 1</A>), which writes some objects of type <B>X</B>, <B>Y</B>, and <B>XY</B> defined in the beginning of the program, to see some equivalent ways of using <B>TIOObject</B> for output. To write an object <B>x</B> of type <B>X</B> to a file stream pointed to by <B>fstr</B>, you must construct an object of <B>TIObject&lt;X&gt;</B> with <B>x</B> as a parameter. Then, call its <B>write(fstream*)</B> method with a pointer to a file stream as a parameter. The two steps can be combined into one:</p>
+
+<pre>
+TIOObject&lt;X&gt;(x).write(fstr);
+</pre>
+
+<p>or</p>
+
+<pre>
+TIOObject&lt;X&gt;(X(20)).write(fstr);
+</pre>
+
+<p>if your class has a suitable constructor like <B>X</B> does.</p>
+
+<h4><FONT COLOR="#000080">Reading Simple Objects</FONT></H4>
+
+<p>Input is trickier. Function <B>useFile</B> (<A HREF="list1.htm">Listing 1</A>) shows how to get input and process it.</p>
+
+<p>Since the program does not know what type of object it is going to read, the input cannot go to <B>TIObject&lt;X&gt;</B> or <B>TIOObject&lt;Y&gt;</B>, etc. Instead, you must use a pointer to the common base class <B>TIOObjectBase</B>:</p>
+
+<pre>
+TIOObjectBase* pIOObjectBase;
+
+pIOObjectBase = TIOObjectBase::Create(*pfstream);
+</pre>
+
+<p>If the read is successful, <B>pIOObjectBase</B> points to a <B>TIOObject&lt;X&gt;</B> or a <B>TIOObject&lt;Y&gt;</B> type object, etc., which contains one of your objects (here an <B>X</B>, <B>Y</B>, or <B>XY</B>). But to use the <B>TIOObject</B>, you need to know the kind of object it contains and obtain a pointer to that object. So, you must write code for each class you want to process.</p>
+
+<p>Every <B>TIOObject</B> template class provides its own static function <B>PtrData(TIOObjectBase*)</B>, which returns either zero or a pointer to the contained object. For the <B>X</B> objects, for example, the code for obtaining the pointer is</p>
+
+<pre>
+if ( X* p = TIOObject&lt;X&gt;::PtrData(pIOObjectBase) )
+{
+         // process the p as a X*
+}
+</pre>
+
+<p>That's all there is to doing input. However, notice the <B>try</B> block enclosing the <B>Create(*pfstream)</B> input code. End of file is recognized by catching a member exception of <B>TIOObjectBase</B>. The <B>TIOObjectBase::EUnknownClass</B> exception can be used for debugging.</p>
+
+<h4><FONT COLOR="#000080">Object Limitations</FONT></H4>
+
+<p>There are two limitations to what structures or classes you can use. They must be "plain old data" classes that do not contain pointers or references to other objects or any other data members that are not simple objects themselves. In other words, it must be possible to initialize their objects with a simple memory copy of their contents. A <B>char *</B> type of field will not do, since the contents don't have a fixed size and are not stored sequentially. But you can use a <B>char something[20]</B>, as well as any other C-style array of simple objects. Also the classes must have an implicit or explicit default constructor.</p>
+
+<h4><FONT COLOR="#000080">Initialization and Cleanup</FONT></H4>
+
+<p>See the top of <A HREF="list1.htm">Listing 1</A> for the initialization you need. Declare a pointer to the disk file stream:</p>
+
+<pre>
+fstream* pfstream;
+</pre>
+
+<p>See also the <B>init</B> function of <A HREF="list1.htm">Listing 1</A>. You must have a statement like:</p>
+
+<pre>
+TIOObject&lt;X&gt;::Register();  <a href="#4">[4]</a>
+</pre>
+
+<p>for <I>every</I> type of object you expect to read from your disk file, even though you might not want to process it in that program. Writing objects requires no such initialization, but input won't be able to continue after encountering an object of a missing type. However, the <B>TIOObjectBase::EUnknownClass</B> exception will make the name of the missing class available in the string returned by its <B>mess</B> member (see <A HREF="list1.htm">Listing 1</A>, <B>useFile</B> function).</p>
+
+<h4><FONT COLOR="#000080">Implementing Simple Persistence</FONT></H4>
+
+<p><A HREF="list2.htm">Listings 2</A> and <A HREF="list3.htm">3</A> contain the implementation of the <B>TIOObjectBase</B> class and <B>TIOObject</B> class template.</p>
+
+<p>There are ways to do similar object I/O that do not require the use of rather new language features like templates, RTTI, and STL. But not without having to intrude on your I/O classes by deriving them from some common class or having to overload the <B>ios &lt;&lt;</B> and <B>&gt;&gt;</B> operators for each of them <a href="#5">[5]</a>.</p>
+
+<p>I did not want to have to derive all my I/O classes from some common base that would do the job for them, so I used templates. The <B>TIOObjectBase</B> class and the derived template classes <B>TIOObject&lt;T&gt;</B> will provide I/O for any type <B>T</B> that satisfies the requirements I mentioned above.</p>
+
+<p><B>TIOObjectBase</B> has no data members. <B>TIOObject&lt;T&gt;</B> has only one data member, <B>T Data</B>, containing the simple structure for which we want to provide I/O.</p>
+
+<h4><FONT COLOR="#000080">Writing to a File</FONT></H4>
+
+<p>Writing objects is not a problem, because the object's type is known. The problem is how to read arbitrary types of objects, with arbitrary sizes, in arbitrary order. The program must know how many bytes to read each time and what type of object it has read. The requirements for reading back objects determine the kind of information that must be written to the file when an object is stored.</p>
+
+<p>For starters, when the objects are read back from the file, they must be able to identify themselves to the reading function. I used the <B>typeid(T).name</B> functions of RTTI (see C++ RTTI documentation) to get the class names and write them to the file.</p>
+
+<p>Take a look at the <B>write</B> members <a href="#6">[6]</a> of <B>TIOObjectBase</B> (<A HREF="list3.htm">Listing 3</A>). The public <B>TIOObjectBase::write(fstream&amp;)</B> is the one users will call. This function calls the protected <B>TIOObjectBase::write(ostrstream &amp;)</B>. <B>write(ostrstream &amp;)</B> uses the <B>name</B> method of <B>TIOObject</B> (declared virtual abstract in <B>TIOObjectBase</B>, so that the correct <B>TIOObject&lt;T&gt; method is called</B>) to write two pieces of information to a temporary memory buffer: the size of the actual class name and the class name itself <a href="#7">[7]</a>.</p>
+
+<p><B>write(ostrstream &amp;)</B> also copies the contents of the "simple I/O" object to the memory buffer, again using virtual methods <B>dataStart</B> and <B>dataSize</B>. <B>TIOObject Base::write(fstream&amp;)</B> then copies everything from the memory buffer to the disk.</p>
+
+<h4><FONT COLOR="#000080">Reading from a File</FONT></H4>
+
+<p>The implementation of input is more complicated, because the program does not know what type it is reading. It just gets a string containing the object's name, and C++ provides no way to get a type from a string with the type's name <a href="#8">[8]</a>. That's where the <B>create</B> static member functions come in.</p>
+
+<p>If the object's type is known, each <B>TIOObject&lt;T&gt;</B> type knows how to construct itself from file input with its static <B>TIOObjectBase* create(fstream&amp;)</B> function (<A HREF="list2.htm">Listing 2</A>). This function just creates a new object of its class type, reads as many bytes from the file stream as it takes to hold all the class's data members, and copies the bytes to the object.</p>
+
+<p>You can think of the static <B>create</B> functions as special kinds of constructors, because they construct new objects and return pointers to them.</p>
+
+<p>The real problem is how to call the correct constructor for each object we read. To do that, we will use function pointers. Although the <B>create(fstream&amp;)</B> constructors construct a new <B>TIOObject&lt;T&gt;</B>, they return a <B>TIOObjectBase*</B>, and their declaration does not contain a <B>T</B>. I did this on purpose to make them all have exactly the same signature, the same argument type, and the same return type.</p>
+
+<p>Because of this common signature, it is possible to assign all the <B>create(fstream&amp;)</B> functions to the same type of pointer to function. The <B>TIOObjectBase</B> class (<A HREF="list2.htm">Listing 2</A>) defines a <B>pfCreate</B> type, which can hold a pointer to any <B>create</B> function:</p>
+
+<pre>
+typedef  TIOObjectBase*
+    (*pfCreate)(fstream&amp;);
+</pre>
+
+<p>Before reading the object's data from the file, the program reads a string with the object's class name. So we just need to associate this string with the <B>create</B> function of that particular type. If I read a <B>"TIOObject&lt;SomeType&gt;"</B> string from the file, then I must use the constructor (<B>create(fstream&amp;)</B>) for the <B>TIOObject&lt;SomeType&gt;</B> template class.</p>
+
+<p>We can also access these constructor functions through the <B>pfCreate</B> pointers introduced above. This is what makes the whole idea work. Suppose I have defined a struct:</p>
+
+<pre>struct createFunction {
+        string className;
+        pfCreate pcreate;
+};
+</pre>
+
+<p>and an array of <B>createFunction</B>, for which each element has been assigned the name and the pointer to the <B>create(fstream&amp;)</B> function for one of the classes instantiated from <B>TIOObject&lt;T&gt;</B>.</p>
+
+<p>Then each time I read a class name string from the file, I can search the array for the element whose class name matches the string just read, and then call the <B>create</B> function pointed to by the element's <B>pcreate</B> member <a href="#9">[9]</a>. I should get the correct type of object.</p>
+
+<p>Of course, what I get is a <B>TIOObjectBase*</B>, not a <B>TIOObject&lt;X&gt;*</B> or a <B>TIOObject&lt;Y&gt;*</B>. The type information has been lost again. But that can be easily fixed with the RTTI <B>dynamic_cast</B> operator. I can test the <B>TIOObjectBase*</B> pointer against each <B>TIOObject&lt;T&gt;</B> that I am interested in. Users of object I/O do the testing indirectly through <B>TIOObject&lt;T&gt;::PtrData(TIOObjectBase*)</B> (see <A HREF="list2.htm">Listing 2</A>). This function conveniently returns a pointer not to the <B>TIOObject</B> wrapper, but to the ready-to-use simple object itself.</p>
+
+<p><B>dynamic_cast</B> is the second of the less common language features that makes this mechanism possible. (Function pointers were the first.)</p>
+
+<h4><FONT COLOR="#000080">Improving on the Array</FONT></H4>
+
+<p>The problem of simple object I/O is essentially solved by the use of templates (so that each simple object type can have its own methods of saving and reading itself), RTTI (to get the class name to write to disk, and to test the kind of object by <B>dynamic_cast</B>), and function pointers (to treat different creation functions as belonging to the same type, so that they can be referred to from the <B>TIOObjectBase</B> base class and accessed through a container).</p>
+
+<p>However, the new STL <B>map</B> container can be used to provide a more elegant and direct interface for object creation than the previously described array.</p>
+
+<p>The map container is an "associative container." It associates values of one type with values of another. Its elements are pairs of values; the first value is the <I>key</I>, which acts as an index to the second value, much like an integer indexes the values in an array by denoting their positions.</p>
+
+<p>In my case, I need to index the <B>create</B> function pointers by the names of the classes they instantiate. So, my keys are strings containing the class names, and their associated values are the function pointers used to create instances of those classes. See the <B>TIOObjectBase</B> declaration (<A HREF="list2.htm">Listing 2</A>) <a href="#10">[10]</a>:</p>
+
+<pre>
+typedef
+map&lt;string, pfCreate, less&lt;string&gt; &gt;
+    CreateMap;
+</pre>
+
+<p><B>TIOObjectBase</B> holds a static member pointer to a <B>CreateMap</B>. The map is allocated when needed by the <B>TIOObject &lt;T&gt;::Register</B> function, which is also called by users of the classes to populate the map with all the classes. <B>TIOObjectBase::reset</B> can be used either to empty the map, so that a new set of classes can be registered, or to clean up after object I/O is no longer needed. Finally, the static <B>TIOObjectBase* TIOObjectBase::Create(fstream&amp;)</B> function (<A HREF="list3.htm">Listing 3</A>) brings everything together by reading a class name from file, indexing the map with that name, and using the function pointer to construct a new object from the file.</p>
+
+<h4><FONT COLOR="#000080">Afterthoughts</FONT></H4>
+
+<p>It should be easy to extend this library to write an additional field to disk, which would indicate the length of the class data. This field would enable recovery from reading an unregistered object from the file by just moving on to the next object. But since I initially implemented my technique for Paradox Blob fields containing only one object, I could recover by just going on to the next record. So, I haven't implemented a length field. I also have not implemented a method for writing objects to a stream or for reading them back from a stream. Possibly, I should have implemented these features first.</p>
+
+<p>Finally, C++ is a great language, and the new extensions make it even greater. If templates and STL were not such terrific concepts, I would never have gone on using them, at least with the compilers I have. You can read about the problem I had with the <B>less&lt;string&gt;</B> template in the beginning of <A HREF="list2.htm">Listing 2</A>. Unfortunately, that wasn't the only one. Still, I think templates and STL are well worth the trouble.</p>
+
+<h4><FONT COLOR="#000080">Acknowledgement</FONT></H4>
+
+<p>This article would not have been possible without the consent and support of the Ministry of Education and Culture of Cyprus. This article was conceived in part as a result of work I am doing for the Ministry.</p>
+
+<h4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1]  For example, since I wanted the option of two simulations of the same type to run simultaneously, I had to duplicate each field.</p>
+
+<p><a name="2"></a>[2]  Paradox naming for fields that contain arbitrary-length binary data.</p>
+
+<p><a name="3"></a>[3]  Partial code for the C++ Builder Blob field is included in the files <B>UBlobClass.h</B> and <B>UBlobClass.cpp</B>, available on the <I>CUJ</I> ftp site (see p. 3 for downloading instructions).</p>
+
+<p><a name="4"></a>[4]  If I don't use that specific class, then my linker gives an error <B>"Unresolved external reference TIOObject&lt;X&gt;::Register() referenced from"</B>. In that case, I use <B>TIOObject&lt;X&gt; (X()).Register()</B>, forcing instantiation.</p>
+
+<p><a name="5"></a>[5]  I looked at Borland's "persistent objects" how-to and decided I definitely did not need all that complexity. Of course, it is a different story if you need persistence for non-simple classes.</p>
+
+<p><a name="6"></a>[6]  I split the <B>write</B> member into two methods: a protected method that writes to memory through an <B>ostrstream</B>, and one that copies the <B>ostrstream</B> to disk. I did that to use the memory write to do all the work before writing to other outputs, such as a disk file or the Paradox Blob type field.</p>
+
+<p><a name="7"></a>[7]  Not the <B>T</B>'s name, but the <B>TIOObject&lt;T&gt;</B> class's name. If the program writes to file an object of class <B>SomeClass</B>, it will write its name as <B>"TIOObject&lt;SomeClass&gt;."</B></p>
+
+<p><a name="8"></a>[8]  Object Pascal can. I did the same thing in Delphi, but did not get around to using it before I decided I should use C++ Builder.</p>
+
+<p><a name="9"></a>[9]  To call a function when you have a pointer to that function, simply use the pointer name in place of the function name. If <B>pcreate</B> points to a <B>TIOObject&lt;X&gt;::create(fstream&amp;)</B>, then <B>TIOObjectBase* p = pcreate (fstr)</B> will be equivalent to writing <B>TIOObjectBase* p = TIOObject&lt;X&gt;::create(fstr)</B>.</p>
+
+<p><a name="10"></a>[10]  <B>less&lt;string&gt;</B> just tells the <B>map</B> to use the <B>string</B> class's overloaded <B>operator&lt;(const string&amp;)</B> to determine an order relation for the keys. The definition of <B>less&lt;string&gt;</B> at the top of the <B>TIOObject.h</B> (<A HREF="list2.htm">Listing 2</A>) should not be needed. In fact, C++ Builder's compiler does not require it. But Borland's C++ v5.02 returned a compilation error without this definition, even though BC++ v5.02 uses the same STL implementation as C++Builder. In theory, their two <B>cstring.h</B> headers should be the same.</p>
+
+<p><i>Alberto Florentin has been a secondary education physics teacher employed by the Ministry of Education and Culture of Cyprus since 1988. Before that he worked as a programmer for various companies. For the last few years he has been assigned by the ministry to write educational computer simulations for the teaching of physics (among other duties). He enjoys writing these simulations in C++, since it combines two of his intellectual interests, physics and programming. He is sure that computers, and especially simulations, can have a large impact in the teaching and understanding of physics, although a lot of work needs to be done for this to materialize. He welcomes any email with comments on these issues. He may be reached at <B>albertos@spidernet.com.cy</B>.</i></p>
+
+<h4><a href="../../../source/1998/aug98/florent.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

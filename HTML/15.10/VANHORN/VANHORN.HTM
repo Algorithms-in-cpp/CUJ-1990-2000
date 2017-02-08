@@ -1,0 +1,245 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>October 1997/Compile-Time Assertions in C++</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><A href="../tococt.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          <FONT COLOR="#FF0000">Features</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">Compile-Time Assertions in
+          C++</FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">Kevin S. Van Horn</FONT></H3>
+          
+          <BLOCKQUOTE>
+               
+               <P>You can get templates to do all sorts of things for you, even
+                    check assertions at compile time.</P></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <p>As a general rule, it's best to catch
+                    your programming errors as early as possible. The assert
+                    macro can help a lot here, by detecting violated assumptions
+                    before your code has a chance to act on those assumptions.
+                    assert works at run time, but the best time to catch an
+                    error is before your program runs &#151; at compile time. If
+                    your assertion is a constant expression, then in principle 
+                    the compiler should able to check it for you. </p>
+               
+               <p> In practice, checking a constant
+                    expression at compile time is not entirely straightforward.
+                    The most obvious approach is to make use of the
+                    preprocessor:</p>
+
+<PRE>
+#if !(Assertion)
+#error You blew it!
+#endif
+</PRE>
+               
+               <p>This approach has some severe
+                    limitations. Since the preprocessor knows very little about
+                    C++, an #if directive can't use the sizeof operator or refer
+                    to enum values, class members, const variables, or
+                    integer-valued template parameters. The preprocessor is okay
+                    for checking requirements on #defined symbols, but that's
+                    about it.</p>
+               
+               <h4><FONT COLOR="#000080">A Motivating Example</FONT></H4>
+               
+               <p>Consider using a multiplicative
+                    congruential algorithm to generate pseudorandom numbers,
+                    using Schrage's algorithm to avoid integer overflow. This
+                    algorithm requires a pair of integers m and a satisfying the
+                    following restriction:</p>
+
+<PRE>
+0 &lt; a &amp;&amp; a &lt; m &amp;&amp; a % m &lt; m / a
+</PRE>
+               
+               <p>If you've done much generic
+                    programming, you probably don't want to write just a
+                    particular random-number generator; you can write a
+                    random-number generator template:</p>
+
+<PRE>
+template &lt;unsigned m, unsigned a&gt;
+class randgen {
+public:
+  randgen(unsigned seed);
+  unsigned operator()() const;
+private:
+ ...
+};
+</PRE>
+               
+               <p>To create a random-number generator
+                    you then write</p>
+
+<PRE>
+randgen&lt;M, A&gt; x(seed);
+</PRE>
+               
+               <p>using your favorite constant M and A,
+                    and thereafter calls x to generate a new random number.
+                    However, being an experienced programmer, you know that
+                    eventually someone is going to ignore your carefully-crafted
+                    warning comments and use randgen&lt;M,A&gt; with constants M
+                    and A that don't satisfy the restriction. It would be nice
+                    to associate some sort of compile-time check with the
+                    randgen&lt;&gt; class template itself. Clearly, the
+                    preprocessor will be no help at all with this.</p>
+               
+               <h4><FONT COLOR="#000080">The ctassert&lt;&gt;
+               Class Template</FONT></H4>
+               
+               <p>The ctassert&lt;&gt; class template
+                    shown below can perform this compile-time check:</p>
+
+<PRE>
+#ifndef CTASSERT_H
+#define CTASSERT_H
+     
+template &lt;bool t&gt;
+struct ctassert {
+  enum { N = 1 - 2 * int(!t) };
+    //  1 if t is true,
+    // -1 if t is false
+  static char A[N];
+};
+     
+template &lt;bool t&gt;
+char ctassert&lt;t&gt;::A[N];
+     
+#endif
+</PRE>
+               
+               <p>Just insert the declaration</p>
+
+<PRE>
+ctassert&lt;
+  0 &lt; a &amp;&amp; a &lt; m &amp;&amp; a % m &lt; m / a
+&gt; foo;
+</PRE>
+               
+               <p>someplace within the definition of of
+                    the randgen&lt;&gt; class template. If randgen&lt;&gt; is
+                    instantiated with invalid values for m and a, ctassert will
+                    force a compile-time error.</p>
+               
+               <p>Here's how it works. When you declare
+                    a dummy variable of type ctassert&lt;E&gt;, where E is a
+                    constant, Boolean, or integer expression, the compiler
+                    generates the definition</p>
+               
+               <p></p>
+
+<PRE>
+static char A[1];
+</PRE>
+               
+               <p>if E is true (non-zero), and</p>
+
+<PRE>
+static char A[-1];
+</PRE>
+               
+               <p>if E is false (zero). The latter is an
+                    error, so the compiler will complain loudly if E happens to
+                    be false. Furthermore, the compiler diagnostic will point to
+                    the declaration of the variable of type ctassert&lt;E&gt;,
+                    telling you exactly what you did wrong.</p>
+               
+               <p>Note that an object of type ctassert&lt;E&gt;
+                    has no internal storage, so adding a data member of this
+                    type to an object does not increase that object's size.
+                    </p>
+               
+               <p> One word of warning: when writing a
+                    compile-time assertion ctassert&lt;E&gt;, make sure that the
+                    expression E does not contain the &gt; operator, or your
+                    compiler is likely to consider it a closing angle bracket.
+                    Rewrite the expression to use &lt; instead.</p>
+               
+               <h4><FONT COLOR="#000080">A More Involved
+               Example</FONT></H4>
+               
+               <p>The following example uses those nifty
+                    numeric_limits&lt;&gt; traits classes in the draft C++
+                    Standard Library. It applies specifically to those
+                    situations in which a programmer knows exactly what size of
+                    integer &#151; 8-, 16-, or 32-bit &#151; to use. Unfortunately, the
+                    language definition provides no portable way of specifying a
+                    particular size of integer. The best the programmer can do
+                    is write a header file (call it sized_types.h) giving
+                    typedefs for int8, int16, int32, etc. These typedefs will be
+                    specific to the particular platform in use, so the
+                    programmer can only hope that someone remembers to change
+                    the typedefs when the code is moved to a new platform.
+                    </p>
+               
+               <p> The C++ standardization committee has
+                    helped out here. The proposed Standard Library includes a
+                    class template numeric_limits&lt;&gt;, which is specialized
+                    for each of the numeric fundamental types. The class
+                    numeric_limits&lt;T&gt; includes the following members:</p>
+
+<PRE>
+static const bool is_integer;
+  // true if T is an integer type
+static const bool is_signed;
+  // true if T is a signed type
+static const int radix;
+  // for integer types, specifies
+  // the base of the representation
+static const int digits;
+  // for built-in integer types,
+  // the number of non-sign bits
+</PRE>
+               
+               <p>Compile-time assertions can check that
+                    the typedefs in sized_types.h are correct. If the code is
+                    moved to another platform and the header contains the wrong
+                    typedefs, the compiler will not so gently inform the
+                    programmer. </p>
+               
+               <p><A href="list1.htm"> Listing 1</A>
+                    shows how to write the compile-time checks. There are a lot
+                    of them; thus, they reside in their own namespace to avoid
+                    polluting the global namespace with dummy variable names.
+                    For each sized type the compile-time assertion checks that
+                    the type is in fact an integral type; that it is signed or
+                    unsigned as desired; that it uses a base-2 representation;
+                    and that it has the  appropriate number of bits. </p>
+               
+               <p> Assertions: they're not just for run
+                    time anymore! o </p>
+               
+               <p><I>Kevin S. Van Horn has a Ph.D. in
+                    Computer Science from Brigham Young University. He was the
+                    technical lead for Excite, Inc.'s NewsTracker service until
+                    he decided to strike out on his own and start KSVH Software
+                    and Consulting (http://www.xmission.com/~ksvhsoft/). You can
+                    reach him at kevin.s.vanhorn@iname.com. </I></p>
+     
+<h4><a href="../../../source/1997/oct97/vanhorn.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+     </BODY>
+</HTML>

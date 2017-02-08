@@ -1,0 +1,204 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>February 1996/The Poor Man's Serial Protocol Analyzer</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><A href="../tocfeb.htm"><IMG src="../../toc.gif" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">Real-Time/Embedded
+          Systems </FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">The Poor Man's Serial
+          Protocol Analyzer</FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">by Tim Behrendsen</FONT></H3>
+          
+          <HR>
+          <BLOCKQUOTE>
+               
+               <h4><FONT COLOR="#000080"> A Familiar Problem</FONT></H4>
+               
+               <P>A few years ago, I was assigned a
+                    project to write an interface to a medical monitoring
+                    server, which connected many bedside medical monitors to a
+                    central surveillance unit. This server used an arrangement
+                    with a proprietary coax and an RS/232 port to perform
+                    real-time data acquisition from each bed. My interface was
+                    supposed to connect to the server's RS-232 port. The
+                    hospital and server were not local to my UNIX development
+                    host, but this in itself posed no problem; I could connect
+                    the two computers via high-speed modems. That is what I did.
+                    I had a live, tested connection. I had thorough
+                    documentation on the server's RS/232 protocol. There was
+                    only one problem: It didn't work.</P>
+               
+               <P> I followed the documentation's
+                    examples and, try as I might, all I could get the server to
+                    do was send back NAKs. The server product just wouldn't work
+                    to specifications (I was just shocked, of course). The
+                    vendor offered no advice, but did send me an MS/DOS-based
+                    surveillance program. This program would run on a PC and
+                    carry on a conversation with the server, and if I could 
+                    monitor the conversation I could find out what "my
+                    mistake" was. I needed to figure out how to monitor the
+                    conversation even though the server was at a remote
+                    location.</P>
+               
+               <P> My solution was to develop the ttymon
+                    program, which uses two serial ports to monitor serial
+                    conversations. If ttymon reads characters from one port, it
+                    writes them to the other port. While it does this, it
+                    displays a log of the conversation.</P>
+               
+               <P> To solve my problem, I ran the
+                    vendor's program on my local PC, hooked that to one serial
+                    port on my local UNIX system, and ttymon'd that port
+                    (through a second port) to my modem. The modem connected my
+                    local host to the remote UNIX system, where I ran a
+                    communications program to the medical server. It worked
+                    perfectly, and I solved the mystery.</P>
+               
+               <h4><FONT COLOR="#000080">Implementing ttymon</FONT></H4>
+               
+               <P>The heart of ttymon (<A href="listing1.htm">Listing
+                         1</a>)
+ is the select call, which will wait on input
+                    from multiple file descriptors (see<A href="behrside.htm">
+                         sidebar</a>
+for more on select). When characters are
+                    available on one or both of the serial ports, ttymon reads
+                    the characters into a buffer and writes them to the opposite
+                    port. It then writes an entry to the log file showing the
+                    characters that came in and which channel they came in on.</P>
+               
+               <P> That's the gist of the program; it's
+                    pretty simple in concept, but has to be a bit trickier in
+                    practice. Since the CPU is much faster than the relatively
+                    slow serial character rates, select often returns with only
+                    a single character available. A program without any smarts
+                    would end up creating a single log entry for every
+                    character.</P>
+               
+               <P> I want to allow a number of
+                    characters to build up in a buffer before writing the log
+                    entry, but still accurately show the flow of conversation.
+                    To do this, my program starts a timer when the first
+                    character comes in. The program creates a log entry when one
+                    of the following occurs:</P>
+               <UL><LI> when the timer expires (default 250ms)</LI>
+                    <LI> when one channel buffer contains data, the other
+                         channel's buffer is empty, and data arrives on the
+                         empty channel. Dumping at this time accurately shows
+                         conversation turnaround.</LI>
+                    <LI> when characters received exceeds a threshold (default:
+                         256 characters).</LI>
+               </UL>
+               
+               <P>ttymon transfers characters
+                    independently of the logging mechanism, so these rules will
+                    not usually create propagation delays. Because transfers
+                    between ports are not buffered, the number of read/write
+                    calls between ports could be considerable. Plan on running
+                    ttymon low priority if CPU hogging is an issue.</P>
+               
+               <h4><FONT COLOR="#000080">ttymon Performance</FONT></H4>
+               
+               <P>How much does all this affect data
+                    performance and timing? To find out, I performed two
+                    experiments. In the first, I had two systems play "catch"
+                    and pass various sized packets back and forth to measure the
+                    time to complete 100 passes.<A href="table1.htm"> Table 1</A>
+                    gives the results with and without ttymon. As expected,
+                    using small packet sizes resulted in longer propagation
+                    delays than larger packets. The overhead of logging,
+                    however, is relatively small, due to the fast CPU and the
+                    slow character rate.</P>
+               
+               <P> In the second experiment, I sent
+                    small bursts of characters at regular intervals to one port,
+                    and measured the regularity of characters appearing on the
+                    other port. Character transfer remained fairly regular until
+                    I increased the burst rate to one burst per 10-25
+                    milliseconds. My experience with other devices has convinced
+                    me that the latter experiment is important. I once used a 
+                    device (built by a very major manufacturer) that would send
+                    back various information based on a one-character request
+                    code. The device worked perfectly, unless I sent two
+                    requests within 40ms of each other. When the request rate
+                    reached this frequency the device would quietly ignore one
+                    or both requests &#151; an actual, documented "feature."</P>
+               
+               <h4><FONT COLOR="#000080">Potential Trouble
+               Spots</FONT></H4>
+               
+               <P>For the most part, ttymon is
+                    transparent to the connected devices. You might run into
+                    trouble when using modems, however: Because DCD (Carrier
+                    Detect) cannot be easily passed through to the other serial
+                    port, the host can't detect a modem connection. You can
+                    solve this problem by wiring DSR (Data Set Ready) high, and
+                    ignoring the DCD signal.</P>
+               
+               <P> I've tested the program on an IBM
+                    RS/6000 running AIX 3.2.5. If you're using another machine,
+                    there are two potential trouble spots to watch out for. The
+                    first is my SetRawMode subroutine, which sets non-buffering,
+                    pass-through mode on the serial port. The other area is the
+                    SetDaemon subroutine, which sets up the process to operate
+                    as a daemon. Since daemons and serial ports are so 
+                    intimately involved with specific architectures, you should
+                    carefully test the operation of these subroutines on your
+                    machine.</P>
+               
+               <h4><FONT COLOR="#000080">Using ttymon for Good
+               and Mischief</FONT></H4>
+               
+               <P>ttymon provides several options for
+                    controlling its behavior. The usage syntax is shown in
+                    <A href="table2.htm">Table 2</a>.
+ The output display shows
+                    two columns of output; each column represents one channel.
+                    The data is shown in hex and ASCII, eight bytes per line.
+                    Each log entry has a time stamp, which shows the reception
+                    time of the first character. To demonstrate ttymon, I
+                    decided to record the  PPP network conversation for the new
+                    Windows/95 Microsoft Network. Excerpts from the log are
+                    given in <A href="figure1.htm">Figure 1</a>.</P>
+               
+               <h4><FONT COLOR="#000080">The Swiss Army
+               Protocol Analyzer</FONT></H4>
+               
+               <P>This program has become a valuable
+                    skeleton for many other applications; thus it has gone far
+                    beyond its original purpose. It can convert attributes such
+                    as baud rates or parity, and can also do data protocol
+                    conversions by embedding a subroutine in the main loop. I
+                    have reworked it to allow serial file transfer programs to
+                    work through telnet by translating the telnet special codes.
+                     It has been a workbench for many tools, and I hope it
+                    provides you the same benefits.</p>
+               
+               <P><I>Tim Behrendsen is Vice President
+                    of Air-Shields Information Systems, a medical information
+                    systems company. He has programmed professionally for 15
+                    years. He may be reached at 148 La Verne Ave., Long Beach,
+                    CA 90803, or via e-mail at monoxtb@cerf.net.</I></P>
+
+<h4><a href="../../../source/1996/feb96/behrend.zip">Get Article Source Code</a></h4>
+
+          </BLOCKQUOTE>
+     </BODY>
+</HTML>

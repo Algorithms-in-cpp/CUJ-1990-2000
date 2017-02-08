@@ -1,0 +1,238 @@
+<HTML><HEAD>
+<TITLE>November 1995/A Synchronization Class Using Critical-Sections/Listing 3</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 3 <I>Using semaphores and critical sections to synchronize processes</I></A></h4>
+<pre>//**************************************************
+//  Listing 3
+//
+//  FILE NAME   : sema.cpp
+//  AUTHOR      : Matt Weisfeld
+//
+//  DESCRIPTION : using semaphores and critical
+//                     sections to synchronize processes.
+//
+//**************************************************
+// Example : For 3 processes
+//
+// Pn - process (P0 is the master)
+// T  - turn variable
+// Sn - status
+//
+// P0 P1 P2 T S1 S2
+//
+
+#include &lt;iostream.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include "sema.h"
+
+// DESCRIPTION : constructor
+semaphore::semaphore (long processes)
+{
+   strcpy (filename,FILENAME);
+
+   // Initialize the number of processess and the
+   // appropriate arrays.
+   PROCESSES = processes;
+   for (int loop_i = 0; loop_i &lt; PROCESSES; loop_i++) {
+      NODE[loop_i] = loop_i;
+      LOC[loop_i] = PROCESSES+loop_i;
+   };
+};
+
+// DESCRIPTION : dummy destructor
+semaphore::~semaphore(void){};
+
+// DESCRIPTION : synchronize using critical sections
+void semaphore::synchronize(char *param) {
+   // If the parameter is an 'i', simply initialize
+   // the shared file then exit
+   if (!strcmp (param, "i")) {
+      initialize();
+      exit(0);
+   };
+
+   node = atoi(param);     // identify the current node
+   intro();        // print out informational messages
+   i = node;          // use 'i' since algorithm does
+   turn_num=0;
+   flag_num=0;
+   critical_status=NORMAL;
+
+   // Perform critical function until exit condition exists
+   while (critical_status == NORMAL) {
+      perform();
+   }
+   return;
+}
+
+// DESCRIPTION : contains the CS algorithm
+void semaphore::perform(void)
+{
+   //     A do-while (!expression) is the same as
+   //       do-until (expression)
+
+   // See algorithm for description of the code.
+   do {
+      cs_write ( i, WANT_IN);
+      turn_num = cs_read ( LOC[0]);
+      j = turn_num;
+      while (j != i) {
+         flag_num = cs_read ( j);
+         if (flag_num != IDLE) {
+            turn_num = cs_read ( LOC[0]);
+            j = turn_num;
+         } else {
+
+            j = (j+1) % PROCESSES;
+
+         }
+      }
+      cs_write ( i, IN_CS);
+
+      j = 0;
+      flag_num = cs_read ( j);
+      while ( (j&lt;PROCESSES-1) &amp;&amp; (j==i || flag_num!=IN_CS) ) {
+         j++;
+         flag_num = cs_read ( j);
+      }
+      turn_num = cs_read ( LOC[0]);
+      flag_num = cs_read ( turn_num);
+   }while (!((j&gt;=PROCESSES-1) &amp;&amp;
+          ((turn_num == i) || flag_num == IDLE)));
+   turn_num = i;
+   cs_write ( LOC[0], turn_num);
+   // enter critical section
+   critical_status = critical_section();
+   // leave critical section
+   turn_num = cs_read ( LOC[0]);
+   j = (turn_num+1) % PROCESSES;
+   flag_num = cs_read ( j);
+   while (flag_num == IDLE) {
+      j = (j+1) % PROCESSES;
+      flag_num = cs_read ( j);
+   }
+   turn_num = j;
+   cs_write ( LOC[0], turn_num);
+   flag_num = IDLE;
+   cs_write ( i, flag_num);
+   return;
+};
+
+// DESCRIPTION : identify the node
+void semaphore::intro(void)
+{
+   printf ("PROCESSOR NODE %d\n", node);
+   return;
+};
+
+// DESCRIPTION : initialize the shared data file
+void semaphore::initialize(void)
+{
+   FILE *fp;
+   long loc = 0, zero=0;
+   printf ("Initialize\n");
+   if ((fp = fopen(filename, "w+")) == NULL){
+      printf ("initialize: can't open %s\n", filename);
+      exit(0);
+   };
+
+   // Initialize all status variables and flags to zero
+   for (loc = 0; loc &lt; (PROCESSES + 1 + (PROCESSES-1)); loc++) {
+      if (fseek (fp, loc*2, ORIGIN) != 0) {
+         printf ("ERROR: fseek error in initialize\n");
+         exit(0);
+      };
+      if (fprintf (fp, "%ld ", zero) &lt; 0) {
+         printf ("ERROR: initialize error\n");
+         exit(0);
+      };
+   };
+   // Simply for clarity, mark the end of the flags with
+   // an 'X'
+   if (fseek (fp, loc*2, ORIGIN) != 0) {
+      printf ("ERROR: fseek error in initialize\n");
+      exit(0);
+   };
+   if (fprintf (fp, "%c ", 'X') &lt; 0) {
+      printf ("ERROR: initialize error\n");
+      exit(0);
+   };
+   fclose (fp);
+};
+
+// DESCRIPTION : actual critical section
+long semaphore::critical_section(void)
+{
+   int loop_i;
+   long status;
+   // If the node is the master (node 0) then see if all
+   // other nodes are ready. If they are, then clear all
+   // appropriate variables and the shared file. If all
+   // not ready, try again.
+   if (node == 0) {
+         status = READY;
+         for (loop_i=1; loop_i&lt;PROCESSES; loop_i++) {
+            NODE_NUM[loop_i] = cs_read(LOC[loop_i]);
+            if (NODE_NUM[loop_i] != READY)
+               status=CLEAR;
+         };
+         if (status == READY) {
+            for (loop_i=1; loop_i&lt;PROCESSES; loop_i++) {
+               NODE_NUM[loop_i] = CLEAR;
+               cs_write(LOC[loop_i], NODE_NUM[loop_i]);
+            }
+            return(STOP);
+         } else {
+            return(NORMAL);
+         }
+   } else {         // if non-master node, mark node as ready
+      NODE_NUM[node] = READY;
+      cs_write(LOC[node], NODE_NUM[node]);
+      return(STOP);
+   }
+};
+
+// DESCRIPTION : write to the shared file
+void semaphore::cs_write(long loc, long value)
+{
+   
+   FILE *fp;
+   if ((fp = fopen(filename, "r+")) == NULL){
+      printf ("cs_write: can\'t open %s\n", filename);
+      exit(0);
+   };
+   if (fseek (fp, loc*2, ORIGIN) != 0) {
+      printf ("ERROR: fseek error in cs_write\n");
+      exit(0);
+   };
+   if (fprintf (fp, "%ld ", value) &lt; 0) {
+      printf ("ERROR: cs_write error\n");
+      exit(0);
+   };
+   fclose (fp);
+   return;
+};
+
+// DESCRIPTION : read from the shared file
+long semaphore::cs_read(long loc)
+{
+   FILE *fp;
+   long value;
+   if ((fp = fopen(filename, "r")) == NULL){
+      printf ("cs_read: can't open %s\n", filename);
+      exit(0);
+   };
+   if (fseek (fp, loc*2, ORIGIN) != 0)
+      printf ("ERROR: fseek error in cs_read\n");
+   if (fscanf (fp ,"%ld", &amp;value) == EOF)
+      printf ("ERROR: cs_read error\n"};
+   fclose (fp);
+   return(value);
+};
+//End of File
+</pre>
+</BODY>
+</HTML>

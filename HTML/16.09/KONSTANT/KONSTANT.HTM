@@ -1,0 +1,228 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>September 1998/Advanced Serial Port Communication Under Win32</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocsep.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Advanced Serial Port Communication Under Win32</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Thanos D. Konstantinidis and M.G. Strintzis</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>It's really easy to communicate with an external device through a serial port &#151; once you get all the administrivia under control.</p></BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>Many of the devices that can be connected to a computer do so through the serial port. The advantages are simplicity in hardware, low cost, and a relatively straightforward API (Application Programming Interface) for the serial port, since most OS's (Operating Systems) treat ports as files. The disadvantages are slower communication and the need for advanced programming techniques like multithreading to fully exploit the OS's capabilities.</p>
+
+<p>In the Win32 world, the term <I>file</I> covers a very broad range of logical devices, including the parallel and serial ports, disk files, and the screen and keyboard in console-mode applications. With the same basic set of API routines, a programmer can handle all of these devices.</p>
+
+<p>When files are involved, the most time-consuming chores are reading and writing, because hardware is directly involved. With the serial port, the program must wait for the FIFO buffers to fill before accessing any of the data. Luckily there are a number of techniques to work around this limitation. Overlapped I/O is one technique that allows client code to be more efficient, because the client code is notified via event objects when the file operation is complete. Until then, other duties can be performed. (A very thorough analysis of the technique can be found in [<a href="#1">1</a>], but I will cover the basics here.) This article presents a class for encapsulating overlapped serial port I/O in both Windows 95 and Windows NT.</p>
+
+<h4><FONT COLOR="#000080">Overlapped File I/O</FONT></H4>
+
+<p>When using serial I/O under Win32, the Win32 function <B>CreateFile</B> is used to get a handle to the port. One of the parameters in this function, the <B>DWORD</B> <B>dwFlagsAndAttributes</B>, must be <B>OR</B>ed with the flag <B>FILE_FLAG_OVERLAPPED</B> to ensure overlapped I/O port mode. Later, when the Win32 functions <B>ReadFile</B> or <B>WriteFile</B> are called, the parameter <B>lpOverlapped</B> passed to them must have the address of an <B>OVERLAPPED</B> structure, which is defined as:</p>
+
+<pre>
+typedef struct _OVERLAPPED {
+    DWORD  Internal;
+    DWORD  InternalHigh;
+    DWORD  Offset;
+    DWORD  OffsetHigh;
+    HANDLE hEvent;
+} OVERLAPPED;
+</pre>
+
+<p>The <B>hEvent</B> member must hold the handle of a manual event. The event must be manual or a deadlock might occur (for more details, see [<a href="#1">1</a>]). When the file operation is complete, the state of that event will change to "signaled." For the purpose of this article, the only other interesting member of the <B>OVERLAPPED</B> structure is <B>Offset</B>, which will store the offset where the reading or writing starts. The purpose of this member is to handle the situation in which many file operations are occurring on the same file, and each operation requires its own separate offset. <B>OffsetHigh</B> is used for files larger than 4 GB, because that size cannot be described by a single 32-bit <B>DWORD</B>. In this implementation, <B>OffsetHigh</B> must be zero. A detailed description of <B>OVERLAPPED</B> can be found in [<a href="#1">1</a>] or [<a href="#2">2</a>].</p>
+
+<p>Note that the file handle can be used to determine when the file operation is finished. However, this technique can be used only when there is only one overlapped operation in progress. Once an operation is complete, the OS sets the file handle to the signaled state. Therefore, if there are a number of operations in progress when the first one is completed, the file handle will be in the signaled state, and there will be no way to determine when the others complete.</p>
+
+<p>When used with overlapped I/O, <B>ReadFile</B> and <B>WriteFile</B> return immediately. If all the data has been transferred, the return value is <B>TRUE</B> (e.g., the file was already cached in memory, so the operation was completed immediately); otherwise it is <B>FALSE</B>, and the <B>GetLastError</B> function returns <B>ERROR_IO_PENDING</B>. In the latter case, the <B>GetOverlappedResult</B> function</p>
+
+<pre>
+BOOL GetOverlappedResult(
+    HANDLE  hFile,      
+    LPOVERLAPPED  lpOverlapped,
+    LPDWORD  lpNumberOfBytesTransferred,
+    BOOL  bWait   
+   );
+</pre>
+
+<p>must be called to determine the number of bytes transferred (in the parameter <B>lpNumberOfBytesTransferred</B>). <B>hFile</B> and <B>lpOverlapped</B> must contain the same values passed to <B>ReadFile</B> or <B>WriteFile</B>. In our case, <B>bWait</B> must be <B>FALSE</B> to indicate that we do not want to wait for the overlapped operation to be completed. We just want to read whatever we can in one pass. The other bytes will be read in the next pass. Obviously, if the <B>DWORD</B> pointed by <B>lpNumberOfBytesTransferred</B> is zero, there are no more bytes to read.</p>
+
+<h4><FONT COLOR="#000080">Port Notification Events</FONT></H4>
+
+<p>Asynchronous I/O is only half the story. The performance of the client application can be further improved with port notification events. Win32 allows a thread to monitor the port so that when a certain event occurs that thread can trigger an action. The events of interest can be specified (<B>OR</B>ed) with a call to <B>SetCommMask</B> and monitored with calls to <B>WaitCommEvent</B>. If the monitoring of the event should be executed asynchronously (i.e., the event involves data transfer), the address of an <B>OVERLAPPED</B> structure can be passed to <B>WaitCommEvent</B>. <B>WaitCommEvent</B> is called in an infinite loop in the function body of the monitoring thread. If <B>WaitCommEvent</B> finishes immediately, it returns <B>TRUE</B>; otherwise, it returns <B>FALSE</B>, and <B>GetOverlappedResult(...)</B> can be called to check the progress.</p>
+
+<p>In our case, the event to be monitored should be <B>EV_RXCHAR</B> (receipt of characters). The monitoring thread should not be given any other responsibilities. The final part of the technique involves notification of the main program when the event in question occurs. The most straightforward way to achieve this is to use standard Windows message passing.</p>
+
+<h4><FONT COLOR="#000080">Implementation</FONT></H4>
+
+<p>Now I will translate the above logic into a C++ class, <B>CPort</B>. First, note that there are enough variables involved to justify wrapping them in a separate class, <B>CPortData</B>. Class <B>CErr</B> is a general class for error reporting and serves as the base class for <B>CPortData</B> and <B>CPort</B>. <B>CErr</B> and <B>CPortData</B> are defined as follows:</p>
+
+<pre>
+class CErr {   
+protected :
+    // name of the derived class
+    char  szCName[30]; 
+
+    CErr(char*);
+    CErr();
+    virtual ~CErr(){};
+
+    //report error
+    void ShowErr(char*, char* = NULL,
+                 int = 0, int = 0 );    
+    ...
+};
+
+class CPort ;
+
+class CPortData : public CErr {
+
+    volatile HANDLE _hPort;
+    volatile CWnd*  _pWnd;
+    volatile HANDLE _hEvNot;
+    volatile BOOL   _bGoOn;
+
+    OVERLAPPED      _olWrite, _olRead;
+    UINT            _uMsg;
+
+    CPortData(CWnd* pWnd, UINT uMsg);
+    ~CPortData();    
+
+    friend class CPort;
+};
+
+#define Err(s2) ShowErr(s2,
+    __FILE__,__LINE__)
+</pre>
+
+<p>(<B>CErr</B> has been abbreviated here. Full source code is available on the <I>CUJ</I> ftp site. See p. 3 for downloading instructions.)</p>
+
+<p>In class <B>CPortData</B>, <B>_hPort</B> is the handle of the port, <B>_pWnd</B> is the pointer to the window object (an MFC library class, <B>CWnd</B>) that will receive the notification from the monitoring thread, and <B>_hEvNot</B> is used for signaling the end of received characters. To use a fixed-size buffer, <B>_hEvNot</B> is needed to enable reading in chunks (e.g., 128 characters at a time). Each pass will be executed in overlapped mode (asynchronously, through <B>_olRead</B>). But if more than 128 characters (the buffer size) are received at the port, another mechanism is required to know when to end the series of passes. This series of passes will end with the help of <B>_hEvNot</B>. The thread resets the state of <B>_hEvNot</B> when characters are received, and the window (indirectly, through the call of <B>CPort::Read</B>) sets it when all the characters are read. In other words, the window calls <B>CPort::Read</B> repeatedly until there are no more bytes to be read. At that point, the state of <B>_hEvNot</B> is set to signaled in <B>CPort::Read</B>.</p>
+
+<p>In this implementation, writing to the port is not so complicated because the size of the written data is small and can be transferred almost instantly. The other members of <B>CPortData are _olWrite</B>, which is used for overlapped writing; <B>_bGoOn</B>, which is used to terminate the thread; and <B>_uMsg</B>, which is the message sent to <B>_pWnd</B>. <B>CPortData</B> has no public members, as it is intended merely as a place to store the variables. Note also the use of the <B>volatile</B> keyword. Since multitasking is involved, we can never be too careful. The code must warn the compiler that the value of these variables should not be cached in optimizations. With the help of <B>CPortData</B>, I can now define the <B>CPort</B> class:</p>
+
+<pre>
+class CPort : public CErr {
+    CPortData*  _pData;
+    CWinThread* _pThr;
+
+    BOOL SetDCB();
+    BOOL InitPort(const char*);
+    void DoneReading();
+
+    //thread function, must be static
+    static UINT PortFunc(PVOID);
+    
+public:
+    CPort(const char* szPort,
+          CWnd* pWnd, UINT uMsg);
+    ~CPort();
+
+    int   Read(char*,int);
+    BOOL  Write(const char*,int);
+    void  Flush();
+
+    BOOL  IsConn(){
+        return (BOOL)_pThr;};
+    void  StartOp();
+    void  StopOp();
+};
+</pre>
+
+<p>Using the serial port involves the following steps:</p>
+
+<p>1.  Open the port through the <B>CreateFile</B> API.</p>
+
+<p>2.  Specify the events of which we want to be notified through the <B>SetCommMask</B> API.</p>
+
+<p>3.  Set the size of the port buffers through the <B>SetupComm</B> API.</p>
+
+<p>4.  Set the port timeouts through the <B>SetCommTimeouts</B> API.</p>
+
+<p>5.  Set the DCB (Device Control Block) structure in <B>CPort::SetDCB</B>.</p>
+
+<p>The most complicated of these steps is the fifth. Usually a program obtains the port's DCB, changes some of its members, and then reconfigures the port. In this case, the configuration for the port is kept in a file (<B>.ini</B>), but the program could pass a DCB structure in the constructor of <B>CPort</B> or pass the most important configuration data (baud rate, parity, etc.) through individual variables. Of course, the constructor will be rather complicated, so the configuration file is an elegant solution. The above steps are performed in <B>CPort::InitPort</B> (<A HREF="fig1.htm">Figure 1</A>), which shows the default arguments to be passed to the API functions.</p>
+
+<p>The functions <B>CPort::Write</B> (<A HREF="fig2.htm">Figure 2</A>) and <B>CPort::Read</B> (<A HREF="fig3.htm">Figure 3</A>), show how the overlapped port operations are performed. Note that <B>CPort::Read</B> first checks (via the <B>ClearCommError</B> API) if there are any unread bytes and then tries to read them. Also when there are no more bytes to be read, <B>Read</B> sets the state of <B>_hEvNot</B> to signaled through <B>CPort::DoneReading</B>.</p>
+
+<p>The monitoring thread is created in <B>CPort::StartOp</B> (<A HREF="fig4.htm">Figure 4</A>) and destroyed in <B>CPort::StopOp</B> (<A HREF="fig5.htm">Figure 5</A>). Since the thread does not do any time-critical processing, it is created as a low-priority thread. The function pointer, <B>CPort::PortFunc</B>, passed to <B>AfxBeginThread</B> must be the address of a plain C-style function (see <A HREF="fig6.htm">Figure 6</A>). Since this function is also a member of <B>CPort</B>, it must be declared as <B>static</B> so that it does not include an implicit <B>this</B> pointer argument. The argument passed to this function is the address of <B>CPort</B> (<B>this</B>) to give the function access to the <B>CPort</B> members. As noted before, all this function does is wait for port events to happen, and when they do happen, it notifies the associated window. In our case, we are interested only in <B>EV_RXCHAR</B> events. In general, the program anticipates any event, so it must wait for events in overlapped mode. In every loop, the program must wait for all bytes to be read (wait for <B>_hEvNot</B>) before the next iteration.</p>
+
+<p>In the message sent to the window, the address of <B>CPort</B> is passed in <B>wParam</B> and the event is passed in <B>lParam</B>. So when the window receives the message, we have all the information we need to proceed. Furthermore, we can have many ports sending different event notifications to the same window through the same message, and we will know which port sent which notification without the use of extra variables.</p>
+
+<h4><FONT COLOR="#000080">Using Class CPort</FONT></H4>
+
+<p>Using the <B>CPort</B> class is pretty straightforward. First, initialize the class by passing the proper arguments to its constructor. These arguments are a string describing the port (e.g. <B>"COM2"</B>), a pointer to the window being notified, and a <B>UINT</B> representing the message that will be sent to the window when an <B>EV_RXCHAR</B> event occurs. The port initialization could take place in the MFC functions <B>CDialog::OnInitDialog</B>, if the application is dialog-based, or <B>CWnd::OnCreate</B>.</p>
+
+<p>The following code illustrates the creation of a <B>CPort</B>:</p>
+
+<pre>
+CString strPort =
+    (LPCTSTR)AfxGetApp()-&gt;
+        GetProfileString(
+            "Communication",
+            "Port", "COM2");
+
+_pPort = new CPort(strPort, this,
+                   WM_SERIAL_PORT);
+</pre>
+
+<p>The next step is to define a handler in <B>CPort</B>'s parent window to respond to this message. Finally, before you start using the port, call <B>CPort::StartOp</B>. I chose a two-step initialization process to save processor time and have the monitoring thread running only when it is needed. Also, to temporarily stop the port operation, call <B>CPort::StopOp</B>. A typical handler would look like this:</p>
+
+<pre>
+LRESULT
+CDragerDlg::OnPortMsg(WPARAM wParam,
+                      LPARAM lParam){
+
+    static char buf[PORTBUFLEN];
+    MSG msg;
+    int nLen ;
+    CPort* pPort = (CPort*) wParam;
+    do {
+        while(PeekMessage(&amp;msg, NULL,
+                  0, 0, PM_NOREMOVE))
+          AfxGetApp()-&gt;PumpMessage();
+
+        if(nLen = pPort-&gt;Read(buf,
+                    (int)PORTBUFLEN))
+            ProcessPortData(
+                (unsigned char*)buf,
+                nLen);
+  } while(nLen);
+return 0;
+}
+</pre>
+
+<p>This handler uses the <B>PeekMessage</B> mechanism to keep the window responsive, thus giving port messages low priority. To write to the port, call <B>CPort::Write</B>.</p>
+
+<h4><FONT COLOR="#000080">Sample Application</FONT></H4>
+
+<p>I've provided a sample MFC application on the ftp site (see p. 3 for downloading instructions) that you can use to read from and write to the serial port. Instructions for use are included with the source code.</p>
+
+<h4><FONT COLOR="#000080">Further Enhancements</FONT></H4>
+
+<p>The above class was tested extensively in a project involving real-time communication with medical devices, and it performs as specified. However, it is possible to enhance its functionality simply by making it a template with a functor as a template argument. Instead of calling <B>CWnd::PostMessage</B>, you would call that functor and pass the same arguments. Thus, the handling of port events could occur in another class, and <B>CPort</B> could be used in console applications or without the MFC framework. However, only function <B>CPort::PortFunc</B> should be a template (parameterized by the functor type being called), so this requires use of a new element of C++, member function templates. Which have yet to be implemented in all compilers. We could also pass a <B>DWORD </B>to the constructor with a bitwise <B>OR</B> of the events to be monitored.</p>
+
+<h4><FONT COLOR="#000080">References</FONT></H4>
+
+<p><a name="1"></a>[1]  Jeffrey Richter. <I>Advanced Windows</I>, 3rd edition (Microsoft Press, 1997).</p>
+
+<p><a name="2"></a>[2]  Ralph Davis. <I>Win32 Network Programming: Windows 95 and Windows NT Network Programming Using MFC</I> (Addison Wesley, 1996).</p>
+
+<p><i>Thanos D. Konstantinidis received his diploma from Aristotle's University of Thessaloniki, Department of Electric and Computer Engineering. He also holds a degree in programming. He has seven years experience programming with C++. His main fields of interest are biomedical signal and image processing, and 2-D and 3-D graphics.</i></p>
+
+<p><i>Michael Gerassimos Strintzis received a Ph.D. in Electrical Engineering from Princeton University, Princeton, N.J., in 1970. Since 1980 he has been a professor of Electrical and Computer Engineering at the University of Thessaloniki, Thessaloniki, Greece. His current research interests include 2-D and 3-D Image Coding, Image Processing, and Biomedical Signal and Image Processing. Dr. Strintzis is a member of the NYAS, SPIE, and a senior member of IEEE. In 1984, Dr. Strintzis was awarded one of the Centennial Medals of the IEEE.</i></p>
+
+<h4><a href="../../../source/1998/sep98/konstant.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

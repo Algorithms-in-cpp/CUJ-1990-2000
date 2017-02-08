@@ -1,0 +1,190 @@
+<HTML>   
+     <HEAD>
+<TITLE>May 1999/A Wrapper Class for Dynamically Linked Plug-Ins</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocmay.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Cross-Platform Development</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">A Wrapper Class for Dynamically Linked Plug-Ins</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Eric Roe</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Creating plug-ins for multiple platforms can be tricky. Here's some techniques that make writing plug-ins almost as easy as using them.</p>
+</BLOCKQUOTE>
+<HR>
+<BLOCKQUOTE>
+
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>Many applications today are written to be modifiable or extendable, by running code that has been compiled by third parties. This code, often called a "plug-in" or "add-in," typically takes the form of a DLL (dynamically linked library) that can be mapped at run time into the application's address space. Most modern operating systems, including the variants of Windows, Solaris, and Linux, provide some capability to do such dynamic linking.</p>
+<p>This article presents a simple class that wraps the dynamic linking facilities under Win32, Solaris, and Linux. Using the presented class as a base, developers can create derived classes that fully encapsulate the functions contained in a DLL. In addition, by writing a set of abstract classes and using them as interfaces, it's possible to mimic some of the core functionality of COM (Microsoft's Component Object Model).</p>
+<p>The sources accompanying this article were tested on Windows NT using Microsoft Visual C++ v5.0. On Linux, kernel version 2.0.34, I used the egcs compiler version 1.1.1; and on Solaris I used the GNU C++ compiler version 2.8.2. It should be noted that older versions of the GNU compiler (in particular v2.7.x) will fail to build the included source files because of lack of support for namespaces and incomplete STL implementations. I suspect that the presented code can easily be ported to other versions of Unix.</p>
+
+<h4><FONT COLOR="#000080">Overview of Dynamic Linking</FONT></H4>
+
+<p>There are two ways a program can call functions in a DLL (or "shared object," as Unix programmers might call it). Probably the most common use of dynamic libraries is through build-time linking. In this case, libraries on which the program depends are specified at build time. The dependency information is stored within the executable and when the program is run, the system loader loads all the required libraries and resolves function addresses between the executable and the libraries. Win32 developers will recognize this as "implicit" linking.</p>
+<p>For the most part, this is an acceptable way to connect your program to the services provided by a specific library without incorporating the library code directly in your program (which is what occurs when you link with a static library). There are, however, a few drawbacks with implicit linking:</p>
+
+<UL><LI>Your program will fail to run if it depends on any missing libraries.</LI>
+    <LI>Implicit linking doesn't provide a way for users to choose which libraries they wish to use.</LI>
+    <LI>The application cannot switch between libraries depending upon different situations.</LI></UL>
+
+<p>This leads to the second method for using functions contained in a dynamic library: run-time linking. In this case, the DLL is loaded programmatically by the application. Once the library is loaded, the application can query the library to obtain the addresses to functions contained therein. Finally, when the application is finished using the services provided by the library, the library is programmatically unloaded. Win32 developers will recognize this as "explicit" linking. Run-time linking requires more work on the part of the developer, but the reward can be a significantly more flexible program.</p>
+<p>The <B>DynamicLibrary</B> class presented below encapsulates the loading, address resolution, and unloading required to perform run-time linking. It is the starting point for making plug-ins appear like objects to the calling application.</p>
+
+<h4><FONT COLOR="#000080">The DynamicLibrary Class</FONT></H4>
+
+<p>Although <B>DynamicLibrary</B> can be instantiated and used directly, it was really meant to serve as a base class. <B>DynamicLibrary</B> contains all the code needed to load, query, and free DLLs, while classes derived from <B>DynamicLibrary</B> wrap the functions exported by the plug-in. <A HREF="list1.htm">Listings 1</A> (<B>DynamicLibrary.h</B>) and <A HREF="list2.htm">2</A> (<B>DynamicLibrary.cpp</B>) present the <B>DynamicLibrary</B> class.</p>
+
+<h4><FONT COLOR="#000080">Loading the Library</FONT></H4>
+
+<p>There are two ways to load a DLL with <B>DynamicLibrary</B>. The first method simply loads the library as part of the construction of the <B>DynamicLibrary</B> object. In this case the programmer uses the constructor</p>
+
+<pre>
+DynamicLibrary(const char* libName)
+</pre>
+
+<p>passing the library name in the <B>libName</B> parameter. You should specify a full or relative path to the dynamic library in <B>libName</B>. Without path information, both Windows and Solaris/Linux will attempt to locate the library using the standard library search path. If your plug-in is not located in the library search path &#151; and it's quite probable that it won't be &#151; the library won't get loaded.</p>
+<p>Because the constructor does not throw an exception if it fails to load the dynamic library, you should call <B>DynamicLibrary::IsLoaded</B> to see if the load was successful. If you want to separate construction from loading, you can use the default constructor and then call the <B>Load(const char* libName)</B> method, which returns a <B>bool</B> value indicating if the function completed successfully.</p>
+<p>Under Solaris and Linux, <B>Load</B> calls <B>dlopen</B>, which returns a non-null <B>void</B> pointer if the library was successfully loaded. The <B>dlopen</B> function actually takes two parameters. The first is the library file name (and optional path); the second is a mode flag. I use the <B>RTLD_LAZY</B> flag that defers relocating function references until the function is first called. This results in faster loading of the dynamic library.</p>
+<p>Under Win32, <B>Load</B> uses the Win32 <B>LoadLibrary</B> call, which returns a Win32 <B>HANDLE</B> if the library was successfully loaded or <B>NULL</B> otherwise. Because of the use of the <B>HANDLE</B> data type, be sure to place the necessary <B>#include</B>s to define Windows-specific data types before <B>#include "DynamicLibrary.h"</B>, or you'll end up with an undefined type error.</p>
+
+<h4><FONT COLOR="#000080">Getting the Function</FONT></H4>
+
+<p>The <B>DynamicLibrary</B> class makes available two (four under Win32) methods for obtaining a function pointer from the DLL. <B>GetProcAddr(const char* procName)</B> returns a pointer to the function named <B>procName</B> in the library or <B>NULL</B> if the function wasn't found. As a concession to Win32 developers I've included a version of <B>GetProcAddr</B> that takes an ordinal value. Using ordinals instead of strings makes lookup slightly faster &#151; there is no similar functionality under Solaris or Linux.</p>
+
+<h4><FONT COLOR="#000080">Caching</FONT></H4>
+
+<p>If you continually are calling the same function, there is a cached lookup available: <B>GetProcAddrCached(const char *procName, int procId)</B>. <B>GetProcAddrCached</B> uses the <B>DynamicLibrary</B>'s cache array, which is an STL <B>vector</B> of <B>cache_info</B> objects.</p>
+
+<pre>
+class cache_info
+{
+public:
+    DLPROC procAddr;
+    bool testFlag;
+    // constructor declaration
+};
+</pre>
+
+<p>The <B>cache_info</B> class is a private, nested class of <B>DynamicLibrary</B>. It contains two data members: <B>procAddr</B>, which contains the address of the function obtained when querying a dynamic library; and <B>testFlag</B>, an indicator of whether an attempt has already been made to obtain a function pointer from the library.</p>
+<p><B>GetProcAddrCached</B> begins by ensuring that the cache vector contains at least <B>procId</B> + 1-<B>ache_info</B> objects. Adding one to <B>procId</B> accounts for the fact that the vector is zero-based and <B>procId</B> will be used as an index into the vector.</p>
+<p>Next, a reference to the <B>cache_info</B> object at index <B>procId</B> is placed in <B>ci</B>. If <B>ci.testFlag</B> is <B>true</B>, then a function lookup was previously performed and the result of that lookup is in <B>ci.procAddr</B>. If <B>ci.testFlag</B> is <B>false</B>, then this is the first time <B>GetProcAddrCached</B> has been called with this particular value for <B>procId</B>. In this case, no function address is cached in <B>ci.procAddr</B>, so a call to <B>GetProcAddr</B> is made to look up the function by <B>procName</B>. The resulting function pointer, or <B>NULL</B> if the <B>GetProcAddr</B> call was unsuccessful, is stored in <B>ci.procAddr</B> and the test flag is set to <B>true</B>. Finally, <B>GetProcAddrCached</B> returns the value stored in <B>ci.procAddr</B>.</p>
+<p>The key to successfully using the <B>GetProcAddrCached</B> method is the selection of the <B>procId</B> value. It is important that each function retrieved from the DLL have a unique value for <B>procId</B> and to always use the same value for <B>procId</B> to refer to that function.</p>
+<p>Admittedly, the caching mechanism is simple; but it's also effective. Timing test code in the sample driver program (<B>PITest.cpp</B>, available online &#151; see p. 3 for downloading instructions) confirms this. On an Intel Pentium Pro 200MHz running Windows NT, ten million calls were made using both cached and non-cached lookups. The cached calls ran in about 4.7 seconds whereas the non-cached calls took about 44.7 seconds. Linux on the same machine yielded times of 7.6 seconds cached and 24.8 seconds non-cached. Solaris on a 200MHz UltraSPARC I produced times of 10.1 seconds cached versus 32.9 non-cached.</p>
+<p>Like <B>GetProcAddr</B>, there is also Win32 version of <B>GetProcAddrCached</B> that uses an ordinal value; however, in this version, the ordinal value is used not only for function lookup but also as an index into the cache vector.</p>
+
+<h4><FONT COLOR="#000080">Clean-up</FONT></H4>
+
+<p>When you are finished using the functions in the dynamic library, call the <B>Unload</B> method to free the library and to delete any cache information that the <B>DynamicLibrary</B> object maintains. In the spirit of good object-oriented programming, the <B>DynamicLibrary</B> class destructor ensures that <B>Unload</B> is called when a <B>DynamicLibrary</B> object is deleted.</p>
+
+<h4><FONT COLOR="#000080">Plug-ins in a Nutshell</FONT></H4>
+
+<p>Put simply, a plug-in implements a set of well defined behaviors on behalf of a calling application. Programmatically, behavior is implemented through functions; and if the application and plug-in agree on a set of functions to use, you've got an API. The <B>DynamicLibrary</B> class provides the means to call functions in a dynamic library, but it does not prescribe the expected behavior of a plug-in. To that end, <A HREF="list3.htm">Listings 3</A> (<B>SimpleMath.h</B>) and <A HREF="list4.htm">4</A> (<B>SimpleMath.cpp</B>) show the <B>SimpleMath</B> class. <B>SimpleMath</B> is derived from <B>DynamicLibrary</B> and it defines the API between the calling application, which instantiates the <B>SimpleMath</B> class, and the plug-ins, which implement the requisite functions.</p>
+<p>As its name suggests, <B>SimpleMath</B> wraps plug-ins that implement some basic mathematical functionality. In this case the SimpleMath API consists of four functions capable of performing ordinary arithmetic. The four functions that every plug-in must implement are prototyped as:</p>
+
+<pre>
+extern "C" int
+simple_math_add(int x, int y);
+extern "C" int
+simple_math_sub(int x, int y);
+extern "C" int
+simple_math_mul(int x, int y);
+extern "C" int
+simple_math_div(int x, int y);
+</pre>
+
+<p>I've also included another function each plug-in must implement:</p>
+
+<pre>
+extern "C" void
+simple_math_who(char *str, int nChars);
+</pre>
+
+<p>This function fills in the character array pointed to by <B>str</B> with the name of the plug-in. The parameter <B>nChars</B> specifies the size of the buffer pointed to by <B>str</B>. This function illustrates a different function signature than the arithmetic functions, which all have the same signature.</p>
+<p>The key to deriving a class from <B>DynamicLibrary</B> is adding the plug-in API-specific wrapper methods. For each function in the SimpleMath API, the <B>SimpleMath</B> class defines a wrapper method. Each wrapper method is responsible for obtaining the corresponding plug-in function address, casting the returned pointer to the appropriate signature, and then calling the function. Examining <B>SimpleMath::Add</B> shows how all the above steps are accomplished in just a few lines of code.</p>
+
+<pre>
+int(*f)(int,int) = 
+reinterpret_cast&lt;int(*)(int,int)&gt;
+       (GetProcAddrCached("simple_math_add",
+       SIMPLEMATH_ADD));
+</pre>
+
+<p>The above line performs the first two steps: obtaining the function address and casting the returned pointer to the correct signature. The code in the next two lines</p>
+
+<pre>
+if (f)
+    return f(x,y);
+</pre>
+
+<p>checks that the function pointer is non-<B>NULL</B>, and then invokes the function.</p>
+<p>An excerpt from the test driver program in <A HREF="fig1.htm">Figure 1</A> shows how to use the <B>SimpleMath</B> class. The line</p>
+
+<pre>
+SimpleMath spi( argv[1] );
+</pre>
+
+<p>constructs the <B>SimpleMath</B> object <B>spi</B> and loads the DLL specified as the first command-line argument. Before attempting to call the plug-in functions, <B>IsLoaded</B> checks if the DLL was successfully loaded. A call to <B>spi.Who</B> obtains the name of the plug-in which is then output to the screen. Then the test program calls the <B>spi.Add</B> and <B>spi.Mul</B> methods and outputs the results on the screen. To the test program, the plug-in appears just like an ordinary object, which is exactly the desired behavior.</p>
+
+<h4><FONT COLOR="#000080">Two Sample Plug-ins</FONT></H4>
+
+<p>Of course, <B>SimpleMath</B> is not of much use without corresponding plug-ins. <A HREF="list5.htm">Listing 5</A> (<B>GoodMath.cpp</B>) shows one of two plug-ins that can be used by a <B>SimpleMath</B> object. The GoodMath plug-in implements the four arithmetic routines in a manner to generate correct results. The <B>LINKAGE</B> preprocessor definition assures that the functions are properly exported from the Win32 DLL without requiring a module definition (<B>.def</B>) file. (<B>LINKAGE</B> is of no use when the plug-in is compiled under Solaris or Linux.) The second plug-in, <B>BadMath.cpp</B>, is available online. As its name suggests, the BadMath plug-in is a little confused, swapping subtraction for addition and multiplication for division.</p>
+<p>Use the test driver program to call the plug-in functions. The name of the plug-in is specified on the command line. On Linux, the command</p>
+
+<pre>
+PITest ./GoodMath.so
+</pre>
+
+<p>uses the GoodMath plug-in when testing the <B>SimpleMath</B> class.</p>
+
+<h4><FONT COLOR="#000080">COM-like Capability</FONT></H4>
+
+<p>Developers who are familiar with Java or COM will recognize the next concept: the interface. In COM, an interface is a group of function prototypes with no defined implementation. Written in C++, an interface is nothing more than a class definition that follows a few simple rules.</p>
+
+<UL><LI>Only methods are declared &#151; there are no data members.</LI>
+    <LI>All methods are declared as pure virtual.</LI>
+    <LI>All ancestor classes follow the previous two rules.</LI></UL>
+
+<p>I have exploited the interface concept in its barest form. Unlike real COM, I'm not worried about language neutrality or creating a general-purpose object model &#151; my interest is C/C++ plug-ins. I don't use any non-portable COM system calls nor do I write any IDL (Interface Definition Language). I don't even deal with GUIDs (Globally Unique Identifiers) a.k.a. UUIDs (Universally Unique Identifiers). Even while ignoring these key COM features, it is still possible to mimic some of the basic functionality of COM, namely the creation and use of objects that implement interfaces. The main advantage of all this is that by specifying your plug-in API as one or more interfaces, you can avoid writing plug-in wrapper classes like <B>SimpleMath</B>. Instead, the compiler does the work by generating virtual functions tables (vtables) through which all the methods implemented by the plug-in get called. The main disadvantage is that it's harder to code the corresponding plug-ins in C.</p>
+
+<h4><FONT COLOR="#000080">The Interface Specifications</FONT></H4>
+
+<p>Just like COM's <B>IUnknown</B> interface, the interface I have created is used as a common ancestor. This interface is called <B>IBase</B> (see <A HREF="list6.htm">Listing 6</A> &#151; <B>BaseInterface.h</B>). <B>IBase</B> declares the two methods <B>QueryInterface</B> and <B>Destroy</B>. All implementations of <B>QueryInterface</B> should check to see if the interface named <B>iid</B> is supported. For my purposes, <B>iid</B> is a null-terminated character array containing the name of the interface. If the implementation supports the requested interface, it should place a pointer to that interface in <B>*iface</B> and <B>QueryInterface</B> should return <B>true</B>. If the implementation does not support the requested interface, it should set <B>*iface</B> to <B>NULL</B> and <B>QueryInterface</B> should return <B>false</B>. The <B>Destroy</B> method is used to destroy the interface returned by a previous call to <B>QueryInterface</B> (possibly deleting the interface's underlying object).</p>
+<p>COM programmers will note that I haven't included an <B>AddRef</B> method in <B>IBase</B>. I've chosen a slight variation on COM reference counting. My rule is simple: for each successful call to <B>QueryInterface</B>, there must be a corresponding call to <B>Destroy</B>. This rule implies that <B>QueryInterface</B> increments the underlying object's reference count and <B>Destroy</B> decrements it. When the reference count reaches zero, the underlying object deletes itself. Of course the exact implementation is up to the developer of the plug-in.</p>
+<p>Using <B>IBase</B> as a starting point, I've created two other interfaces: <B>IDoMath</B> and <B>INamed</B>, shown in <A HREF="list7.htm">Listings 7</A> (<B>IDoMath.h</B>) and <A HREF="list8.htm">8</A> (<B>INamed.h</B>). <B>IDoMath</B> declares the same arithmetic methods as found in the <B>SimpleMath</B> class. <B>INamed</B> contains the <B>Who</B> method as found in the <B>SimpleMath</B> class.</p>
+
+<h4><FONT COLOR="#000080">Class COMLikeMath</FONT></H4>
+
+<p><B>COMLikeMath</B> (<A HREF="list9.htm">Listing 9</A>, <B>COMLikeMath.cpp</B>) implements all of the interfaces described above. <B>COMLikeMath</B> is derived from both <B>IDoMath</B> and <B>INamed</B>. <B>COMLikeMath</B> is also required to implement <B>IBase</B> by virtue of the fact that <B>IBase</B> is an abstract ancestor of both <B>IDoMath</B> and <B>INamed</B>. By implementing <B>IDoMath</B> and <B>INamed</B>, <B>COMLikeMath</B> can perform the exact same functions as plug-ins implementing the <B>SimpleMath</B> functions.</p>
+<p>A look at the <B>QueryInterface</B> and <B>Destroy</B> methods shows that I've implemented them exactly as described above. Each time <B>QueryInterface</B> is called and successfully returns an interface pointer, <B>COMLikeMath</B>'s <B>refCount</B> member is incremented. Each time <B>Destroy</B> is called, <B>refCount</B> is decremented. Finally, when <B>refCount</B> reaches zero, the <B>COMLikeMath</B> object deletes itself. (Note that this implementation is by no means thread-safe.)</p>
+
+<h4><FONT COLOR="#000080">The Class Factory</FONT></H4>
+
+<p>There is only one thing missing that prevents use of <B>COMLikeMath</B>: the class is completely unknown outside of the <B>COMLikeMath.cpp</B> source file. Therefore there is no way for the application using the plug-in to create the initial instance of the <B>COMLikeMath</B> class. To solve this problem, just like in COM, I use a class factory. <A HREF="list10.htm">Listings 10</A> (<B>ClassFactory.h</B>) and <A HREF="list11.htm">11</A> (<B>ClassFactory.cpp</B>) show the declaration and implementation for the <B>ClassFactory</B> class.</p>
+<p><B>ClassFactory</B> is a class used to create the underlying objects that serve to implement interfaces. Like class <B>SimpleMath</B>, <B>ClassFactory</B> wraps functions exported by the plug-in. In this case, the method <B>ClassFactory::CreateInterface</B> wraps the function</p>
+
+<pre>
+extern "C" bool 
+cf_create_interface(const char *iid, IBase **iface)
+</pre>
+
+<p>where <B>iid</B> and <B>iface</B> are identical to that of <B>IBase::QueryInterface</B>.</p>
+<p>Each plug-in should contain an implementation of the <B>cf_create_instance</B> function that is tailored to creating the classes defined in the plug-in. For the <B>COMLikeMath</B> plug-in, <B>cf_create_interface</B> creates a new <B>COMLikeMath</B> object on the heap. Then, using the newly created <B>COMLikeMath</B> object, it calls the <B>QueryInterface</B> method to fill in <B>*iface</B> with a pointer to the interface requested by <B>iid</B>. Just like interfaces obtained by <B>QueryInterface</B>, you must call <B>Destroy</B> on any interfaces obtained by calls to <B>CreateInterface</B>.</p>
+<p>A test driver program for the <B>COMLikeMath</B> plug-in is included with this month's online sources (see p. 3 for downloading instructions).</p>
+
+<h4><FONT COLOR="#000080">Concluding Remarks</FONT></H4>
+
+<p>Plug-ins are a powerful technique to extend the capabilities and usefulness of your application. Using class <B>DynamicLibrary</B> as a starting point, it is possible to create a wide variety of plug-in architectures, ranging from direct use of the <B>DynamicLibrary</B> class to deriving wrapper classes based on <B>DynamicLibrary</B> to a COM-like interface-based architecture. There are certainly other approaches available that were not covered in this article.</p>
+<p>The code presented here does have its limitations (thread safety jumps out at me in particular), but I hope it gives you a starting point for experimenting with plug-ins in your applications.</p>
+
+<p><i>Eric Roe began tinkering with computers back in the early 1980's on the "good ol' Apple II+" &#151; and he's been tinkering ever since, working mainly on Windows, MS-DOS/DR-DOS, Solaris, and Linux. He's currently a software engineer in the Systems and Information Technology Group at TRW Inc. He can be reached at <B>Eric.Roe@trw.com</B>.</i></p>
+
+<h4><a href="../../../source/1999/may99/roe.zip">Get Article Source Code</a></h4>
+
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

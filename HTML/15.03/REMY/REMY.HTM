@@ -1,0 +1,300 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>March 1997/Portable Signal Handling Under UNIX</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><A href="../tocmar.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          <FONT COLOR="#FF0000">Unix</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">Portable Signal Handling
+          Under UNIX</FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">Martin Remy</FONT></H3>
+          <BLOCKQUOTE>
+          <P>UNIX-style signals are hardly an object-oriented concept, but that
+               doesn't prevent you from imposing a class discipline on how
+               they're used.</P></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <h4><FONT COLOR="#000080">The Problem So Far</FONT></H4>
+               
+               <p>In most C++ UNIX programs, signal
+                    handling represents a kind of make shift bridge between
+                    objects and processes. Usually, a global signal handler is
+                    written that (among other operations) calls various member
+                    functions of the classes that constitute the process. This
+                    means that the knowledge about how each of the classes
+                    should handle certain signals is collected by the consumer 
+                    of the classes. This knowledge is therefore external to the
+                    class, and is mixed with the same kind of knowledge about
+                    the other classes in the program. Another programmer who
+                    wants to use some of the same classes in a different program
+                    has to build a new signal handler from scratch. So much for
+                    reuse. </p>
+               
+               <p> However, if you believe that Posix
+                    can provide portable signal handling, and you've written
+                    your classes for UNIX-to-UNIX portability only, there is a
+                    graceful way to the other side. (If you want to brush up on
+                    Posix signal handling before you cross that bridge, see the
+                    <A href="sidebar.htm">sidebar</a>)
+. </p>
+               
+               <p> One solution, of course, is to
+                    encapsulate signal handling knowledge within the class. For
+                    example, if you are writing a class (class Manager, say)
+                    that manages a critical resource, you simply provide a
+                    member function Manager::sighandler(int) that executes the
+                    appropriate response to each type of signal that class
+                    Manager is interested in. This response might consist of 
+                    terminating child processes spawned by the resource manager,
+                    or manipulating the state of the object in some way to
+                    ensure the integrity of the resource in the situation
+                    indicated by the particular signal. </p>
+               
+               <p> Some would argue that signal handling
+                    does not belong in classes. But since Posix addresses
+                    signals, I think this approach is defensible (because it can
+                    be made portable), at least for strictly UNIX/Posix classes.
+                    </p>
+               
+               <p> To make this strategy robust and
+                    usable, I decided to employ an abstract base class (class
+                    SigAware) that provides "signal awareness" to objects of
+                    its subclasses. The idea is to keep track of the objects in
+                    a process, and to give each one a chance to handle the
+                    current signal. This shifts the focus of signal handling
+                    from the process to its constituent objects. There are 
+                    several significant advantages in this approach. For
+                    example, as a class evolves during application development,
+                    its signal handling can be brought up to date by the owner
+                    of the class code. This leaves very little room for
+                    miscommunication between class author and class consumer on
+                    the subject of signals. </p>
+               
+               <p> The class SigAware provides a static
+                    collection for keeping track of the objects in the process,
+                    and some static methods for routing the signal to the
+                    appropriate object's signal handler. It also provides a
+                    constructor that registers an object to receive signals as
+                    soon as it is constructed, as well as a virtual destructor
+                    that ensures that an object's pointer is removed from the 
+                    collection as soon as the object is destroyed. </p>
+               
+               <p> The strategy, then, is to derive
+                    signal-aware classes from this base class, which provides
+                    all of the necessary functionality except for the signal
+                    handler function itself, which is specific to the derived
+                    class.</p>
+               
+               <h4><FONT COLOR="#000080">Implementation of
+               SigAware</FONT></H4>
+               
+               <p>The base class is shown in
+                    <A href="list1.htm">Listing 1</a>.
+ For a collection class
+                    it uses an STL set, of template class set. (You can, of
+                    course, substitute almost any collection class you like.)
+                    This set is static data because it manages SigAware objects
+                    process-wide. There is a matching static iterator for the
+                    set, which is used to traverse the set so that each
+                    registered object's signal handler function can be called.
+                    The constructor simply registers the object (by calling the
+                    registerForSignals function), and the destructor unregisters
+                    the object by calling the corresponding function
+                    unregisterForSignals. The static function
+                    SigAware::sigRouter passes the signal to each registered
+                    object, and must be installed as a signal handler (using
+                    sigaction &#151; see the <A href="sidebar.htm">sidebar</a>
+on
+                    Posix signal handling). The  function registerForSignals
+                    just adds the pointer to the SigAware object to the set, and
+                    unregister accomplishes the reverse, erasing the pointer
+                    from the set. </p>
+               
+               <p> The most important function in the
+                    class is sighandler, which is pure virtual. This means that
+                    if you derive a class (say, Manager) from SigAware, you will
+                    be forced to implement sighandler to process the signals
+                    that your new class Manager is interested in. The sighandler
+                    function usually consists just of a switch statement, with a
+                    case for each signal that the class is interested in. 
+                    </p>
+               
+               <p> If your class is not interested in a
+                    particular signal, say SIGUSR2, simply omit a case for
+                    SIGUSR2 in your switch statement. See<A href="list2.htm">
+                         Listing 2</a>
+for an example of a sighandler
+                    implementation that omits all signals except SIGTERM and
+                    SIGINT. </p>
+               
+               <p> To illustrate what SigAware-derived
+                    classes look like, <A href="list2.htm">Listing 2</a>
+shows
+                    two examples. One is the Manager class I mentioned
+                    previously. The other is a class called Scribe, whose
+                    purpose is to log all signals that are sent to the program.
+                    The Manager class is interested only in SIGINT and SIGTERM
+                    in this example. Its implementation of the virtual function
+                    sighandler calls the member function writeCache in response
+                    to either signal. The sighandler for the Scribe class, on
+                    the other hand, acts as a signal monitor by logging every
+                    signal it receives. (A class like this may be useful in a
+                    real program for achieving conformance to a logging format).
+                    </p>
+               
+               <p> <A href="list3.htm">Listing 3</A>
+                    shows a small program that instantiates a Scribe object and
+                    a Manager object. Next, it installs the static function
+                    SigAware::sigRouter as the signal handler for SIGINT,
+                    SIGTERM, and SIGUSR1. This implies that all other signals
+                    will follow the default behavior in this program (as you
+                    will see with SIGHUP in the test below). </p>
+               
+               <p> It is important to point out here
+                    that the SigAware scheme of handling signals does not
+                    preclude other signal handling tricks. If you are using
+                    SigAware-derived classes in your program, you can still
+                    block signals and play other signal games from any other
+                    point within your code. </p>
+               
+               <p> After installing the signal handlers,
+                    the example program in <A href="list3.htm">Listing 3</A>
+                    enters an infinite loop. If you run this program in the
+                    background, you can easily test its response to various
+                    signals by invoking the kill command from the shell. </p>
+               
+               <p> For example, kill -USR1 causes the
+                    Scribe object to report the signal, but the Manager object
+                    remains silent since it is not interested in SIGUSR1. Typing
+                    kill -TERM again causes the Scribe object to report the
+                    signal. This time the Manager object calls its writeCache
+                    method. If you send a signal that is not being caught, such
+                    as SIGHUP, the program simply exits. Even the Scribe object 
+                    does not report the signal, since SigAware::sigRouter was
+                    not installed as the signal handler for SIGHUP. </p>
+               
+               <p> If you have several instances of a
+                    SigAware-derived class in your program, you will see that
+                    each one responds to the signal separately, just as you
+                    would expect.</p>
+               
+               <h4><FONT COLOR="#000080">Questions About
+               SigAware</FONT></H4>
+               
+               <p>The benefits of encapsulating signal
+                    knowledge within classes are clear. Chief among them are
+                    encapsulation and code reuse. The SigAware class offers a
+                    simple, portable, way to reap these benefits in practice.
+                    But there are several questions that inevitably arise. One
+                    of them is, how do I make sure that the consumer of my class
+                    will install SigAware::sigRouter as a signal handler? The 
+                    first answer, of course, is documentation. If you make it
+                    clear that this is a requirement of your class, you may have
+                    a good chance at being invited to the signal party in that
+                    particular program. </p>
+               
+               <p> The second answer is that SigAware,
+                    as I have presented it here, is only the beginning. It is
+                    possible to add code to the SigAware constructor that
+                    automatically installs sigRouter as a signal handler.
+                    Another data member of type pointer-to-function has to be
+                    added so that the currently installed handler can be
+                    preserved and called before or after sigRouter. </p>
+               
+               <p> Another important question that
+                    arises about the SigAware approach is, what if my class is
+                    already derived from another class, and I don't want to
+                    introduce multiple inheritance into my model just to get
+                    signal awareness? This question takes a lot more thought,
+                    but the answer has to be something like this: If you
+                    absolutely cannot see your way clear to using MI, you have 
+                    to look for alternatives that still provide at least
+                    encapsulation and reusability. You could try to implement
+                    SigAware along the lines of the Visitor design pattern [<A href="#REF1">1</a>]
+.
+                    But my evaluation of that approach shows that the code
+                    required would at least triple in size, and that the burdens
+                    on the user of the Manager class would increase as well.
+                    </p>
+               
+               <p> It is true that, in the case of the
+                    SigAware class, inheritance is used to model an
+                    "implements" relationship rather than an "is-a"
+                    relationship to its superclass. But C++ doesn't really offer
+                    an alternative for modeling "implements" relationships
+                    (unlike Java, which has interfaces for this kind of thing).
+                    I think that, even at the cost of using multiple
+                    inheritance, SigAware provides significant benefits to the
+                    C++ UNIX programmer who wants to be more "objective" about
+                    signal handling. </p>
+               
+               <p> In fact, I have experimented with
+                    extending the basic SigAware class presented here, and have
+                    found it to be a good model for something like a
+                    "process-aware" class that could bridge the gulf between
+                    objects and processes in many more areas than just signals.
+                    Child processes, for example, could be managed on a
+                    per-object basis. This could be useful, again, in the
+                    context of a resource-manager class, which spawns child
+                    processes that respond to requests for data from the
+                    resource. </p>
+               
+               <p> Suppose there are several different
+                    kinds of resource manager objects living in a single
+                    process, with each object spawning its own specialized child
+                    processes. In this situation it would make sense to let each
+                    object take "ownership" of its children. In effect, this
+                    would mean superimposing ownership by objects onto ownership
+                    by processes. Extending SigAware could achieve this. But for
+                    now, I use SigAware to make my signal handling less prone to
+                    the pitfalls of huge, monolithic UNIX programs, and more
+                    portable, reusable, and object-friendly.</p>
+               
+               <h4><FONT COLOR="#000080">Reference</FONT></H4>
+               
+               <p>[<A name="REF1">1</a>]
+ Erich Gamma,
+                    Richard Helm, et al. Design Patterns: Elements of Reusable
+                    Object-Oriented Software (Addison-Wesley, 1995).</p>
+               
+               <h4><FONT COLOR="#000080">Bibliography</FONT></H4>
+               
+               <p>Graham Glass &amp; Brett Schuchert.
+                    The STL &lt;Primer&gt; (Prentice-Hall, 1996). </p>
+               
+               <p> Donald Lewine. Posix Programmer's
+                    Guide, "Writing Portable Unix Programs" (O'Reilly and
+                    Associates, 1991). </p>
+               
+               <p> Kay A. Robbins &amp; Steven Robbins.
+                    Practical Unix Programming, "A Guide to Concurrency,
+                    Communication, and Multithreading" (Prentice-Hall, 1996).
+                    </p>
+               
+               <p> W. Richard Stevens. Advanced
+                    Programming in the Unix Environment (Addison-Wesley, 1992).
+                    </p></BLOCKQUOTE>
+<P><I>Martin Remy is a consultant at IBM in Boulder, Colorado, working on a large client/server project employing C++ under AIX. He holds an M.S. degree in Applied Mathematics as well as a B.S. degree in Computer Science from Santa Clara University. He may be reached at remy@dimensional.com.</FONT></I></P> 
+    
+<h4><a href="../../../source/1997/mar97/remy.zip">Get Article Source Code</a></h4>
+
+ </BODY>
+</HTML>

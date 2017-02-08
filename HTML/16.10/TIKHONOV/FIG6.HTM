@@ -1,0 +1,101 @@
+<HTML><HEAD>
+<TITLE>October 1998/An SQL Client Class/Figure 6</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Figure 6: SQL statement caching classes</A></FONT>
+<pre>
+#define CHECK_QUERY_LENGTH 128
+class StoredQuery : public LstLink0 {
+public :
+    Query* data;
+    ExactString stackName;
+    ExactString queryText;
+    StoredQuery(const Query&amp; query, char* text);
+    ~StoredQuery()  {
+        data-&gt;state &amp;= ~DQS_CACHED;
+        delete data;
+    }
+};
+
+class StackOfQuery : public LstList {
+public :
+    StackOfQuery() : LstList("Query Stack") {};
+    ~StackOfQuery() { flush(); }
+    Result Add(const Query&amp; query, char* text);
+    Result Remove(const char* name);
+    Result RemoveStack(const char* name);
+    StoredQuery* findByName(const char* name);
+    static void flush();
+};
+
+
+StoredQuery:: StoredQuery(const Query&amp; query, char* text) 
+        : LstLink0() {
+    stackName = query.getStackName();
+    if (strlen(text) &gt; CHECK_QUERY_LENGTH)
+        queryText = StdFormat("%.*s", CHECK_QUERY_LENGTH,text);
+    else
+        queryText = text;
+    data = query.dup();
+    data-&gt;cloneFrom(query);
+    data-&gt;state = DQS_PREPARED | DQS_CACHED | DQS_HAS_STMT;
+}
+
+StackOfQuery stackOfQuery;
+
+void StackOfQuery::flush() {
+    for (Pointer item = stackOfQuery.getFirst(); item;
+            item = stackOfQuery.getFirst()) {
+        stackOfQuery.LstList::Detach(item);
+        delete (StoredQuery*)item;
+    }
+}
+
+StoredQuery* StackOfQuery::findByName(const char* name) {
+    for (Pointer item = getFirst(); item; item = getNext(item))
+        if (strcmp(((StoredQuery*)item)-&gt;data-&gt;getQueryName(),
+                   name)==0)
+            return (StoredQuery*)item;
+    return 0;
+}
+
+Query* Query::findByName(const char* name) {
+    StoredQuery* item = stackOfQuery.findByName(name);
+    return item ? item-&gt;data : 0;
+}
+
+Result StackOfQuery::Add(const Query&amp; query, char* text) {
+    if (!(query.state &amp; DQS_PREPARED) 
+            || findByName(query.getQueryName()))
+        return FAIL;
+    StoredQuery* storedQuery = new StoredQuery(query,text);
+    return LstList::Add(storedQuery);
+}
+
+Result StackOfQuery::Remove(const char* name) {
+    StoredQuery* storedQuery = findByName(name);
+    if (!storedQuery)
+        return FAIL;
+    if (LstList::Detach(storedQuery)==FAIL)
+        return FAIL;
+    delete storedQuery;
+    return OK;
+}
+
+Result StackOfQuery::RemoveStack(const char* name) {
+    for (Pointer next, item = getFirst(); item; item = next) {
+        next = getNext(item);
+        StoredQuery* q = (StoredQuery*)item;
+        if (strcmp(q-&gt;stackName,name) == 0) {
+            LstList::Detach(q);
+            delete q;
+        }
+    }
+    return OK;
+}
+
+/* End of File */
+</pre>
+</BODY>
+</HTML>

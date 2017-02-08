@@ -1,0 +1,349 @@
+<HTML><HEAD>
+<TITLE>April 1995/An Error Manager With Message Text Replacement/Listing 6</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 6 <I>Member functions of class</I> error_mgr</A></h4>
+<pre>/* errmgr.cpp - error manager */
+/* has been trimmed to fit; see the monthly code */
+/* disk for the complete source. */
+
+#include &lt;stdio.h&gt;
+#include &lt;ctype.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;stdarg.h&gt;
+#include &lt;string.h&gt;
+#include "complain.hpp"
+#include "utils.hpp"
+#include "c_failur.hpp"
+#include "errmgr.hpp"
+
+/* an element in the list of complaint dictionaries: */
+
+class error_dict_list {
+   public:
+      error_dict_list(error_dict_list *curr,
+                   complaint_dict *new_dict);
+      error_dict_list *prev;
+      complaint_dict *dict;
+};
+
+error_mgr err_mgr;
+
+/* is_set_up is set when err_mgr is initialized. no */
+/* other error manager can be active. */
+
+int error_mgr::is_set_up = 0);
+
+/* asserts_off is 0 when assertions are to be checked. */
+
+#ifndef NDEBUG
+int error_mgr::asserts_off = 0;
+#else
+int error_mgr::asserts_off = 1;
+#endif
+
+failure_handler *error_mgr::curr_handler = 0,
+             *error_mgr::default_handler = 0;
+error_dict_list *error_mgr::error_dicts = 0;
+ptr_stack *error_mgr::handler_stack = 0;
+
+static char line[512];  /* should be managed buffer */
+
+static int proper_format(const char *pgm_text,
+                     const char *user_text);
+static char format_specifier(const char **fmt);
+
+error_mgr::error_mgr(void)      /* constructor */
+{
+   setup();
+}
+
+error_mgr::~error_mgr(void)     /* destructor */
+{
+   delete default_handler;
+   delete handler_stack;
+}
+
+void error_mgr::setup(void)
+{
+   /* create default handler and empty dictionary */
+   /* list, allocate stack for failure_handlers, */
+   /* make sure no other error_mgr is present. */
+   if (this != &amp;err_mgr)       /* just in case... */
+      err_mgr.fail("Duplicate error_mgr defined.\n");
+   if (is_set_up)
+      return;
+   is_set_up = 1;
+   curr_handler = default_handler =
+                new failure_handler;
+   handler_stack = new ptr_stack;
+}
+
+int error mgr::define_dictionary(const char *filename)
+{
+   /* add a new dictionary to the list. it's */
+   /* ignored if any errors are found. */
+   counting_failure_handler *our_handler;
+   complaint_dict *new_dict;
+
+   setup();
+   /* we count errors in the file with our_handler. */
+   our_handler = new counting_failure_handler;
+   new_dict = new complaint_dict(filename);
+   if (our_handler-&gt;errors_logged() ||
+      our_handler-&gt;warns_logged()) {
+      delete new_dict;
+      warn("$bad_error_dict: dictionary file \"%s\" "
+          "has errors - will not be used\n",
+          filename);
+      delete our_handler;
+      return 0;
+   }
+   error_dicts = new error_dict_list(
+                      error_dicts,new_dict);
+   delete our_handler;
+   return 1;
+}
+
+failure_handler *error_mgr::define_handler(
+                  failure_handler *new_handler)
+{
+   /* install a new error handler, pushing the */
+   /* previous handler onto a stack. */
+
+   failure_handler *old_handler;
+   
+   setup();
+   handler_stack-&gt;push(curr_handler);
+   old_handler = curr_handler;
+   if (new_handler == 0)        /* bomb-proof */
+      curr_handler = default_handler;
+   else
+      curr_handler = new_handler;
+   return old_handler;
+}
+
+failure_handler *error_mgr::restore_handler(void)
+{
+   /* return to the previous error handler. */
+   failure_handler *old_handler;
+
+   setup();
+   old_handler = curr_handler;
+   curr_handler = (failure_handler *)
+                     (handler_stack-&gt;pop());
+   if (curr_handler == 0)
+      curr_handler = default_handler;
+   return old_handler;
+}
+
+const char *error_mgr::message(
+                   const char *fmt,char *msg_line,
+                   int linelen)
+{
+   /* search for the replacement text, writing */
+   /* it into msg_line if found. return a pointer */
+   /* to the start of the message, ready to print. */
+   const char *new_fmt,*key,*keystart;
+   char *key_alloc,*buf;
+   int keylen;
+
+   /* this routine calls setup() for fail(), */
+   /* vfail(), etc. */
+   setup();
+   ASSERT(fmt != msg_line);
+   msg_line[0] = '\0';
+   if (*fmt ! = '$') {         /* not keyed? */
+      strncpy(msg_line,fmt,linelen);
+      msg_line[linelen - 1] = '\0';
+      return msg_line;
+   }
+
+   /* extract the key. */
+   key = ++fmt;                /* skip '$' */
+   key += skipblanks(key);
+   keylen = skip_ident(key);   /* fetch key name */
+   new_fmt = key + keylen;     /* skip key name */
+   new_fmt += skipblanks(key); /* skip to ':' */
+
+   /* error text here is not replaceable - */
+   /* recursive calls would be dangerous. */
+   if (keylen == 0 || ll *new_fmt != ':') {
+      sprintf(msg_line,"Keyed error message format"
+             "string is malformed\n%s",fmt);
+   }
+   else {
+      key_alloc = newstring(key,keylen);
+      ++new_fmt;              /* skip ':' */
+      new_fmt += skipblanks (new_fmt);
+      if (find_replacement(key_alloc,msg_line,
+                       linelen)) {
+         if (!proper_format(new_fmt,msg_line)) {
+            /* invalid; dictionary text left at */
+            /* front of resulting error message. */
+            buf = msg_line + strlen(msg_line);
+            sprintf(buf,"Replacement text for "
+                   "keyed error message is "
+                   "malformed\n%s", fmt);
+         }
+      }
+      else {                  /* use program version */
+         strncpy(msg_line,new_fmt,linelen);
+         msg_line[linelen - 1] = '\0';
+      }
+      free(key_alloc);
+   }
+   return msg_line;
+}
+
+int error_mgr::find_replacement(
+                 const char *key,char *msg_line,
+                 int linelen)
+{
+   /* search for message replacement. returns 1 */
+   /* if found, 0 if not. */
+   error_dict_list *curr_dict;
+
+   for (curr_dict = error_dicts; curr_dict != 0;
+       curr_dict = curr_dict-&gt;prev)
+      if (curr_dict-&gt;dict-&gt;key_defined(key))
+          break;
+   return curr_dict != 0 &amp;&amp;
+         curr_dict-&gt;dict-&gt;complaint_text(
+                          key,msg_line,linelen);
+}
+
+static int proper_format(const char *pgm_text,
+                     const char *user_text)
+{
+   /* return 1 if the printf() format specifiers */
+   /* in user_text match the ones in pgm_text. */
+   char pgm_fmt,user_fmt;
+
+   do {
+      pgm_fmt = format_specifier(&amp;pgm_text);
+      user_fmt = format_specifier(&amp;user_text);
+      if (pgm_fmt!= user_fmt)
+         return 0;
+   } while (*pgm_text || *user_text);
+   return 1;
+}
+
+static char format_specifier(const char **fmt)
+{
+   /* skip to the next '%' specifier (if any) */
+   /* and return a unique letter indicating its */
+   /* type. advances *fmt past the specifier. */
+   const char *s : *fmt;       /* *s vs. **fmt */
+   char c;
+
+   for (;;) {                  /* skip to '%' */
+      while (*s &amp;&amp; *s != '%')
+         ++s;
+      if (*s == '\0')
+         break;
+      ++s;                    /* skip '%' */
+      if (*s == '%')          /* "%%" prints '%' */
+         ++s;                 /* not specifier */
+      else
+         break;
+   }
+   if (*s == '\0') {
+      *fmt = s;               /* update caller var */
+      return '\0';
+   }
+
+   /* skip to the specifier letter. */
+   while (*s &amp;&amp; !isspace(*s) &amp;&amp; !isalpha(*s))
+      ++s;
+   if (!isalpha(*s)) {
+      *fmt = s;               /* update caller var */
+      return '\0';            /* bad specifier */
+   }
+
+   /* any 'l' is assumed to be long. */
+   if (*s == 'l' &amp;&amp; isalpha(*(s + 1))) {
+      *fmt = s + 2;           /* skip l, specifier */
+      return '1';
+   }
+
+   /* map the specifier into a canonical value. */
+   c = tolower(*s);
+   *fmt = s + 1;               /* update caller var */
+   switch(c) {
+   case 'e': case 'f': case 'g':
+      return 'e';              /* floating point */
+   case 'o': case 'u': case 'x':
+   case 'd': case 'i': case 'b':
+      return 'd';              /* int */
+   default:                     /* all others map */
+      return c;                /* to themselves */
+   }  /* end of switch(c) */
+   /* NOTREACHED */
+}
+
+void error_mgr::fail(const char *fmt,...)
+{
+   /* print the message and exit. */
+   va_list ap;
+
+   va_start(ap,fmt);
+   vfail(fmt,ap);              /* won't return */
+   /* NOTREACHED */
+   va_end(ap);
+}
+
+void error_mgr::vfail(const char *fmt,va_list ap)
+{
+   /* fail() with a va_list already built. if */
+   /* the handler doesn't exit we force it. */
+   fmt = message(fmt,line,sizeof(line));
+   curr_handler-&gt;fail(fmt,ap);
+   exit(EXIT_FAILURE);         /* just in case! */
+}
+
+void error_mgr::error(const char *fmt,...)
+{
+   /* print the message and ask for permission to */
+   /* continue. */
+   va_list ap;
+
+   va_start(ap,fmt);
+   verror(fmt,ap);
+   va_end(ap);
+}
+
+void error_mgr::verror(const char *fmt,va_list ap)
+{
+   /* error() with a va_list already built. */
+   /* we replace the message if possible. */
+   fmt = message(fmt,line,sizeof(line));
+   curr_handler-&gt;error(fmt,ap);
+}
+
+int error_mgr::set_assert_flag(int asserts_on)
+{
+   /* enable or disable assertions at run time. */
+   int retval = asserts_off;
+
+   /* set to opposite state because we want to */
+   /* short-circuit assertion evaluation. */
+   asserts_off = !asserts_on;
+   return !retval;
+}
+
+int error_mgr::assert_failed(
+                const char *exp,const char *fname,
+                unsigned linenum)
+{
+   /* an assertion has failed. */
+   error("Assertion failed - file %s, line %u:\n%s\n",
+        fname,linenum,exp);
+   return 1;                   /* needed for macro */
+}
+
+// End of File
+</pre>
+</BODY>
+</HTML>

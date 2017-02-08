@@ -1,0 +1,235 @@
+<HTML><HEAD>
+<TITLE>February 1999/A Lightweight C++ Library for Embedded LCDs/Figure 4</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Figure 4: Derived class StripChartField</A></h4>
+<pre>
+enum StripChartOrientation {Vertical, Horizontal};
+
+class StripChartField : public IOField
+{
+    UINT *DataBuf;
+    PixelLoc *PixelBuf;
+    UINT PixelCount;
+    UINT NumPoints;
+    UINT DataHead;
+    UINT DataTail;
+    StripChartOrientation Orientation;
+    BOOL Changed;
+public:
+    StripChartField(LCDDisplay *d, UINT x, UINT y, UINT w,
+        UINT h, StripChartOrientation o);
+    void NewPoint(UINT val);
+    virtual void Paint();
+};
+
+StripChartField::StripChartField(LCDDisplay *d, UINT x,
+    UINT y, UINT w, UINT h, StripChartOrientation o)
+    : (d, x, y, w, h)
+{
+    Orientation = o;
+    DataHead = 0;
+    DataTail = 0;
+    PixelCount = 0;
+    Changed = FALSE;
+    /* I omit, for space, the initialization of the Data and Pixel
+       buffers */
+}
+
+void StripChartField::NewPoint(UINT val)
+{
+    // add the point to the queue
+    DataHead = (DataHead + 1) % NumPoints;
+    if (DataHead == DataTail)
+        DataTail = (DataTail + 1) % NumPoints;
+    DataBuf[DataHead] = val;
+    Changed = TRUE;
+}
+
+void StripChartField::Paint()
+{
+    if (Changed == FALSE) return;
+    Changed = FALSE;
+
+    // Erase all the old points on the screen
+    UINT t = 0;
+    while (t != PixelCount)
+    {
+        Display-&gt;Plot(PixelBuf[t].X, PixelBuf[t].Y, White);
+        t += 1;
+    }
+
+    // Set coordinates of pixels to draw
+    PixelCount = 0;
+    t = DataTail;
+    while (t != DataHead)
+    {
+        // scale the value so it fits in the graph
+        // only need to set the value of one coordinate now, other
+        // coordinate was set in the constructor as it will not
+        // change further
+        if (Orientation == Horizontal)
+            PixelBuf[PixelCount].Y =
+                (Y+H-1) - ((ULONG) DataBuf[t] *
+                    (ULONG) (H-1)) / ((ULONG) USHRT_MAX + 1);
+        else
+            PixelBuf[PixelCount].X =
+                (X+W-1) - ((ULONG) DataBuf[t] *
+                    (ULONG) (W-1)) / ((ULONG) USHRT_MAX + 1);
+        t = (t + 1) % NumPoints;
+        PixelCount+=1;
+    }
+
+    // Draw the points in PixelBuf
+    for (short i = 0; i &lt; PixelCount; i++)
+        Display-&gt;Plot(PixelBuf[i].X, PixelBuf[i].Y, Black);
+}
+
+class ParmSelectField : public TextOutputIOField
+{
+protected:
+    PRM *PRM;  // all system parameters of interest are PRM
+    objects
+public:
+    ParmSelectField(LCDDisplay *d, UINT x, UINT y, UINT w,
+        UINT h);
+    PRM *GetParm(); // returns currently selected system parameter
+    virtual void GotFocus();
+    virtual void LostFocus();
+    virtual void DialMovedTo(UINT Position);
+};
+
+ParmSelectField::ParmSelectField(LCDDisplay *d, UINT x,
+    UINT y, UINT w, UINT h) : (d, x, y, w, h)
+{
+    PRM = LastPRMAddedToList;
+    FontToUse = _8x8;
+    TColor = BlackOnWhite;
+    sprintf(buf, "%-10.10s %-4.4s", PRM-&gt;GetName(),
+        PRM-&gt;GetDisplayUnits());
+    Changed = TRUE;
+}
+
+PRM *ParmSelectField::GetParm()
+{
+    return PRM;
+}
+
+void ParmSelectField::GotFocus()
+{
+    // Highlight the field when it has the input focus
+    TColor = WhiteOnBlack;
+    Changed = TRUE;
+}
+
+void ParmSelectField::LostFocus()
+{
+    // Unhighlight the field when it loses the input focus
+    TColor = BlackOnWhite;
+    Changed = TRUE;
+}
+
+void ParmSelectField::DialMovedTo(UINT Position)
+{
+    /* I omit, for space, the mechanism by which a system
+       parameter is selected for display.  The PRM is
+       beyond the scope of this article. */
+    // Output is the name of the system parameter and its units
+    PRM = p;
+    sprintf(buf, "%-10.10s %-4.4s", PRM-&gt;GetName(),
+        PRM-&gt;GetDisplayUnits());
+    Changed = TRUE;
+}
+
+class StripChartProcess : public IOProcess
+{
+    DWORD Parm1Sample;
+    DWORD Parm2Sample;
+    StripChartField *Parm1Graph;
+    StripChartField *Parm2Graph;
+    ParmSelectField *Parm1Select;
+    ParmSelectField *Parm2Select;
+    TextOutputIOField *Parm1Numeric;
+    TextOutputIOField *Parm2Numeric;
+    PRM *LastPRM1;
+    PRM *LastPRM2;
+    DWORD LastS1;
+    DWORD LastS2;
+    void GetSamples();
+protected:
+    virtual void Paint();
+public:
+    StripChartProcess();
+}   StripChartDisplay;
+
+StripChartProcess::StripChartProcess()
+{
+    // instantiate the fields that are to be shown on the LCD
+    Parm1Select = new ParmSelectField(&amp;Display, 120,  0, 120, 8);
+    Parm2Select = new ParmSelectField(&amp;Display, 120, 32, 120, 8);
+    Parm1Graph =
+        new StripChartProcess(&amp;Display, 0, 0,  120, 32,
+                              Horizontal);
+    Parm2Graph =
+        new StripChartProcess(&amp;Display, 0, 32, 120, 32,
+                              Horizontal);
+    Parm1Numeric =
+        new TextOutputIOField(&amp;Display, 120,  8, 120, 8);
+    Parm2Numeric =
+        new TextOutputIOField(&amp;Display, 120, 40, 120, 8);
+
+    // Z order is not important, but set tab stops of the two
+    // input fields
+    RegisterField(Parm1Select, 0, 1);
+    RegisterField(Parm2Select, 0, 2);
+    RegisterField(Parm1Graph);
+    RegisterField(Parm2Graph);
+    RegisterField(Parm1Numeric);
+    RegisterField(Parm2Numeric);
+
+    LastPRM1 = NULL;
+    LastPRM2 = NULL;
+    LastS1 = 2340; // unusual value, not likely to
+    LastS2 = 2340; // come up the first time
+
+    // in a tenth of a second, grab the first set of samples
+    AlarmClock.WakeMeIn(ATENTHOFASECOND,
+        &amp;StripChartProcess::GetSamples, this);
+}
+
+void StripChartProcess::Paint()
+{
+    char buf[32];
+    DWORD s;
+    PRM *p;  // a pointer to a system parameter
+
+    // reset the text fields showing parameter values if changed
+    p = Parm1Select-&gt;GetParm(); // first system parameter to view
+    s = p-&gt;GetSample();
+    if ((s != LastS1) || (p != LastPRM1))
+    {
+        p-&gt;GetDisplayValue(s, buf);
+        Parm1Numeric-&gt;SetText(_8x8, BlackOnWhite, buf);
+        LastPRM1 = p;
+        LastS1 = s;
+    }
+    p = Parm2Select-&gt;GetParm(); // second system parameter to view
+    s = p-&gt;GetSample();
+    if ((s != LastS2) || (p != LastPRM2))
+    {
+        p-&gt;GetDisplayValue(s, buf);
+        Parm2Numeric-&gt;SetText(_8x8, BlackOnWhite, buf);
+        LastPRM2 = p;
+        LastS2 = s;
+    }
+
+    // Call the base class Paint() function so strip chart,
+    // parameter select fields get updated
+    IOProcess::Paint();
+}
+
+//End of File
+</pre>
+</BODY>
+</HTML>

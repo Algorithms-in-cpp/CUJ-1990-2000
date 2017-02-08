@@ -1,0 +1,304 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>December 1996/A Faster memcpy for the Pentium</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><A href="../tocdec.htm"><IMG src="../../toc.gif" WIDTH="54" HEIGHT="54"></A>
+          <FONT COLOR="#FF0000">Optimization &amp; Efficiency</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000"> A Faster memcpy for the
+          Pentium</FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">Steve Durham </FONT></H3>
+          
+          <BLOCKQUOTE>
+               
+               <p> If you have to move large quantities
+                    of data, the faster you can get the processor to do so the
+                    better.</p></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <h4><FONT COLOR="#000080"><FONT COLOR="#000080">How
+               Fast is memcpy?</FONT></FONT></H4>
+               
+               <p>When writing time-critical code, we
+                    often have to throw out our dearest assumptions about
+                    execution speed. Perhaps one of the hardest assumptions to
+                    give up is that the C/C++ standard libraries always deliver
+                    the fastest possible code. As an example, consider memcpy,
+                    one of the workhorses of the standard libraries. memcpy's
+                    execution speed on a Pentium varies over a wide range, 
+                    depending on whether or not the source and destination
+                    buffers are in the Pentium's L1 cache [<A href="#REF1">1</a>]
+.
+                    One of the things I will show in this article is that memcpy
+                    is not always the fastest way to transfer non-cached data.
+                    </p>
+               
+               <p> It is true that when data is in the
+                    cache, the standard library's memcpy is probably about as
+                    fast as you can get. In Visual C++ 4.1, the heart of memcpy
+                    is the rep movsd instruction (see
+                    msdev\crt\src\intel\memcpy.asm). According to the Intel
+                    specs, this instruction executes in just 13+count clock
+                    cycles on a Pentium, where count is the number of
+                    double-words (dwords) being copied. Indeed, if you create a
+                    1Kb source buffer and a 1Kb destination buffer, read from
+                    each one to ensure they are in the cache, and then execute
+                    memcpy (more than once, to ensure that the code also gets
+                    loaded in the cache), your measurements should actually
+                    match the number of cycles that Intel quotes. </p>
+               
+               <p> But what if the data is not in the L1
+                    cache? [<A href="#REF1">1</a>]
+ This situation is not
+                    uncommon, and may actually be the norm. If you are writing
+                    code that reads and writes to several different buffers,
+                    it's likely that no single buffer will stay in the cache
+                    very long. By the time you come back to the buffer again, it
+                    may be completely out of the cache. You will also have a
+                    problem if your buffer is significantly larger than the
+                    cache itself. If you are running a multimedia program that
+                    operates on video or audio buffers, both these problems are
+                    likely. When the buffers are not in the cache, memcpy slows
+                    down considerably. For example, assume that a 1Kb buffer is
+                    being copied. This is small enough for both the source and
+                    destination buffers to fit into the Pentium L1 cache. In
+                    this situation, memcpy takes approximately 0.27 cycles/byte.
+                    But it takes a whopping 3 cycles/byte or so when only the
+                    code is in the cache. </p>
+               
+               <p> In this article I present some
+                    optimizations that enable us to beat this time. On a regular
+                    Pentium, the gains are a modest 16% &#151; not extraordinary,
+                    but still significant when every microsecond counts. On the
+                    newer Pentium MMX (Pentium with Multimedia Extensions, to be
+                    widely available in 1Q97), we can achieve speedups of up to
+                    40%. To find out more about the MMX, see the sidebar, "<A href="durside1.htm">The
+                         Pentium MMX</a>.
+"</p>
+               
+               <h4><FONT COLOR="#000080">Some Preliminaries</FONT></H4>
+               
+               <p>Before I present the optimizations, I
+                    need to discuss a couple of concepts crucial to their
+                    understanding. First, there is the practice of pre-warming
+                    the cache. A warm cache is one whose internal registers are
+                    already mapped to the main memory addresses from which you
+                    want to read and write. In other words, the cache locations
+                    are "associated'' with those main memory locations. In the 
+                    case of reads, the cache must also contain current data from
+                    the associated main memory addresses. Part of the
+                    optimizations I discuss rely upon "pre-warming'' the cache.
+                    To see how this is done, see the sidebar, "<A href="durside2.htm">Pre-warming
+                         the Cache.</A>" </p>
+               
+               <p> Second, how do I measure performance?
+                    In another article in this issue (see "<A href="../durham2/durham.htm">A
+                         Test Jig for Pentium Optimization</A>"), I
+                    describe a tool (TestJig) which I developed to measure the
+                    cycle counts required to execute a piece of code on the
+                    Pentium. I used this same tool to obtain the performance
+                    measurements for this article. Most of my following comments
+                    on performance are qualitative, because I'm discussing
+                    trends in the measured data produced by TestJig. If you run
+                    TestJig yourself, you will see that the numbers dance around
+                    quite a bit. The absolute cycle count is not important. What
+                    is important is the speed of the memcpy version relative to
+                    the optimized version. The cycle counts for the warm-cache
+                    case are very stable. It is only the cold-cache numbers that
+                    frolic impudently. </p>
+               
+               <p> My definition of performance gain is
+                    as follows:</p>
+
+<PRE>
+gain = 100% * (1-o/m),
+</PRE>
+               
+               <p>where o is the optimized cycle count,
+                    and m is memcpy's cycle count.</p>
+               
+               <h4><FONT COLOR="#000080">The Optimization
+               Technique</FONT></H4>
+               
+               <p>memcpy really boils down to the
+                    following code:</p>
+
+<PRE>
+
+ _asm{   ;Clocks
+ cld
+
+ mov ecx, dwByteCount
+ mov edi, pDest
+
+ shr ecx, 2;
+ mov esi, pData
+
+ rep movsd  ;13+ecx = 13+256 = 269
+ // Total clocks = 273
+ // Measured == 306 - 38 overhead<BR> // (measured) = 273
+ }
+</PRE>
+               
+               <p>TestJig shows that this code takes
+                    0.27 clocks/byte when the cache has been pre-warmed, and 2.5
+                    to 3.5 cycles/byte with a cold cache.</p>
+               
+               <p>On a Pentium system, if your data is
+                    not in the cache, you can achieve a significant performance
+                    increase over memcpy by using the floating-point or MMX
+                    registers in a somewhat unconventional way. (MMX registers,
+                    of course, can be used only on the Pentium MMX.) If you use
+                    the top FP register or one of the MMX registers to do a
+                    memory copy instead of using rep movsd, you can achieve up 
+                    to 30-40% better performance on an MMX machine, and 16% on a
+                    regular Pentium. </p>
+               
+               <p> I have to say I am really not sure
+                    why the big-register cases run faster than movsd when the
+                    data is not cached. But I do know that both registers allow
+                    you to move eight bytes at a time, whereas general register
+                    instructions allow you to move only four bytes at a time.
+                    Also, MMX and floating-point writes can take full advantage
+                    of write buffers. A regular Pentium has two write buffers 
+                    and an MMX Pentium has four. The write buffers hold eight
+                    bytes each. If you move only four bytes per move, you may
+                    not be filling the write buffer completely and thus not
+                    using it as efficiently as possible. movsd does everything
+                    internally and doesn't make any measurable optimizations
+                    with regard to the cache.</p>
+               
+               <h4><FONT COLOR="#000080">Using the FP
+               Registers</FONT></H4>
+               
+               <p>The code in <A href="durl1.htm">Listing
+                         1 </A>appears to produce the best performance for the
+                    floating-point register implementation. Note that the code
+                    does an integer load and store (fild and fistp), not
+                    floating-point load and store. Many four-byte bit patterns
+                    do not represent valid floating-point numbers, and since the
+                    patterns being copied are random, we cannot use fld and
+                    fstp, or we will probably incur several floating-point 
+                    exceptions. Pre-warming (see sidebar, "Pre-warming the
+                    Cache") seems to have a greater effect on the
+                    floating-point copy than on the MMX copy.</p>
+               
+               <h4><FONT COLOR="#000080">Using the MMX
+               Registers</FONT></H4>
+               
+               <p>You may not realize it, but you can
+                    already compile MMX instructions with Visual C++ 4.1. Just
+                    use the /GM Compiler switch. This will produce MMX
+                    instructions even on a non-MMX system. Of course, a non-MMX
+                    processor cannot execute these instructions, but Intel
+                    supplies an emulation VxD. Being able to turn MMX
+                    instructions on and off is handy if you're part of a team
+                    where not everyone has an MMX box. The code in
+                    <A href="durl2.htm">Listing 2</a>
+uses the MMX register
+                    mm0 to load and store bytes. Note that any one of the eight
+                    registers (mm0-mm7) could be used. The MMX instruction movq
+                    (move qword) will move eight bytes at a time. This code
+                    times at 0.65 cycles/byte with a warm cache and roughly 2 -
+                    2.5 cycles/byte with a cold cache. </p>
+               
+               <p> It turns out that pre-warming the
+                    code helps in MMX copies only when copying more than eight
+                    bytes per iteration in the main copy loop. Measurements show
+                    that copying only eight bytes/iteration takes about the same
+                    amount of time with or without cache warming. However,
+                    copying only eight bytes/iteration also gives the best
+                    performance gain over memcpy. Please refer to Table 1 to see
+                     the comparison.</p>
+               
+               <h4><FONT COLOR="#000080">Summary</FONT></H4>
+               
+               <p>The results of all tests are
+                    summarized in <A href="durt1.htm">Table 1</a>.
+ I ran all
+                    MMX copy and and floating-point copy code on a Pentium MMX
+                    166MHz system. I also ran the floating-point copy code on a
+                    Pentium-90 system. In all cases, performance improvements
+                    over memcpy appear only when the cache is cold at the time
+                    memcpy or the optimized copy is called. (The optimized copy
+                    may then pre-warm the cold cache to some advantage,
+                    however.) </p>
+               
+               <p> The only sweeping statement I will
+                    make is that using the MMX and floating-point registers is
+                    faster than using rep movsd for doing memory copies when the
+                    cache is cold. Also, pre-warming the cache before the main
+                    copy loop makes the overall code run marginally faster on
+                    MMX systems, and is essential on the Pentium 90 (a non-MMX
+                    system) to net any gain in performance. Beyond these 
+                    statements, the numbers become ambiguous.</p>
+               
+               <h4><FONT COLOR="#000080">Notes</FONT></H4>
+               
+               <p>[<A name="REF1">1</a>]
+ From here on,
+                    when I refer to the cache, I mean the L1, or on-chip cache.
+                    The L2, or external cache, is much larger but can be about
+                    ten times slower. </p>
+               
+               <p> [<A name="REF2">2</a>]
+ Don't
+                    pre-warm the cache to more bytes than it can hold! The last
+                    bytes of an oversized buffer will "push" the first
+                    bytes out of the cache. As a rule of thumb, handle 4Kb
+                    chunks at a time, preferably on a 4K boundary.</p>
+               
+               <h4><FONT COLOR="#000080">Further Reading</FONT></H4>
+               
+               <p>Pentium Processor Family Developer's
+                    Manual, Volume 3: Architecture and Programming Manual. Intel
+                    Corporation, Order Number 240897. </p>
+               
+               <p> Intel Architecture MMX Technology
+                    Developer's Manual. Intel Corporation, Order Number 243010.
+                    </p>
+               
+               <p> Intel Architecture MMX Technology
+                    Programmer's Reference Manual. Intel Corporation, Order
+                    Number 243007-002 </p>
+               
+               <p> Schmit, Michael, L. Pentium Processor
+                    Optimization Tools. Academic Press, Inc. ISBN 0-12-627230-1.</p>
+               
+               <p>Abrash, Michael. The Zen of Code
+                    Optimization. Coriolis Group Books, ISBN 1-883577-03-9</p>
+               
+               <p>Messmer, Hans-Peter. The Indispensable
+                    Pentium Book. Addison Wesley, ISBN 0-201-87727-9. See
+                    chapter 9 for an explanation of the Pentium cache.</p>
+               
+               <P><I>Steve Durham, a.k.a. Bull, is a
+                    senior design engineer for Codesign, an embedded systems
+                    design and consulting firm. He has a BSEE (computer design)
+                    from the United States Military Academy. Steve is currently
+                    doing Pentium optimization work and can be reached at
+                    sdurham@cdcorp.com.</FONT></I></P><I> </I>
+
+<h4><a href="../../../source/1996/dec96/durham.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+     </BODY>
+</HTML>

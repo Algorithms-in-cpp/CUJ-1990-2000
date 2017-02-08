@@ -1,0 +1,142 @@
+
+
+<HTML>
+<HEAD>
+
+<TITLE>February 1995/Programming Flash Memory</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocfeb.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Real-Time/Embedded Systems</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Programming Flash Memory<A name="003E_001E"><A name="003E_001E"></font></h2><P>
+<h3 align="center"><font color="#800000"><A name="003E_0000"><A name="003E_0000">Mike Cepek</font></h3><hr><blockquote><P>
+<P><i><A name="003E_0000"><A name="003E_0000">Mike is a Senior Software Design Engineer in the Research and Development department of Management Graphics, Inc., Minneapolis. Mike started programming in the 7th grader, and later earned his B.S. in Computer Science at the University of Minnesota/Institute of Technology in 1984. Mike can be reached on the Internet at cepek@mgi.com.</i></P><P>
+<h4><FONT COLOR="#000080"><A name="003E_001F">Introduction<A name="003E_001F"></FONT></h4></P>
+Flash memory is an increasingly popular choice over EPROMs for system designers, especially for embedded systems. The devices available today allow in-circuit reprogramming of megabytes of "ROM" with few or no additional parts. This article describes the additional software required to program these devices.<P>
+<h4><FONT COLOR="#000080"><A name="003E_0020">Why We Like Flash<A name="003E_0020"></FONT></h4></P>
+One major benefit from flash is faster software development turnaround time. Burning and installing EPROMs for each new version of firmware slows down development. While downloading the firmware to RAM can eliminate these steps, it assumes that we have adequate (i.e. more) RAM for the task, which is not always a good assumption. This is because in an embedded system, code and static data usually reside in ROM. Note also that the ROM and RAM versions of the code are not identical &#151; the ROM and RAM address spaces will be different, leading to different firmware relocation addresses. Using flash memory avoids all these development issues.<P>
+Our embedded systems currently use two types of flash memory devices made by AMD: the Am29F010 and Am29F040. These devices are single-voltage (5v), byte-wide memories with 128 KB and 512 KB capacity, respectively. High storage capacity is just one of the many device features available in flash memories (see <a href="sidebar1.htm">sidebar</a>). For example, both of these devices divide their memory into eight equal size sectors, each of which can be independently erased and reprogrammed.<P>
+These two flash devices are compatible with the JEDEC pinout standard for EPROM devices. This allows us to use flash during the development process and to use off-the-shelf EPROMs in production where desired.<P>
+Our customers also appreciate flash because it enables them to install firmware updates without disassembling the product to replace EPROMs. We have even provided "media-less" firmware updates to customers via e-mail, which they can download to the product and save in the flash memory.<P>
+<a href="#1">[1]</a> and <a href="#2">[2]</a> discuss other applications for flash, and discuss common problems with and solutions for embedded system flash implementations.<P>
+<h4><FONT COLOR="#000080"><A name="003E_0021">Implementation Background<A name="003E_0021"></FONT></h4></P>
+Code written for embedded systems is often highly specific to one platform. However, by applying principles of generality and modularization, I believe we have produced code that is reasonably portable and adaptable.<P>
+Our implementation uses two byte-wide flash chips in parallel, allowing direct 16-bit reads and writes with minimum access time (see <A href="fig1.htm">Figure 1</a>)
+. This leads to some interesting program timing constraints, to be covered later in this article.<P>
+The remainder of this article discusses the production code we use with these devices. I describe the data structures defined in the file <I>fmutl.h</I> first, and follow with a bottom-up presentation of the routines, defined in <I>fmutl.c.</I> (These two source files are available on this month's code disk. The disk includes another source module which uses these routines for diagnostic and unit testing.)<P>
+<h4><FONT COLOR="#000080"><A name="003E_0022">Data Structures<A name="003E_0022"></FONT></h4></P>
+<A href="list1.htm">Listing 1</a>
+shows the header file, <I>fmutl.h.</I> It contains the following:<P>
+<UL><li>typedefs for the <I>FMINFO</I> and <I>FMERR</I> structures</li>
+<li>an extern for an <I>FMERR</I> instance</li>
+<li>prototypes for the global routines in <I>fmutl.c</I></li></UL>
+The <I>FMINFO</I> structure holds information describing the characteristics of the flash devices. This data allows the code to adapt to different flash devices still having similar overall characteristics (e.g., programming algorithm). The <I>fm_status</I> routine fills in the <I>FMINFO</I> member data.<P>
+The <I>FMERR</I> structure provides error information to the calling routine. A global instance of this structure is defined in the <I>fmutl. c</I> module, and <I>fMerr. h</I> provides an <I>extern</I> declaration.<P>
+<A href="list2.htm">Listing 2</a>
+shows the manifest constants and static variable definitions for the program. (On the code disk, <A href="list2.htm">Listing 2</a>
+through <A href="list7.htm">Listing 7</a>
+comprise <I>fmutl. c.)</I><P>
+Because our code accesses two byte-wide devices in parallel, we've duplicated the command code bytes in the command constants &#151; the commands will be written to, and data will be read back from, both devices simultaneously.<P>
+The constants <I>FM_DATA1</I> and <I>FM_DATA2</I> are offsets from the beginning (base) of the flash memory space, and will be resolved to actual system addresses in the flash memory address space at run time. The global definition of the <I>fm_err</I> structure allows <I>fmutl. c</I> to export error information to calling routines.<P>
+<I>DevTable</I> is an array of <I>FMINFO</I> structures that describes the flash devices supported by the program. The code uses this data at runtime to accommodate a variety of devices. (One of our product models actually does use two sizes of flash devices in the same unit.)<P>
+<h4><FONT COLOR="#000080"><A name="003E_0023">Flash Programming Routines<A name="003E_0023"></FONT></h4></P>
+The routines in <I>fmutl.c</I> are ordered in traditional bottom-up-first fashion. Accordingly, I begin my discussion with the low-level routines, followed by mid- and high-level routines.<P>
+The <I>fm_error</I> routine (<A href="list3.htm">Listing 3</a>)
+ needs little explanation. It simply stores its parameters in the global <I>fm_err</I> structure. We make this routine global to allow calling modules to handle flash-related errors without duplication of code. For example, a diagnostic test verifying data written to the flash could handle a verification error by calling <I>fm_error</I> with its own unique error code.<P>
+<h4><FONT COLOR="#000080"><A name="003E_0024">Picking the lock<A name="003E_0024"></FONT></h4></P>
+In normal operation, flash memory behaves like ROM: values may be read from ROM but writes are ignored. Attempts to write to ROM are usually programming errors, and are thus rare. Flash devices take advantage of this rarity by allowing for a series of special writes to act as "key." When a flash device recognizes the predetermined sequence, it becomes available for erasing, writing, and other operations.<P>
+The <I>fm_cmd</I> routine (<A href="list3.htm">Listing 3</a>)
+ recites the magic incantation to unlock the devices into the special mode selected by the third parameter. If any of the writes contain unexpected data, the devices revert to read-only mode.<P>
+We use the static variable <I>pBase</I> to simplify parameter passing. <I>pBase</I> is initialized by the two global routines <I>fm_status </I>and <I>fm_write</I>, to point to the base address of the flash memory space. (In our products with two sets of flash devices, one set starts at system address <I>0x00000000,</I> the other at <I>0x64000000.)</I><P>
+Because flash memory is implemented in the system as normal read/write memory, there are no special timing considerations during normal operation. We can use normal memory read and write accesses from high-level code to perform all the special device functions.<P>
+<h4><FONT COLOR="#000080"><A name="003E_0025">Mid-Level Routines<A name="003E_0025"></FONT></h4></P>
+<A href="list4.htm">Listing 4</a>
+shows the routines <I>fm_protected</I> and <I>fm_status</I>. The former uses a special mode of the devices to query if any of the memory sectors are protected. Protected sectors cannot be erased or reprogrammed, and typically store bootstrap or BIOS type code. (We could have implemented the fields in <I>FMINFO</I> for reporting protected sector information as bits within a word or a <I>long</I>, but this would place an artificial limit on the number of sectors in a device. Some flash devices have as many as 1024 sectors.)<P>
+<I>FMINFO</I> represents the protected sectors using a start sector and number of sectors. This method assumes that the case of non-contiguous protected sectors is not interesting, since bootstrap and BIOS code is usually in a single area located at the highest or lowest area of memory. We use the shift-right operator, as found in the first two lines, throughout this module to convert byte lengths to word lengths, since all pointer arithmetic is word-based.<P>
+To sense which sectors are protected, <I>fm_protected</I> calls <I>fm_cmd</I> to place the devices in AutoSelect mode. In this mode, reads from certain offsets in the flash address space will return chip status information instead of real data. The constants with the <I>FM_AO_</I>prefix identify these special address offsets.<P>
+Inside the loop, the routine reads a word from each sector. The <I>FM_PROT_SECT_MASk</I> bits within the word indicate whether that sector is protected in either device.<P>
+The <I>fm_status</I> routine is global. It uses AutoSelect mode to read back ID bytes indicating the device manufacturer and the device type. The routine scans the <I>DevTable</I> array of known device information for a match, and initializes the static <I>FMInfo</I> structure with device-specific information. <I>fm_status</I> returns a non-zero value if the devices are known, which can be used as a quick check for functioning flash.<P>
+Also, <I>fm_status</I> can optionally copy the <I>FMInfo</I> static structure to a structure designated by the caller. Diagnostics, for example, could display the <I>pDevName</I> string to confirm the type of devices installed.<P>
+<h4><FONT COLOR="#000080"><A name="003E_0026">Erasing Sectors<A name="003E_0026"></FONT></h4></P>
+<I>fm_sector_erase</I> (the second routine in <A href="list5.htm">Listing 5</a>)
+ uses the Sector Erase feature of the devices to prepare them for being written with new data. Sector Erase erases all locations within a sector at once, which is where the term "flash" comes from. Conventional EEPROM technology erases each location separately. Any number of flash sectors can be erased concurrently.<P>
+One curious thing about flash is that this "electrically erased" condition results in all bits being set to 1. A related curiosity is that 1 bits erase faster than 0 bits. (See <a href="#7">[7]</a> for a good explanation of how flash memory operates at the cell level.) The time required for erasure also varies with device temperature and the number of lifetime erase/write cycles performed. <A href="fig2.htm">Figure 2</a>
+shows how erase and write times increase with use for an Am29F010. See also <a href="#8">[8]</a> for more information on erasure time.<P>
+In anticipation of success &#151; where <I>fm_error</I> is not called &#151; <I>fm_sector_erase</I> and <I>fm_write</I> both clear the <I>fm_err</I> structure to all zeros. This action prevents uninitialized values from being left for the caller in <I>fm_err</I>. Note that <I>fm_err</I> cannot be initialized in its declaration, since embedded system compilers tend to place initialized data into ROM rather than RAM.<P>
+The construction and use of the <I>SectorAddrMask</I> variable deserves mention. The code uses this variable to convert a pointer into a flash sector to a byte offset from the base of that sector. This conversion assumes that the base address of the flash (<I>FBASE</I>) in the system address space is aligned to an even multiple of the flash address range (<I>FSIZE</I>) &#151; i.e., <I>FBASE</I> mood <I>FSIZE</I> must be zero. This assumption is significant when supporting devices of various sizes.<P>
+Prior to the first loop in <I>fm_sector_erase</I>, the devices are unlocked for erasure. The first loop completes the sector erasure command sequence by writing a secondary command code to an erase within each sector to be erased. The devices consider the erase command sequence complete if they receive no secondary command within a certain time period (e.g. 80 msec), so it may be necessary to disable interrupt service routines during this time.<P>
+The second loop in <I>fm_sector_erase</I> waits for the erase operation to complete. The erase and write processes are controlled by an algorithm internal to the devices. When these internal algorithms are running, reading from the devices returns status information instead of ROM data. In particular, the high bit of the byte is inverted from the final, expected value. This operation guarantees that when the expected value occurs, the erase or write operation has completed successfully, which leads to a very simple polling loop for success. The erase is complete when the readback of any erased location returns <I>FM_ERASE_VAL</I>.<P>
+<h4><FONT COLOR="#000080"><A name="003E_0027">Device Time-outs<A name="003E_0027"></FONT></h4></P>
+The fail-safe loop in <I>fm_sector_erase</I> ensures that malfunctioning hardware does not cause the firmware to hang. An earlier version of this routine assumed that completion or time-out were the only two possible outcomes. However, the specific tests used for completion and time-out ignore many other possible bit combinations which, though rare, should be tolerated by robust code.<P>
+A "feature" of that earlier code version was the lack of an implementation-dependent timing constant like <I>E_FS_ITER</I>. Using such a constant may not be desirable, but I don't know of a way to handle all three cases (success, time-out, and other) without assuming another implementation-dependent resource, such as a watchdog timer.<P>
+<I>fm_sector_erase</I> calls the <I>fm_tofs_error</I> routine (<A href="list5.htm">Listing 5</a>)
+ if the fail-safe loop expires. Its job is to determine whether or not a timeout occurred. This process sounds simple enough, but two things complicate the code here: timeout detection itself and parallel devices.<P>
+<A href="fig3.htm">Figure 3</a>
+illustrates the byte data returned by polling an erased location during an erase cycle. While the erase is in progress, bit 7 (DQ7) shows the inverse of the final expected data. If a location cannot be successfully erased, bit 5 (DQ5) will go high when the device gives up trying and times out. The data book warns that DQ5 and DQ7 may change at the same time. Thus, a single read showing DQ5 high cannot be trusted as indicating a timeout, since DQ7 may be transitioning to final valid data, which might coincidentally have DQ5 set.<P>
+A further complication is that we are using two devices in parallel. The case where only one device times out must be properly handled. I will leave as an exercise for the reader to figure out the nuances of Boolean logic in the first three lines of code.<P>
+<h4><FONT COLOR="#000080"><A name="003E_0028">Programming New Data<A name="003E_0028"></FONT></h4></P>
+<A href="list6.htm">Listing 6</a>
+shows the <I>fm_cpy</I> routine. <I>fm_cpy</I> writes new data into sectors which are assumed to have been erased. The data books refer to this operation as "programming" the data. (The parameter order purposely mimics <I>memcpy</I>.)<P>
+Each byte to be written requires a separate unlock sequence. We applied heavy optimization techniques to this routine to minimize the effect of this overhead. Our hand-optimization (mentioned in the function header comment) is aware of the kind of assembly code that will ultimately be generated here. For example, using a <I>short</I> instead of an <I>int</I> for the fail-safe counter allowed the compiler to generate a faster looping construct. An 11 percent improvement in speed resulted from this one change. This routine is then both optimal for our specific implementation and portable.<P>
+The bulk of this routine will look familiar from previous routines. For efficiency, we replicate a call to <I>fm_cmd</I> using register pointers and data. We then write the bytes to be programmed to the desired location. The completion polling loop and error handling mimics the code in <I>fm_sector_erase</I>.<P>
+As indicated by a comment statement, two program lines occuring before the inner loop perform a kind of parallel processing. After we write new data to the current location we must wait for the write to complete. We can execute more program statements in the meantime. Analysis shows that these two lines execute well before the write completes. This results in fewer polling iterations, which speeds up the innermost loop.<P>
+<h4><FONT COLOR="#000080"><A name="003E_0029">The High-Level Routine<A name="003E_0029"></FONT></h4></P>
+The <I>fm_write</I> routine (<A href="list7.htm">Listing 7</a>)
+ makes use of all the other routines in <I>fmutl.c</I> to accomplish its function: writing an arbitrary sized buffer of data to an arbitrary area of the flash.<P>
+We chose to abstract to this level for a number of reasons. Writing new data to all of flash, our most common operation, requires a simple call:<P>
+<pre>fm_write(FLASH_BASE, FLASH_BASE, pNewData, DataSize, 0);</pre>
+The complexities of sector sizes, erasing before writing, device identification, and so on are encapsulated.<P>
+Because sectored flash devices can only erase entire sectors, writes that are not aligned to sector boundaries require special handling. Rather than implement this complexity in various separate locations, we chose to encapsulate it as well.<P>
+<h4><FONT COLOR="#000080"><A name="003E_002A">Optional Scratch Buffer<A name="003E_002A"></FONT></h4></P>
+The encapsulation approaches presented thus far cannot hide one aspect of sectored flash memory which differs from normal RAM: It's impossible to change just one byte within a sector.<P>
+Consider the case where a program calls <I>fm_write</I> to write a single word to a sector already containing healthy data. Erasing the sector and writing the new word leaves the remaining words in that sector changed to <I>0xFFFF</I> &#151; not likely what the caller expected.<P>
+To get around this problem, the <I>pScrBuf</I> parameter lets the caller pass a pointer to a buffer. If <I>pScrBuf</I> is not a <I>NULL</I>, uses it to save and restore any existing flash sector data not being reprogrammed.<P>
+If <I>pScrBuf</I> is <I>NULL, fm_write</I> transfers the caller's new data directly to the flash sector. Non-buffered transfers accommodate the case in which the caller wishes to transfer a large block of data to flash memory and doesn't care what happens to the remaining (unwritten) portion of the sector. Giving the caller this control is a performance feature, since not using the buffer saves time. Allowing the caller to provide the buffer also avoids forcing <I>fm_write</I> to acquire an implementation-dependent resource (memory) at run time. The caller can use <I>fm_status</I> and the <I>SectorSize</I> field of the <I>FMINFO</I> structure to size this buffer.<P>
+<h4><FONT COLOR="#000080"><A name="003E_002B">The <B><I>fm_write </I></B>algorithm<A name="003E_002B"></FONT></h4></P>
+The function header comments describe the external interface. The following pseudo-code provides an overview of how the routine works:<P>
+<pre>   fm_status();
+   if (bad parameters)
+      fm_error();
+   if (not starting at a sector boundary)
+      handle partial write to first sector;
+   if (data doesn't end on a sector boundary)
+      setup for partial last sector write;
+   erase the remaining sectors;
+   write the remaining user data;
+   if (last sector was partial &amp;&amp; pScrBuf)
+      write pScrBuf data to last sector;</pre>
+The bulk of this routine handles the partial sector cases. If the caller only writes complete sectors, the extra complexity isn't used.<P>
+The first major conditional, based on <I>keep_before</I>, handles the case where the beginning of the write doesn't start on an even sector boundary. In this case, the algorithm computes the following key length values:<P>
+<pre>     keep_before = number of bytes before user data
+     wri_len = number of bytes of user data
+     keep_after = number of bytes after user data</pre>
+These values reflect the start and end boundaries of the user data within the initial sector. If a scratch buffer was provided, the buffer is used to save the original contents of the sector. Next, the routine erases the sector and writes the new user data. Then, the original sector data before and/or after the new user data is restored, if a scratch buffer was provided.<P>
+The next major conditional, based on <I>wri_len</I>, handles the case where the write does not end on an even sector boundary. The <I>wri_len</I> and <I>keep_after</I> variables are recomputed. If a buffer was provided it is loaded with the original contents of the last sector.<P>
+Next, the routine erases the remaining sectors and writes them with the new user data. Finally, the routine writes the remainder of the final sector from the scratch buffer, if provided.<P>
+<h4><FONT COLOR="#000080"><A name="003E_002C">Testing<A name="003E_002C"></FONT></h4></P>
+The code disk contains a third source module, <I>flashtst.c</I>, that we have used to unit test these routines. One routine performs a few basic memory tests (zeros, ones, unique data) suitable for a manufacturing check-out process. Another routine performs an exhaustive test of all combinations of writes on and off sector boundaries, which helps test the code integrity.<P>
+This module can be compiled as a stand-alone utility or as an independently linkable module. While modularized, it does rely on external routines available in our embedded system for user input and output.<P>
+<h4><FONT COLOR="#000080"><A name="003E_002D">The Tip of the Iceberg<A name="003E_002D"></FONT></h4></P>
+The code presented here works well for our purposes, but there are many extra features supported by the devices that you may want to use:<P>
+<UL><li>Many flash devices support an erase suspend feature. Recall that during erase, data reads return status information rather than real data. With some hardware assistance an application could implement "background erasing." By using interrupt handlers to suspend and resume erasing, data could be read from sectors not being erased, which would allow the application to continue while the erase occured during idle bus cycles.</li>
+<li>Creative algorithms could also take advantage of the fact that flash writes can change 1-bits to 0-bits (but not vice-versa) without an erase cycle.</li>
+<li>"Wear leveling" is a technique commonly applied to heavy use flash implementations. You can maximize device lifetime with low-level remapping of the sectors as necessary to keep them all at roughly the same number of erase and write cycles. You can also automatically "retire" sectors as they become unusable.</li>
+<li>File systems are a typical next step beyond using flash as a better EPROM. There are various hardware and software solutions available today implementing this logical next step.</li></UL>
+<h4><FONT COLOR="#000080"><A name="003E_002E">Source Sources<A name="003E_002E"></FONT></h4></P>
+Source code for interfacing with flash devices is available. Intel provides assembly and C code in their flash data books (see <a href="#6">[6]</a>). AMD offers Embedded Development Kit Driver Software free for the asking or via their California BBS (contact your local rep).<P>
+<h4><FONT COLOR="#000080"><A name="003E_002F">Conclusion<A name="003E_002F"></FONT></h4></P>
+Flash memory allows embedded systems to easily adapt to changing requirements. After working with flash memory devices for awhile now in a fast-paced development environment, I can't imagine going back to burning EPROMs. And the features flash provides to our customers make our products even more competitive.<P>
+<h4>References</FONT></h4></P>
+<a name="1"></a>[1]     Arvind Rana. "Designing and Debugging with Flash ROMs," <I>Proceedings of the Sixth Annual Embedded Systems Conference</I>, Volume 2, September 1994, pp. 145-153.<P>
+<a name="2"></a>[2]     Brian Dipert and Markus Levy, <I>Designing With Flash Memory</I> (Annabooks, 1994).<P>
+<a name="3"></a>[3]     <I>Advanced Micro Devices, Inc. 1994/1995 Flash Memory Products Data Book/Handbook</I>.<P>
+<a name="4"></a>[4]     <I>Atmel Corporation 1994 Single Voltage Flash Memory Design &amp; Application Book</I>.<P>
+<a name="5"></a>[5]     <I>Intel 1994 Flash Memory data books Volumes I &amp; II</I>.<P>
+<a name="6"></a>[6]     ibid., Vol. I, Chapters 3 and 4, Application Notes.<P>
+<a name="7"></a>[7]     ibid., Vol. II, ppg 9-1 to 9-5, Engineering Report ER-20.<P>
+<a name="8"></a>[8]     ibid., Vol. II, pg 9-11, Figure 5.<P>
+
+<h4><a href="../../../source/1995/feb95/cepek.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

@@ -1,0 +1,251 @@
+
+
+
+
+<HTML><HEAD>
+
+<TITLE>July 1996/C++ Theory and Practice/Listing 5</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4>
+<A name="HEADING1">Listing 5: The source file that implements the scanner and token classes that support unlimited lookahead</A></h4>
+
+
+<pre>
+
+//
+// scanner.cpp
+//
+// Copyright (C) 1996 by Dan Saks.
+// May be copied for private, non-commercial use,
+// provided this copyright notice remains intact.
+// All other rights reserved.
+//
+
+#include &lt;ctype.h&gt;
+#include &lt;iostream.h&gt;
+#include &lt;string.h&gt;
+
+#include "scanner.h"
+
+#define DIM(a) (sizeof(a)/sizeof(a[0]))
+
+scanner::pair const scanner::keyword[] =
+    {
+        { "bool", token::TYPE_KEYWORD },
+        { "char", token::TYPE_KEYWORD },
+        { "const", token::CONST },
+        { "double", token::TYPE_KEYWORD },
+        { "float", token::TYPE_KEYWORD },
+        { "int", token::TYPE_KEYWORD },
+        { "void", token::TYPE_KEYWORD },
+        { "volatile", token::VOLATILE },
+        { "wchar_t", token::TYPE_KEYWORD }
+    };
+
+token scanner::backup()
+    {
+    assert(looking_ahead);
+    if (!getting_from_queue)
+        in_queue.push_back(current_token);
+    looking_ahead = false;
+    return get();
+    }
+
+token scanner::get()
+    {
+    if (!looking_ahead)
+        {
+        if (in_queue.empty())
+            current_token = scan();
+        else
+            {
+            current_token = in_queue.front();
+            in_queue.pop_front();
+            }
+        }
+    else // looking_ahead
+        {
+        if (!getting_from_queue)
+            {
+            in_queue.push_back(current_token);
+            current_token = scan();
+            }
+        else if (in_queue_iterator != in_queue.end())
+            current_token = *in_queue_iterator++;
+        else
+            {
+            getting_from_queue = false;
+            current_token = scan();
+            }
+        }
+    return current_token;
+    }
+
+void scanner::mark()
+    {
+    assert(!looking_ahead);
+    assert(current_token.kind() != token::NO_VALUE);
+    looking_ahead = true;
+    getting_from_queue = !in_queue.empty();
+    if (getting_from_queue)
+        {
+        in_queue.push_front(current_token);
+        in_queue_iterator = in_queue.begin();
+        ++in_queue_iterator;
+        }
+    }
+
+void scanner::reset()
+    {
+    bool found_a_semicolon = false;
+    while (!in_queue.empty())
+        {
+        current_token = in_queue.front();
+        in_queue.pop_front();
+        if (current_token.kind() == token::SEMICOLON)
+            {
+            found_a_semicolon = true;
+            break;
+            }
+        }
+    if (!found_a_semicolon)
+        {
+       int c;
+       while ((c = in_stream.get()) != EOF)
+            if (c == ';' || c == '\n')
+                break;
+        }
+    current_token = token();
+    getting_from_queue = !in_queue.empty();
+    looking_ahead = false;
+    }
+
+token scanner::scan()
+    {
+    int c;
+    token::category kind;
+    string text;
+    while (isspace(c = in_stream.get()))
+        ;
+
+    //
+    // scan an integer-literal
+    //
+    if (isdigit(c))
+        {
+        kind = token::INT_LITERAL;
+        do
+            {
+            text += char(c);
+            c = in_stream.get();
+            }
+        while (isdigit(c));
+        in_stream.putback(c);
+        }
+    //
+    // scan an identifier, a name, or a type-keyword
+    //
+    else if (isalpha(c) || c == '_')
+        {
+        kind = token::IDENTIFIER;
+        do
+            {
+            text += char(c);
+            c = in_stream.get();
+            }
+        while (isalnum(c) || c == '_');
+        in_stream.putback(c);
+        if (isupper(text[0]))
+            kind = token::NAME;
+        else
+            for (int i = 0; i &lt; DIM(keyword); ++i)
+                if (text == keyword[i].text)
+                    {
+                    kind = keyword[i].kind;
+                    break;
+                    }
+        }
+    //
+    // scan a scope-resolution operator
+    //
+    else if (c == ':')
+        {
+        if ((c = in_stream.get()) != ':')
+            {
+            in_stream.putback(c);
+            kind = token::NO_SUCH;
+            text = ":";
+            }
+        else
+            {
+            kind = token::SCOPE;
+            text = "::";
+            }
+        }
+    //
+    // scan a single-character operator
+    //
+    else if (strchr("*&amp;[]();,", c) != 0)
+        {
+        kind = token::category(c);
+        text = char(c);
+        }
+    //
+    // scan end-of-file
+    //
+    else if (c == EOF)
+        kind = token::NO_MORE;
+    //
+    // there's no such token
+    //
+    else
+        {
+        kind = token::NO_SUCH;
+        text = char(c);
+        }
+    return token(kind, text);
+    }
+
+const char *image(token::category tc)
+    {
+    switch (tc)
+        {
+        case token::AMPERSAND:
+            return "&amp;";
+        case token::COMMA:
+            return ",";
+        case token::LEFT_BRACKET:
+            return "[";
+        case token::LEFT_PAREN:
+            return "(";
+        case token::RIGHT_BRACKET:
+            return "]";
+        case token::RIGHT_PAREN:
+            return ")";
+        case token::SEMICOLON:
+            return ";";
+        case token::STAR:
+            return "*";
+        case token::NO_MORE:
+            return "end of input";
+        case token::SCOPE:
+            return "::";
+        case token::INT_LITERAL:
+            return "int literal";
+        case token::IDENTIFIER:
+            return "identifier";
+        case token::NAME:
+            return "name";
+        case token::TYPE_KEYWORD:
+            return "type keyword";
+        case token::CONST:
+            return "const";
+        case token::VOLATILE:
+            return "volatile";
+        }
+    return "no such token";
+    }
+//End of File
+</pre>
+</body></html>

@@ -1,0 +1,228 @@
+
+
+
+<HTML><HEAD>
+
+<TITLE>April 1998/General-Purpose Threads with I/O Completion Ports/Listing 3</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4>
+<A name="HEADING1">Listing 3: Multithreading word count program</A></h4>
+
+
+<pre>
+//
+// partial listing of mtwc.h
+//
+const int NUM_WORKER_THREADS = 0 ;    // use default, 2 * #CPUs + 2
+const int THREAD_CONCURRENCY = 0 ;    // use default, 1 per CPU
+const int READ_BUFFER_SIZE     = 4096 ;
+
+class CWordCountContext {
+public:
+    CWordCountContext();
+
+    enum enState {
+        STATE_UNOPENED,
+        STATE_OPENED,
+        STATE_CLOSED,
+        STATE_ERROR_OPENING,
+        STATE_ERROR_READING
+    };
+
+    LPSTR       lpszFilename ;
+    HANDLE      hFile ;
+    OVERLAPPED  overlapped ;
+    char        buffer[ READ_BUFFER_SIZE ];
+    enState     state;
+    int         spaceState ;
+    DWORD       dwNumChars ;
+    DWORD       dwNumWords ;
+    DWORD       dwNumLines ;
+};
+
+
+class CWordCountThreadPool : public CThreadPool {
+public:
+
+    CWordCountThreadPool( DWORD numThreads, DWORD threadConcurrency, 
+        DWORD numFiles );
+    ~CWordCountThreadPool();
+
+    CWorkerThread* CreateWorkerThread( CThreadPool* pPool );
+    void WaitUntilDone();
+    void ProcessedFile();
+
+protected:
+    long    m_NumFiles ;
+    HANDLE    m_hDone ;
+};
+
+
+class CWordCountWorker : public CWorkerThread {
+public:
+
+    CWordCountWorker( CWordCountThreadPool* pPool ) :
+        CWorkerThread( pPool ) {}
+
+    void OnReceivedCompletionPacket( BOOL bResult,
+        DWORD dwNumberOfBytesTransferred, DWORD dwKey,
+        LPOVERLAPPED lpOverlapped );
+
+protected:
+    void readFile( CWordCountContext* aCtx );
+    void closeFile( CWordCountContext* aCtx );
+};
+
+/ -------------------------------------------------------------------
+// Partial listing of mtwc.cpp
+
+void CWordCountWorker::OnReceivedCompletionPacket( 
+    BOOL bResult, DWORD dwNumberOfBytesTransferred, DWORD dwKey,
+    LPOVERLAPPED lpOverlapped )
+{
+    CWordCountContext* pContext = 
+        reinterpret_cast&lt;CWordCountContext*&gt;(dwKey);
+
+    if( pContext-&gt;state == CWordCountContext::STATE_UNOPENED ) {
+        pContext-&gt;hFile = CreateFile( pContext-&gt;lpszFilename, 
+            GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+            FILE_FLAG_OVERLAPPED | FILE_FLAG_SEQUENTIAL_SCAN, NULL );
+
+        if( pContext-&gt;hFile == INVALID_HANDLE_VALUE ) {
+            pContext-&gt;state = CWordCountContext::STATE_ERROR_OPENING;
+            closeFile( pContext );
+        } else {
+            // Associate overlapped operations on this file 
+            // with our I/O completion port
+            m_pThreadPool-&gt;AssociateFile( pContext-&gt;hFile, 
+                reinterpret_cast&lt;DWORD&gt;(pContext) );
+            pContext-&gt;state = CWordCountContext::STATE_OPENED ;
+            readFile( pContext ); // kick off first read...
+        } // else
+    } else if( pContext-&gt;state == CWordCountContext::STATE_OPENED ) {
+        if( dwNumberOfBytesTransferred == 0 ) {
+            // we are at end of file
+            closeFile( pContext );
+        } else {
+            // This is the guts of the word-counting...
+            for( DWORD i=0; i&lt;dwNumberOfBytesTransferred; i++ ) {
+               char c = pContext-&gt;buffer[i];
+               if( c == '\n' ) {
+                    pContext-&gt;dwNumLines++ ;
+                } else if( isspace( c ) ) {
+                    pContext-&gt;spaceState = 0;
+                } else if( pContext-&gt;spaceState == 0 ) {
+                    pContext-&gt;spaceState = 1 ;
+                    pContext-&gt;dwNumWords++ ;
+                } // else
+            } // for
+
+            pContext-&gt;dwNumChars += dwNumberOfBytesTransferred ;
+            lpOverlapped-&gt;Offset += dwNumberOfBytesTransferred ;
+            readFile( pContext );
+        } // else
+    } else {
+        // unknown state--should never happen
+        assert(0);
+    } // else
+}
+
+
+
+void CWordCountWorker::readFile( CWordCountContext* pContext )
+{
+    BOOL bResult = ReadFile( pContext-&gt;hFile, &amp;(pContext-&gt;buffer),
+        READ_BUFFER_SIZE, NULL, &amp;(pContext-&gt;overlapped) );
+    if( bResult == FALSE ) {
+        DWORD dwLastError = GetLastError();
+        if( dwLastError == ERROR_IO_PENDING ) {
+            // asynchronous read was queued, this is normal result...
+        } else if( dwLastError == ERROR_HANDLE_EOF ) {
+            closeFile( pContext );
+        } else {
+            pContext-&gt;state = CWordCountContext::STATE_ERROR_READING;
+            closeFile( pContext );
+        } // else
+    } // if
+}
+
+
+void CWordCountWorker::closeFile( CWordCountContext* pContext )
+{
+    pContext-&gt;state = CWordCountContext::STATE_CLOSED ;
+    if( pContext-&gt;hFile != INVALID_HANDLE_VALUE ) {
+        CloseHandle( pContext-&gt;hFile );
+    } // if
+    dynamic_cast&lt;CWordCountThreadPool*&gt;(
+        m_pThreadPool)-&gt;ProcessedFile();
+}
+
+
+CWordCountThreadPool::CWordCountThreadPool( DWORD numThreads,
+    DWORD threadConcurrency, DWORD numFiles ) :
+        CThreadPool( numThreads, threadConcurrency ), 
+        m_NumFiles( numFiles )
+{
+    assert( numFiles &gt; 0 );
+    m_hDone = CreateEvent( NULL, TRUE, FALSE, NULL );
+}
+
+
+void CWordCountThreadPool::ProcessedFile()
+{
+    InterlockedDecrement( &amp;m_NumFiles );
+    if( m_NumFiles == 0 ) {
+        SetEvent( m_hDone );
+    } // if
+}
+
+
+int main( int argc, char* argv[] )
+{
+    CWordCountContext* aCtx = NULL ;
+
+    try {
+        if( argc &lt; 2 ) {
+            cerr &lt;&lt; "Usage: mtwc &lt;file1&gt; [ &lt;file2&gt; ... &lt;filen&gt; ]" 
+                 &lt;&lt; endl
+                 &lt;&lt; "Counts lines, words, chars in files and reports" 
+                    " results" &lt;&lt; endl;
+            return 0 ;
+        } // if
+
+        int numFiles = argc-1 ; // -1 since program name 
+                                // is first argument
+        aCtx = new CWordCountContext[ numFiles ];
+
+        CWordCountThreadPool threadPool(NUM_WORKER_THREADS, 
+            THREAD_CONCURRENCY, numFiles);
+        threadPool.Start();
+
+        for( int i=0; i&lt;numFiles; i++ ) {
+            // assign file name to context
+            aCtx[i].lpszFilename = argv[i+1]; 
+            // kick off a worker thread
+            threadPool.PostQueuedCompletionStatus( 
+                reinterpret_cast&lt;DWORD&gt;( &amp;(aCtx[i]) ) );
+        } // for
+
+        // wait for threads to complete...
+        threadPool.WaitUntilDone();
+        threadPool.Stop();
+
+        reportResults( aCtx, numFiles );
+
+    } catch( ... ) {
+        cerr &lt;&lt; "Unhandled exception" &lt;&lt; endl ;
+    } // catch
+
+    if( aCtx != NULL ) {
+        delete [] aCtx ;
+    } // if
+
+    return 0 ;
+}
+/* End of File */
+</pre>
+</body></html>

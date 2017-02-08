@@ -1,0 +1,535 @@
+<HTML><HEAD>
+<TITLE>May 1995/Dynamic Client/Server-Based Image Processing/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2<I> The server process source code</A></I></h4>
+<pre>/*
+ * Listing 2 - ips.c
+ */
+
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+#include &lt;rpc/rpc.h&gt;
+#include &lt;sys/dir.h&gt;
+#include &lt;unistd.h&gt;
+#include "ips.h"
+
+/* Constants */
+#define STORAGE_DIR     getenv("STORAGE_DIR")
+#define LOADERS_DIR     getenv("LOADERS_DIR")
+#define SAVERS_DIR      getenv("SAVERS_DIR")
+#define OPS_DIR         getenv("OPS_DIR")
+
+/* Prototypes */
+void                    ips_hello();
+void                    ips_decode();
+void                    ips_process();
+void                    ips_encode();
+void                    ips_release();
+void                    ips_request_list();
+void                    ips_request_args();
+char                    *replace_ext( );
+char                    *get_filename();
+char                    *upcase();
+int                     get_next_id();
+unsigned char           *loadfile();
+
+Packet *
+ips_1(request)
+Packet *request;
+{
+       static Packet   reply;
+       char            sbuf[1024];
+       
+       xdr_free(xdr_Packet, reply);
+       
+       switch(request-&gt;op) {
+              case IPS_INIT:
+                     ips_hello(request, &amp;reply);
+                     break;
+              
+              case IPS_DECODE:
+                     ips_decode(request, &amp;reply);
+                     break;
+              
+              case IPS_REQUEST_IMAGE:
+                     ips_encode(request, &amp;reply);
+                     break;
+              
+              case IPS_PROCESS:
+                     ips_process(request, &amp;reply);
+                     break;
+              
+              case IPS_IMAGE_RELEASE:
+                     ips_release(request, &amp;reply);
+                     break;
+              
+              case IPS_REQUEST_OPS:
+                     ips_request_list(request, &amp;reply);
+                     break;
+              
+              case IPS_REQUEST_LOADERS:
+                     ips_request_list(request, &amp;reply);
+                     break;
+              
+              case IPS_REQUEST_SAVERS:
+                     ips_request_list(request, &amp;reply);
+                     break;
+              
+              default:
+                     reply.op = ERROR;
+       }
+       
+       return &amp;reply;
+}
+
+
+void
+ips_release(request, reply)
+Packet *request, *reply;
+{
+       char buf[1024];
+       
+       sprintf(buf, "rm -f %s/%d:*",
+              STORAGE_DIR, request-&gt;Packet_u.id);
+       
+       system(buf);
+       
+       reply-&gt;op = IPS_RELEASE_OK;
+}
+
+
+void
+ips_hello(request, reply)
+Packet *request, *reply;
+{
+       reply-&gt;Packet_u.hello_string = "Welcome to IPS.";
+       reply-&gt;op = IPS_HELLO;
+}
+
+void
+ips_request_list(request, reply)
+Packet *request, *reply;
+{
+       int              i,
+                     found_listings  = 0;
+       char             *temp_name;
+       list             *cp,
+                     *nlp = NULL;
+       static DIR       *dirp;
+       struct direct    *d;
+       
+       
+       printf("IPS_REQUEST received.\n");
+       
+       switch(request-&gt;op) {
+              case IPS_REQUEST_OPS:
+                     dirp = opendir(OPS_DIR);
+                     break;
+              
+              case IPS_REQUEST_LOADERS:
+                     dirp = opendir(LOADERS_DIR);
+                     break;
+              
+              case IPS_REQUEST_SAVERS:
+                     dirp = opendir(SAVERS_DIR);
+                     break;
+       }
+       
+       nlp = &amp;reply-&gt;Packet_u.operators;
+       
+       while(d = readdir(dirp)) {
+              temp_name = d-&gt;d_name;
+              
+              if(strcmp(temp_name, ".") == 0 ||
+                           strcmp(temp_name, "..") == 0)
+                     continue;
+              
+              found_listings = 1;
+              nlp-&gt;name = strdup(temp_name);
+              cp = nlp;
+              nlp-&gt;next = (list *) malloc(sizeof(list));
+              nlp = nlp-&gt;next;
+       }
+       
+       closedir(dirp);
+       
+       if(found_listings)
+              cp-&gt;next = nlp = NULL;
+       else {
+              nlp-&gt;name = "NONE_AVAILABLE";
+              nlp-&gt;next = NULL;
+       }
+       
+       switch(request-&gt;op) {
+              case IPS_REQUEST_OPS:
+                     reply-&gt;op = IPS_SEND_OPS;
+                     break;
+              
+              case IPS_REQUEST_LOADERS:
+                     reply-&gt;op = IPS_SEND_LOADERS;
+                     break;
+              
+              case IPS_REQUEST_SAVERS:
+                     reply-&gt;op = IPS_SEND_SAVERS;
+                     break;
+       }
+}
+
+
+void
+ips_process(request, reply)
+Packet *request, *reply;
+{
+       int i, stat;
+       long len;
+       char buf[2000];
+       char buf2[2020];
+       unsigned char *data;
+       char *filename = NULL;
+       
+       
+       printf("IPS_PROCESS received.\n");
+       
+       sprintf(buf, "%s/%s", OPS_DIR,
+              request-&gt;Packet_u.proc.command);
+       
+       filename =
+              get_filename(request-&gt;Packet_u.send_ops.id);
+       
+       if(access(buf, R_OK) != 0 ||
+                    strlen(filename) == 0) {
+              reply-&gt;op = ERROR;
+              return;
+       }
+       
+       sprintf(buf, "%s/%s %s/%s %s/%s",
+              OPS_DIR,
+              request-&gt;Packet_u.proc.command,
+              STORAGE_DIR,
+              filename,
+              STORAGE_DIR,
+              filename);
+       
+       if(request-&gt;Packet_u.proc.argc &gt; 0) {
+              list *lp;
+              
+              lp = &amp;request-&gt;Packet_u.proc.argv;
+              
+              for(i=0;i&lt;request-&gt;Packet_u.proc.argc &amp;&amp;
+                           lp != NULL;i++, lp=lp-&gt;next) {
+                     strcat(buf, " ");
+                     strcat(buf, lp-&gt;name);
+              }
+       }
+       
+       if(system(buf) != 0)
+              reply-&gt;op = ERROR;
+       else
+              reply-&gt;op = IPS_PROCESS_OK;
+       
+       return;
+}
+
+
+void
+ips_encode(request, reply)
+Packet *request, *reply;
+{
+       int i, stat;
+       long len;
+       char buf[2000];
+       char buf2[2020];
+       unsigned char *data;
+       char *filename = NULL;
+       
+       
+       printf("IPS_REQUEST_IMAGE received.\n");
+       
+       filename = get_filename(request-&gt;Packet_u.send_ops.id);
+       
+       if(strlen(filename) == 0)
+              reply-&gt;op = IPS_IMAGE_NOT_AVAIL;
+       else {
+              printf("\tSending %s image.\n",
+                     request-&gt;Packet_u.send_ops.format);
+                     
+                     sprintf(buf. "%s/%s", SAVERS_DIR,
+                            request-&gt;Packet_u.send_ops.format);
+                     
+                     if(access(buf, R_OK) != 0) {
+                            reply-&gt;op = IPS_UNSUPPORTED_FORMAT;
+                            return;
+                     }
+                     
+                     sprintf(buf, "%s/%s %s/%s %s/%s";
+                            SAVERS_DIR,
+                            request-&gt;Packet_u.send_ops.format,
+                            STORAGE_DIR,
+                            filename,
+                            STORAGE_DIR,
+                            replace_ext(filename,
+                            request-&gt;Packet_u.send_ops.format));
+                     
+                     if(request-&gt;Packet_u.send_ops.argc &gt; 0) {
+                            list *lp;
+                            
+                            lp = &amp;request-&gt;Packet_u.send_ops.argv;
+                            
+                            for(i=0;
+                               i&lt;request-&gt;Packet_u.send_ops.argc
+                                 &amp;&amp; lp != NULL;
+                               i++, lp=lp-&gt;next) {
+                                   
+                                   strcat(buf, "");
+                                   strcat(buf, lp-&gt;name);
+                            }
+                     }
+                     
+                     printf("\tConverting IPS to %s...\n",
+                            request-&gt;Packet_u.send_ops.format);
+                     
+                     stat = system(buf);
+                     
+                     if(stat != 0) {
+                            printf("\tError %d.\n", stat);
+                            reply-&gt;op = ERROR;
+                            
+                            sprintf(buf, "%s/%s",
+                            STORAGE_DIR, replace_ext(filename,
+                            request-&gt;Packet_u.send_ops.format));
+                            
+                            sprintf(buf2, "rm -f %s", buf);
+                            system(buf2);
+                            
+                            return;
+                     }
+                     
+                     printf("\tSuccess.\n");
+                     
+                     sprintf(buf, "%s/%s", STORAGE_DIR,
+                            replace_ext(filename,
+                            request-&gt;Packet_u,send_ops.format));
+                     
+                     data = loadfile(buf, &amp;len);
+                     
+                     sprintf(buf2, "rm -f %s", buf);
+                     system(buf2);
+                     
+                     reply-&gt;Packet_u.img.data.data_len = len;
+                     reply-&gt;Packet_u.img.data.data_val =
+                            (char *) data;
+                     reply-&gt;op = IPS_SEND_IMAGE;
+       }
+}
+
+
+void
+ips_decode(request, reply)
+Packet *request, *reply;
+{
+       FILE *fp;
+       char buf[256];
+       char format[10];
+       unsigned char *data;
+       unsigned long id;
+       int status;
+       char new_filename[1024];
+       
+       
+       printf("IPS_DECODE received.\n");
+       
+       id = get_next_id();
+       
+       reply-&gt;Packet_u.id = id;
+       
+       sprintf(buf, "%s/%ld:%s",
+              STORAGE_DIR, id,
+              request-&gt;Packet_u.raw_img.filename);
+       
+       if((fp = fopen(buf, "w")) == NULL) {
+              printf("\tError in opening file %s.\n", buf);
+              reply-&gt;op = ERROR;
+              return;
+       }
+       
+       fwrite(request-&gt;Packet_u.raw_img.data.data_val, 1,
+              request-&gt;Packet_u.raw_img.data.data_len, fp);
+       fclose(fp);
+       
+       strcpy(new_filename, buf);
+       strcpy(format,
+              upcase(request-&gt;Packet_u.raw_img.fomat));
+       
+       if(strcmp(format, "UNKNOWN") == 0) {
+              printf("\tUnknown format.\n");
+              reply-&gt;op = IPS_UNKNOWN_FORMAT;
+              return;
+       }
+       
+       sprintf(buf, "%s/%s", LOADERS_DIR, format);
+       
+       if(access(buf, R_OK) == 0) {
+              sprintf(buf, "%s/%s %s %s",
+                     LOADERS_DIR, format, new_filename,
+                            replace_ext(new_filename, "ips"));
+              
+              printf("\tConverting: DATA...%s...", format);
+              fflush(stdout);
+              
+              status = system(buf);
+              
+              if(status == 0) {
+                     printf("\n\tSuccess.\n");
+                     sprintf(buf, "rm %s", new_filename);
+                     system(buf);
+                     reply-&gt;op = IPS_OK_ID;
+              
+              } else {
+                     printf("\tUnsupported format.\n");
+                     reply-&gt;op = IPS_UNSUPPORTED_FORMAT;
+              }
+       
+       } else {
+              printf("\tUnsupported format.\n");
+              reply-&gt;op = IPS_UNSUPPORTED_FORMAT;
+       }
+}
+
+
+int
+get_next_id()
+{
+       static unsigned long current_id = 0;
+       current_id++;
+       
+       if(current_id &gt; 999999)
+              current_id = 0;
+       
+       return current_id;
+}
+
+
+char *
+replace_ext(filename, ext)
+char *filename;
+char *ext;
+{
+    static char newbuf[1024];
+    char temp[1024];
+    char *p;
+       
+       strcpy(temp, filename);
+       p = temp;
+    
+    while(*p != '.' &amp;&amp; *p ! = 0)
+       p++;
+    
+    if(*p != 0)
+       *p = 0;
+    
+    trcpy(newbuf, temp);
+    strcat(newbuf, ".");
+    strcat(newbuf, ext);
+    
+    return newbuf;
+}
+
+
+char *
+get_filename(id)
+unsigned long id;
+{
+    static DIR *dirp;
+       struct direct *d;
+       int temp_id;
+       static char filename[1024];
+       struct filelist_node {
+              char *filename;
+              struct filelist_node *next;
+       };
+       
+       struct filelist_node filelist, *clp, *flp;
+       
+       dirp = opendir(STORAGE_DIR);
+       
+       flp = &amp;filelist;
+       
+       while(d = readdir(dirp)) {
+              flp-&gt;filename = d-&gt;d_name;
+              flp-&gt;next = (struct filelist_node *)
+                     malloc(sizeof(struct filelist_node));
+              clp = flp;
+              flp = flp-&gt;next;
+       }
+       
+       closedir(dirp);
+       
+       clp-&gt;next = NULL;
+       filename[0] = NULL;
+       
+       for(flp=&amp;filelist;flp != NULL; flp=flp-&gt;next) {
+              int temp_id;
+              
+              if(strcmp(flp-&gt;filename, ".") == 0||
+                     strcmp(flp-&gt;filename, "..") == 0)
+                            continue;
+              
+              sscanf(flp-&gt;filename, "%d:", &amp;temp_id);
+              
+              if(temp_id == id)
+                     strcpy(filename, flp-&gt;filename);
+       }
+       
+       for(flp=&amp;filelist;clp != NULL; flp=clp=flp-&gt;next)
+              free(flp);
+       
+       return filename;
+}
+
+
+unsigned char *
+loadfile(filename, len)
+char *filename;
+long *len;
+{
+    FILE *fp;
+    long size;
+    unsigned char *raw_img;
+    
+    fp = fopen(filename, "r");
+    fseek(fp, 0, 2);
+    *len = size = ftell(fp);
+    
+    fseek(fp, 0, 0);
+    
+    raw_img = (unsigned char *) malloc(size);
+    fread(raw_img, 1, size, fp);
+    fclose(fp);
+    
+    return raw_img;
+}
+
+
+char *
+upcase(text)
+char *text;
+{
+    char *p;
+    static char buf[1000];
+    
+    strcpy(buf, text);
+    p = buf;
+    
+    while(*p != NULL) {
+       *p = toupper(*p);
+       p++;
+    }
+    
+    return buf;
+}
+/* End of File */
+</pre>
+</BODY>
+</HTML>

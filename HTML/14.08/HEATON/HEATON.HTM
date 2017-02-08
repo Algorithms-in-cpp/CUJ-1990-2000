@@ -1,0 +1,478 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>August 1996/High Speed Win32 Animation</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><FONT COLOR="#FF0000"><A href="../tocaug.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          Graphics</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="CENTER"><FONT COLOR="#800000"> High Speed Win32 Animation</FONT></H2>
+          
+          <H3 ALIGN="CENTER"><FONT COLOR="#800000"> Jeff Heaton</FONT></H3>
+          
+          <BLOCKQUOTE>
+               
+               <p> The 32-bit Windows interface lets you
+                    attain graphics performance comparable to DOS, if you know
+                    the proper tricks to play.</p></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <h4><FONT COLOR="#000080">Introduction</FONT></H4>
+               
+               <p>One of the true ironies of Windows is
+                    its slow graphic display speed. While graphic display is the
+                    cornerstone of Windows' user interface, it remains one of
+                    Windows' worst performance areas. Fortunately, Microsoft has
+                    taken steps to improve graphics performance. Many of these
+                    improvements are internal to the API, but exploiting some of
+                    them will still require a change in your code. You will need
+                    to use new API functions and a few new techniques. </p>
+               
+               <p> There are several reasons for
+                    Windows' slow graphics performance. The most basic is that
+                    Windows must satisfy the needs of every application running.
+                    Some applications must interact with the user; some may be
+                    time-critical, calculation intensive, or resource hungry.
+                    Windows must allocate its limited hardware resources so as
+                    to keep all these applications running. One side effect of 
+                    this multitasking is that Windows cannot afford to give an
+                    application direct access to video hardware. </p>
+               
+               <p> Life is much simpler in MS-DOS.
+                    Because only one application runs at a time, that
+                    application can have direct access to the video hardware.
+                    Direct access has two primary advantages over traditional
+                    Windows Graphics Device Interface (GDI) programming. First,
+                    direct access allows off-screen drawing. The DOS application
+                    can split VGA memory into two video frames, one of which is 
+                    displayed; the other being "offscreen." These two
+                    frames, or pages, consist of two complete bitmaps of the
+                    screen. The application can draw to the frame not being
+                    displayed. Once drawing is complete, the application flips
+                    the frames, and continues drawing on what used to be the
+                    current (display) frame. This frame flipping possible in DOS
+                    ensures that the screen never displays a partially drawn
+                    page, which greatly reduces flicker. The other major
+                    advantage of direct access is that it allows a program to
+                    use its own highly optimized rendering routines, not just
+                    general-purpose drawing functions like the GDI. </p>
+               
+               <p> Microsoft introduced WING to allow
+                    Windows 3.1 to achieve nearly the same graphic display
+                    speeds as DOS-based programs. WING enabled creation of
+                    Device Independent Bitmaps (DIBs) that corresponded closely
+                    enough to the physical hardware that they could be
+                    transferred to it with very little overhead. </p>
+               
+               <p> The Win32 API for Windows95 and
+                    Windows NT contains a new API function called
+                    CreateDIBSection. CreateDIBSection replaces WING on Windows
+                    95 and Windows NT. (In fact, Windows95 and Windows NT
+                    emulate WING using CreateDIBSection.) For applications not
+                    required to run on Windows 3.1, CreateDIBSection provides
+                    better graphics performance than does WING. In this article,
+                    Ishow how to use CreateDIBSection to do high speed
+                    animation. I also provide a simple application that you can
+                    modify to suit your own needs.</p>
+               
+               <h4><FONT COLOR="#000080">How Windows Handle
+               DIBs</FONT></H4>
+               
+               <p>A DIB can exist in memory in one of
+                    two general forms, or modes. These two modes dictate the
+                    interpretation of the DIB's color table, which lists the set
+                    of optimal colors packaged with the DIB. These "optimal"
+                    colors are the ones that would be displayed if an
+                    application could somehow bypass all logical and physical
+                    palettes and transfer RGB tuples directly from the DIB to
+                    the video chip's DACs. Since this is usually not possible,
+                    the optimal colors undergo one or more translations before
+                    being displayed. The two modes determine what kind of
+                    translation occurs. </p>
+               
+               <p> The first of these two modes,
+                    DIB_RGB_COLORS, is the more common mode seen in uses of
+                    functions CreateDIBSection and CreateDIBitmap. (I name these
+                    modes after the constant passed to CreateDIBSection to set
+                    the mode.) This mode calls for the color table to be in
+                    exactly the same format as it is when stored in a file. Each
+                    entry in the color table specifies three values -- the 
+                    amount of red, green, and blue making up one of the optimal
+                    colors available for selection by a pixel. This mode makes
+                    the DIB very easy for programmers to work with, but rather
+                    cumbersome for Windows. To send a pixel from the DIB to the
+                    display, Windows uses the pixel's eight-bit value as an
+                    index into the color table. (In this article, I deal only
+                    with DIBs having eight bits per pixel.) Windows maps the
+                    color table's RGB entry to the closest match in a logical
+                    palette, and finally maps that to the display device's
+                    physical palette. </p>
+               
+               <p> The second mode, DIB_PAL_COLORS, is
+                    faster, because it creates a DIB with a palette-based color
+                    table. In this mode the color table does not specify true
+                    RGB colors; rather, it contains an array of WORD-sized
+                    values that specify indexes into the physical palette.
+                    Because a palette-based DIB maps directly into the physical
+                    palette this saves Windows the time of having to map the 
+                    color table to the logical palette, and then finally to the
+                    physical palette. By contrast, in DIB_RGB_COLORS mode,
+                    Windows must do this conversion on every pixel of a DIB,
+                    which can add up to a large amount of processing time.
+                    </p>
+               
+               <p> Using a palette-based DIB saves
+                    Windows considerable work, but more still can be done. There
+                    is a trick that allows the pixel map to specify palette
+                    colors directly -- no color table is involved. To use this
+                    trick a program must transform the color table into an
+                    identity table. Simply put, an identity color table creates
+                    a one-to-one mapping from the pixel map to the physical 
+                    palette. That is, index 0 in the color table will contain 0,
+                    index 1 will contain 1, and so on. Windows will recognize
+                    this identity palette and cut it out altogether. This
+                    usually allows Windows to get away with doing no processing
+                    on a pixel map. The pixel map can be moved directly to the
+                    video memory.</p>
+               
+               <h4><FONT COLOR="#000080">Creating a DIB</FONT></H4>
+               
+               <p>Because DIBs are stored in
+                    DIB_RGB_COLORS form on disk, applications that deal with
+                    palette-based DIBs must convert these RGB-based DIBs into
+                    palette-based DIBs. To convert an RGB-based DIB into a
+                    palette-based DIB involves first creating a logical palette
+                    that is identical to the DIB's RGB-based color table. The
+                    demo program main.c (<A href="heatl1.htm">Listing 1</a>)
+
+                    creates this initial logical palette within a function
+                    called LoadSprites, using a for loop:</p>
+
+<PRE>
+
+pal = malloc( sizeof(LOGPALETTE)
+    + sizeof(PALETTEENTRY) * 256);
+pal-&gt;palVersion = 0x300;
+pal-&gt;palNumEntries = 256;
+for( i = 0; i &lt; 256 ; i++) {
+    pal-&gt;palPalEntry[i].peRed = quad[i].rgbRed;
+    pal-&gt;palPalEntry[i].peBlue = quad[i].rgbBlue;
+    pal-&gt;palPalEntry[i].peGreen = quad[i].rgbGreen;
+    pal-&gt;palPalEntry[i].peFlags = 0;
+}
+hp = CreatePalette(pal);
+free(pal);
+</PRE>
+               
+               <p></p>
+               
+               <p>pal is a pointer to a logical palette
+                    structure. This structure is defined by inclusion of the
+                    header windows.h. hp is a handle to the palette; quad
+                    contains the color table.</p>
+               
+               <p>This logical palette, when selected
+                    into a device context, will then create the physical
+                    palette:</p>
+
+<PRE>
+
+oldPal = SelectPalette(hdcScreen, hp, FALSE);
+//create physical palette
+RealizePalette(hdcScreen);
+SelectPalette( hdcScreen, oldPal, FALSE);
+</PRE>
+               
+               <p>At this point the logical palette is
+                    still an "optimal" palette -- the 256 colors the
+                    DIB wants to display. However, the DIB cannot have all 256
+                    colors. Windows reserves 20 colors for itself (called "system"
+                    colors) at indexes 0 through 9 and 246 through 255. When you
+                    select the optimal logical palette into the device context,
+                    the physical palette becomes a compromise between the 256
+                    colors that the DIB actually wanted, the 20 system colors
+                    that must always be present, and what the hardware is
+                    physically capable of providing. </p>
+               
+               <p> That's the first step. Now, to
+                    achieve the fastest graphic display speeds the logical
+                    palette must be made identical to the physical palette. If
+                    the two palettes are not identical, Windows will attempt to
+                    do closest matches from the logical palette to the physical
+                    palette, and slow down processing considerably. To make the
+                    two palettes identical, the application creates a new 
+                    logical palette from the colors of the newly created system
+                    (physical) palette:</p>
+
+<PRE>
+GetSystemPaletteEntries(hdcScreen,
+                        0,
+                        iPalEntries,
+                        pe);
+
+for( i = 0; i &lt; iSysColors/2 ; i++)
+    pe[i].peFlags=0;
+
+for( ;i&lt;iPalEntries-iSysColors/2;i++)
+    pe[i].peFlags=PC_NOCOLLAPSE;
+
+for( ;i&lt;iPalEntries;i++)
+    pe[i].peFlags=0;
+
+ResizePalette(hp,iPalEntries);
+SetPaletteEntries(hp,0,iPalEntries,
+                  pe);
+ReleaseDC(hwndScreen,hdcScreen);
+</PRE>
+               
+               <p>GetSystemPaletteEntries copies the RGB
+                    tuples in the physical palette to pe, an array of
+                    PALETTENTRY structures. iPalEntries in this snippet from
+                    main.c specifies how many entries to copy. SetPaletteEntries
+                    copies the tuples from pe to the logical palette, hp. When
+                    this new logical palette is selected into a device context
+                    the resulting physical palette will be identical to the 
+                    logical palette.</p>
+               
+               <p>Now that the correct logical and
+                    system palettes have been created, the application must
+                    convert the original RGB-based DIB to use these new
+                    palettes. As read from disk, the DIB's pixel map indexes
+                    point to color table entries, and the DIB expects to use 256
+                    colors. Each byte in the pixel map must be converted from an
+                    index into an optimal color table to an index into the 
+                    physical palette. Function LoadSprites in main.c does this
+                    translation as a two-step process: first, LoadSprites
+                    translates each DIB color table entry to a physical palette
+                    index, by calling GetNearestPaletteIndex:</p>
+
+<PRE>
+ for(i=0;i&lt;=255;i++)
+    table[i]=
+        GetNearestPaletteIndex(hp,
+            RGB(quad[i].rgbRed,
+                quad[i].rgbGreen,
+                quad[i].rgbBlue));
+</PRE>
+               
+               <p> The for loop stores these translated
+                    indexes in the vector table. Note that the first parameter
+                    passed to GetNearestPaletteIndex is hp, the handle to the
+                    logical palette, which is now identical to the physical
+                    palette. </p>
+               
+               <p> The second step is to replace each
+                    byte in the pixel map so that it indexes the physical
+                    palette, not the color table. LoadSprites does this by
+                    wrapping the following statement in a for loop:</p>
+
+<PRE>
+
+spritePattern[i]=
+    table[spritePattern[i]];
+</PRE>
+               
+               <p>Now that all the components needed for
+                    an optimal DIB have been created, the application can call
+                    CreateDIBSection to create a highly efficient DIB. This new
+                    DIB can be accessed in two ways. First, the application can
+                    select the DIB into a compatible memory device context, and
+                    call GDI functions to do off-screen drawing. Second, the
+                    application can directly access the pixel map of this DIB.
+                    Direct access to the pixel map lets an application create
+                    binary images of what is to be displayed, in much the same
+                    way as DOS-based applications do. This bitmap can be used
+                    for off-screen drawing, and then rapidly transferred to main
+                    video memory by a bitblt call. Using bitblt is not as
+                    efficient as having two entire screens loaded in video
+                    memory at the same time, but it is close.</p>
+               
+               <h4><FONT COLOR="#000080">Sample Application</FONT></H4>
+               
+               <p>The included sample application
+                    demonstrates the use of CreateDIBSection by implementing a
+                    simple, yet efficient, sprite engine. This sample
+                    application displays several star-shaped sprites that spin
+                    and bounce about the screen. The sprite engine component
+                    (sprite.c) is available on the code disk and online sources
+                    (see p.3 for details). It will work in any MFC or Win32 API 
+                    application. A makefile on the code disk combines this file
+                    with main.c to build a Windows executable, stars.exe.
+                    </p>
+               
+               <p> To run stars.exe you will need the
+                    file stars.bmp, also provided on the code disk. This DIB
+                    file must be stored in eight-bit color. stars.bmp contains
+                    just three frames of a star (see <A href="heatf1.htm">Figure
+                         1</a>)
+. You can use any eight-bit color DIB file in
+                    place of stars.bmp, but for it to work with stars.exe the
+                    individual frames of the DIB must be stacked vertically (as
+                    in a movie reel). Each frame is square; the entire DIB is
+                    one frame wide and three frames high. This format is
+                    somewhat limited, but enables you to create new DIBs for the
+                    demo application without modifying the demo. (This square
+                    shape limitation applies only to the demo program; the
+                    sprite engine allows sprites to be of any size.) </p>
+               
+               <p> The sprite engine draws to a master
+                    DIB that matches the size of the window. The master DIB is
+                    created by a call to CreateDIBSection within the function
+                    RenderReset (<A href="heatl2.htm">Listing 2</a>)
+.
+                    CreateDIBSection passes the address of an empty pixel map
+                    back through its parameter list to bitmap, which is defined
+                    in main.c as a pointer to BYTE. bitmap is accessible by
+                    functions in sprite.c. The sprite engine does no drawing to
+                    the actual window, but directly manipulates the master DIB's
+                    pixel map, bitmap. This manipulation occurs within function
+                    RenderSprites (<A href="heatl3.htm">Listing 3</a>)
+,
+                    explained later. After manipulating the master DIB, the
+                    application uses bitblt to rapidly copy it to the actual
+                    window. </p>
+               
+               <p> Because the master DIB is the same
+                    size as the window it's drawn to, it must be recreated each
+                    time the window changes its size. RenderReset recreates the
+                    window, by deleting the current master DIB (if there is
+                    one), then creating a new master DIB to the window's new
+                    size. The sample application calls this function in response
+                    to a WM_SIZE message. In addition to creating the master 
+                    bitmap, the application must load the templates for the
+                    sprites, which will come from the file stars.bmp. The
+                    application reads in the file as a DIB, and does away with
+                    its color table in the manner described above. The DIB
+                    becomes just an array of pixels that represent indexes into
+                    the hardware palette. </p>
+               
+               <p> The DIB engine keeps a linked list of
+                    all active sprites. I provide a simple "API" of
+                    functions that allow programs to interact with this list and
+                    display the sprites. These functions are all available on
+                    the code disk. Four of them are defined as simple macros in
+                    sprite.h:</p>
+
+<PRE>
+
+#define SpriteSetPos(s,x,y) \<BR>    s-&gt;xLoc=x;s-&gt;yLoc=y
+#define SpriteSetFrame(s,f) \<BR>    s-&gt;frame=f
+#define SpriteSetBase(s,b) s-&gt;base=b
+#define SpriteShow(s,b) s-&gt;show=b
+</PRE>
+               
+               <p>The others have the following
+                    prototypes:</p>
+
+<PRE>
+
+struct SPRITE *CreateSprite(
+    int h,int w,BYTE *base);
+void RenderSprites(HWND hwnd);
+void DeleteSprite(
+    struct SPRITE *delme);
+</PRE>
+               
+               <p>The function names are pretty much
+                    self-explanatory, with the exception of SpriteSetFrame and
+                    SpriteSetBase. </p>
+               
+               <p>SpriteSetFrame controls which "frame"
+                    of the sprite should currently be displayed. The first
+                    parameter is a pointer to the sprite to be moved. The second
+                    parameter is the frame number. (Recall that each sprite's
+                    DIBconsisted of three frames stacked vertically.) </p>
+               
+               <p> SpriteSetBase enables an application
+                    to change the appearance of a sprite originally created by
+                    CreateSprite. The first parameter to this function is a
+                    pointer to the sprite; the second is a pointer to new data.
+                    Every sprite contains a pointer, base, to the sprite's data.
+                    Calling SpriteSetBase causes the sprite to point to a new
+                    image. </p>
+               
+               <p> RenderSprites causes all the sprites
+                    to be drawn to the master DIB. The calling program should
+                    then copy the master DIB to the display to achieve the
+                    desired effect. </p>
+               
+               <p> With the exception of RenderSprites (<A href="heatl3.htm">Listing
+                         3</a>)
+, these functions are very simple. The position,
+                    frame, and base functions just set various data members
+                    inside the sprite structure which they are passed. All of
+                    the real work occurs within RenderSprites. </p>
+               
+               <p> I've optimized RenderSprites to
+                    execute as fast as possible, so it is not as straightforward
+                    as it could be. RenderSprites starts by setting up a loop to
+                    go through the entire sprite list in memory. RenderSprites
+                    copies each sprite, byte for byte, from the sprite pixel map
+                    to the master DIB. </p>
+               
+               <p> Since sprites are defined within
+                    rectangular regions, the part of the region that isn't
+                    sprite needs to be transparent. You can see how transparency
+                    works in the sample program when two stars overlap. The
+                    bounding rectangle of the star in front does not obliterate
+                    the star behind it. You see all parts of the background
+                    sprite that are not obscured by the foreground star. </p>
+               
+               <p> I experimented with several methods
+                    for encoding transparency, but ultimately settled on having
+                    one single color represent transparency. This color can be
+                    different for each sprite, and is defined by the color of
+                    the very top left pixel of the sprite. This method allows
+                    the sprites to be drawn naturally, with any convenient color
+                    acting as the transparent background color. </p>
+               
+               <p> This code targets an eight-bit
+                    palettized device. I've made every effort to ensure
+                    compatibility with 16- or 24-bit video. A programmer can
+                    optimize many of the techniques given here specifically for
+                    16- or 24-bit video, if it is possible to guarantee that the
+                    code would always be run on such a device. Such
+                    modifications are beyond the scope of this article.</p>
+               
+               <h4><FONT COLOR="#000080">Summary</FONT></H4>
+               
+               <p>The methods presented here allow
+                    animation vastly superior to that offered by standard GDI
+                    programming. One of the main benefits of CreateDIBSection is
+                    that it allows the entire image to be drawn off-screen, and
+                    then rapidly transferred to the screen. This technique
+                    eliminates flicker and other odd effects caused by allowing
+                    the user to see the screen as it is redrawn. Additionally, 
+                    CreateDIBSection allows direct pixel manipulation. I used
+                    the sprite engine example, because this is one area where
+                    direct pixel manipulation is both faster and easier to
+                    implement using direct pixel manipulation. This example
+                    sprite engine could easily form the foundation for more
+                    complex animation programs.</p>
+               
+               <p><I>Jeff Heaton is a software engineer
+                    for The Earthgrains Company, where he works with C/C++ and
+                    database programming. Jeff may be reached at
+                    76476.1701@compuserve.com.</I></p>
+
+<h4><a href="../../../source/1996/aug96/heaton.zip">Get Article Source Code</a></h4>
+
+ </BLOCKQUOTE>
+     </BODY>
+</HTML>

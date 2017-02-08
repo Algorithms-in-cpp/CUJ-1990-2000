@@ -1,0 +1,172 @@
+<HTML>   
+     <HEAD>
+<TITLE>December 1999/We Have Mail</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocdec.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Departments</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">We Have Mail</FONT></H2>
+
+<hr>
+<BLOCKQUOTE>
+
+<p><I>Letters to the editor may be sent via email to </I>cujed@mfi.com<I>, or via the postal service to Letters to the Editor, </I>C/C++ Users Journal<I>, 1601 W. 23rd St., Ste 200, Lawrence, KS 66046-2700.</I></p>
+
+<hr>
+
+<p><I>Jonathan Ringle's article, &#145;&#145;Singleton Creation the Thread-Safe Way,'' ( CUJ, October 1999) intrigued many readers. Some of them pointed out some potential problems in his implementation. We don't have space to print all their letters here, but Jonathan has graciously sent us this summary of the issues brought up (edited for brevity), as well as suggested fixes. Look for an expanded discussion of this topic on our Code Review web page at </I><B>www.cuj.com/forum/</B><I>. &#151; mb</I></p>
+
+<hr>
+<p>Dear <I>CUJ,</I></p>
+<p>There are three issues that need to be pointed out with respect to my article, &#145;&#145;Singleton Creation the Thread-Safe Way'': 1) The use of a volatile flag, 2) Initialization of static mutexes, and 3) Multi-processor cache coherency <a href="#1">[1]</a>.</p>
+<p>1. There is a potential danger that a couple of the variables used in the implementation may be put into registers by the compiler. If a variable is put into a register, then other threads will potentially not see changes made to the variable across thread context switches. This problem can be avoided with the use of the <B>volatile</B> cv-qualifier. Using <B>volatile</B> ensures two things: a) that the compiler will not put the variable into a register, and b) that the compiler doesn't optimize away the double-check of the variable as being superfluous code.</p>
+<p>We could start out by making the static <B>Singleton* _instance</B> volatile, but that quickly gets messy. Either <B>Singleton</B> must provide volatile member functions or the caller of <B>Singleton::instance</B> must cast away the return value's volatile-ness using <B>const_cast</B>.</p>
+<p>So, rather than play the casting game, I've decided to separate the functionality of the flag from the pointer, as in:</p>
+
+<pre>
+class Singleton
+{
+public:
+   static Singleton&amp; instance();
+//...
+private:
+   static Singleton* _instance;
+   static volatile bool _is_created;
+//...
+};
+
+static Singleton&amp;
+Singleton::instance()
+{
+  if(!_is_created)
+  {
+  //.. double-checked locking omitted
+  }
+
+  return *_instance;
+}
+</pre>
+
+<p>2. Initialization of static mutexes. The code for the <B>Critical_Section::acquire</B> method could potentially be called before the constructor for <B>Critical_Section</B> is called. In fact this would occur for the very same reason that got me started on all this. (See the anecdote at the start of the article.) This issue can be resolved by creating a static instance of a mutex type object that requires no constructor code at all. This can be done by leveraging the guaranteed zero-initialization of non-local statics before anything else. In section 3.6.2 the C++ Standard (<B>http://www.maths.warwick.ac.uk/cpp/pub/</B>) states, &#145;&#145;The storage for objects with static storage duration (3.7.1) shall be zeroinitialized (8.5) before any other initialization takes place <a href="#2">[2]</a>.'' Because there is such a strong reliance on initialization in this fashion, access to declare an instance of this type should not have public visibility.</p>
+<p><a href="list1.htm">Listing 1</a> shows an implementation of a mutex type object, class <B>Interlocked_Mutex</B>, which will work on the Windows NT platform. (I have not verified if it will work on other Windows platforms.)</p>
+<p>3. Multiprocessor cache coherency. The double-checked locking optimization works well within the confines of a uniprocessor machine. However, the game rules change when you move to a multiprocessor platform. This is especially true if the platform performs very aggressive memory caching optimizations, in which read and write operations can execute &#145;&#145;out of order'' across multiple CPU caches <a href="#1">[1]</a>. Without modification, the double-checked locking optimization can not be declared safe on such systems.</p>
+<p>The double-checked locking pattern is an optimization that tries to remove the need for an expensive lock for an infrequently called critical section of code. The pattern exposes &#145;&#145;read-only" parts outside the context of the lock. The reader thread depends very much upon an ordering: the visibility of the writes in main memory as done by the writer thread must be in the same order as the instructions issued to the CPU. On a uniprocessor system, this is not a problem even if the processor writes things &#145;&#145;out of order,'' because a thread context switch will make sure that the write-back cache is flushed before the next thread gets control. However, on a multiprocessor platform, the &#145;&#145;out of order'' writes become visible to threads running on other CPUs! So then it is possible for a thread on CPU number 2 to evaluate <B>if(!_is_created)</B> as true before the data contained within <B>Singleton</B> is available in main memory, or even the <B>_instance pointer</B>. The timing window for these conditions to occur is probably in the nanosecond range, but it's the type of bug that I'm sure would drive me mad trying to find.</p>
+<p>Given all the complications involved, I would conclude that the use of the double-checked locking optimization is not worth the trouble on a multiprocessor architecture.</p>
+<p>I have used the following references in my research of these issues:</p>
+<p><a name="1"></a>[1]  Douglas Schmidt. &#145;&#145;Double Checked Locking Optimization,'' <B>http://www.cs.wustl.edu/~schmidt/patterns/Double-Checked-Locking.pdf.gz</B></p>
+<p><a name="2"></a>[2]  Andrew Koenig. <I>Working Paper for Draft Proposed International Standard for Information Systems &#151; Programming Language C++</I> (2 December 1996). <B>http://www.maths.warwick.ac.uk/cpp/pub/</B>, section 3.6.2.</p>
+<p><a name="3"></a>[3]  Compaq Computer Corporation. <I>Alpha Architecture Handbook,</I> <B>http://ftp.digital.com/pub/Digital/info/semiconductor/literature/alphaahb.pdf</B>, chapters 4.11, 5.</p>
+<p><a name="4"></a>[4]  A newsgroup discussion thread on comp.programming.threads &#145;&#145;MP safe Singleton using double-checked locking'' that ran last year from 05/28/98-06/04/98. I used <B>http://www.deja.com</B> to search for this discussion thread.</p>
+<p><a name="5"></a>[5]  <I>Intel Architecture Software Developer's Manual, Volume 2: Instruction Set Reference,</I> pgs 3-230, 3-456.</p>
+<p>Jonathan Ringle</p>
+
+<hr>
+<p>Dear <I>CUJ,</I></p>
+<p>In the September 1999 issue, P.J. Plauger wrote about the limits to the Standard C library. As he stated in his article, &#145;&#145;So there is more than one way to head off this problem, and nearly four decades in which to do it. For my part, I hope to be retired before then.'' I for one hate this because more and more the limitations that we as programmer place upon ourselves the more we fix or rework old problems. I started programming before the PC and remember the 640K barrier. How much time and code and device drivers did we that lived through DOS 6.22 consume because someone placed a limit out there?</p>
+<p>I would agree that 2037 is far enough away that some of us will be retired, but most of us will be working in 2007, when banks hit limits as they calculate a 30-year mortgage. Our company has already been hit by limits with dates as we deal with companies that are over 100 years old. As we continue to move forward we should look to ways that do not impose limits, especially within standards; or the standards should list the ramifications of those limits.</p>
+<p>The real Y2K issue will be 2001/2002 when companies return to normal program enhancement and maintenance. All the people that are working on visas return home and we have a drastic change to our economy, as these people leave behind houses. I hope that our current Government does not say, &#145;&#145;For my part, I hope not to be in office at that time.''</p>
+<p>Leland F. Carpenter<br>
+847/645-5747</p>
+<p><I>I quite agree. I was being facetious, and not very clear about it. &#151; pjp</I></p>
+
+<hr>
+<p>Dear <I>CUJ,</I></p>
+<p>Everyone keeps saying that &#145;&#145;objects in arrays can be initialized only with the default constructor'' (quote from Pete Becker's column in <I>CUJ,</I> April 1999, for example). However, the following code compiles and runs very nicely under Borland compilers ranging from BC++ 4.5 to BCB 4.0:</p>
+
+<pre>
+#include &lt;iostream.h&gt;
+struct A {
+A () : _n( -1 )
+{cout &lt;&lt;  "construct default object\n";}
+A ( int n ) : _n( n )
+{cout &lt;&lt; "construct A("  &lt;&lt; n &lt;&lt; ")\n"; }
+A ( int n, int m ) : _n( n )
+{ cout &lt;&lt; "construct A("  &lt;&lt; n &lt;&lt; ',' &lt;&lt;
+    m  &lt;&lt; ")\n"; }
+A ( const A &amp; rhs ) : _n( rhs._n )
+{ cout &lt;&lt;  "A(" &lt;&lt; _n
+       &lt;&lt; ") is assigned A("
+       &lt;&lt; rhs._n &lt;&lt; ")\n";
+{ cout &lt;&lt; "copy (A"  &lt;&lt; _n &lt;&lt; ")\n"; }
+A &amp; operator= ( const A &amp; rhs )
+   {_n = rhs._n; return *this; }
+
+int _n;
+};
+
+int main(int, char*[]) {
+A array[6] = { A( 0 ), A( 1 ),
+               A( 2, 0 ),3, A() };
+return 0;
+}
+</pre>
+
+<p>The output is:</p>
+
+<pre>
+  construct A(0)
+  construct A(1)
+  construct A(2,0)
+  construct A(3)
+  construct default object
+  construct default object
+</pre>
+
+<p>All objects are constructed in place; there are no copy constructor or copy assignment calls. Removing the default constructor still allows creating an array with the first four elements.</p>
+<p>I respect Borland for making great efforts to track the developing standard and to bring BCB to full conformance to the final standard. Are they misinterpreting the standard, or can we use non-default constructors to initialize array elements after all?</p>
+<p>Thank you for a very interesting and useful magazine!</p>
+<p>Regards,</p>
+<p>Hans Salvisberg Berne<br>
+Switzerland<br>
+hs@salvisberg.com</p>
+
+<p><I>I checked with P.J. Plauger, and he sees nothing in the C++ Standard that prohibits the form of initialization you present. I'll bet the statement you keep hearing about &#145;&#145;default constructors only'' assumes the array is being dynamically allocated:</I></p>
+
+<pre>
+A *array = new A[6];
+</pre>
+
+<p><I>There's no place here to specify individual constructor arguments, so the compiler calls the default constructor for each element. &#151; mb</I></p>
+
+<hr>
+<p>Dear Mike Betrand,</p>
+<p>My name is Ivan Zelina. I am a software developer with Micromine Ply Ltd in Perth, Western Australia. We develop mining and exploration software. Recently I read your article in <I>C/C++ Users Journal</I> on TrueType fonts (&#145;&#145;TrueType Font Secrets,'' <I>CUJ,</I> August 1999). Reading it I got an idea how to solve a problem I have been struggling to solve for a few months. (Thanks a lot for the idea.)</p>
+<p>We use TrueType fonts to display various symbols and we need to be able to draw a border around each character as displayed to achieve this &#145;&#145;Halo" or "Glow'' effect. We have tried two complex solutions but they did not work well. What we are going to try now is quite simple. We will vectorise the character and then draw the character outline using thick line. Then we will just do simple <B>CDC::TextOut</B> over the vectorized characted with parts of the thick border sticking out from underneath.</p>
+<p>I have just tried to use your <B>CGlyph</B> class combined with <B>DC::TextOut</B>. Calling <B>CGlyph::Draw</B> and <B>CDC::TextOut</B> will generate characters of equal size but at different positions. Output produced by <B>CDC::TextOut</B> is offset to the bottom right when compared to <B>CGlyph::Draw</B> generated character outline.</p>
+<p>Well, my question is if there is a simple way to work out the offsets needed for <B>CGlyph::Draw</B> to make it draw at the same position as <B>CDC::TextOut</B>. I do not want to use too much of your time. Please, let me know if there is a simple answer.</p>
+<p>Regards,</p>
+<p>Ivan Zelina</p>
+
+<p><I>Mike Bertrand replies:</p>
+<p>Hi Ivan,</p>
+<p>Good hearing from you.</p>
+<p>You probably know about </I><B>SetTextAlign</B><I>, which gives you some flexibility to determine where </I><B>TextOut</B><I>'s text goes. For glyph placement, look at the </I><B>GetGlyphOutline</B><I> parameter that is a pointer to a GLYPHMETRICS structure, defined as follows in MSDN:</I></p>
+
+<pre>
+typedef struct _GLYPHMETRICS {
+    UINT  gmBlackBoxX;
+    UINT  gmBlackBoxY;
+    POINT gmptGlyphOrigin;
+    short gmCellIncX;
+    short gmCellIncY;
+} GLYPHMETRICS;
+</pre>
+
+<p><I>where:</p>
+<p></I><B>gmBlackBoxX</B><I> specifies the width of the smallest rectangle that completely encloses the glyph (its black box).</p>
+<p></I><B>gmBlackBoxY</B><I> specifies the height of the smallest rectangle that completely encloses the glyph (its black box).</p>
+<p></I><B>gmptGlyphOrigin</B><I> specifies the x- and y-coordinates of the upper left corner of the smallest rectangle that completely encloses the glyph.</p>
+<p></I><B>gmCellIncX</B><I> specifies the horizontal distance from the origin of the current character cell to the origin of the next character cell.</p>
+<p></I><B>gmCellIncY</B><I> specifies the vertical distance from the origin of the current character cell to the origin of the next character cell.</p>
+<p>This enables you to calculate the character's bounding box, including the very bottom, calculate the distance between adjacent characters, etc.</p>
+<p>Regards,</p>
+<p>Mike Bertrand</I></p>
+
+  
+
+<h4><a href="../../../source/1999/dec99/letters.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

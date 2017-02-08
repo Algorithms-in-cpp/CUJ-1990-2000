@@ -1,0 +1,167 @@
+<HTML>   
+     <HEAD>
+<TITLE>July 1999/Wrapping the Windows ODBC API</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocjul.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Wrapping the Windows ODBC API</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Giovanni Bavestrelli</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Who needs yet another layer of software between program and database? Maybe you do.</p>
+</BLOCKQUOTE>
+
+<hr>
+<BLOCKQUOTE>
+
+<p>ODBC (Open Database Connectivity) is a C-language API that allows programmers to write applications that are independent of any particular DBMS (Database Management System). The ODBC standard defines an API; and database/driver vendors who want to support the API implement ODBC drivers for a particular DBMS. In Windows, most relational databases today support the ODBC standard. ODBC uses a standardized version of SQL (Structured Query Language) to interact with the underlying DBMS. If you program using ODBC, you should, with some effort, be able to access any database that has an ODBC driver <a href="#1">[1]</a>. ODBC allows you to build applications that work on many DBMSs. Recompiling your application to access a different database is unnecessary; your application can dynamically load the correct ODBC driver at run time.</p>
+<p>ODBC alone is no longer the hottest database access technology for Windows programs. Microsoft has developed a number of database access technologies over the past few years, including the MFC ODBC classes (<B>CRecordset</B> and <B>CDatabase</B>), DAO, RDO, OLE DB, and ADO. Many OLE DB providers, though not all, still use ODBC. ODBC remains vital for Microsoft's connectivity strategy. If you need to access a DBMS and want a simple and fast solution that gives you total control with SQL, ODBC is still a good way to go. A small wrapper can take away most of the complexity of the API without adding any significant overhead.</p>
+<p>This article presents a small set of simple C++ classes that encapsulate some tedious details and peculiarities of the ODBC API and make the C++ compiler work for you to provide an easier and more intuitive interface. These simple C++ classes are thin wrappers. They don't change the programming metaphor, like DAO, RDO, OLE DB, ADO, and even MFC's ODBC classes; they don't use COM; and they don't throw exceptions. You will still have to write SQL statements yourself. This is the main reason I chose to develop these classes instead of using MFC's ODBC classes. I wanted to have total control of the SQL statements <a href="#2">[2]</a>. These classes make it simpler to work with ODBC, in a number of ways:</p>
+
+<UL><LI>by reducing the number of parameters that must be passed to API functions (often just too many)</LI>
+<LI>by automatically specifying the types of some parameters passed using function overloading</LI>
+<LI>by automatically handling ODBC errors in a uniform and customizable way and providing extra information when errors do occur</LI>
+<LI>by providing simple return types (<B>BOOL</B>) instead of multiple SQL return codes</LI>
+<LI>by reducing the number of data types you have to work with</LI>
+<LI>by freeing resources automatically</LI></UL>
+
+<p>A secondary effect of these classes is that ODBC API functions, which originally are all at the same level, get grouped together into the areas in which they belong: environments, connections, or statements.</p>
+
+<h4><FONT COLOR="#000080">An Approach to Encapsulation</FONT></H4>
+
+<p>In Windows, ODBC operations seem to revolve around Windows handles. In a typical database access, using ODBC 2.0 requires first allocating an ODBC environment with a call to <B>SQLAllocEnv</B>, which will return a handle of type <B>HENV</B>. The application needs only one of these handles to establish a link between the program and ODBC. Using this handle, you must create a connection handle of type <B>HDBC</B> for each database to which you want to connect, by calling <B>SQLAllocConnect</B>. This connection handle will be used to connect to the database, using <B>SQLConnect</B> or <B>SQLDriverConnect</B>. This connection handle must also be passed to <B>SQLAllocStmt</B> to allocate each statement handle, of type <B>HSTMT</B>, which will be used to call other ODBC APIs to do the real work with SQL. Upon completion, you must free statement handles with a call to <B>SQLFreeStmt</B>, free connection handles with a call to <B>SQLFreeConnect</B>, and free environment handles with a call to <B>SQLFreeEnv</B>.</p>
+<p>All of these handles call for encapsulation. When I see a handle in a C API, I try to think of a C++ class. If a good class is not available, then I develop one. C++ classes, with constructors, destructors, data members, encapsulation, inline functions, function overloading, and default arguments can hide some details without adding significant overhead.</p>
+<p>To stay close to the ODBC API, my main abstractions are classes <B>ODBCEnvironment</B>, <B>ODBCConnection</B>, and <B>ODBCStatement</B> (see <a href="fig1.htm">Figure 1</a>). These classes are simple wrappers around the relative environment (<B>HENV</B>), connection (<B>HDBC</B>), and statement (<B>HSTMT</B>) handles. To keep these wrappers thin, most of the member functions just encapsulate the ODBC API functions of the same name (except for the SQL prefix of the ODBC API functions, which are consistently dropped from the member function names). Keeping the same names means you can refer to the ODBC documentation to figure out what the member functions do. However, you still have to know how ODBC works (just as using MFC's <B>CWnd</B> class requires that you know what a window is and how to use it).</p>
+
+<h4><FONT COLOR="#000080">Classes ODBCEnvironment, ODBCConnection, and ODBCStatement</FONT></H4>
+
+<p>Each application needs only one environment handle, so class <B>ODBCConnection</B> contains a static <B>ODBCEnvironment</B> object. That's about all there is to say about the ODBC environment. Class <B>ODBCConnection</B> handles it automatically through <B>ODBCEnvironment</B>'s interface. That leaves classes <B>ODBCConnection</B> and <B>ODBCStatement</B>.</p>
+<p>Class <B>ODBCConnection</B> is very simple. Its main member functions are <B>Connect</B> and <B>Disconnect</B> for connecting and disconnecting to and from a database. To connect to a database, you must supply a database connection string, like <B>"DSN=TRYODBC;UID=USER;"</B>, where <B>DSN</B> stands for Data Source Name, <B>UID</B> for User ID, <B>PWD</B> for Password, etc. Other <B>ODBCConnection</B> member functions can be used to set options, to get information relative to the connection, or to handle transactions. Classes <B>ODBCEnvironment</B> and <B>ODBCConnection</B> get rid of a little complexity, plus automatically handle errors.</p>
+<p>ODBC statements do the real work of ODBC. The most common operations done with ODBC statements are compiling and executing SQL statements, setting parameters in the SQL statements, fetching records from the result set of a <B>SELECT</B> query, and retrieving values from the columns of the fetched records. To do any of these, an ODBC statement object must first be created, which is easy enough:</p>
+
+<pre>
+ODBCStatement Sql;
+</pre>
+
+<p>This ODBC statement, named <B>Sql</B>, is not bound to any database. To bind it to a particular database, you can either pass an <B>ODBCConnection</B> object to the constructor of the <B>ODBCStatement</B> or pass it to the <B>ODBCStatement::AllocStmt</B> member function if you want to know the result of the allocation. Either way, if the <B>ODBCConnection</B> object has been successfully connected to a database (with the <B>ODBCConnection::Connect</B> member function), the ODBC statement is ready for use. At this point, you can set some statement options (with the <B>SetStmtOption</B> member function), and you're ready to use SQL <a href="#3">[3]</a>.</p>
+<p>You can now run your SQL command by using the <B>Prepare</B> and <B>Execute</B> member functions or by using <B>ExecDirect</B>, which does both actions in one step. If you use the <B>Prepare</B> and <B>Execute</B> functions, you can call <B>Prepare</B> only once, but then call <B>Execute</B> many times with different parameters, increasing performance.</p>
+<p>As described in the sidebar, <a href="sidebar.htm">"Simple SQL Statements,"</a> the main SQL commands are <B>SELECT</B>, <B>INSERT</B>, <B>UPDATE</B>, and <B>DELETE</B>. <B>SELECT</B> is different from the other three in that it generates a result set, which is a set of records that allows you to extract the requested data.</p>
+<p>The following code does a simple <B>SELECT</B> statement using the ODBC classes:</p>
+
+<pre>
+void DoSomethingWithData(int, float, char *);
+
+void DoSimpleSelect()
+{
+   ODBCConnection Dbms;
+  
+   if (!Dbms.Connect("DSN=TRYODBC;UID=USER;"))
+      return;
+ 
+   ODBCStatement Sql(&amp;Dbms,"DoSimpleSelect");
+          
+   char * SqlStatement =
+      "SELECT [IntegerField], [FloatField],
+      [CharField] FROM [TryODBC]"; // broken to fit on page
+ 
+   int   IntegerField;
+   float FloatField;
+   char  CharField[256];
+
+   Sql.BindCol(1,&amp;IntegerField);
+   Sql.BindCol(2,&amp;FloatField);
+   Sql.BindCol(3,CharField,sizeof(CharField));
+
+   if (Sql.ExecDirect(SqlStatement))
+      while (Sql.Fetch())
+        DoSomethingWithData(IntegerField,FloatField,CharField);
+}
+</pre>
+
+<p>Note that this code had no error handling, since it is all done inside the ODBC classes. If a warning or an error is encountered, a function that you provide is called, passing information about the event that occurred. The optional second argument to the <B>ODBCStatement</B> constructor is part of this information. I use this to identify the name of the function where the error occurred.</p>
+<p>Most member functions in the ODBC classes, such as <B>BindCol</B>, <B>ExecDirect</B>, or <B>Fetch</B>, return Boolean values. The <B>BindCol</B> function binds a buffer of a specific data type to a column in the result set. After a successful fetch, these buffers will contain the retrieved data. The compiler selects the type of data, since <B>BindCol</B> is overloaded for many of the allowed types. Make sure these buffers remain valid until you have finished retrieving data from the result set. <B>GetData</B>, an alternative to <B>BindCol</B>, puts the data into a buffer that you provide <I>after</I> you have fetched the record. Both <B>BindCol</B> and <B>GetData</B> have an optional last parameter, <B>pcbValue</B>, that can be used to retrieve extra information from the field, such as whether or not it is NULL. This parameter is passed directly as the last parameter of the ODBC API functions <B>SQLBindCol</B> and <B>SQLGetData</B>. (See the documentation for these two functions for an explanation on how to use the parameter.) <B>GetData</B> is one of the few member functions that does not return a Boolean. Instead, <B>GetData</B> has a more intelligent return type. It can be used to retrieve data from a field one piece at a time, so you need to know if more data is available after your call. An overloaded <B>GetData</B> function that takes a <B>CString *</B> as a parameter retrieves all the data automatically, by calling <B>SQLGetData</B> repeatedly until the entire string has been retrieved.</p>
+<p>The previous code did not use parameters in the SQL statement; here is an insert statement that does:</p>
+
+<pre>
+BOOL DoSimpleInsert()
+{
+   ODBCConnection Dbms;
+  
+   if (!Dbms.Connect("DSN=TRYODBC;UID=USER;"))
+      return FALSE;
+
+   ODBCStatement Sql(&amp;Dbms);
+
+   char * SqlCommand="INSERT INTO [TryODBC]
+      ([IntegerField], [FloatField], [CharField])
+      VALUES (?,?,?)"; // broken to fit on page
+
+   int IntegerField=35;
+   float FloatField=180.0F;
+   char * CharField="Eric"; 
+
+   Sql.BindParameter(1,&amp;IntegerField);
+   Sql.BindParameter(2,&amp;FloatField);
+   Sql.BindParameter(3,CharField);
+
+   return Sql.ExecDirect(SqlCommand);
+}
+</pre>
+
+<p><B>BindParameter</B> works similarly to <B>BindCol</B>; it associates a buffer of a particular data type to a parameter in the SQL command. <B>BindParameter</B> is overloaded for many of the allowed data types, and the buffer must remain valid until the SQL command has been executed. Whereas <B>BindCol</B> defines a buffer from which data will be retrieved, <B>BindParameter</B> defines a buffer that must contain the data for the parameter when the command is executed. Note that the contents of the buffer at the time <B>BindParameter</B> is called are unimportant; it is the contents just before the SQL command is executed (in <B>Sql.ExecDirect</B> here) that count. Keep this in mind when you set the parameters. <B>BindParameter</B> also has an optional last argument, <B>pcbValue</B>, which is passed directly to the <B>SQLBindParameter</B> API function. For a description of the parameter's use, see the documentation of <B>SQLBindParameter</B>.</p>
+<p>There are many more member functions in the <B>ODBCStatement</B> class than described here, but most of them are just simplifications of the related ODBC API functions of the same name (without the SQL prefix). If you look at the ODBC documentation, you will find these functions easy to use.</p>
+
+<h4><FONT COLOR="#000080">Other Features of the ODBC Classes</FONT></h4>
+
+<h4><FONT COLOR="#000080">Managing ODBC Types</FONT></H4>
+
+<p>ODBC defines many types, such as <B>SWORD</B>, <B>SDWORD</B>, <B>RETCODE</B>, etc. Where possible, I prefer to deal with standard Windows types, such as <B>int</B>, <B>long</B>, <B>BOOL</B>, etc. It makes the interface more readable and makes things simpler for users. Where possible, I used the standard types in the interface code, but left the ODBC types in the implementation code. A parameter that has a type <B>short</B> in the interface declaration might have the same parameter defined as <B>SWORD</B> in the function implementation. This is certainly a questionable approach, but I like it because the compiler will tell me when my assumption about any two types actually being the same is no longer valid. Simple types in C have a notorious problem: their size and signedness are not strictly defined by the language. Consequently, I had to use <B>#ifdef WIN32</B> in some situations.</p>
+<p>In class <B>ODBCStatement</B>, functions <B>BindCol</B>, <B>GetData</B>, and <B>BindParameter</B> are overloaded for many types, but I did not overload them for binary data (<B>LPVOID</B>). Instead, I defined a function of a different name (i.e., <B>BindParameterBinary</B>) that takes an <B>LPVOID</B>. This way is safer, because you are forced to be explicit when using binary data. A similar approach is also used for very long strings.</p>
+<p>One word about dates. ODBC uses the structure <B>TIMESTAMP_STRUCT</B> as an exchange buffer for date and time data, so this structure will have to be used in <B>BindCol</B> and <B>BindParameter</B> statements when dealing with date/time. If you normally use MFC's <B>CTime</B>, two simple functions can do the conversion: <B>CTime_to_TIMESTAMP_STRUCT</B> and <B>TIMESTAMP_STRUCT_to_CTime</B>. If you use <B>GetData</B>, there is an overloaded function that works directly with <B>CTime</B>.</p>
+
+<h4><FONT COLOR="#000080">Error Handling</FONT></H4>
+
+<p>ODBC defines various return codes from API functions. I use mostly <B>BOOL</B> in my classes. The various return codes are divided into errors and warnings. The error/warning information is sent to the following function, which must be defined in your code or the program will not link:</p>
+
+<pre>
+BOOL
+ReportODBCProblem(BOOL isError,
+   LPCSTR ApiFunction,
+   LPCSTR ErrorDescription,
+   LPCSTR State,LPCSTR Retcode,
+   LPCSTR LastCommand,LPCSTR Extra,
+   long NativeError,long Row);
+</pre>
+
+<p>This function will receive the error/warning status, the name of the ODBC API function that caused the error, the ODBC driver error description, the ODBC error state, the ODBC API return code, the last SQL command compiled, the native error of the DBMS, the row number in the recordset (where meaningful), and some additional information. I usually display this information or log it somewhere. It is possible to disable this error reporting for an object by calling <B>EnableErrorHandling</B>, passing <B>FALSE</B> as a parameter. For convenience, some functions have a <B>BOOL</B> parameter named <B>DisableErrorNotification</B> that will disable error handling only for that particular function invocation. It is also possible to get some information about the previous error by calling some of my classes' member functions.</p>
+
+<h4><FONT COLOR="#000080">Using the ODBC Classes</FONT></H4>
+
+<p>Using these ODBC classes in your applications is very easy. Include <B>ODBCGIO.H</B> in your source files where you want to use the classes and <B>ODBCGIO.CPP</B> in your project. You will also need to define function <B>ReportODBCProblem</B> to log or show the errors. If you are creating your application with App-Wizard, select "no database support," because the App-Wizard database support creates MFC's ODBC classes. My classes also tell the linker to link with <B>ODBC32.DLL</B> (or <B>ODBC.DLL</B> for 16-bit Windows).</p>
+<p>A sample application, which is available for download from the <I>CUJ</I> ftp site (see p.3 for downloading instructions), uses these classes to do simple SQL queries (see <a href="fig2.htm">Figure 2</a>). Before running the sample application, you must register the <B>TRYODBC</B> System Data Source name by using the ODBC 32 application in Control Panel. (The Microsoft Access database <B>TRYODBC.MDB</B> is included with the source code of the sample application.)</p>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>ODBC is still a very useful API, but it is a bit tedious to use. A simple wrapper can take away most of the complexity without sacrificing performance or changing the programming paradigm. The wrappers presented here do not wrap the whole of ODBC, but the classes expose the ODBC handles so that ODBC API functions can be called easily while working with these classes. Since the level of abstraction of these classes is similar to the raw ODBC API, it would be very easy to extend them to wrap other parts of the API that users need to access. Indeed, the main advantage of these classes is simplicity.</p>
+<p>The presented classes use ODBC 2.0. Visual C++ 6.0 was shipped with ODBC 3.0, and the new online help for many ODBC 2.0 functions states that these functions have been deprecated in the new version of ODBC. Still, if you look at the source code of the <B>CRecordset</B> class (Microsoft's ODBC wrappers) shipped with Visual C++ 6.0, you'll find that it still uses ODBC 2.0.</p>
+
+<h4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1]  I say "with some effort" because ODBC is no panacea; it does not hide all the peculiarities of each DBMS. If you try to build an application that is meant to be truly independent of any particular DBMS, you will run into table and column naming conventions. Some DBMSs accept spaces in table/column names; others don't. Some have limitations on the length of such names. Case sensitivity might be handled differently. Some data types might not be fully supported on certain DBMSs.</p>
+<p><a name="2"></a>[2]  This is not to say that you should not use <B>CRecordset</B> classes. They are very well implemented, robust, and well-documented. However, if you would like more direct control and a smaller overhead, but do not want to tamper with the raw ODBC API, my classes might be just what you need.</p>
+<p><a name="3"></a>[3]  In my opinion, one of the main advantages in using these classes is that they let you write your own SQL statements. If you don't feel very comfortable with SQL, you can use the Microsoft Access query designer and then view the SQL, copy it, and paste it into your code.</p>
+
+<h4><FONT COLOR="#000080">Acknowledgments</FONT></H4>
+
+<p>Thanks to Lodovico Gandini for giving me the first serious opportunity to work with this wonderful language.</p>
+
+<p><i>Giovanni Bavestrelli lives in Milan and is a software engineer for Techint S.p.A., Castellanza, Italy. He has a degree in Electronic Engineering from the Politecnico di Milano, and writes automation software for Pomini Roll Grinding machines. He has been working in C++ under Windows since 1992, specializing in the development of reusable object oriented libraries. He can be reached at <B>giovanni.bavestrelli@pomini.it</B>.</i></p>
+
+<h4><a href="../../../source/1999/jul99/bavestre.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

@@ -1,0 +1,379 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>July 1998/Questions &amp; Answers</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocjul.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Questions &amp; Answers: Assumptions to Avoid Concerning Memory</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Pete Becker</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Pete demonstrates several not-so-stupid memory tricks that every good C/C++ programmer should know.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+<p><I>To ask Pete a question about C or C++, send e-mail to petebecker@acm.org, use subject line: Questions and Answers, or write to Pete Becker, C/C++ Users Journal, 1601 W. 23rd St., Ste. 200, Lawrence, KS 66046.</I></p>
+
+<h4><FONT COLOR="#000080">Q</FONT></H4>
+
+<p>I had to write a simple linked list (for a C program running on a Unix machine):</p>
+
+<pre>
+typedef struct component
+{
+int component_id;
+char component_name[56];
+int active_flag;
+/*  other stuff omitted  */
+} Component;
+
+typedef struct component_node
+{
+Component  component;
+struct component_node *next;
+} ComponentNode ;
+
+typedef ComponentNode *CompList;
+</pre>
+
+<p>The program works with a database and dynamically allocates a number of nodes in the linked list depending on how many records were returned from a query. When a new node is allocated, <B>next</B> is set to <B>NULL</B>. At some point I need to free the memory. Here is my first draft:</p>
+
+<pre>
+void freeCompList(CompList pCompList)
+{
+/*  assumed that pCompList is always a
+    'head' pointer   */
+while(pCompList)
+    {
+    free(pCompList);
+    pCompList = pCompList-&gt;next;
+    }
+}
+</pre>
+
+<p>Then I looked at the code and I didn't feel good about it. My second version looked like this:</p>
+
+<pre>
+void freeCompList(CompList pCompList)
+{
+CompList pScan = NULL;
+while(pCompList)
+    {
+    pScan = pCompList;
+    pCompList = pCompList-&gt;next;
+    free(pScan);
+    }
+}
+</pre>
+
+<p>I thought any program ultimately is a set of instructions and the scheduler may pause it at any time to use the CPU for some other task. Therefore it is possible that between the call to <B>free</B> and moving the pointer to the next node (in my first draft) the memory returned to the operating system could be already utilized by some other program and <B>next</B> in fact may point to who knows what. Does this make sense at all?</p>
+
+<p>My other question: is it possible in C to implement a generic list and maybe initialize it to a particular data structure as needed? Something like:</p>
+
+<pre>
+struct node_tag
+{
+void *data;
+struct node_tag *next;
+} Node;
+</pre>
+
+<p>Can I cast data to the particular data type when needed? Any public domain code I could look into? - Michael Brusser</p>
+
+<h4><FONT COLOR="#000080">A</FONT></H4> 
+
+<p>You were right not to feel good about the original code. The reason you give is certainly valid, but there's a much more fundamental reason for not accessing fields in a struct after you've deleted it: it's an invalid operation. However, it's one of those invalid operations that compilers aren't required to diagnose, and in most cases they can't diagnose it. What the language definition actually says is this:</p>
+
+<p>The value of a pointer that refers to freed space is indeterminate.</p>
+
+<p>What this means, technically, is that once you've freed the space that a pointer points to you cannot legitimately do anything at all with the value stored in that pointer. You can't even copy it into another pointer variable, much less dereference it and look at the values that it used to point to.</p>
+
+<p>The reason for this rule is much simpler than the one you suggest. The compiler's runtime library, which includes the code for <B>malloc</B> and <B>free</B>, must keep track of which memory blocks are in use and which ones are available for a subsequent call to <B>malloc</B>. The library often does this by adding a header to each memory block to hold the needed information. When a block is made available to the application through a call to <B>malloc</B>, the pointer that <B>malloc</B> returns actually points to the first byte after the header. On a call to <B>free</B> the library code backs up from the pointer that you gave it to find the header.</p>
+
+<p>Some implementations, however, improve their memory usage by reducing the amount of information that they keep in the header for an allocated block. That is, the information stored in a freed block takes up more space than the information in a block that's in use. The extra information is stored after the header, which means that it overwrites some of the data that your program had stored in the block. No need to resort to multitasking to understand what the problem here is: when you call <B>free</B> on a memory block, the runtime library is allowed to overwrite the information in that memory block.</p>
+
+<p>As to your second question, yes, it's possible to implement a generic linked list in C via a <B>void *</B> pointer. In fact, with a minor change to your code you can store your actual data in each node, and not just a pointer to your data. The trick is to put the pointer to the next node first in the struct. Begin by defining a struct that holds nothing but a pointer to next:</p>
+
+<pre>
+struct node
+{
+struct node *next;
+};
+</pre>
+
+<p>Now you can write the functions that manipulate your linked list in terms of pointers to <B>struct node</B>:</p>
+
+<pre>
+void insert(struct node *list, struct node *new_node)
+{
+new_node-&gt;next = list-&gt;next;
+list-&gt;next = new_node;
+}
+</pre>
+
+<p>And finally, write the actual struct that holds your data:</p>
+
+<pre>
+typedef struct component_node
+{
+struct node *next;
+Component  component;
+} ComponentNode ;
+</pre>
+
+<p>With a suitable cast, you can now use your generic list manipulation functions to manipulate a list of your <B>Component</B>s:</p>
+
+<pre>
+int main()
+{
+struct node head;
+head.next = NULL;
+struct component_node *node =
+    malloc(sizeof(struct component_node));
+insert(&amp;head, (struct node *)node);
+return 0;
+}
+</pre>
+
+<p>Of course, in actual use you'd use more typedefs, and wrap the more longwinded expressions inside macros.</p>
+
+<p>The reason this works is that C allows pointer "puns," and requires them to work only when you use the resulting pointer to access the common starting sequence of the two types. That is, both <B>struct node</B> and <B>struct component_node</B> begin with a pointer to <B>struct node</B>. You can start with a pointer to <B>struct component_node</B> and cast it to a pointer to <B>struct node</B>. Because each of these types' first element is a pointer to <B>struct node</B>, you can use the resulting pointer to manipulate that first field without worrying about corrupting other fields in the <B>struct component_node</B> that it actually points to.</p>
+
+<p>If you're a C++ programmer you may be thinking that this looks suspiciously like inheritance. You're right: it's actually a technique you can use to implement inheritance in C, if you can keep the casts straight. If you find that you're doing this sort of thing frequently in your C code you might consider switching to C++.</p>
+
+<h4><FONT COLOR="#000080">Q</FONT></H4> 
+
+<p>I have a C programming question. Forgive my wasting your time with what is probably a trivial problem, but I am stuck. There is an issue regarding the ability of C to perform an operation which I believe it cannot, and so I am deferring to a higher authority. This is the scenario. I have a buffer of ASCII data. Also, I have a struct which represents the buffer and its data. For example:</p>
+
+<pre>
+char *Buffer="1234567803/18/1998"
+
+typedef struct BasePolicyInfoTag
+{
+char PolicyNumber[8];
+char PolicyDate[10];
+} BasePolicyInfo;
+
+BasePolicyInfo aPolicy;
+
+memcpy ((char *)&amp;aPolicy, Buffer, sizeof aPolicy);
+</pre>
+
+<p>The <B>memcpy</B> statement does not work. Since the fields are not null terminated in the buffer, <B>aPolicy</B> after this copy looks something like:</p>
+
+<pre>
+aPolicy.PolicyNumber :  "1234567803/18/1998"
+aPolicy.PolicyDate :  "03/18/1998"
+</pre>
+
+<p>Is there any way to achieve the intended effect? - Howard Bash</p>
+
+<h4><FONT COLOR="#000080">A</FONT></H4> 
+
+<p>Be careful about saying that a particular programming language cannot do something. In general it's just not true. A better question is whether the language can do it reasonably elegantly and reasonably efficiently. What you're trying to do here can certainly be done in C, and in fact it can be done elegantly and efficiently. It's not as fast as a simple <B>memcpy</B>, but as you have observed, using <B>memcpy</B> doesn't produce the correct result.</p>
+
+<p>Let's back off a bit and begin by stating the problem more clearly. You're starting out with a string whose first eight characters contain a policy number, and whose next ten characters contain a text representation of a date <a href="#1">[1]</a>. The task is to copy that information into a struct of type <B>BasePolicyInfo</B>, having a <B>char</B> field that holds eight <B>char</B>s followed by a <B>char</B> field that holds ten <B>char</B>s. A simple <B>memcpy</B> runs into a complication here: the compiler is permitted to put extra memory bytes in between these two fields, so it's possible that <B>memcpy</B> will copy some part of the date into those extra bytes, and only get the tail end of the date into the date field.</p>
+
+<p>For example, if the compiler puts two bytes of padding between the two fields in <B>BasePolicyInfo</B>, then this code:</p>
+
+<pre>
+int main()
+{
+int i;
+char Buffer[]="1234567803/18/1998"
+BasePolicyInfo aPolicy;
+memcpy((char *)aPolicy, Buffer, sizeof(aPolicy));
+
+for( i = 0; i &lt; 8; ++i)
+    printf("%c", aPolicy.PolicyNumber[i]);
+printf("\n");
+for( i = 0; i &lt; 10; ++i)
+    printf("%c", aPolicy.PolicyDate[i]);
+printf("\n");
+return 0;
+}
+</pre>
+
+<p>produces the following output:</p>
+
+<pre>
+12345678
+/18/1998*#
+</pre>
+
+<p>The two padding bytes got the <B>'0'</B> and the <B>'3'</B> from the middle of <B>Buffer</B>, and the last two bytes of the second field ended up with strange characters. (The characters I've used probably won't be what you'd actually see.) That's because the call to <B>memcpy</B> said to copy <B>sizeof(aPolicy)</B> bytes, and with the padding between the two fields, that's two bytes larger than <B>Buffer</B>. The next-to-last character would be the terminating <B>'0'</B> from <B>Buffer</B>, and the last character would be whatever random thing happened to come after the <B>Buffer</B>'s bytes in memory. That is, assuming the program didn't crash. Accessing this last byte is not a valid operation, and your program can do just about anything when this happens.</p>
+
+<p>To get around the padding problem you need to handle each field in the struct separately. Instead of doing a single <B>memcpy</B>, do two:</p>
+
+<pre>
+memcpy(aPolicy.PolicyNumber, Buffer,
+    sizeof(aPolicy.PolicyNumber));
+memcpy(aPolicy.PolicyData, Buffer+8,
+    sizeof(aPolicy.PolicyName));
+</pre>
+
+<p>This technique gets the right information into each field. If you replace the original <B>memcpy</B> in the test code with the above code you should see this:</p>
+
+<pre>
+12345678
+03/18/1998
+</pre>
+
+<p>Now we've managed to transfer the data from <B>Buffer</B> into <B>aPolicy</B> and get it into the right places. If you want to be able to treat these two fields as ordinary C strings, there's more work to do: you must put a null terminator on each one. This requires you to make the two fields larger, and to allow space for the null terminator. You also must add a bit of code to add the terminator itself. Once that's done, you can use the <B>%s</B> format specifier in <B>printf</B>, instead of looping through the characters:</p>
+
+<pre>
+typedef struct BasePolicyInfoTag
+{
+char PolicyNumber[9];
+char PolicyDate[11];
+} BasePolicyInfo;
+
+int main()
+{
+char Buffer[]="1234567803/18/1998"
+BasePolicyInfo aPolicy;
+
+memcpy(aPolicy.PolicyNumber, Buffer,
+    sizeof(aPolicy.PolicyNumber));
+aPolicy.PolicyNumber[8] = '\0';
+memcpy(aPolicy.PolicyData, Buffer+8,
+    sizeof(aPolicy.PolicyName));
+aPolicy.PolicyName[8] = '\0';
+
+printf("%s\n%s\n", aPolicy.PolicyNumber,
+    aPolicy.aPolicyDat);
+return 0;
+}
+</pre>
+
+<p>Finally <a href="#2">[2]</a>, to make the code more robust in accomodating changes to the sizes in a future revision, add manifest constants for the sizes:</p>
+
+<pre>
+#define NUM_SIZE 8
+#define DATE_SIZE 10
+
+typedef struct BasePolicyInfoTag
+{
+char PolicyNumber[NUM_SIZE+1];
+char PolicyDate[DATE_SIZE+1];
+} BasePolicyInfo;
+
+int main()
+{
+char Buffer[]="1234567803/18/1998"
+BasePolicyInfo aPolicy;
+
+memcpy(aPolicy.PolicyNumber, Buffer,
+    NUM_SIZE);
+aPolicy.PolicyNumber[NUM_SIZE] = '\0';
+memcpy(aPolicy.PolicyData,
+    Buffer+NUM_SIZE, DATE_SIZE);
+aPolicy.PolicyName[DATE_SIZE] = '\0';
+
+printf("%s\n%s\n", aPolicy.PolicyNumber,
+    aPolicy.aPolicyDat);
+return 0;
+}
+</pre>
+
+<p>Be careful with <B>memcpy</B>. Use it to copy things only when you can show that they're the right sizes. In practice that means that you can copy objects of the same type, for example a <B>BasePolicyInfo</B> object could be copied on top of another <B>BasePolicyInfo</B> object; and you can copy arrays of elements that you could copy individually. Don't write code that makes assumptions about how structs are laid out. That will only get you in trouble.</p>
+
+<h4><FONT COLOR="#000080">Q</FONT></H4>
+
+<p>What is the theoretical difference between reference and pointer variables? I know the usage of both practically, but I failed to express the same in words in an interview. - R. Muthugomu</p>
+
+<h4><FONT COLOR="#000080">A</FONT></H4>
+
+<p>The difference lies in the distinction between "pass by value" and "pass by reference." C uses only pass by value: when you call a function, the values of the arguments to that function are copied, and the function acts on those copies. Changes that the function makes in its copies do not affect the original values. For example:</p>
+
+<pre>
+#include &lt;stdio.h&gt;
+
+void f(int skip, const char *str)
+{
+while( skip-- &gt; 0 &amp;&amp; *str != 0 )
+    ++str;
+while( *str != 0 )
+    putchar(*str++);
+putchar('\n');
+}
+
+int main()
+{
+int skip = 6;
+const char *str = "Hello, world!";
+printf("%d, %s\n", skip, str);
+f(skip, str);
+printf("%d, %s\n", skip, str);
+return 0;
+}
+</pre>
+
+<p>If you run this program you'll get the following output:</p>
+
+<pre>
+7, Hello, world!
+world!
+7, Hello, world!
+</pre>
+
+<p>You can see that the call to <B>f</B> does not change the values of <B>skip</B> and <B>str</B> in <B>main</B> That's because they are passed by value, and the modifications done in <B>f</B> are done on copies of <B>skip</B> and <B>str</B>, not on the original values.</p>
+
+<p>Pass by reference, on the other hand, means that the names of the function arguments used inside <B>f</B> refer to the original variables that the function was called with, and not to copies of those values. So if we change <B>f</B> to take both of its arguments by reference it looks like this:</p>
+
+<pre>
+void f(int&amp; skip, const char*&amp; str)
+{
+while( skip-- &gt; 0 &amp;&amp; *str != 0 )
+    ++str;
+while( *str != 0 )
+    putchar(*str++);
+putchar('\n');
+}
+</pre>
+
+<p>Now the test program produces the following:</p>
+
+<pre>
+7, Hello, world!
+world!
+-1,
+</pre>
+
+<p>As you can see, when we pass by reference the original data is modified by the function <B>f</B>.</p>
+
+<p>Now, what does this have to do with pointers? C supports only pass by value. It does not support pass by reference. When you write a function that is meant to modify a variable passed as a parameter you cannot pass that variable by reference - that just isn't part of the language. So what you do is pass the address of that variable, and write the function so to use the pointer to modify the actual data. Like this:</p>
+
+<pre>
+void f(int *skip, const char** str)
+{
+while( *skip-- &gt; 0 &amp;&amp; **str != 0 )
+    ++*str;
+while( **str != 0 )
+    putchar(*(*str)++);
+putchar('\n');
+}
+</pre>
+
+<p>And, of course, at the point where we call <B>f</B> we need to take the address of its two arguments:</p>
+
+<pre>
+f(&amp;skip, &amp;str);
+</pre>
+
+<p>With these changes, we'll get the same output as with the previous version. Note that the arguments we passed to <B>f</B> are pointers that are passed by value. Don't make the mistake of thinking of this as pass by reference: it isn't. The actual arguments to <B>f</B> are pointers, and modifying those pointers does not modify the pointers that <B>f</B> was called with. Since the arguments are pointers, however, they can be used to modify the data they point to. This is why we use pointers in C when we need to modify data in the calling function.</p>
+
+<p>In short, a pointer is passed by value. The passed pointer can be modified so that it points to a different object, and it can be used to modify a data object that it points to. A reference always refers to the same object. It can be used to modify the object that it refers to, but the reference itself cannot be modified. o
+
+<h4><FONT COLOR="#000080">Notes</FONT></H4>
+<p><a name="1"></a>[1]  And, of course, you've correctly included the century as part of the date. No year 2000 problem here.</p>
+<p><a name="2"></a>[2]  That is, "finally" in terms of the order that I'm presenting the changes here. In real life you should use the manifest constants right from the start.</p>
+
+<p><i>Pete Becker is Technical Project Leader for Dinkumware, Ltd. He spent eight years in the C++ group at Borland International, both as a developer and manager. He is a member of the ANSI/ISO C++ standardization commmittee. He can be reached by email at petebecker@acm.org.</I></P>
+</BLOCKQUOTE>
+</BODY>
+</HTML>

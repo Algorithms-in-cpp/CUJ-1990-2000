@@ -1,0 +1,303 @@
+
+
+
+<HTML><HEAD>
+
+<TITLE>May 1998/A Regular Expression Class Library/Listing 4B</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4>
+<A name="HEADING1">Listing 4b: Class RegularExpression implementation</A></h4>
+
+
+<pre>
+#include "regexp.h"
+     
+void RegularExpression::
+   ConvertToFiniteAutomaton(const char *regExp)
+{
+  // Traverses the input expression and constructs a finite 
+  // automaton expressing it 
+  bool retval = true;
+  bool backslashFound = false;
+  bool orOperatorFound = false;
+  bool inSet = false;
+  bool firstSetChar = true;
+     
+  int outerFromState = invalidState;
+  int innerFromState = invalidState;
+  int innerToState = invalidState;
+  int outerToState = invalidState;
+  int tempState = invalidState;
+     
+  innerToState = startState;
+  outerToState = NewState();
+     
+  // For a regular expression, the empty event is assumed 
+  // to be '\0'
+  AddEmptyTransition(innerToState, outerToState);
+     
+  for(char ch; (ch = *regExp) != 0; regExp++) 
+  {
+    if(backslashFound || !SpecialChar(ch)) 
+    {
+      //if the previous character was a '\' then 
+      //character may need translation.
+      if(backslashFound)
+      {
+         ch = TranslateCh(ch);
+         backslashFound = false;
+      }
+     
+      if(inSet)
+      {
+        // Is the first character in the set? 
+        if(firstSetChar)
+        {
+          // Add new states for either side of set expression
+          innerFromState = NewState();
+          innerToState = NewState();
+          firstSetChar = false;
+        }
+        // Add transition for new character
+        AddTransition(innerFromState, ch, innerToState);
+      }
+      else
+      {
+        // Single character transition
+        innerFromState = NewState();
+        innerToState = NewState();
+        AddTransition(innerFromState, ch, innerToState);
+     
+        // Connect new transition to rest of automaton
+        ConnectSubExpr(
+           outerFromState, innerFromState, innerToState, 
+           outerToState, orOperatorFound);
+     
+        orOperatorFound = false;
+        backslashFound = false;
+      }
+    }
+    else
+    {
+      // Handle special characters
+      switch (ch)
+      {
+         case '|':   // OR operator
+           orOperatorFound = true;
+           break;
+     
+         case '\\':  // escape character
+           backslashFound = true;
+           break;
+     
+         case '[':   // opening a set
+           if(!inSet)
+           {
+             inSet = true;
+             firstSetChar = true;
+           }
+           break;
+     
+         case ']':   // closing a set
+            if (inSet &amp;&amp; !firstSetChar)
+            {
+               inSet = false;
+               firstSetChar = true;
+               // Connect set transitions to rest of automaton
+               ConnectSubExpr(
+</pre>
+<p>
+                 outerFromState, innerFromState, innerToState,</u></b></p>
+
+<pre>
+                  outerToState, orOperatorFound);
+            }
+            break;
+     
+         case '*':   // zero or more
+           AddEmptyTransition(innerFromState, innerToState);
+           AddEmptyTransition(innerToState, innerFromState);
+           break;
+     
+         case '+':   // one or more
+           AddEmptyTransition(innerToState, innerFromState);
+           continue;
+     
+         case '?':   // any character
+           AddEmptyTransition(innerFromState, innerToState);
+           continue;
+     
+         case '(':   // opening parenthesised sub-exp
+            innerFromState = NewState();
+            Push(innerFromState, outerFromState, outerToState, 
+               orOperatorFound);
+            outerToState = innerFromState;
+            orOperatorFound = false;
+            break;
+     
+         case ')':   // closing parenthesised sub-exp
+            innerToState = outerToState;
+            Pop(innerFromState, outerFromState, outerToState, 
+               orOperatorFound);
+            ConnectSubExpr(
+               outerFromState, innerFromState, innerToState,
+               outerToState, orOperatorFound);
+            break;
+      }
+   }
+  }
+  SetAcceptState(outerToState);
+}
+     
+     
+// Implementation for helper functions
+char RegularExpression::TranslateCh(char inChar) 
+{
+   char retval = inChar;
+   switch (inChar)
+   {
+      case 'r': retval = '\r'; break;
+      case 'n': retval = '\n'; break;
+      case 't': retval = '\t'; break;
+   }
+   return(retval);
+}
+     
+// Determines whether the passed character is in any way 'special', 
+// that is whether or not it is a meta-character controlling the 
+// meaning of the regular expression string
+bool RegularExpression::SpecialChar(char ch) 
+{
+  bool retval = false;
+  switch (ch)
+  {
+    case '\\':
+    case '(':
+    case ')':
+    case '|':
+    case '[':
+    case ']':
+    case '*':
+    case '+':
+    case '-':
+      retval = true;
+      break;
+  }
+  return(retval);
+}
+     
+void RegularExpression::Dump(ostream &amp;out) 
+{
+  // Print regular expression represented 
+  out &lt;&lt; "RegularExpression::exp "
+      &lt;&lt; exp &lt;&lt; '\n';
+}
+     
+void RegularExpression::Push(
+   int i_s1, int i_s2, int i_s3, bool i_f1)
+{
+   subExpStack.AddHead(new subExpState(i_s1, i_s2, i_s3, i_f1));
+}
+     
+void RegularExpression::Pop(
+   int &amp;o_s1, int &amp;o_s2, int &amp;o_s3, bool &amp;o_f1)
+{
+  if(subExpStack.IsEmpty())
+    throw "stack underflow";
+     
+  subExpState *subExp = (subExpState *)subExpStack.RemoveHead();
+</pre>
+<p>
+ o_s1 = subExp-&gt;m_s1;</u></b></p>
+
+<pre>
+  o_s2 = subExp-&gt;m_s2;
+  o_s3 = subExp-&gt;m_s3;
+  o_f1 = subExp-&gt;m_f1;
+  delete subExp;
+}
+     
+void RegularExpression::ConnectSubExpr(
+   int&amp; outerFromState, int innerFromState, int innerToState,
+   int&amp; outerToState, bool&amp; orOperatorFound)
+{
+  // was the char before the subexpression an OR operator?
+  if (orOperatorFound)
+  {
+    // Yes, so connect it up accordingly 
+    AddEmptyTransition(outerFromState, innerFromState);
+    AddEmptyTransition(innerToState, outerToState);
+  }
+  else
+  {
+    // No, so concatenate the sub-exp onto the automaton
+    outerFromState = outerToState;
+    AddEmptyTransition(outerFromState, innerFromState);
+    outerToState = NewState();
+    AddEmptyTransition(innerToState, outerToState);
+  }
+  orOperatorFound = false;
+}
+     
+//////////////////////////////////////////////// 
+// Constructor
+RegularExpression::RegularExpression(CFABuild&amp; faBuild) 
+  :pFABuild(&amp;faBuild)
+{
+}
+     
+//////////////////////////////////////////////// 
+// Destructor
+RegularExpression::~RegularExpression() 
+{
+  // clear out the sub-exp stack.
+  while(!subExpStack.IsEmpty())
+  {
+    subExpState *subExp = (subExpState *)subExpStack.RemoveHead();
+    delete subExp;
+  }
+}
+     
+     
+//////////////////////////////////////////////// 
+// envelope/letter delegation methods.
+     
+int RegularExpression::NewState()
+{
+  return pFABuild-&gt;NewState();
+}
+     
+void RegularExpression::AddTransition(
+   int sourceState, char event, int targetState)
+{
+  pFABuild-&gt;AddTransition(sourceState, event, targetState);
+}
+     
+void RegularExpression::AddEmptyTransition(
+   int sourceState, int targetState)
+{
+  pFABuild-&gt;AddEmptyTransition(sourceState, targetState);
+}
+     
+void RegularExpression::SetAcceptState(int a_acceptState)
+{
+  pFABuild-&gt;SetAcceptState(a_acceptState);
+}
+     
+//
+////////////////////////////////////
+     
+void RegularExpression::SetFABuild(CFABuild* ipFaBuild)
+{
+  pFABuild = ipFaBuild;
+}
+     
+CFABuild* RegularExpression::GetFABuild() const 
+{
+  return pFABuild;
+}
+     
+//End of File
+</pre>
+</body></html>

@@ -1,0 +1,133 @@
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+<TITLE>January 1998/Creating Active Data Types via Multithreading</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<H2><A href="../tocjan.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+<FONT COLOR="#FF0000">Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Creating Active Data Types via Multithreading</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Patrick Tennberg</FONT></H3>
+<blockquote>
+<p>If you need multiple active agents in a program, you need multiple threads to
+synchronize them.</p></blockquote><hr>
+<blockquote>
+<p>In my work, I spend a lot of time developing device drivers for Windows NT.
+The devices I work with perform real-time data acquisition. In my current
+design I use a thread to request data from the device. Each time new data
+arrives, I want to store the data in a queue; later, I want another thread
+running on lower priority to de-queue the stored data and perform some action
+on it. The solution I adopted was to encapsulate a queue and a thread in a
+template-based class. This article will discuss the implementation of the
+ActiveQueue class and the helper class Thread, a lightweight encapsulation of a
+thread. I will also present a small example program exercising the active data
+type.</p>
+
+<h4><FONT COLOR="#000080">Encapsulating a Thread</FONT></H4>
+
+<p>Windows 95 and Windows NT implement threads using a standard set of functions. The
+workhorse of this implementation is the Win32 SDK function CreateThread, which
+allows you to specify a C-style function executing in the context of the
+thread. Other parameters to CreateThread are the stack size (each thread has
+its own stack), and a DWORD (lpParameter) which will be used as a parameter to
+the thread function. CreateThread returns a handle used to manipulate the
+thread (e.g., setting priorities or waiting on the thread to finish
+executing).<p>
+I wanted to encapsulate the concept of a thread in a class. The Thread class
+(see <A href="list1.htm">Listing 1</a>)
+ specifies a pure virtual member function ThreadFunction, which
+will execute in the context of the thread. Because CreateThread will not accept
+a non-static member function as parameter, I must use a static member function
+that will call the member function. The ISO/ANSI C++ draft standard does not
+specify that a static member function must have C linkage, but apparently using
+a static member function as if it does have C linkage works on most compilers.
+The static function needs a this pointer to perform this little trick. I use
+lpParameter to pass a this pointer to the static function. The Thread class
+Create member function will create a new thread, passing it the static function
+as a thread function and the this pointer as a parameter. Create returns false
+if it failed to create the thread. The static function will call the virtual
+function ThreadFunction using the this pointer. The Thread class defines an
+operator HANDLE, ensuring that an instance of a thread class can be implicitly
+converted to a HANDLE when necessary (e.g., when calling WaitForSingleObject or
+SetThreadPriority).<p>
+My implementation uses my compiler's C-Library version of CreateThread, which
+is part of the Win32 SDK. (_beginThreadNT for the Borland compiler and
+_beginThreadex for Visual C++.) This guarantees that you can use the C Library
+function within the thread function in a thread-safe way.</p>
+
+<h4><FONT COLOR="#000080">ActiveQueue</FONT></H4>
+
+<p>ActiveQueue (see <A href="list2.htm">Listing 2</a>)
+ implements an active data type based on a template-based queue.
+ActiveQueue inherits from the Thread class. The name "ActiveQueue" is a bit
+misleading because it does not inherit from a queue. I've chosen to aggregate
+the queue to keep the code size down. I did not want to overload each member in
+the queue by adding synchronization. (I'll discuss synchronization in more
+detail later.) The principle is to inherit from the abstract base class
+ActiveQueue and implement the member HandleData (defined as pure virtual inside
+ActiveQueue). HandleData lets you define some application-specific operation to
+be performed on each element of the queue. In the course of adding and removing
+elements from the queue, the HandleData member function will be called once for
+each element.<p>
+ActiveQueue overrides the ThreadFunction inherited from the class Thread. When
+ThreadFunction is invoked, it first calls the virtual function InitThread. If
+InitThread returns false, then the thread will exit. The default implementation
+of InitThread always returns true. You can change the priority of the thread or
+do any other initialization within InitThread. The thread will then call
+WaitForSingleObject with the handle of a semaphore. A client can add new data
+to the queue by calling the member function Add. Each time new data is added to
+the queue, the semaphore will be released, causing WaitForSingleObject to
+return. The thread will then de-queue the data and call HandleData.<p>
+The queue is implemented using the Standard Template Library. Because the
+Standard Template Library is not thread-safe by default, ActiveQueue uses a
+critical section to synchronize access to the queue. A critical section is the
+fastest synchronization method available under Win32. Before accessing the
+queue (pushing, popping data, etc.) the thread enters a critical section
+(EnterCriticalSection), and after the queue is accessed the thread leaves the
+critical section. If another thread tries to access the queue, it is forced to
+wait inside EnterCriticalSection until the other thread leaves the critical
+section.<p>
+The test program (<A href="list3.htm">Listing 3</a>)
+ implements the class MyActiveQueue, which inherits
+from ActiveQueue. MyActiveQueue customizes the ActiveQueue template to use
+string as the element data type. The HandleData function simply checks if the
+string contains the data "end"; if so, it returns false, thus halting the
+execution of the ActiveQueue. Otherwise, it prints the contents of the string
+and returns true. The test program adds 51 strings to the queue and then calls
+WaitForSingleObject with a handle to the thread (recall that the Thread class
+contains the operator HANDLE). When the thread exits, WaitForSingleObject
+returns and the program exits. Because ending a process automatically
+terminates the thread, you must wait for the thread to finish executing before
+you end the execution of the process. Otherwise, unprocessed data could remain
+in the queue. The ActiveQueue constructor can throw FailedToCreateSemaphore or
+FailedToCreateThread, depending on the problem.</p>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>Using active data types is a powerful technique that allows data-collecting threads
+to delegate the responsibility of data handling. Even though threads are a
+convenient way to mimic concurrent execution, they can easily be abused.
+Remember that a good thread is a thread that sleeps, allowing other threads to
+execute.<p>
+I thank Carlo Pescio for his help with this article. o
+</p>
+<p><i>Patrick Tennberg received a BS in Computer Science from the University of
+Umea, Sweden. He has been developing software for 11 years. He is currently
+employed as a consultant at Unicorn System. He can be reached at
+tennberg@canit.se.
+</i></p>
+
+<h4><a href="../../../source/1998/jan98/tennberg.zip">Get Article Source Code</a></h4>
+
+</blockquote>
+</body></html>

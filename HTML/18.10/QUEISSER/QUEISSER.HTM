@@ -1,0 +1,152 @@
+<HTML>   
+     <HEAD>
+<TITLE>October 2000/Classes for Reading and Writing Parameter Blocks</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tococt.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Objects and Components</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Classes for Reading and Writing Parameter Blocks</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Andrew Queisser</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Fortran IV let you read and write variables by name since the 1960s. It still makes sense to do so in C++.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<H4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>Have you ever wished that, within a program, you could obtain a variable name as a string? Then you could easily display variable names along with their values, or you could read or write variables to <B>.INI</B> files <a href="#ref1">[1]</a> using the actual variable name as a key. This would be particularly useful when dealing with global parameters, such as process parameters in a machine controls application or options in a general purpose application.</p>
+<p>In this article, I introduce a template class <B>NamedVal</B>, that wraps simple data types and stores the variable name as a string. A preprocessor macro takes the variable name as an argument and uses the stringizing operator to generate the name string. I show how several <B>NamedVal</B> objects can be grouped into a structure I call a parameter block. The parameter block can then be used to build a simple but effective I/O mechanism that reads or writes <B>NamedVal</B>s to a simple database using the variable names as keys. I also show how the database implementation details can be kept separate from the <B>NamedVal</B> implementation details.</p>
+<p>Finally, I use a parameter block to generate a dynamic dialog box. The dialog box displays the variable names next to edit fields that enable users to display and change the values. The layout of the dialog box is automatically generated based on the contents of the parameter block. Putting all the pieces together, I end up with a data structure that acts like a regular C++ structure, but can also load, display, edit, and save the member values.</p>
+
+<H4><FONT COLOR="#000080">Designing a NamedVal Template</FONT></H4>
+
+<p>It was the frequent use of strings to refer to parameters in my machine vision applications that motivated me to design the <B>NamedVal</B> template. Before I began using <B>NamedVal</B>, my code contained many lines such as:</p>
+
+<pre>
+GetPrivateProfileString
+   (
+   section,  "CameraPort", "Port0",
+   camPortStr, sizeof camPortStr,
+   iniFileName
+   )
+</pre>
+
+<p>and somewhere else:</p>
+
+<pre>
+WritePrivateProfileString
+   (
+   section,
+   "CameraPort", camPortStr,
+   iniFileName
+   )
+</pre>
+
+<p>which were tedious and error prone to write. (For readers not familiar with Windows programming, the above are two functions Windows provides to read from and write to an <B>.INI</B> file <a href="#ref1">[1]</a>.)</p>
+<p>Of course I didn't have to use string literals &#151; instead, I could define parameter strings at one central point in the program. In the past, I have used a table that maps parameter strings to the variables holding the parameter values. The table approach works well, but I still want a more elegant solution &#151; a solution that directly links the values to their names and can be used like a built-in type. I want to have the variable itself "know" its own name. This has led me to try a template-based wrapper class.</p>
+<p>Given the proper conversion operators, a C++ class can be used wherever a value of the wrapped type is required. This automatic conversion capability is the first feature the new class should have. The other feature is a string that represents the name of the variable. This string should contain the C++ identifier; that is, a variable named <B>numParts</B> should contain the string <B>"numParts"</B>. A class that has both the necessary conversion operators and the name string member is shown in <B>NamedVal.h</B> (<a href="list1.htm">Listing 1</a>).</p>
+<p>Note that <B>NamedVal</B>'s constructor requires a pointer to <B>char</B> to initialize the embedded name string. At first glance, it seems that I have simply moved the problem of associating the string and variable to the wrapper class constructor. This is where the preprocessor comes in: the key is the stringizing operator, <B>#</B>, which turns a macro argument into a string. Although I usually try to avoid using macros, I believe this is a case where only a macro can solve the problem.</p>
+
+<H4><FONT COLOR="#000080">Helper Macros</FONT></H4>
+
+<p>The macro:</p>
+
+<pre>
+#define foo(arg) printf(#arg)
+</pre>
+
+<p>when instantiated with the argument <B>bar</B>:</p>
+
+<pre>
+foo(bar);
+</pre>
+
+<p>causes <B>"bar"</B> to be printed. In my macros, the variable name shows up only once as a macro argument, but is used both to define the variable and the variable name as a string. For example, writing</p>
+
+<pre>
+DEF_NAMED_VAL(double, Pressure)
+</pre>
+
+<p>will define a <B>NamedVal</B> <B>Pressure</B> with the name member set to <B>"Pressure"</B>.</p>
+
+<p>Now if you write:</p>
+
+<pre>
+Pressure = 123.45;
+</pre>
+
+<p>you can pass <B>Pressure</B> to a function that takes a <B>double</B> argument, or you can print the value of <B>Pressure</B> to <B>cout</B>:</p>
+
+<pre>
+cout &lt;&lt; Pressure.Name() &lt;&lt; "=" &lt;&lt; Pressure &lt;&lt; endl;
+</pre>
+
+<p>which will cause the string <B>"Pressure=123.45"</B> to be printed.</p>
+<p>If you need to create <B>NamedVal</B> with an initial value, you use a modified version of the macro with an additional formal parameter. Using</p>
+
+<pre>
+DEF_NAMED_VAL_I(double, Pressure, 23.4);
+</pre>
+
+<p>will initialize the <B>NamedVal</B> <B>Pressure</B> to <B>23.4</B>. Having to use different macros to call the constructor with an initial value is a drawback to using the preprocessor. Since you cannot specify default parameters in macros, you have to use a different macro for different argument lists.</p>
+<p>It is also possible to dynamically allocate <B>NamedVal</B>s from the heap. To do this, you use the macro <B>DECL_NAMED_VAL(int, * namedIntPtr)</B> where you would normally declare a pointer to an <B>int</B>. Then you use</p>
+
+<pre>
+NEW_NAMED_VAL(int, namedIntPtr);
+</pre>
+
+<p>to allocate and construct the value.</p>
+<p>The final macro, <B>CONSTRUCT_NAMED_VAL</B>, is used when a <B>NamedVal</B> is a member object of a structure. In this case, it is necessary to call the member-object constructor in the initializer list of the structure that contains the <B>NamedVal</B>.</p>
+<p><a href="list2.htm">Listing 2</a> shows examples of using <B>NamedVal</B>s in different ways, as local and dynamically allocated variables and as members of structures.</p>
+
+<H4><FONT COLOR="#000080">Adding I/O Capability</FONT></H4>
+
+<p>To show how <B>NamedVal</B> can simplify reading and writing parameters to simple databases, such as <B>.INI</B> files or the Windows registry, I first introduce a fictitious database. <B>SimpleDB</B> serves as a stand-in, for either an <B>.INI</B> file or the Windows Registry. This fictitious database has only two operations: reading a string from or writing a string to the database. Each string value is uniquely identified by a section and a key. Typical examples from my application domain are <B>section="InspectionStation1"</B>, <B>key="SPC_Port"</B>, and <B>value="COM2"</B>. Most Windows users are familiar with this type of simple database. To make the test examples work, I define mock <B>Read</B> and <B>Write</B> functions that read from <B>cin</B> and write to <B>cout</B>.</p>
+<p>As stated in the introduction, one of the design goals was to use <B>NamedVal</B>s in a block of parameters. The most obvious way to hold multiple <B>NamedVal</B>s in a block is with a Standard C++ container, such as <B>std::vector</B>. However, to hold multiple <B>NamedVal</B>s in a vector, the <B>NamedVal</B>s must all be of the same type; alternatively, if all <B>NamedVals</B> derive from a common base class, the vector can hold pointers to them (as pointers to their base class).</p>
+<p>Adopting the latter approach, I first define an abstract base class <B>IOAble</B>, which defines just the interface to the database:</p>
+
+<pre>
+class IOAble {
+public:
+  virtual void Write(SimpleDB &amp;db, 
+    const char *section)=0;
+  virtual void Read(SimpleDB &amp;db, const char *section)=0;
+};
+</pre>
+
+<p>It is now possible to define a class <B>IOParamBlock</B>, which contains a <B>std::vector</B> of <B>IOABle *</B>. An <B>IOParamBlock</B> can iterate through all the vector elements and perform reads and writes on the <B>IOAble</B> interface. Of course, <B>IOAble</B> is still an abstract base class, which cannot be instantiated. The next step is to make <B>NamedVal</B> a derived class of <B>IOAble</B>. This makes it possible to insert a pointer to any specialization of the <B>NamedVal</B> template into the vector of <B>IOAble *</B>.</p>
+<p>Note that <B>NamedVal::Read</B> and <B>NamedVal::Write</B> convert the <B>val</B> member (the actual value of the variable) to a string in order to call the <B>Read</B> and <B>Write</B> functions of <B>SimpleDB</B>. Other databases might have overloaded <B>Read</B>/<B>Write</B> functions for different datatypes that could directly accept the <B>val </B>member in <B>NamedVal</B>. The file <B>NamedVal.h</B> (<a href="list1.htm">Listing 1</a>) defines the classes <B>SimpleDB</B>, <B>IOAble</B>, and <B>IOParamBlock</B>.</p>
+<p>To use <B>NamedVal</B> as part of an <B>IOParamBlock</B>, you have to use the third version of the <B>NamedVal</B> constructor, which takes a pointer to the <B>IOParamBlock</B> containing the <B>NamedVal</B>. Rather than calling the constructor directly, however, you use the macro <B>CONSTRUCT_AUTOIO_VAL</B> (see <a href="list1.htm">Listing 1</a>). Consider the class <B>TestBlock</B> in <a href="list3.htm">Listing 3</a>: <B>TestBlock</B>'s constructor calls the constructors of <B>autoInt</B> and <B>autoFloat</B>, which are both members of <B>TestBlock</B>. The macro <B>CONSTRUCT_AUTOIO_VAL</B> passes <B>TestBlock</B>'s <B>this</B> pointer to the <B>NamedVal</B> constructor. The <B>NamedVal</B> constructor, which expects an <B>IOParamBlock *</B> as a parameter, then calls <B>IOParamBlock::AddVar</B> via the <B>this</B> pointer that was just passed in. Once all the constructors of the <B>TestBlock</B>'s member objects have been called, <B>TestBlock</B> will contain a vector of pointers to its <B>NamedVal</B> member objects. <a href="fig1.htm">Figure 1</a> shows the class hierarchy for <B>NamedVal</B>, <B>IOAble</B>, <B>IOParamBlock</B>, and <B>TestBlock</B>.</p>
+<p>One of the two compilers that I tested this code with warned about using <B>TestBlock</B>'s <B>this</B> pointer in a constructor of its member <B>NamedVal</B> object. However, base class objects (in this case, of type <B>IOParamBlock</B>) are constructed before member objects. It is okay for those member objects to reference the base class (via its <B>this</B> pointer) as long as they call no virtual functions. In this case, it is okay for the member objects of <B>TestBlock</B> to call <B>IOParamBlock::AddVal</B> through <B>TestBlock</B>'s <B>this</B> pointer, because <B>AddVal</B> is not a virtual function. For an explanation of using the <B>this</B> pointer in the constructor, refer to the C++ FAQ Lite <a href="#ref2">[2]</a>.</p>
+<p>All this might seem a little confusing, but the net result of setting up the <B>NamedVal</B> class as described can be seen in the example class <B>TestBlock</B> (found in <a href="list3.htm">Listing 3</a>). Once you define <B>TestBlock</B> using <B>DECL_NAMED_VAL</B> and <B>CONSTRUCT_AUTOIO_VAL</B>, you can call the member functions <B>ReadAll</B> and <B>WriteAll</B> to read and write all members from and to the database.</p>
+
+<H4><FONT COLOR="#000080">Adding Notification Using the Observer Pattern</FONT></H4>
+<p>In many applications, the value of a parameter in one object may be important to several other unrelated objects. These objects will need to be notified when the parameter changes. The Observer pattern <a href="#ref3">[3]</a>, also known as Publish-Subscribe, is a simple abstraction of the solution to this problem. There are many ways to implement the Observer pattern. In one implementation, both the subject (which contains the parameter) and the observer are derived from base classes. <a href="list4.htm">Listing 4</a> shows the definitions of these base classes. The <B>Subject</B> base class keeps a list of attached observers. When <B>Subject</B>'s <B>Notify</B> method is invoked (indicating that a parameter has changed in a derived-class subject), it notifies each observer by calling the observer's <B>Update</B> method. The observer checks which of one or more subjects has changed and carries out whatever action is necessary.</p>
+<p>In my applications, the subject is typically a class derived from both <B>IOParamBlock</B> and <B>Subject</B>; whoever creates a change in this subject is also responsible for calling <B>Notify</B>. <a href="list5.htm">Listing 5</a> shows definitions of these typical subject/observers classes.</p>
+
+<H4><FONT COLOR="#000080">Creating Dynamic Dialog Boxes</FONT></H4>
+
+<p>Before I developed <B>NamedVal</B>s and <B>IOParamBlock</B>s, I built dialog boxes the standard way: I used the GUI editor built into Microsoft Visual C++ along with ClassWizard. It is very easy to build dialogs this way, but there is one very annoying aspect. ClassWizard forces you to create member variables of certain types, which will be linked to the edit fields, buttons, or other GUI elements. There is no way of telling ClassWizard to link a member of a structure or array to a GUI control. Say you want to add another parameter to an already existing set, for which you have created a dialog template and a class derived from <B>CDialog</B>. Now you'll have to add the GUI controls, the new member value, and, if you're loading and saving the values from an <B>.INI</B> file, you'll have to add more code to do the reading and writing.</p>
+<p>If you're not very particular about the layout of the controls on the screen, you can use an <B>IOParamBlock</B> to automatically generate a dialog box. This dialog box displays the current values of all <B>IOParamBlock</B> members and writes them to the <B>.INI</B> file when the user clicks OK. Dialog templates or classes derived from <B>CDialog</B> are not necessary to do this. I also use only standard Windows API calls, so you can use the dynamic dialog boxes in non-MFC applications.</p>
+<p>The code to generate a dynamic dialog, based on the members of an <B>IOParamBlock</B>, is quite simple. <a href="list5.htm">Listing 5</a> shows how it is done. The static controls containing the variable names and the edit fields for the variable values are created in the <B>WM_INITDIALOG</B> handler. First, however, there is one hurdle to overcome: the <B>IOParamBlock</B> only knows about <B>IOAble</B> pointers, and an <B>IOABle</B> can only <B>Read</B> or <B>Write</B> its value to a <B>SimpleDB</B>. To display the names and values of the <B>NamedVal</B>s to a dialog box, <B>IOParamBlock</B> would need to have direct access to its <B>NamedVal</B>s.</p>
+<p>Instead of adding forwarding functions to <B>IOAble</B>, I decided to create a class <B>DlgDB</B>, which is derived from <B>SimpleDB</B>. You can think of the dialog box as a type of database: the <B>Write</B> function creates the GUI controls and puts the current values in the edit box; the <B>Read</B> function reads the current values from the edit box. <B>DlgDB</B> keeps a <B>std::map&lt;string,HWND&gt;</B> to associate the name of the variable with the handle of an edit box. <B>DlgDB</B> is also responsible for a very simplistic layout algorithm. Each call to <B>Write</B> increments a row counter. The row coordinates of the GUI controls are based on the row counter. Note that a real application would go to greater lengths to ensure that the layout would be right for different font sizes, perhaps also taking the real lengths of the variable names into account.</p>
+<p>The last piece of the dynamic dialog box mechanism is found in the <B>WM_COMMAND</B> handler for <B>IDOK</B>. This code is executed when the user clicks OK; it transfers the values from the edit fields into the members of <B>IOParamBlock</B>. <B>IOParamBlock::ReadAll</B> is responsible for the transfer. In order to call <B>ReadAll</B>, you have to retrieve the pointer to the original <B>IOParamblock</B>. The <B>WM_INITDIALOG</B> handler previously stored that pointer in the OK button's user data.</p>
+<p><a href="list5.htm">Listing 5</a> also shows how the Observer pattern integrates with the dynamic dialog box. In this example, the <B>Notify</B> function gets called only when the user clicks OK, which means that new values are copied into the <B>NamedVal</B>s. The call to <B>Attach</B> in the <B>Test</B> function would normally appear in the constructor of the observing class, and the call to <B>Detach</B> would normally appear in the destructor of the observing class.</p>
+
+<H4><FONT COLOR="#000080">Summary</FONT></H4>
+
+<p>In this article, I have introduced a class hierarchy that simplifies handling of named parameter variables. The classes in this hierarchy allow reading and writing the variable values keyed by their identifiers. I have also demonstrated how dynamic dialog boxes for user modifiable parameters can be created. Finally, I have shown how the Observer pattern can be used to notify clients of the parameter variables.</p>
+
+<H4><FONT COLOR="#000080">References</FONT></H4>
+<p><a name="ref1">[1]</a>  <B>.INI</B> files are simple text files on Windows-based systems that serve as simple databases. They are organized as key-value pairs of strings.</p>
+<p><a name="ref2">[2]</a>  Marshall Cline. "Should you use the this pointer in the constructor?" , Topic 10.7, <I>C++ FAQ Lite</I>, <B>http://www.cerfnet.com/~mpcline/c++-faq-lite/</B>.</p>
+<p><a name="ref3">[3]</a>  Erich Gamma et al. <I>Design Patterns: Elements of Reusable Object-Oriented Software</I>, (Addison-Wesley, 1995).</p>
+
+<p><i><B>Andrew Queisser</B> got his degree in Mechanical Engineering from Stuttgart University, Germany. His areas of expertise are image processing and machine vision. He works at Hewlett-Packard in Corvallis, Oregon and can be reached at <B>ahqueisser@aol.com</B>.</i></p>
+
+<h4><a href="../../../source/2000/oct00/queisser.zip">Get Article Source Code</a></h4>
+</blockquote></body></html>

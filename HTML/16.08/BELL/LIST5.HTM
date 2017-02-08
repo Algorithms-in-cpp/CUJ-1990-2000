@@ -1,0 +1,155 @@
+<HTML><HEAD>
+<TITLE>August 1998/A Wrapper Class for NT Services/Listing 5</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 5: Implementation file for MyService class</A></h4>
+
+<pre>#include &lt;windows.h&gt;
+#include &lt;winsock.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;process.h&gt;
+
+#include "myserve.h"
+#include "tapplog.h"
+
+static const char szRegBasePath[] = 
+    "SYSTEM\\CurrentControlSet\\Services\\";
+
+MyService::MyService( 
+    const char*              srvname, 
+    LPSERVICE_MAIN_FUNCTION  fpSrvMain, 
+    LPHANDLER_FUNCTION       fpSrvCtrl
+    )
+    :    NTService( srvname, fpSrvMain, fpSrvCtrl )
+{
+    mStat.dwControlsAccepted = 
+        SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN;
+#ifdef LOGGING
+    m_log = new TAppLog( m_name, LOG_ALL );
+#endif
+}
+
+MyService::~MyService( void )
+{
+#ifdef LOGGING
+    delete m_log;
+#endif
+}
+
+DWORD MyService::Init( DWORD ac, LPTSTR *av )
+{
+    LogEvent( LOG_INFORM, "MyServe init..." );
+    mhMailslot = CreateMailslot( 
+        "\\\\.\\mailslot\\myserve", //== mailslot name
+        4096,                       //== maximum message size
+        200,                        //== milliseconds to timeout
+        NULL                        //== security attributes
+    );
+    
+    if( mhMailslot == INVALID_HANDLE_VALUE ){
+        Error( __LINE__ );
+        return false;
+    }
+
+    mhOutfile = CreateFile( 
+        "c:\\temp\\outfile.txt",    //== filename
+        GENERIC_WRITE,              //== access type
+        FILE_SHARE_READ,            //== share mode
+        NULL,                       //== security mode
+        CREATE_ALWAYS,              //== always creates the file
+        FILE_ATTRIBUTE_NORMAL,      //== sets file attributes
+        NULL                        //== template file
+    );
+
+    if( mhOutfile == INVALID_HANDLE_VALUE ){
+        Error( __LINE__ );
+        return false;
+    }
+
+    LogEvent( LOG_INFORM, "MyServe starting..." );
+    return NO_ERROR;
+}
+
+int MyService::Run( void )
+{
+    DWORD   msg_sz = 0;
+    DWORD   bytes_read = 0; 
+    DWORD   bytes_written = 0;
+    BOOL    aok; 
+    char    buff[4096];
+ 
+    m_running = true;            //== changed by OnStop()
+
+    while( m_running ){
+        aok = GetMailslotInfo(
+            mhMailslot,         // mailslot handle 
+            NULL,               // no maximum message size 
+            &amp;msg_sz,            // size of next message 
+            NULL,               // number of messages 
+            NULL                // no read time-out 
+        );
+        if( !aok )
+            Error( __LINE__ );
+                    
+        if(aok &amp;&amp; (msg_sz != MAILSLOT_NO_MESSAGE)) 
+        {
+            if( ReadFile( mhMailslot, buff, msg_sz, 
+                    &amp;bytes_read, NULL ))
+                WriteFile( mhOutfile, buff, bytes_read, 
+                    &amp;bytes_written, NULL);
+        }
+      }
+    
+    CloseHandle( mhOutfile );
+    CloseHandle( mhMailslot );
+    return NO_ERROR; 
+}
+
+void MyService::OnStop( void )
+{
+    m_running = false;
+}
+
+#ifdef LOGGING
+void MyService::LogEvent( LOG_LEVEL level, char* argstr, ... )
+{
+    va_list vl;
+    va_start( vl, argstr );
+    
+    if( m_log )
+        m_log-&gt;LogEventVL( level, argstr, vl );
+}
+
+void MyService::InstallAid( void )
+{
+    //== install the logging information
+    if( m_log )
+        m_log-&gt;Install();
+}
+
+void MyService::Error( long line = 0 )
+{
+    DWORD errval = GetLastError();
+    LPVOID lpMsgBuf;
+
+    FormatMessage( 
+        FORMAT_MESSAGE_ALLOCATE_BUFFER | 
+        FORMAT_MESSAGE_FROM_SYSTEM | 
+        FORMAT_MESSAGE_IGNORE_INSERTS,
+        NULL,
+        GetLastError(),
+        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), // Default 
+                                                   // language
+        (LPTSTR) &amp;lpMsgBuf,
+        0,
+        NULL 
+    );
+    LogEvent( LOG_ERROR, "line (%d): %s", line, lpMsgBuf );
+    LocalFree( lpMsgBuf );
+}
+#endif
+//End of File</pre>
+</BODY>
+</HTML>

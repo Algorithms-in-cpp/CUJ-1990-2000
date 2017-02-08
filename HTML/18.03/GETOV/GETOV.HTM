@@ -1,0 +1,433 @@
+<HTML>   
+     <HEAD>
+<TITLE>March 2000/Not-So-Obvious Utility Macros</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocmar.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Not-So-Obvious Utility Macros</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Radoslav Getov</FONT></H3>
+
+<BLOCKQUOTE>
+<p>We all know the preprocessor is primitive and ugly. Nevertheless, a clever macro or two can still come in handy more often than we care to admit.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<p>During my career as a software developer, I have acquired a small collection of C and C++ preprocessor macros. Some I collected and some I created by myself. A few of them might be already familiar to you, but I am sure there are also ones here you have never thought of. I present a number of those macros here.</p>
+
+<H4><FONT COLOR="#000080">Repeating Macros</FONT></H4>
+
+<p>From time to time a programmer must write long sequences of repeating text. For example:</p>
+
+<pre>
+// 16 spaces:
+char spaces[] = "                "; 
+
+8 '1's
+int ones[] = {1,1,1,1,1,1,1,1}; //
+</pre>
+
+<p>The task becomes harder when the repetition count increases. A string of 1,000 spaces can be very tedious to write. In such a case, you might prefer using run-time rather than compile-time initialization code. This can make the code slower and more complicated &#151; sometimes unnecessarily, as you will see.</p>
+<p>The macro families <B>REPEAT_xxx</B> and <B>REPEAT_WC_xxx</B> (<a href="list1.htm">Listing 1</a>) are designed to help you in solving this and similar problems. Macro <B>REPEAT_xxx</B> (where <B>xxx</B> is some number) expands to <B>xxx</B> repetitions of its argument. Similarly, <B>REPEAT_WC_xxx</B> expands to <B>xxx</B> repetitions, separated by commas.</p>
+<p>Alternatively, there are the two-argument versions of the macros: <B>REPEAT</B> and <B>REPEAT_WC</B>. In them, the repetition count is supplied as first argument, and the text to be repeated as second.</p>
+<p>With the <B>REPEAT</B> macros you can rewrite the above declarations as:</p>
+
+<pre>
+char spaces[] = REPEAT_16(" ");
+int ones[] = { REPEAT_WC_8 (1) };
+</pre>
+
+<p>Note that only macros for repeating counts of powers of two are defined, such as <B>REPEAT_2</B>, <B>REPEAT_4</B>, <B>REPEAT_8</B>, etc, up to 1,024. You can easily increase this limit.</p>
+<p>To use a count that is not a power of two, decompose it to sum of such numbers. For example, 100 is the sum 64 + 32 + 4. Use the corresponding macros in combination. So to print 100 asterisks, you can write:</p>
+
+<pre>
+#define REPEAT_100(x) \
+REPEAT_64(x) \
+REPEAT_32(x) \
+REPEAT_4(x)
+
+REPEAT_100 (std::cout &lt;&lt; '*';)
+</pre>
+
+<p>This code expands to a sequence of 100 identical insertions. This is not as silly as it might look. An optimization techniques known as "loop unrolling" involves the replacing of loops by sequential code. If you are a fan of such optimizations, these macros give you the chance to unroll loops by hand.</p>
+<p>Another example defines a function returning the index of the most significant bit of its eight-bit argument:</p>
+
+<pre>
+int getLastOnBit8 (unsigned f)
+{
+assert (f &lt;= 0xff);
+return ("\xff" // -1
+        "\0"
+        REPEAT_2   ("\1")
+        REPEAT_4   ("\2")
+        REPEAT_8   ("\3")
+        REPEAT_16  ("\4")
+        REPEAT_32  ("\5")
+        REPEAT_64  ("\6")
+        REPEAT_128 ("\7")) [f]);
+// "\ff\0\1\2\2\3\3\3\3.."[f]
+}
+</pre>
+
+<p>It may not be pretty, or space efficient, but it is very fast.</p>
+
+<H4><FONT COLOR="#000080">Unique Names</FONT></H4>
+
+<p>Macro <B>UNIQUE_NAME</B> (<a href="list1.htm">Listing 1</a>) expands to a C++ identifier that is unique for each line of the source file. For this purpose, a prefix is concatenated with the result of the expansion of the predefined macro <B>__LINE__</B>. As a result, this code:</p>
+
+<pre>
+int UNIQUE_NAME,
+    UNIQUE_NAME;
+</pre>
+
+<p>declares two different variables, whereas this one:</p>
+
+<pre>
+int UNIQUE_NAME, UNIQUE_NAME;
+</pre>
+
+<p>causes a translation error, such as:</p>
+
+<pre>
+'uniqueNameOnLine_65' : redefinition
+</pre>
+
+<p>Of course, a chance exists that two presumably different unique names could expand to one and the same identifier, probably causing a name conflict. This can happen if they appear on the same line number in different files (including included ones). To solve such conflicts, you can use the macro <B>UNIQUE_NAME_WP</B> (<a href="list1.htm">Listing 1</a>). It lets you supply your own, more unique, prefix.</p>
+<p><B>UNIQUE_NAME</B> is good wherever you need an identifier that is different from all the others &#151; a quite common case &#151; provided that you will not use it anywhere else in your program. Such identifiers are effectively anonymous. They give you an easy way to avoid name conflicts, at least within one source file. You will see examples of using <B>UNIQUE_NAME</B> throughout the rest of this article.</p>
+<p>As an implementation note, <B>UNIQUE_NAME_1</B> and <B>UNIQUE_NAME_2</B> (<a href="list1.htm">Listing 1</a>) are internally used helper macros. It is not possible to define <B>UNIQUE_NAME</B> simply as:</p>
+
+<pre>
+#define UNIQUE_NAME \
+   uniqueNameOnLine_##__LINE__
+</pre>
+
+<p>This is not how the C++ preprocessor works. On a macro call, a macro name is <I>not</I> expanded if it is an operand to a stringizing (<B>#</B>) or token-pasting (<B>##</B>) operator. So you need to make <B>__LINE__</B> an argument to yet another macro. Thus, the implementation of <B>UNIQUE_NAME</B> requires two additional macro calls. In our case they are <B>UNIQUE_NAME_1</B>, to do the job of concatenating the prefix argument with the already expanded second argument <B>__LINE__</B>, and <B>UNIQUE_NAME_2</B>, where the expansion takes place.</p>
+
+<H4><FONT COLOR="#000080">Line Number as a String</FONT></H4>
+
+<p>The macro <B>LINE_STRING</B> (<a href="list1.htm">Listing 1</a>) expands to a quoted string, such as <B>"1234"</B>, corresponding to the line number in the source file where it is used. It can be used to produce diagnostic messages. Most compilers have a way of printing a user-supplied message during translation. For instance, Microsoft Visual C++ v6.0 has the pragma:</p>
+
+<pre>
+#pragma message ("Something to do")
+</pre>
+
+<p>The #pragma message expects a quoted string argument. This means that you are not allowed to use directly the predefined <B>__LINE__</B> macro in its argument. The reason is that <B>__LINE__</B> expands to a decimal integer constant (like <B>1234</B>), and not to a string (like <B>"1234"</B>). Writing:</p>
+
+<pre>
+#pragma message (__LINE__": TO DO")
+</pre>
+
+<p>would cause the compiler to print a warning about improper use of the pragma rather than your message. But if you convert <B>__LINE__</B> to a string, using <B>LINE_STRING</B>, as in:</p>
+
+<pre>
+#pragma message(LINE_STRING ": TO DO")
+</pre>
+
+<p>you will get the desired result:</p>
+
+<pre>
+123: TO DO
+</pre>
+
+<p>You can go even farther and define a macro which expands to a string in a format that is understandable to your IDE (integrated development environment). Clicking on this message might cause opening of the source file and marking the line where this macro was invoked, the same way as it is with normal compilation errors.</p>
+<p>For instance, the Microsoft Visual Studio IDE understands compiler messages in the following format:</p>
+
+<pre>
+file_name(line_number):
+</pre>
+
+<p>The definition of the macro <B>HERE</B> (<a href="list1.htm">Listing 1</a>) expands to a quoted string in exactly this format, so that you can use it &#151; alone or combined with another string &#151; in a pragma message. Compiling:</p>
+
+<pre>
+#pragma message (HERE " TO DO")
+</pre>
+
+<p>produces a message like:</p>
+
+<pre>
+test.cpp(44): TO DO
+</pre>
+
+<p>Clicking on this message brings you directly to the code above.</p>
+
+<H4><FONT COLOR="#000080">Controlling Code Execution</FONT></H4>
+
+<p>Quite often situations occur that require executing a code sequence only the first time the program reaches it. The most typical case is first-time initialization. One approach is to use a static <B>initialized</B> flag, as in:</p>
+
+<pre>
+static bool initialized = false;
+if (!initialized)
+    {
+    initialized = true;
+    &lt;&lt; initialization_code &gt;&gt;
+    }
+</pre>
+
+<p>The macro <B>ONCE(execution_code)</B> (<a href="list1.htm">Listing 1</a>) does the same job as the code above, maintaining the flag automatically, and taking the <B>&lt;&lt;initialization_code&gt;&gt;</B> as an argument. It uses <B>UNIQUE_NAME</B> as flag name in order to avoid conflicts. For example:</p>
+
+<pre>
+ONCE (
+     initialize_lookup_table();
+     initialize_cache();
+     )
+</pre>
+
+<p>Sometimes you need to execute some code only occasionally, such as every Nth time that flow of control reaches the code. This might be, for example, some slow code such as a display refresh that is called within a time-critical loop. For this purpose you may use a static counter:</p>
+
+<pre>
+static passes_count = 0;
+if (++passes_count &gt;= skip_count)
+    {
+    passes_count = 0;
+    &lt;&lt;execution code&gt;&gt;
+    }
+</pre>
+
+<p>Macro <B>SKIP(count, execution_code)</B> (<a href="list1.htm">Listing 1</a>) simplifies this solution, maintaining the counter for you. Its first argument defines the skip count, and the second supplies the executable code. <B>UNIQUE_NAME</B>, used as counter variable, reduces the risk of name conflicts. Here is an example:</p>
+
+<pre>
+for (int j = 0; j &lt; 1000; j++)
+    SKIP(100, cout &lt;&lt; '.'; )
+</pre>
+
+<p>This code prints ten (1000 / 100 == 10) dots.</p>
+<p>By contrast, the macro <B>REV_SKIP(skip_count, execution_code)</B> (<a href="list1.htm">Listing 1</a>) does a job exactly opposite to the one that <B>SKIP</B> does. With this macro, the code is executed on almost every visit. It is skipped just once every <B>skip_count</B> times.</p>
+<p>Macro <B>LOOP_C(loop_count, execution_code)</B> (<a href="list1.htm">Listing 1</a>) executes the code <B>loop_count</B> times. Its first argument, presumably an integer expression, is evaluated only once and stored in a counter variable whose name is determined by <B>UNIQUE_NAME</B>. For example:</p>
+
+<pre>
+LOOP_C (100, cout &lt;&lt; '*';)
+</pre>
+
+<p>Macro <B>LOOP(loop_count)</B> (<a href="list1.htm">Listing 1</a>), expands to a header of a <B>for</B> loop that will be executed <B>loop_count</B> times. For example:</p>
+
+<pre>
+LOOP (askGodForStarsCount())
+   printf (a, b, c);
+</pre>
+
+<p>Note that this macro and the ones that follow make use of language features in C++. They typically cannot be used with C.</p>
+<p>In C, program execution begins with the function <B>main</B>. In C++, though, the constructors of the global and file static objects execute before <B>main</B> is called. This gives you the opportunity to execute arbitrary code before <B>main</B> is called. All you have to do is to put it in the definition of the constructor of some class, and declare a global or file static object of this class, as in:</p>
+
+<pre>
+static class Unimportant
+{
+public:
+Unimportant()
+    {
+    &lt;&lt; code before main &gt;&gt;
+    }
+} unimportantObject;
+</pre>
+
+<p>The macro <B>AT_START(execution_code)</B> (<a href="list1.htm">Listing 1</a>) simplifies using of this code pattern. It takes as its single argument the code to be executed when the global or file static object is initialized. The names of the declared class and the object (the "unimportant" ones from the example above) are chosen for you using <B>UNIQUE_NAME</B>. Here is an example:</p>
+
+<pre>
+AT_START (
+         initializeUniverse();
+         bigBang();
+         )
+</pre>
+
+<p>Most often I use this macro in order to call (automatically!) some testing code, making only local changes in a single source file. This approach is fast, easy, and avoids polluting the rest of the program.</p>
+<p>Similarly, you might want to execute something after <B>main</B> returns. For this purpose, a global object's destructor can be used. The macro <B>AT_END(execution_code)</B> (<a href="list1.htm">Listing 1</a>) behaves as you might expect:</p>
+
+<pre>
+AT_END (
+       printf ("Made in heaven");
+       )
+</pre>
+
+<p>When using the macros <B>AT_START</B> and <B>AT_END</B>, it is important to remember the rules concerning the order of initialization and destruction of global and file static objects:</p>
+
+<UL><LI>   Objects defined in the same compilation unit are initialized in order of their appearance in this file.</LI>
+<LI>   The order of initialization of objects in different compilation units is undefined.</LI>
+<LI>   The order of destruction is exactly opposite to the order of initialization.</LI></UL>
+
+<p>These rules naturally apply to <B>AT_START</B> and <B>AT_END</B> invocations as well.</p>
+
+<H4><FONT COLOR="#000080">Saving and Restoring Values</FONT></H4>
+
+<p>Imagine that you have some code that modifies, directly or by a side effect, a certain variable, and you must restore its initial value after the code completes execution. You might write:</p>
+
+<pre>
+// int var - to be restored
+
+int var_saver = var;
+&lt;&lt;some code&gt;&gt;
+var = var_saver;
+</pre>
+
+<p>Things become more complicated if the code has branches:</p>
+
+<pre>
+int var_saver = var; // save
+if (whatever)
+   {
+   &lt;&lt;some code&gt;&gt;
+   var = var_saver; // restore
+   return;
+   }
+else if (something_else)
+   {
+   &lt;&lt;more code&gt;&gt;
+   var = var_saver; // restore
+   throw 0;
+   }
+var = var_saver; // restore
+</pre>
+
+<p>In this example there are three places that restore the value of <B>var</B> upon leaving. In more complex code they can be even more. A common C++ idiom for simplifying this code is to declare an auto object whose destructor, called automatically upon leaving the current block, restores the saved value. The destructor is executed no matter how execution leaves the block.</p>
+<p>The macro <B>SAVE(var)</B> (<a href="list1.htm">Listing 1</a>) does the saving and restoring of the value of <B>var</B> for you. The macro makes use of a couple of template classes, a template function, and a macro definition. I present it here in several steps.</p>
+<p>First consider the template class <B>DelayedAssigner_T</B> (<a href="list1.htm">Listing 1</a>). It is able to:</p>
+
+<UL><LI>   store a reference to a variable of class <B>T</B> (the parameter type) that has to have a delayed assignment to it,</LI>
+<LI>   store the value of the same type that needs to be remembered,</LI>
+<LI>   upon destruction, assign the stored value to the referenced variable.</LI></UL>
+
+<p>Now you can rewrite the example from above in this way:</p>
+
+<pre>
+DelayedAssigner_T&lt;int&gt;
+    var_saver (var); // save
+if (whatever)
+   {
+   &lt;&lt;some code&gt;&gt;
+   return; // no restore
+   }
+else if (something else)
+   {
+   &lt;&lt;more code&gt;&gt;
+   throw 0; // no restore
+   }
+// no restore
+</pre>
+
+<p>The constructor of <B>var_saver</B> saves the initial value of <B>var</B>, and its destructor assigns it back. It replaces all the restores spelled out in the initial example above.</p>
+<p>The code can be simplified by using the macro <B>SAVE_T(type, var)</B> (<a href="list1.htm">Listing 1</a>). Its first argument is the type of the variable to be saved, and its second argument is the variable itself. Using this macro, the save statement from above can be written as:</p>
+
+<pre>
+SAVE_T (int, var)
+</pre>
+
+<p>This is already quite simple. But if you are as lazy as I am, you might read farther to see an even simpler solution. I will try to remove the need to supply the type of the variable to be saved (the first argument of <B>SAVE_T</B>). It can be difficult to remember, type, and read. There is always a chance to get it wrong. And it is redundant anyway, as you will see. For this purpose, I will use the template function <B>makeDelayedAssigner_T</B> (<a href="list1.htm">Listing 1</a>) to create a <B>DelayedAssigner_T&lt;T&gt;</B> that deduces <B>T</B> (the type of the variable to be saved/restored) out of its argument (the variable itself).</p>
+<p>Unfortunately, it doesn't alone do the job. It will indeed return a properly created <B>DelayedAssigner_T</B> object, but afterwards this object must stay alive until flow of control leaves the block. (Calling the function without using the returned value would cause immediate destruction of the returned value). Therefore, I must declare a variable in which to store it. But in order to declare such variable, I must (again) explicitly mention what type it is. This is exactly what I am trying to avoid.</p>
+<p>There might be a simple solution if C++ had some kind of operator <B>typeof</B> that we could be used in the declaration. <B>typeof</B> would yield the type of its argument without evaluating it, much like the operator <B>sizeof</B>. You could then write:</p>
+
+<pre>
+#define SAVE(var)                            \
+   typeof (makeDelayedAssigner_T (var))      \
+   UNIQUE_NAME (makeDelayedAssigner_T (var));
+</pre>
+
+<p>There were several discussions about <B>typeof</B> on the newsgroup comp.std.c++. But Standard C++ does not currently define such an operator.</p>
+<p>Without <B>typeof</B>, one possible solution is to use a pointer to a non-template base class, containing the address of an object, dynamically allocated by a template function, and derived from class <B>DelayedAssigner_T</B>. We use a static type for this pointer, so we are able to declare a variable. We would also need a class capable of performing a delete upon destruction, such as template class <B>auto_ptr</B> in the Standard C++ library. And because our pointer would actually point to a derived class object, we would need the virtual mechanism to make sure that the proper destructor, that of the derived <B>DelayedAssigner_T</B>, gets called:</p>
+
+<pre>
+#define SAVE(var)                            \
+   std::auto_ptr &lt;DelayedAssigner_T_Base&gt;    \
+   UNIQUE_NAME (newDelayedAssigner_T (var));
+</pre>
+
+<p>This is already quite a workable solution. It has, though, a considerable drawback &#151; it allocates memory in the process. Memory allocation has traditionally been considered to be slow. This means that such a solution might have considerable negative impact to the performance.</p>
+<p>The "good" solution I am about to present has something in common with these ideas, so I hope that mentioning them will help you to better understand it. The memory allocation mentioned above can be avoided if "placement new" is used instead. Placement new lets you create an object in storage which you supply yourself rather than from the heap, such as in an auto variable. When using placement new, you are responsible for making sure that the storage is available and large enough.</p>
+<p>The template class <B>UniversalStorage_T</B> (<a href="list1.htm">Listing 1</a>) is designed to serve as such universal storage. It combines several useful features:</p>
+<UL><LI>   It is a template class, whose parameter <B>SIZE</B> is presumably the size of the object to be stored in it.</LI>
+<LI>   It has a template constructor, which deduces the type of the object being stored from its argument.</LI>
+<LI>   Its constructor relies on its argument's copy constructor to build the stored object in the right way.</LI>
+<LI>   Its destructor calls the stored object's base-class destructor, which, if virtual, calls the destructor of the derived class, as desired.</LI></UL>
+<p>What we want to store in such an object is the <B>DelayedAssigner_T</B> object, returned by <B>makeDelayedAssigner_T(var)</B>, as mentioned above. For this purpose, we will declare an auto variable of class <B>UniversalStorage_T&lt;Base, SIZE&gt;</B>. We are able to supply the right <B>SIZE</B> parameter, using the operator <B>sizeof</B> with a call to <B>makeDelayedAssigner_T(var)</B>. The other parameter for <B>UniversalStorage_T(Base)</B> will always be one and the same, namely <B>DelayedAssign_T_Base</B>.</p>
+<p>As argument for the constructor of the declared variable we will use the returned value from yet another call to <B>makeDelayedAssigner_T</B>. This call actually happens, unlike the one in the argument to <B>sizeof</B>, which is never executed. Thus we have finally got rid of the type of the variable to be saved and restored:</p>
+<pre>
+UniversalStorage_T
+  &lt;DelayedAssigner_T_Base,
+   sizeof (makeDelayedAssigner_T (var))&gt;
+  saver_var (makeDelayedAssigner_T (var));
+</pre>
+
+<p>To simplify using the code from above, we define the macro <B>SAVE(var)</B> (<a href="list1.htm">Listing 1</a>). Using it is quite simple:</p>
+
+<pre>
+SAVE (var)
+</pre>
+
+<p>Compared to the other solutions mentioned so far, this macro offers several savings and improvements:</p>
+
+<UL><LI>   The names of the supporting classes, functions, and macros are not needed. They are always the same.</LI>
+<LI>   Mentioning the type of the variable is also not needed. It is deduced automatically by a template function.</LI>
+<LI>   The name of the temporary storage variable is not needed. <B>UNIQUE_NAME</B> supplies the name.</LI>
+<LI>   The macro's name suggests its intention, improving code readability.</LI>
+<LI>   No dynamic memory allocation is involved.</LI>
+<LI>   Considerably less typing is required.</LI></UL>
+
+<p>Here is one last variation on the same theme. Upon leaving the block you might want to assign to the target variable a value that is different from its initial one. The macro <B>DELAYED_ASSIGN(var_ref, value)</B> (<a href="list1.htm">Listing 1</a>) offers such a service. Consider the following code that deletes a linked list of dynamically allocated nodes:</p>
+
+<pre>
+while (head)
+   {
+   DELAYED_ASSIGN(head, head-&gt;next)
+   delete head;
+   }
+</pre>
+
+<p>It does the same as:</p>
+
+<pre>
+while (head)
+   {
+   Node* next = head-&gt;next;
+   delete head;
+   head = next;
+   }
+</pre>
+
+<H4><FONT COLOR="#000080">Semicolons and Macros</FONT></H4>
+
+<p>As a final note, I would like to call attention to the way the macros have been used in all of the examples. Note the lack of a semicolon at the end of any macro "statements." This is a deliberate design decision, and is part of the philosophy I follow when I use and define macros. I know that many programmers write a semicolon in such cases, even if it's not needed, just because the code looks "nicer." Besides, the semicolon is "harmless" and "safer." As to what looks "nicer," there are as many opinions as there are programmers, or even more. The point is, though, that using semicolons with macros might be dangerous, and I will try to show why.</p>
+<p>Let's consider a macro, taking a type name as argument, and defining some aliases for pointer and reference types:</p>
+
+<pre>
+#define TYPEDEF(Type)             \
+   typedef           Type* Type##Ptr; \
+   typedef const Type* Type##CPtr;\
+   typedef const Type&amp; Type##_;
+</pre>
+
+<p>Now let's try using it this way:</p>
+
+<pre>
+TYPEDEF(int);
+</pre>
+
+<p>This compiles properly. Funny, though, sometimes it does not do what you expected. How can this be?</p>
+<p>The meaning of the code above depends on whether the compiler sees the macro definition or not:</p>
+<UL><LI>   If it sees it, it is an invocation of the <B>TYPEDEF</B> macro.</LI>
+<LI>   If not, it is (surprise!) a declaration of function called <B>TYPEDEF</B>, returning implicitly <B>int</B>, and taking an <B>int</B> argument.</LI></UL>
+<p>Both are quite valid constructs in any context, so the compiler will always be content and silent. Even worse, if you misspell the name of the macro, it will in any case be taken as a function declaration.</p>
+<p>Such errors are extremely difficult to find, because in most cases the compilation error appears (if at all) at a place quite unrelated to where the actual error occurs (e.g., <B>intPtr</B> undefined). Traditionally, we expect the compiler to help us find such "small" errors as forgotten include or define directives, or mistyped identifiera. And here it just does not happen! Is this not a Very Bad Thing?</p>
+<p>Now let's assume that when using <B>TYPEDEF</B> you just removed the semicolon:</p>
+
+<pre>
+TYPEDEF(int)
+</pre>
+
+<p>It is no longer a good function declaration, but it is still a good macro invocation. If such macro does not exist, or is misspelled, or invisible, you will get a compilation error, most probably on the very next line.</p>
+<p>I hope this convinces you not to use semicolons with macros anymore.</p>
+
+<H4><FONT COLOR="#000080">Last Words</FONT></H4>
+
+<p><a href="list2.htm">Listing 2</a> shows a small test program that can be used to test the macros in the collection presented so far. To test a header containing these macros, just replace the name of the include file (<B>UtilityMacros.h</B>) with the name of the header containing definitions from <a href="list1.htm">Listing 1</a>.</p>
+<p>Some people assert that macros are no longer needed now that C++ includes templates. Although sometimes templates are much more appropriate than macros, there remain situations where macros are still the only alternative. As shown above, using both templates and macros in combination offers even greater possibilities.</p>
+<p>Some of the ideas presented in this article might look like overkill for many simple tasks. Consider, however:</p>
+
+<UL><LI>   You will write them once but you will probably use them many times. This way, the implementation complexity is not an issue.</LI>
+<LI>   The additional performance overhead, if present at all, in most cases consists of a couple of inline function calls and can be neglected.</LI>
+<LI>   Using them can simplify your code, and code simplicity is the Most Important Thing.</LI></UL>
+
+<p><i><B>Radoslav Getov</B> works as senior R&amp;D engineer at Ansoft Corporation, Pittsburgh, PA. He's been developing EDA CAD systems using C and C++ during most of his career as a software developer. You can reach him at <B>rgetov@ansoft.com</B> or visit his web page <B>members.tripod.com/~radosoft</B>.</i></p>
+
+<h4><a href="../../../source/2000/mar00/getov.zip">Get Article Source Code</a></h4>
+
+</blockquote></body></html>

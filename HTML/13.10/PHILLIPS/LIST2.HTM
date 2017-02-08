@@ -1,0 +1,239 @@
+<HTML><HEAD>
+<TITLE>October 1995/Image Processing in C, Part 14: Warping and Morphing/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2 <I>Object warping routines</I></A></h4>
+<pre>/*******************************************
+    *
+    *  object_warp(..
+    *
+    *  This routine warps a ROWSxCOLS section
+    *  of an image. The il, ie parameters
+    *  specify which ROWSxCOLS section of
+    *  the image to warp. The x_control and
+    *  y_control parameters are the control
+    *  points inside that section. Therefore,
+    *  x_control and y_control will always be
+    *  less the COLS and ROWS.
+    *
+    *  The point coordinates are for the four
+    *  corners of a four side figure.
+    *    x1,y1    x2,y2
+    *
+    *    x4,y4    x3,y3
+    *
+
+*********************************************/
+
+object_warp(in_name, out_name,
+          the_image, out_image,
+          il, ie, ll, le,
+          x1, y1, x2, y2, x3, y3, x4, y4,
+          bilinear)
+   char  in_name[], out_name[];
+   int   bilinear, il, ie, ll, le,
+        x1, y1, x2, y2, x3, y3, x4, y4;
+   short the_image[ROWS][COLS],
+        out_image[ROWS][COLS];
+{
+   int   extra_x = 0,
+        extra_y = 0;
+
+   struct tiff_header_struct image_header;
+
+   create_file_if_needed(in_name, out_name,
+                      out_image);
+
+   read_tiff_image(in_name, the_image, il,
+                ie, ll, le);
+
+       /**********************************
+       *
+       *  Call the warp loop function you
+       *  need (with or without bilinear
+       *  interpolation).
+       *
+       **********************************/
+
+   if(bilinear)
+      bi_full_warp_loop(the_image, out_image,
+                     x1, x2, x3, x4,
+                     y1, y2, y3, y4,
+                     extra_x, extra_y);
+   else
+      full_warp_loop(the_image, out_image,
+                   x1, x2, x3, x4,
+                   y1, y2, y3, y4,
+                   extra_x, extra_y);
+
+   write_array_into_tiff_image(out_name,
+                          out_image, il,
+                          ie, ll, le);
+} /* ends object_warp */
+
+
+/*******************************************
+    *
+    *  full_warp_loop(..
+    *
+    *  This routine sets up the coefficients
+    *  and loops through an entire
+    *  ROWSxCOLS image that is being warped.
+    *
+
+*******************************************/
+
+full_warp_loop(the_image, out_image,
+             x1, x2, x3, x4,
+             y1, y2, y3, y4,
+             extra_x, extra_y)
+   int    extra_x, extra_y,
+         x1, x2, x3, x4,
+         y1, y2, y3, y4;
+   short  the_image[ROWS][COLS],
+         out_image[ROWS][COLS];
+{
+   int    cols_div_2, denom, i, j, rows_div_2,
+         xa, xb, xab, x_out, ya, yb, yab, y_out;
+
+   cols_div_2 = COLS/2;
+   rows_div_2 = ROWS/2;
+   denom      = cols_div_2 * rows_div_2;
+
+      /**************************************
+      *
+      *  Set up the terms for the
+      *  spatial transformation.
+      *
+      ***************************************/
+
+    xa  = x2 - x1;
+    xb  = x4 - x1;
+    xab = x1 - x2 + x3 - x4;
+
+    ya  = y2 - y1;
+    yb  = y4 - y1;
+    yab = y1 - y2 + y3 - y4;
+
+       /***********************************
+      *
+      *  Loop through the image and
+      *  perform the spatial
+      *  transformation.
+      *
+      ************************************/
+
+       /* NOTE a=j b=i */
+
+    printf("\n");
+    for(i=0; i&lt;ROWS; i++){
+       if((i%10) == 0) printf("%d ", i);
+       for(j=0; j&lt;COLS; j++){
+
+         x_out = x1 + (xa*j)/COLS +
+              (xb*i)/ROWS + (xab*i*j)/(denom);
+         y_out = y1 + (ya*j)/COLS +
+              (yb*i)/ROWS + (yab*i*j)/(denom);
+       if(x_out &lt; 0        ||
+          x_out &gt;= COLS   ||
+          y_out &lt; 0       ||
+          y_out &gt;= ROWS)
+          out_image[i+extra_y][j+extra_x] =
+              FILL;
+       else
+          out_image[i+extra_y][j+extra_x]=
+          the_image[y_out][x_out];
+
+    }  /* ends loop over j */
+  } /* ends loop over i */
+
+}  /* ends full_warp_loop */
+
+
+/*******************************************
+    *
+    *  bi_full_warp_loop(..
+    *
+    *  This routine sets up the coefficients
+    *  and loops through an entire
+    *  ROWSxCOLS image that is being warped.
+    *
+    *  This version of the routine uses
+    *  bilinear interpolation to find the
+    *  gray shades. It is more accurate
+    *  than warp_loop, but takes longer
+    *  because of the floating
+    *  point calculations.
+    *
+
+*******************************************/
+
+bi_full_warp_loop(the_image, out_image, x1, x2, x3, x4, y1, y2, y3, y4,
+                  extra_x, extra_y)
+int   extra_x, extra_y,
+        x1, x2, x3, x4,
+        y1, y2, y3, y4;
+   short the_image[ROWS][COLS],
+        out_image[ROWS][COLS];
+{
+   double denom, di, dj,
+         xa, xb, xab, x_out, ya, yb, yab, y_out;
+   int    i, j;
+
+   denom      = COLS * ROWS;
+
+     /*************************************
+     *
+     *  Set up the terms for the
+     *  spatial transformation.
+     *
+     *************************************/
+
+   xa  = x2 - x1;
+   xb  = x4 - x1;
+   xab = x1 - x2 + x3 - x4;
+
+   ya  = y2 - y1;
+   yb  = y4 - y1;
+   yab = y1 - y2 + y3 - y4;
+
+      /*************************************
+      *
+      *  Loop through the image and
+      *  perform the spatial
+      *  transformation.
+      *
+      *************************************/
+
+       /* NOTE a=j b=i */
+
+   printf("\n");
+   for(i=0; i&lt;ROWS; i++){
+      if((i%10) == 0) printf("%d ", i);
+      for(j=0; j&lt;COLS; j++){
+
+         di = (double)(i);
+         dj = (double)(j);
+
+         x_out = x1 +
+                (xa*dj)/COLS +
+                (xb*di)/ROWS +
+                (xab*di*dj)/(denom);
+         y_out = y1 +
+                (ya*dj)/COLS +
+                (yb*di)/ROWS +
+                (yab*di*dj)/(denom);
+
+         out_image[i+extra_y][j+extra_x] =
+         bilinear_interpolate(the_image,
+                          x_out, y_out);
+
+       } /* ends loop over j */
+    }  /* ends loop over i */
+
+}   /* ends bi_full_warp_loop */
+/* End of File */</pre>
+
+</BODY>
+</HTML>

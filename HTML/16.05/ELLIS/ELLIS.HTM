@@ -1,0 +1,310 @@
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+<TITLE>May 1998/A Regular Expression Class Library</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<H2><A href="../tocmay.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+<FONT COLOR="#FF0000">Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">A Regular Expression Class Library</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Duncan Ellis and Sameer Udeshi</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Regular expressions are a great way to describe patterns in text, with lots of
+applications.</p></BLOCKQUOTE><hr>
+
+<BLOCKQUOTE>
+
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>Regular expressions are a concise notation for describing patterns of strings. They're
+used in text editors and utilities such as grep, which allow users to search
+for a pattern in text. Compilers use regular expressions for token recognition.
+This article presents a set of classes which will enable you to add regular
+expression handling to your code.<p>
+The aims of the class design are as follows:</p>
+<UL><LI>Provide a set of classes that support a simple interface for regular
+        expression conversion and input matching functionality.</LI>
+    <LI>Ensure loose coupling so that there is no dependency between classes
+        supporting different aspects of functionality.</LI>
+    <LI>Enable customization of some implementation details by inheritance.</LI>
+</UL>
+
+<h4><FONT COLOR="#000080">Regular Expressions as Finite Automata</FONT></H4>
+
+<p>It
+is possible to represent any regular expression as a finite automaton (see the
+sidebar <a href="sidebar1.htm">"Regular Expressions"</a>
+for a description). Representing a regular
+expression in this way provides a simple interface for input matching.  The
+finite automaton conducts a search by sequencing through a series of internal
+states while reading characters from the input string. The automaton jumps from
+one state to the next based on its current state and the character it receives
+from its input. The match succeeds if the automaton reaches its accept state.<p>
+The following classes support this interface (refer to <A href="list1.htm">Listings 1</a>,
+ <A href="list2.htm">2</a>,
+ <A href="list3a.htm">3a</a>,
+ <A href="list3b.htm">3b</a>,
+ <A href="list4a.htm">4a</a>,
+ <A href="list4b.htm">4b</a>,
+ and <A href="list5.htm">5</a>
+for class
+definitions):</p>
+<UL><LI>RegularExpression provides support for converting a regular expression to
+        a finite automaton. It collaborates with class CFABuild to achieve this
+        conversion. The CFABuild class supports construction of a finite automaton by
+        adding state nodes and transitions between state nodes.</LI>
+    <LI>FiniteAutomaton collaborates with class CFAQuery to enable querying the
+        state and transition details of an automaton.</LI>
+    <LI>CAutomatonState is like an iterator and is used during automaton traversal
+        to store the traversal state information.</LI>
+</UL>
+<p>My first design of the finite automaton had a flaw, which is explained as
+follows. The finite automaton provides two major operations:</p>
+<UL><LI>conversion &#151; conversion of a regular expression string to a finite
+        automaton object</LI>
+    <LI>traversal &#151; finding a match for the automaton's equivalent regular
+        expression in an input string</LI>
+</UL>
+<p>The flaw was that a program that needed only traversal functionality would
+be forced to include conversion functionality as well, and vice versa.
+Conversion and traversal functionality might need to be separated if the
+regular expressions were precompiled, for instance in a command-line
+interpreter for a utility or embedded system.<p>
+In redesigning the class structure, I have used the Strategy pattern <a href="#1">[1]</a> to
+achieve this separation and the ability to override automaton information
+storage. Strategy lets the algorithm vary independently of clients that use it.
+There are two classes, RegularExpression and FiniteAutomaton, which serve as
+clients of the strategy; CFABuild and CFAQuery are the abstract base classes
+that represent the strategy.</p>
+
+<h4><FONT COLOR="#000080">Implementing Input Matching</FONT></H4>
+
+<p>This
+section describes how the above classes may be used for implementing some
+common input matching requirements.<p>
+The CAutomatonState class encapsulates state information pertaining to a finite
+automaton. A CAutomatonState instance changes state as input is fed to it.
+Although CAutomatonState implements a nondeterministic finite automaton, the
+class effectively hides this from the user. It appears as a deterministic
+finite automaton (see the sidebar <a href="sidebar2.htm">"Finite Automata"</a>
+for description of these
+terms). Input matching code typically feeds character input to the
+CAutomatonState from a stream, checking for conditions such as:</p>
+<UL><LI>end of input stream is reached</LI>
+    <LI>the Automaton state is invalid indicating that no more input can be fed to
+        the automaton</LI>
+    <LI>an accepting state is reached indicating that input read so far matches the
+        expression</LI>
+</UL>
+<p>Before any input matching can occur, the regular expression must be
+converted into a finite automaton representation. Below I describe some input
+matching functions that take finite automata as arguments. Before using any of
+these functions you must precede them with some code equivalent to the
+following:</p>
+
+<pre>
+// SimpleFA inherits from both
+// CFABuild and CFAQuery
+// argument: const char *regExp
+// to construct a regular expression
+// automaton
+RegularExpression re;
+SimpleFA fabq;
+re.SetFABuild( &amp;fabq );
+re.ConvertToFiniteAutomaton( regExp );
+ 
+// to inform the automaton handler
+// of the query interface object
+FiniteAutomaton fa;
+fa.SetFAQuery( &amp;fabq );
+</pre>
+
+<p>You can then call the match function with the automaton and search string:</p>
+
+<pre>
+ ... match function... (fa, srchStr);
+</pre>
+
+<p>As mentioned above, the CFAQuery object could have been precompiled. Using the fa
+object declared here, some input matching functions might be:<p>
+1. Exact match &#151; Check whether the input string exactly matches the given
+regular expression. This function feeds successive input characters to the
+automaton until it reaches the end of the input or an invalid state is reached.
+An accept state if the first of these conditions is met implies an exact
+match.</p>
+
+<pre>
+//returns true if the input string<br>//exactly matches  
+// the regular expression encoded in the<br>// automaton
+bool ExactMatch
+   (FiniteAutomaton &amp;fa,
+    const char* srchText)  {
+  bool retval = false;
+    
+  CAutomatonState astate( fa );
+</pre>
+<p>
+
+<pre>
+  for( ;*srchText &amp;&amp; astate.IsValid() ;
+       srchText++)  
+  {
+    astate.Next(*srchText);
+  }
+    
+  if( astate.IsAccept( ) &amp;&amp;
+      (*srchText == 0))
+    retval = true;
+  return retval; }
+</pre>
+
+<p>2. Substring match &#151; Check whether a substring (prefix) of the given input string
+matches the regular expression. The following function returns true if a
+substring that matches the regular expression is found. matchLen returns the
+length of the substring. This function feeds successive input characters to the
+automaton until it reaches an accept state.</p>
+
+<pre>
+bool SubStr(FiniteAutomaton &amp;fa,
+    const char* srchText, int&amp; matchLen)
+{
+  bool retval = false;
+     
+  CAutomatonState astate( fa );
+     
+  for(matchLen=0;
+      *srchText &amp;&amp; astate.IsValid();
+      srchText++)
+  {
+    astate.Next(*srchText);
+    matchLen++;
+    if( astate.IsAccept( ))
+    {
+      //the automaton is in accept state, means that the input
+      //read so far matches the regular expression.
+       retval = true;
+       break;
+    }
+  }
+  return retval;
+}
+</pre>
+<p>3. Substring search &#151; The input string contains an embedded string that matches
+the regular expression. This is the requirement for programs like grep &#151; the
+substring match function can be used to implement this behavior. This function
+returns true if a substring that matches the regular expression is found in the
+input string. matchStr and matchLen return the position and length of the
+substring found.</p>
+
+<pre>
+bool StrStr(FiniteAutomaton &amp;fa,
+    const char* srchText,
+    const char*&amp; matchStr, int&amp; matchLen)
+{
+  bool retval = false;
+  for( matchStr = srchText; *matchStr
+       ;matchStr++ )
+  {
+      if( SubStr(fa , matchStr ,
+                 matchLen ))
+      {
+        retval = true;
+        break;
+      }
+  }
+  return retval;
+}
+</pre>
+
+<p>4. Longest substring match &#151; Look for the longest substring that matches the
+regular expression. Such a match is used by lexical analyzers to resolve
+ambiguity in identifying token values. For example, suppose the regular
+expression for variable names is [a-zA-Z]+[a-zA-Z0-9]*. If the input stream is
+"fre1 = 112" then the substrings "f", "fr", "fre", and "fre1" all match the
+regular expression for a variable name, but the lexical analyser should choose
+"fre1".</p>
+
+<pre>
+bool LongestSubStr(FiniteAutomaton &amp;fa,
+    const char* srchText, int&amp; matchLen)
+{
+  bool retval;
+  CAutomatonState astate( fa );
+  int len = 0;
+  for(len = 0;*srchText &amp;&amp; astate.IsValid() ; srchText++ )
+  {
+     len++;
+     if(astate.IsAccept())
+    {
+      retval = true;
+      matchlen = len;
+    }
+  }
+     
+  return retval;
+}
+</pre>
+
+<h4><FONT COLOR="#000080">Overriding CFAQuery and CFABuild</FONT></H4>
+
+<p>As
+mentioned previously, the CFABuild and CFAQuery classes are the strategies used
+by the RegularExpression and FiniteAutomaton client classes. The client classes
+use the strategy classes' abstract interfaces; thus, the strategy implemented
+can vary without affecting the clients in any way. Examining the code for the
+SimpleFA class (<A href="list6.htm">Listing 6</a>)
+ will give you an idea of what is required from the
+implementation.</p>
+<p>SimpleFA is not an optimal implementation. It supports a limited
+number of automaton transitions in the automaton, and its implementation of the
+ToStatesForEvent function is inefficient. If you want to use more complex
+regular expressions than SimpleFA can reasonably support, you can write your
+own implementation of the strategy classes.</u></b></p>
+<p>Note that this code was developed with Visual C++ v4.1 and uses the MFC
+collection classes.</p>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>Many
+text processing applications/utilities can use regular expressions. A class
+library that provides support for a simple interface to use them can be very
+useful, especially since it hides the underlying implementation details.</p>
+
+<h4><FONT COLOR="#000080">Acknowledgements</FONT></H4>
+
+<p>The
+authors would like to thank Jitinder Sethi for reviewing this article.</p>
+
+<h4><FONT COLOR="#000080">Bibliography</FONT></H4>
+
+<p><a name="1"></a>[1]
+Erich Gamma, Richard Helm, Ralph Johnson, and John Vlissides. Design Patterns,
+Elements of Reusable Object-Oriented Software (Addison-Wesley, 1995).<p>
+<a name="2"></a>[2] Alfred V. and Ullman Aho. Principles of Compiler Design (Addison-Wesley,
+1977).
+
+<p><i>Duncan Ellis is a software developer in the CASE tools group at Oracle in
+the United Kingdom. He has ten years of experience in embedded systems,
+telecommunications, and applications development. He can be reached at
+dellis@uk.oracle.com.<p>
+Sameer Udeshi is a software developer working with Mastek India Ltd. He has
+seven years of experience in software development. Object-Oriented Design and
+C++ programming are his main interests.
+</i></p>
+
+<h4><a href="../../../source/1998/may98/elllis.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</p>
+</body></html>

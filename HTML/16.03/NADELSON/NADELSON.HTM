@@ -1,0 +1,399 @@
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+<TITLE>March 1998/Real-time Error Processing on a Unix Network</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<H2><A href="../tocmar.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+<FONT COLOR="#FF0000">Unix</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Real-time Error Processing on a Unix Network</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Mark Nadelson</FONT></H3>
+
+<BLOCKQUOTE>
+<p>A cry for help should not go unattended. The trick is to find the right
+communication channel over which to yell.</p></BLOCKQUOTE><hr>
+
+<BLOCKQUOTE>
+
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>Although
+most programmers yearn to write code that operates error free, those of us who
+program in the real world know this is an unlikely event. Not all errors are
+necessarily bugs &#151; some are situations critical to the operation of the
+program that occur outside its control. The larger the program becomes, the
+more interactions the program has with such forces outside its direct control.
+It is especially noticeable when a program needs to run 24 hours a day, seven
+days a week, and down time is unacceptable.<p>
+The "external forces" might be other programs that preprocess data for the
+program in question. Let's say there are many of these preprocessing programs
+and they are all executing on different machines in the network. The programs
+pull together data from different sources and provide their results (through
+some medium) to another program that displays the final result to the end user.
+How does the administrator of such a system ensure that all programs are
+operating correctly and that the output of the system is as it should be?<p>
+The obvious solution to this dilemma is to have all programs in the system
+report any errors they encounter. This can be accomplished in several ways, but
+each way has inherent problems. One popular method of tracking errors is to
+have each process write the error to its individual error file. This solution
+is fine if the system is comprised of only one or two programs. It would be
+easy for an administrator to monitor and react if an error was displayed.
+However, this solution is not acceptable if the system is made up of 50 or more
+individual processes. It would take a keen observer to keep track of so many
+sources of error reporting. In a system that must react quickly to errors, this
+solution is too vulnerable to missing events.<p>
+Because keeping track of many error logs can be difficult and error prone, the
+next logical solution is to have all processes write to a single error log.
+This too has problems. The first problem has to do with disk space. If the disk
+holding the error log runs out of space, all additional error reporting is
+lost. The processes need to monitor disk space and take additional steps to
+clear space off a full disk, or switch to another storage device. This solution
+can be very complex and error prone.<p>
+Another problem has to do with networking. Networking is a problem if the
+programs are distributed across many different machines. In this case the disk
+drive containing the error log has to be mounted on each machine in the
+network. If any of these machines lose their connection to the disk drive, or
+if a machine is added and not given access to the disk drive, error reporting
+is lost.<p>
+Still another solution is to report errors to a central location, while
+avoiding the problems associated with writing to a disk. Each program can
+report errors via e-mail (assuming the network in question has e-mail). Again,
+this solution is error prone. One of the most critical issues in error
+reporting is prompt notification. The problem with e-mail is that there is no
+guarantee that the e-mail will be received soon after it is sent. For an
+administrator not to be notified of an error until hours after it occurred
+doesn't do anyone much good.<p>
+The solution being proposed in this article avoids the problems with the above
+implementations. It centralizes all error reporting, eliminating the issue of
+disk drive usage, and reports errors on a real-time basis. This solution also
+insures that if errors occur, they are likely to be timely reported.</p>
+
+<h4><FONT COLOR="#000080">UDP Sockets</FONT></H4>
+
+<p>A major benefit of programming on a networked Unix system is the presence of well
+developed socket libraries for writing client/server applications. Sockets let
+you send binary messages across the network with little overhead, and in a
+timely fashion. There are two types of commonly used sockets, UDP and TCP. TCP
+sockets are referred to as connection-oriented sockets. Connection-oriented
+means that in order to have the client programs run, the server must be already
+running.<p>
+TCP sockets are also restricted in that they can be used only point-to-point.
+The client has to know the TCP/IP address of the server for communication to
+occur. If the server is moved to a different machine on the network, the client
+code has to be changed to point to the new server. Also, if the server goes
+down the clients cease to function.<p>
+For error reporting, this is not acceptable. Although error reporting is
+critical in a complex system, the lack of it should not make the system
+inoperative. This is where UDP sockets come in. They are connectionless
+sockets, meaning it is not necessary for the server to be operational for the
+client programs to run correctly. By setting the necessary parameters, UDP
+sockets can also be used to broadcast messages over the network. This means
+that if the server no longer runs on its original machine, the client does not
+have to be changed to point to the new address of the server. The down side to
+UDP sockets is that there is no guarantee of delivery from the client to the
+server.<p>
+The design of the real-time error messaging system uses UDP sockets for the
+delivery of errors across the network, but also ensures that the error message
+is received by the error server.</p>
+
+<h4><FONT COLOR="#000080">The Error-Messaging Client Class</FONT></H4>
+
+<p>The
+objective of the error-messaging client class is to send error messages via UDP
+broadcast sockets to an error-message server. The client is also responsible
+for guaranteeing that its message is received. If it is not, the client resends
+the message. It is important that the sending and possible resending of error
+messages not interfere with the operation of the principal system process.<p>
+The error message is contained in a class called problemMessage. (See <A href="list1.htm">Listing 1</a>.
+) The class contains members which define the application that encountered
+the error. This includes the process ID, the error message itself, the severity
+level of the error, a message ID number (which is used to keep track of which
+messages have been sent to and received by the server), and a count-down
+indicator (which expires the message if it has not been received by a server
+after a specified number of tries).<p>
+The constructor for this class is overloaded. The default constructor
+initializes all member objects to zero. This constructor is used by the server
+for receiving a message off the network. The other constructor takes two
+parameters, the name of the application and the count-down indicator. The
+constructor stores these two values, initializes the message ID to 0, and sets
+the process ID. The final constructor is a copy constructor. It is used to copy
+the values stored in an object of class problemMessage into a new instance of
+the class, then place the new object on the problem-message queue.<p>
+A few other member functions are worthy of mention. Member function newProblem
+stores the message and increments the message ID. Member function setSeverity
+sets the severity level to the indicated amount. And member function
+decrementCountDown decreases the message timeout value.<p>
+As I stated earlier, the error-messaging client sends a message to the server
+via a broadcast UDP socket, and takes steps to insure that the message is
+received. To insure receipt of message, the client must wait for an
+acknowledgment back from the server. The server acknowledges the client's
+message by sending the msgId value directly back to the client. If the client
+does not receive the acknowledgment in a specified amount of time (in this
+design, within 3 seconds), the client adds the message to a queue. In this
+design, I use a RogueWave linked list as the queue, but any dynamic data
+structure will do.<p>
+The client tries resending all messages in its queue every second until the
+server acknowledges receipt or the countDown value of the message reaches zero.
+If the countDown value reaches zero, the message is deleted from the queue.
+This is necessary because memory usage becomes an issue if too many messages
+are stored on the queue. Therefore the countDown value should be set high
+enough so that any problems with the server can be resolved before messages
+start disappearing from the queue.<p>
+By combining acknowledgment from the server and queuing unacknowledged error
+messages, the client can ensure that all error messages are being received by
+the server. However, a new problem arises if the message queue becomes large.
+Process performance will begin to degrade due to the time spent trying to
+resend all queue messages. This can be solved by the use of a Posix thread. By
+threading the sending and subsequent acknowledgment of error message, the main
+process can continue to function with performance unaffected.<p>
+There is one more hurdle to overcome. Processes receive data from a UDP socket
+via the system function recvfrom. By default this function blocks processing
+until data is available. In the error-messaging case, the client calls recvfrom
+to get the acknowledgment back from the server. If for some reason the server
+is not operational, the error class never returns from the call to recvfrom.
+There are ways of making recvfrom non-blocking, but this is of no use. If the
+client sends an error message and the non-blocking recvfrom is executed before
+the server has a chance to acknowledge the message, the call to recvfrom
+returns, indicating no message was sent. In this case, the error message would
+incorrectly be placed back on the queue.<p>
+To overcome the recvfrom problem, an alarm signal handler is used to time out
+the call to recvfrom. A call to the system function alarm(int x) sends the
+signal SIGALRM to the calling process after x seconds. A programmer-defined
+signal handler catches the signal. It simply transfers control to a predefined
+place in the code, terminating the call to recvfrom. This approach thereby
+allows another try at sending the message.</p>
+
+<h4><FONT COLOR="#000080">Class sendAlert</FONT></H4>
+
+<p>Class sendAlert has a few private member objects worth discussing:</p>
+
+<pre>
+class sendAlert
+{
+  static int sockfd;
+  static struct
+    sockaddr_in servAddr;
+  static struct sockaddr_in cliAddr;
+  problemMessage theProblem;
+  static RWTPtrSlist&lt;problemMessage&gt;
+    problemMessageList;
+  static sigjmp_buf threadEnv;
+  static pthread_mutex_t queueLock;
+  int status;
+public:
+  sendAlert(char *_applicationName, int timeoutCount);
+  sendMessage(int _severity, char *_msg);
+  static void
+    *processMessageQueueThread(void *_null);
+  static void alarmHandler(int _location);
+  operator int() { return status; }
+};
+</pre>
+
+<UL><LI>problemMessageList is a queue of problemMessage objects.</LI>
+    <LI>sockfd is the socket identifier.</LI>
+    <LI>servAddr is a structure that contains information on where to send the error
+        messages.</LI>
+    <LI>cliAddr is a structure that holds the acknowledgment from the server.</LI>
+    <LI>threadEnv is used to store the environment of the thread prior to the call
+        to recvfrom.</LI>
+    <LI>queueLock is a mutex used to lock and unlock the problemMessageList
+        queue.</LI>
+</UL>
+<p>All the above member objects need to be declared as static because they must
+be accessible to the thread function and the signal handler, both of which must
+be global functions. The only member object not declared static is theProblem,
+which is an instance of class problemMessage. It is used to increment the
+message ID. A new instance of the problemMessage class is created as a copy of
+theProblem and placed on problemMessageList.<p>
+The constructor for sendAlert (<A href="list2.htm">Listing 2</a>)
+ takes the application name and a
+message timeout value and passes them to the constructor of theProblem. The
+SIGALRM signal is blocked in the main process thread by setting up a signal set
+and calling sigprocmask. Thereafter, processMessageQueueThread can receive this
+signal instead of the main process thread. Next, the UDP socket is initialized,
+and the broadcast address for the server is defined (servAddr). Also being
+defined is a structure to hold the acknowledgment back from the server
+(cliAddr), which is used to bind the socket so that it receives messages from
+the server. The final step of construction is to create
+processMessageQueueThread using the Posix system call pthread_create.<p>
+The member function sendMessage is called with a severity level and the error
+message text:</p>
+
+<pre>
+int
+sendAlert::sendMessage(int severity, char *msg)
+{
+  // Set the severity level
+  theProblem.setSeverity(severity);
+  // Set the error message text and
+  // increment the message id number
+  theProblem.newProblem(msg);  
+
+  // Lock access to the problemMessageQueue
+  pthread_mutex_lock(&amp;queueLock);  
+
+  // Create an instance of the problemMsg to place on the queue
+  problemMsg *newProblem = new problemMsg(theProblem);
+  if (!newProblem)
+  {
+    cerr &lt;&lt; "Could not allocate memory for an instance of "
+      "problemMsg" &lt;&lt; endl;
+    pthread_mutex_unlock(&amp;queueLock);
+    return 0;
+  }
+  // Insert the message on the queue
+  problemMessageList.insert(newProblem);  
+  // Unlock access to the problemMessageQueue
+  pthread_mutex_unlock(&amp;queueLock);  
+  
+  return 1;
+}
+</pre>
+
+<p>sendMessage
+stores these values in theProblem, and places an instance of theProblem on
+problemMessageList. Because problemMessageList is being used in the thread, and
+the thread acts independently of the main thread, it is necessary to protect
+problemMessageList from two accesses at once. This is accomplished through the
+use of Posix mutex locks, which protect critical areas of code from being
+accessed at the same time.<p>
+As evident from the sendMessage method, all error messages are placed on the
+queue. It is the job of processMessageQueueThread to send the message to the
+server. Upon creation of the thread, a signal set is defined for the thread.
+The signal set contains the SIGALRM signal.<p>
+The thread then enters an infinite loop. The first step is to attempt to lock
+access to problemMessageList. Once a lock has been achieved the current
+contents of problemMessageList are copied to a local queue
+(localProblemMessageList) and removed from problemMessageList, to reduce the
+amount of time problemMessageList is locked. As long as it is locked, new error
+messages cannot be added, which in turn slows down overall operation of the
+program. With the contents copied to the local queue, the lock on
+problemMessageList is released.<p>
+The next step is to unblock receiving of the SIGALRM signal. This step is
+necessary in case any other thread in the program has blocked this signal. At
+this point all messages contained within localProblemMessageList are sent to
+the server, using the sendto system call. The recvfrom system call is then used
+to receive acknowlegement back from the server. As discussed before, recvfrom
+blocks until a message is available on the socket. This is unacceptable because
+the server may be down, have never gotten the error message, and subsequently
+never sent any acknowlegement. Under these conditions the thread would remain
+in a wait state.<p>
+To resolve this problem, the recvfrom is timed out using the alarm system call,
+which eventually sends a SIGALRM signal to the calling thread. The signal is
+caught by a signal handler defined by the signal system call. The signal hander
+(alarmHandler, <A href="list3.htm">Listing 3</a>)
+ calls siglongjmp to restore the thread to an
+environment earlier defined by a call to sigsetjmp, prior to the call to
+recvfrom.<p>
+If the server does return the correct acknowledgment for the error message in
+time, the alarm system call is turned off, and the error message is permanently
+removed from localProblemMessageList. If the alarm went off or an incorrect
+acknowlegement was received, the error message remains on the queue for another
+attempt. Before each attempt at sending the error message, the message's
+time-out value (countDown) is decremented. If countDown reaches zero, the
+message is permanently removed from localProblemMessageList.</p>
+
+<h4><FONT COLOR="#000080">The Server</FONT></H4>
+
+<p>The
+error-handling server application (<A href="list4.htm">Listing 4</a>)
+ is fairly simple and
+straightforward. The server creates its UDP socket connection, binds the socket
+and sits in a loop waiting to receive error messages. There is no need to time
+out the recvfrom system call in this case since the purpose of the server is to
+wait for error messages and process them as they come. Upon receiving the error
+message, the server casts the message as an object of class problemMessage. It
+then sends the value of the msgId member object back to the client. This serves
+as acknowlegement of the client's error message.<p>
+Since the address of the client is known upon receipt of the error message (it
+is contained within the cliAddr structure), the acknowlegement can be sent
+directly back to the client instead of being broadcast. There may be numerous
+clients which may have sent error messages to the server containing the same
+msgId value. A broadcast would incorrectly cause some clients to verify
+acknowlegement of their message.<p>
+The next step the server takes is to display the value of the message received.
+This can be done in numerous ways and is only limited by the imagination of the
+developer. The easiest means of displaying the values is to output them
+directly to the terminal (which is what happens in the example server). A
+better way would be to display the values in a graphical-user-interface
+application. The GUI can display messages in different ways, depending on the
+serverity level contained within the message. Regardless of how the information
+is displayed, access to member objects of problemMessage is the same. The
+access is simply a matter of calling the appropriate member functions to
+display the information needed.</p>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>By
+integrating the sendAgent class within all processes in a system, error
+messages can be sent, in real-time, to a central server without fear of losing
+the messages due to limited space or network accessibility to the disk . The
+centralization allows a system administrator to easily monitor and react to
+problems that occur. Because UDP broadcast socket messages are sent to all
+points in the network, it is not necessary to have the error message server
+reside permanently on any one machine. The following code shows an example of
+how to integrate the sendAgent class within an application:</p>
+
+<pre>
+#define HIGHSEVERITY 10
+#define MEDIUMSEVERITY 5
+#define LOWSEVERITY 1
+
+#define TIMEOUT_VALUE 30
+
+main(int argc, char *argv[])
+{   
+  // Instanciate an instance of the problemAgent class 
+  // with the name of the application.
+  sendAgent myAgent(argv[0], TIMEOUT_VALUE);
+  if (!myAgent)
+  {
+    cerr &lt;&lt; "Error instantiating myAgent" &lt;&lt; endl;
+    return 1;
+  }
+
+  .
+  .
+  .
+
+  // If an error occurs simply call the sendMessage method
+  // with the appropriate severity level and a message
+
+  if (error)
+    if (!myAgent.sendMessage(HIGHSEVERITY,
+         "An Error Has Occurred!"))
+      cerr &lt;&lt; "Error placing error message on the queue"
+           &lt;&lt; endl;
+}
+</pre>
+<p>The
+final benefit of using the problemAgent class is that the sending of error
+messages is threaded. A call to sendMessage does not affect the performance of
+the principal process. In conclusion, by incorporating the sendAgent class in
+all system processes, the programmer can be assured that all error messages are
+sent to one central location without affecting system performance and without
+utilizing critical disk space. o
+</p>
+<p><i>Mark Nadelson has been programming for the last six years in a variety of
+industries, including telecommunications, internet software development, and
+financial computing. The operating systems he's used include Unix, Windows NT,
+and proprietary operating systems on embedded systems. His other interests
+include his wife Kim, from whom he hopes to receive brownie points by
+mentioning her. He can be reached via email at nadelsm@gcm.com. 
+</i></p>
+
+<h4><a href="../../../source/1998/mar98/nadelson.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</body></html>

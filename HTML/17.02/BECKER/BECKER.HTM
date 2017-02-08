@@ -1,0 +1,543 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>February 1999/The Journeyman's Shop</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocfeb.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">The Journeyman's Shop: Wrapping Up Error Handling Techniques</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Pete Becker</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>If you don't take an orderly approach to handling all runtime errors, you're bound to introduce even more errors in your error handling.</p>
+</BLOCKQUOTE>
+<HR>
+<BLOCKQUOTE>
+<p>Back when I was in law school I took a seminar course on criminal defense. One of the best pieces of advice I got in that course was "When you're preparing to interview a client who's charged, say, with burglary, begin by reading the burglary statute. And when you're finished with the interview, read the burglary statue again. I don't care how many thousand times you've read it before, chances are that you'll spot something new that's pertinent to your client's case." It's been fifteen years since I stopped practicing law, but I can still recite Maine's burglary statute from memory.</p>
+<p>Here in The Journeyman's Shop we try to follow that advice, too. When you're about to start implementing some part of a project, read the project specification, and review any relevant literature that you have available that relates to what you're about to do. After you've written the code, read the specification again, and review the literature again. Chances are that you'll spot something new that's pertinent to the code that you're writing.</p>
+<p>Reviewing the literature after writing the code may sound a bit odd, but it works. You've just been through the intellectual exercise of making your code work, and you're more familiar with the problems and issues you've run into than you'll ever be again. That's the perfect time to review what others have written about the area that you've just been working on. Often the result will be that you see a better way to write your code. Don't be shy about going back and rewriting it with your newfound insight. The goal is to produce the best code to solve the problem that you're working on, not to prove that what you produced in your first pass can be made to work.</p>
+<p>On the assumption that what I've been writing about error handling may be of some use to you out there in the field, I've included at the end of this installment a brief outline of the subject as I've covered it in my last three columns (see <A HREF="fig1.htm">Figure 1</A>). If you find this series of columns helpful, consider using the outline as a checklist when you're working on a project that involves error handling. Look it over before you begin, and look it over again when you've finished. It might trigger something that saves you a great deal of work.</p>
+
+<h4><FONT COLOR="#000080">Review</FONT></H4>
+
+<p>Two months ago we talked about handling errors in the code that detects the problem. The main issues there are recognizing that an error has occurred and choosing the best way to handle the error. Last month we began talking about what to do when you cannot handle the error in the function that detects it, and in particular we talked about ways of notifying that function's caller that something has gone wrong. This month we'll continue discussing how to handle errors that cannot be handled in the function that detects them, but this time we'll be looking at more complicated transfers of control &#151; that is, transfers that aren't simply a function call or a return from a function.</p>
+
+<h4><FONT COLOR="#000080">Transfer of Control</FONT></H4>
+
+<p>One of the most common beginner's mistakes in writing C or C++ code is forgetting to check the return value of a function for an error indication. How many times have you seen sample code on comp.lang.c that goes something like this:</p>
+
+<pre>
+#include &lt;stdio.h&gt;
+
+int main()
+{
+FILE *fp;
+char data[20];
+fp = fopen("input.dat", "r");
+fread(data, 1, 20, fp);
+return 0;
+}
+</pre>
+
+<p>Of course, the call to <B>fread</B> will fail, often disastrously, if <B>fopen</B> was unable to open the specified file. The code above should explicitly check whether <B>fopen </B>returned a null pointer. Even then, it's not unheard of for programmers to take the wrong action once they've noticed a problem:</p>
+
+<pre>
+#include &lt;stdio.h&gt;
+
+int main()
+{
+FILE *fp;
+char data[20];
+if (fp = fopen("input.dat", "r"))
+    {
+    printf(
+      "Error opening input file\n");
+    }
+fread(data, 1, 20, fp);
+return 0;
+}
+</pre>
+
+<p>Here, the programmer has properly tested for a null pointer, then gone ahead and used the pointer anyway. This is probably an oversight, and the programmer meant to add an else-clause, so that the call to <B>fread</B> would be executed only if <B>fopen</B> succeeded.</p>
+<p>Now, most of us recognize both of these errors when we see them in the simple form presented here. The danger is that we won't recognize them in code that's more complex than these simple examples. There are two approaches to avoiding this kind of mistake. We can look for them in code reviews (either in the form of bench checking or as part of a more formal review program), or we can design our error handling to avoid requiring users of our code to remember to check for errors. Both approaches make good sense: if you're developing high quality software you should have some sort of code review mechanism in place, and adding to your review checklist isn't a big job. On the other hand, if we free client programmers from the burden of checking for errors, it will sometimes simplify (and possibly improve) the code that they write.</p>
+<p>When we free users of the responsibility for error checking we must add in a mechanism to handle errors ourselves. In BASIC we'd use <B>OnError Goto</B>, or some other such bludgeon. In C and C++ we have much more flexible mechanisms available for transferring control to an error handler without requiring our caller to check for errors. We can use callouts, signals, <B>longjmp</B>, and exceptions.</p>
+
+<h4><FONT COLOR="#000080">Callouts</FONT></H4>
+
+<p>Let's put on our application architect hats for a moment, and think about ways to make memory allocation safer. For example, let's suppose we know from looking at our design specification that no function called from the UI code will ever need to allocate more than 320 bytes. The user can call several of these functions, of course, but any one call will succeed if there are 320 bytes available for allocation when the call is made. One approach to safer memory management would be to allocate a block of 320 bytes when the program starts up, and if any allocation fails, free up that block and try again. This guarantees that any one call from the UI code will succeed. Once that has been done, the UI code has to worry about the possibility of running out of memory, but none of the code called by the UI needs to concern itself with that possibility.</p>
+<p>One way to implement this technique is to replace <B>malloc</B> with a different function that implements this strategy. For example:</p>
+
+<pre>
+void *safety_block;
+
+void init_safe_malloc(void)
+{
+safety_block = malloc(320);
+}
+
+void *safe_malloc(size_t sz)
+{
+void *res = malloc(sz);
+while (res == NULL)
+    {
+    if (safety_block == NULL)
+        {
+        printf("Fatal: out of memory");
+        exit(EXIT_FAILURE);
+        }
+    free(safety_block);
+    safety_block = NULL;
+    res = malloc(sz);
+    }
+return res;
+}
+</pre>
+
+<p>Now all that's necessary to make memory allocation much safer is to replace calls to <B>malloc</B> with calls to <B>safe_malloc</B>. Whenever an attempted allocation fails, the safety block will be freed, the required memory allocated, and the application can continue to execute normally. At some point we need to check whether <B>safety_block</B> has been set to <B>NULL</B> and take corrective action, but we've reduced the burden of checking for allocation failures.</p>
+<p>For example, suppose we're writing the code for an application that allows the user to select operations from a menu. Each operation will finish executing and return to our menu handling system before the user gets a chance to select a new operation. We could use our <B>safe_malloc</B> function like this:</p>
+
+<pre>
+int main()
+{
+init_safety_block();
+for(;;)
+    {
+    switch(get_menu_selection())
+        {
+        case ADD:
+            add_data();
+            break;
+        case REMOVE:
+            remove_data();
+            break;
+        case QUIT:
+            exit(EXIT_SUCCESS);
+        }
+    if (safety_block == NULL &amp;&amp; init_safety_block() == NULL)
+            exit(EXIT_FAILURE);
+    }
+}
+</pre>
+
+<p>With this approach we've localized the handling of out-of-memory conditions to our <B>main</B> function. The code in <B>add_data</B> and <B>remove_data</B> can simply allocate memory as needed with <B>safe_malloc</B>, and not check whether the allocation succeeded. If an allocation request initially failed and the safety block had to be released in order to satisfy it, the code after the <B>switch</B> statement attempts to recover. If <B>add_data</B> and <B>remove_data</B> have released any memory that doesn't need to be used across calls, we can reallocate the safety block and resume execution. If not, we terminate the application.</p>
+<p>This approach is somewhat intrusive, particularly if we're adapting existing code. That code probably wasn't written with this strategy in mind, so we'll have to go through it looking for calls to <B>malloc</B>, <B>calloc</B>, and <B>realloc</B>, and replacing them with calls to <B>safe_malloc</B>. That can usually be done with macros, but it's a chore.</p>
+<p>In C++ there is a hook that lets you write this sort of code without having to change any of the affected code. When you use operator <B>new</B> to create an object, if the attempted allocation fails, operator <B>new</B> calls a function known as a new-handler, which can attempt to recover memory. This is invisible to the code that is creating the object, so the programmer doesn't have to worry about whether it is in use. We can provide a callout to handle low memory situations in much the same way as we did in the previous example: pre-allocate a block of memory, write a function to free it, and register that function as the function to be called by operator <B>new</B> if it cannot allocate the requested amount of memory. Like this:</p>
+
+<pre>
+void *safety_block;
+     
+void free_safety_block()
+{
+if (safety_block == NULL)
+    {
+    printf("Fatal: out of memory");
+    exit(EXIT_FAILURE);
+    }
+free (safety_block);
+safety_block = NULL;
+set_new_handler(NULL);
+}
+     
+void *init_safety_block(void)
+{
+safety_block = malloc (320);
+if (safety_block != NULL)
+    set_new_handler(free_safety_block);
+return safety_block;
+}
+</pre>
+
+<p>We can use the same <B>main</B> function as before. The call to <B>init_safety_block</B> allocates the safety block and installs <B>free_safety_block</B> as the callback that operator <B>new</B> will use if it is unable to satisfy an allocation request. The call to <B>set_new_handler</B> in <B>init_safety_block</B> tells the runtime system that it should call <B>free_safety_block</B> if operator <B>new</B> is unable to allocate memory. The call to <B>set_new_handler</B> in <B>free_safety_block</B> tells the runtime system that there is no longer any function to call if operator <B>new</B> is unable to allocate memory. We need to do this because operator <B>new</B> will keep calling the new-handler as long as it keeps failing. Once we've released the safety block there's nothing further we can do, so we need to unregister our handler <a href="#1">[1]</a>.</p>
+<p>Now we don't have to check whether any of our code that allocates memory succeeded, because we've guaranteed that it will (provided, as I said earlier, that we don't try to allocate more memory than the safety block contains). Creating a global policy like this is easy with callout functions like new-handler. We can do this in our own code just as easily. All that we have to add is the code to use the callout function. In the case of operator <B>new</B>, the code might look something like this <a href="#2">[2]</a>:</p>
+
+<pre>
+void *operator new(size_t sz, nothrow_t)
+{
+void *res = malloc(sz);
+while (res == NULL &amp;&amp; new_handler != NULL)
+    {
+    new_handler();
+    res = malloc(sz);
+    }
+return res;
+}
+</pre>
+
+<p>This is typical of code that uses a callout to handle errors. It first tries to do whatever it is supposed to do. If the attempt fails and there is a callout function installed it calls the callout function, then tries again. We use a pointer to the callout function here instead of hard-coding a call to a particular function to make the code more flexible. This version of operator <B>new</B> can be used in any application, with any recovery strategy that is appropriate to the application. The recovery strategy can be changed on the fly, by calling <B>set_new_handler</B> with the address of a function that implements the new strategy.</p>
+<p>This is one of the most important reasons for using a callout rather than simply calling a function when an error occurs. Although you haven't seen its definition in the code snippets we've been looking at, there's actually a pointer to a function involved here. It's held in the variable named <B>new_handler</B>, and its value is set by each call to <B>set_new_handler</B>. By going through this layer of indirection, the library code that implements operator <B>new</B> becomes much more flexible. It allows the application to set the error recovery strategy without having to rewrite library code or replace functions in possibly non-portable ways.</p>
+<p>One drawback with this particular approach is that <B>new_handler</B> is a global variable. This could cause problems in a multithreaded application. Of course, it's possible to minimize these problems by providing a semaphore lock around access to <B>new_handler</B>, but that's slow. It's also possible to provide a separate function pointer for each thread, provided you're willing to deal with the portability problems that creating per-thread data structures poses. Another possibility is to pass a pointer to an error handler as an argument to a function. Obviously this has a fairly high overhead, because that argument must be passed to every function that might need access to the error handler. On the other hand, it provides a great deal of flexibility, particularly if the error handler is not just a single function, but a structure that contains pointers to multiple error handlers. This lets your library distinguish, for example, between warnings, errors, and fatal errors, as some tools insist on doing <a href="#3">[3]</a>. The application can set the policy for handling each of these cases by creating an appropriate error handler and passing its address down into the library.</p>
+
+<h4><FONT COLOR="#000080">Signals</FONT></H4>
+
+<p>C has had a mechanism similar to <B>set_new_handler</B>, but much more limited, for a long time. You use it through the library functions <B>signal</B> and <B>raise</B>. The function <B>signal</B> registers a callout function known as a signal handler that will be called when a particular kind of error occurs. The function <B>raise</B> announces that an error has occurred. If there is a signal handler registered for that error, the signal handler will be called.</p>
+<p>You may have heard that signals are dangerous. Like most powerful tools, they are if you don't know what you're doing with them. To understand signals you have to know the difference between synchronous signals and asynchronous signals. Synchronous signals are those that occur when your code calls the <B>raise</B> function. Asynchronous signals are those that occur in other cases. For example, many compilers allow you to install a signal handler that will be invoked on a floating-point error such as an attempt to divide by zero. Since such a signal does not occur as a result of a call to <B>raise</B>, it is an asynchronous signal. Another example of an asynchronous signal is the <B>kill</B> signal, which occurs when the user tells the operating system to kill an application.</p>
+<p>Asynchronous signals can occur more or less without warning. Because of this, there are severe restrictions on what the handler for an asynchronous signal can do: it cannot call any function in the standard library other than <B>signal</B>, and it is allowed to assign values only to global variables of type <B>sig_atomic_t</B>, which is defined in <B>&lt;signal.h&gt;</B>. As a practical matter, this means that an asynchronous signal can be used only to set a flag to indicate that an error occurred. Your compiler and operating system may permit asynchronous signal handlers to do other things, but those are extensions and cannot be relied on when you move to a different compiler or operating system.</p>
+<p>Synchronous signals are a different matter. They can be used to handle problems in much the same way as the callout functions that we discussed in the previous section. In fact, their operation is quite similar to the code that we talked about. However, when you call <B>raise</B> you can only raise error codes that have been defined by the implementation of the standard library you are using. The C language definition requires compilers to support six signals, all of which can occur asynchronously, so they are not particularly useful for general-purpose error handling. However, some compilers permit a handful of user-defined signals as well, so if you are not concerned about portability, you can use signals as callbacks.</p>
+<p>To install a signal handler, you call the <B>signal</B> function with two arguments: an integer value that indicates which signal you are registering a handler for, and a pointer to a function that should be called when the corresponding signal is received. The <B>signal</B> function returns a pointer to the previously registered handler for that signal. For example, let's continue our memory management example, using a signal handler instead of a new-handler.</p>
+
+<pre>
+#include &lt;signal.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+
+void *safety_block;
+
+void free_safety_block()
+{
+if (safety_block == NULL)
+    {
+    printf("Fatal: out of memory");
+    exit(EXIT_FAILURE);
+    }
+free(safety_block);
+safety_block = NULL;
+}
+
+struct C
+{
+int i;
+};
+
+struct C *create_c()
+{
+struct C *res = malloc(sizeof(C));
+if (res == NULL)
+    {
+    raise(SIGUSR1);
+    res = malloc(sizeof(C));
+    }
+return res;
+}
+
+int main()
+{
+safety_block = malloc(320);
+signal(SIGUSR1, free_safety_block);
+while (safety_block != NULL)
+    create_c();
+}
+</pre>
+
+<p>In <B>main</B>, the call to <B>signal</B> registers the function <B>free_safety_block</B> as the function to be called when a <B>SIGUSR1</B> <a href="#4">[4]</a> signal is raised. In <B>create_c</B>, when an attempted allocation fails, we call <B>raise</B> to see if we can get more memory. In <B>free_safety_block</B>, which handles our signal, we don't have to unregister our signal handler: the call to <B>raise</B> does this for us.</p>
+<p>You can see that when we're using synchronous signals, <B>signal</B> and <B>raise</B> can be used in a way that is similar to the callouts that we discussed earlier. The only advantage that <B>signal</B> and <B>raise</B> have over hand-coded callouts is that we don't have to create a function pointer to keep track of the callout function. Given the severe portability limitations of <B>signal</B> and <B>raise</B>, this advantage is not at all compelling. If you're going to use callouts, don't bother with <B>signal</B> and <B>raise</B>. They're more trouble than they're worth.</p>
+
+<h4><FONT COLOR="#000080">setjmp/longjmp</FONT></H4>
+
+<p>Another form of transfer of control is <B>longjmp</B>, which is often described as a non-local <B>goto</B>. You use <B>longjmp</B> in conjunction with <B>setjmp</B> when you want to transfer control back to a function possibly higher up in your calling chain, without going through the normal sequence of return statements. You create the target of the jump with <B>setjmp</B>, and when the time comes to jump back to it, you call the function <B>longjmp</B>. The connection between a call to <B>longjmp</B> and a particular invocation of <B>setjmp</B> is made through a data structure whose type is <B>jmp_buf</B>. To use these facilities, include the header <B>&lt;setjmp.h&gt;</B>.</p>
+<p>You may have noticed that I've been careful not to use the word "function" in discussing <B>setjmp</B>. That's because it isn't a function, it's a macro. Its job is to save the program's current execution state in the <B>jmp_buf</B>. If you think about it, that would be hard to do from inside a function, because <B>setjmp</B> would have to figure out where its calling function was on the stack in order to get the data needed to jump back to there. So <B>setjmp</B> is a macro. Its code might well execute directly in the code that you're going to jump back to, making it easier to store the necessary information.</p>
+<p>When you call <B>setjmp</B> you get back the value zero. When you jump back to the point of the execution of <B>setjmp</B> you get back a non-zero value that was passed as the argument to <B>longjmp</B>. This means that you typically use <B>setjmp</B> as the expression in an <B>if</B> statement or a <B>switch</B> statement. Like this:</p>
+
+<pre>
+#include &lt;setjmp.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+
+jmp_buf buf;
+
+void f(void);
+
+int main()
+{
+if (setjmp(buf) != 0)
+    {
+    printf("Error occurred\n");
+    return EXIT_FAILURE;
+    }
+f();
+return 0;
+}
+</pre>
+
+<p>As execution of <B>main</B> begins, the call to <B>setjmp</B> initializes <B>buf</B> so that a subsequent call to <B>longjmp</B> can jump back into the <B>if</B> statement. This first call returns zero, so the block that the <B>if</B> statement controls is not executed. Instead, execution proceeds to the call to <B>f</B>. If the call to <B>f</B> returns normally, execution continues to the return statement, and the program terminates.</p>
+<p>If the function <B>f</B> determines that an error occurred, it can call <B>longjmp</B> to jump back into <B>main</B>.</p>
+
+<pre>
+extern jmp_buf buf;
+
+void f(void)
+{
+longjmp(buf, 1);
+}
+</pre>
+
+<p>When <B>f</B> is called, execution will jump back to the point of the <B>setjmp</B> call in <B>main</B>. The value of <B>setjmp</B> will then be 1, because that's the value that we called <B>longjmp</B> with. Since the value is not zero, the block controlled by the <B>if</B> statement will be executed, printing an error message and terminating the program.</p>
+<p>You have to be careful when you use <B>setjmp</B>. I said earlier that it saves the program's current execution state. That's not quite true. It saves enough information to jump back to where it was invoked, and it might save values of auto variables. However, it also might not. Technically, if you change the value of an auto variable after the call to <B>setjmp</B> and before the call to <B>longjmp</B>, after the call to <B>longjmp</B> that variable has an indeterminate value. For example, let's change our <B>main</B> function a bit:</p>
+
+<pre>
+int main()
+{
+int auto_var = 0;
+if (setjmp(buf) != 0)
+    {
+    /* auto_var's value is indeterminate */
+    printf("Error occurred\n");
+    return EXIT_FAILURE;
+    }
+auto_var = 1;
+f();
+return 0;
+}
+</pre>
+
+<p>I've added an <B>auto</B> variable named <B>auto_var</B>, and initialized it to the value zero. Just before the call to <B>f()</B> its value is changed to 1. When <B>f</B> executes <B>longjmp</B>, the value of <B>auto_var</B> becomes indeterminate. This means that there is no guarantee that it will have a meaningful value when the body of the block of code controlled by the <B>if</B> statement is executed. This, in turn, means that you cannot use the value of <B>auto_var</B> in any way after getting back to <B>main</B> through a <B>longjmp</B>.</p>
+<p>Although this example uses a global buffer, it isn't required. All that's necessary is to be able to pass the buffer to <B>longjmp</B>. You can use a pointer to a buffer if that's more convenient. Also, although we've only looked at an example with a single buffer, there's no reason you can't have more than one buffer in an application. All that's required is that the buffer you pass to <B>longjmp</B> must have been initialized by a call to <B>setjmp</B>, and that no intervening call to <B>longjmp</B> was made with that buffer. Finally, note that <B>setjmp</B> and <B>longjmp</B> should be used with caution, if at all, in C++ code. The C++ language definition allows their use, but leaves it up to the implementation whether destructors of auto objects in the functions skipped over during the <B>longjmp</B> will be run. For example,</p>
+
+<pre>
+class C
+{
+public:
+    ~C();
+};
+
+jmp_buf buf;
+
+void f()
+{
+longjmp(buf);
+}
+
+void g()
+{
+C c;
+f();
+}
+
+int main()
+{
+if (setjmp(buf) != 0)
+    {
+    printf("Error occurred\n");
+    return EXIT_FAILURE;
+    }
+g();
+return 0;
+}
+</pre>
+
+<p>It is up to the implementation whether the destructor of the auto object <B>c</B> in the function <B>g</B> will be run when the <B>longjmp</B> call in <B>f</B> forces execution to return abruptly to <B>main</B>. This unpredictability means that <B>longjmp</B> and destructors simply do not mix. In C++ we'd always use exceptions rather than <B>setjmp</B> and <B>longjmp</B>. You have to be careful, though, if you're mixing C and C++ code. Be sure that any <B>longjmp</B> calls from the C code are handled by a <B>setjmp</B> call with no intervening auto objects going out of scope. Otherwise you're deep in the realm of unpredictability.</p>
+<p>When you use <B>setjmp</B> and <B>longjmp</B> to notify your caller of an error, you should use the integer value that you pass to <B>longjmp</B> to indicate the nature of the error. This is pretty much the same as returning an integer value to indicate what went wrong, which we talked about last month. The only difference is that with <B>setjmp</B> and <B>longjmp</B> you can return to a function higher up in your call chain. Other than that, all the same considerations apply.</p>
+
+<h4><FONT COLOR="#000080">Exceptions</FONT></H4>
+
+<p>When we're writing code in C++ or in Java we can use exceptions to transfer control when an error occurs. Exceptions are similar to <B>setjmp</B> and <B>longjmp</B> in that code that detects an error can jump back up the call stack without knowing exactly where the error will be handled. Exceptions are significantly different from <B>setjmp</B> and <B>longjmp</B> in several ways, however, so don't press this analogy too hard. Exceptions in Java differ significantly from exceptions in C++ in the way that stack unwinding is handled. We'll come to that a little later. We'll begin, though, by looking at how to indicate that an error occurred and how to provide code to handle errors. In this regard Java and C++ are quite similar. We'll work mostly with code examples in C++, and when there are significant differences in Java I'll mention them.</p>
+<p>The fundamental idea behind exceptions is that code that detects an error should be able to say "I give up, I don't know how to handle this," without having to know whether some other piece of code can handle the problem. This is a weakness in <B>setjmp</B> and <B>longjmp</B>, because in order to call <B>longjmp</B> there must have been a preceding call to <B>setjmp</B> to set up the jump buffer. Without that call, <B>longjmp</B> will fail disastrously and unpredictably. With exceptions, on the other hand, if there is no handler for the exception that has been thrown the program will terminate in a fairly well defined way.</p>
+
+<h4><FONT COLOR="#000080">Throwing and Catching</FONT></H4>
+
+<p>When our code detects an error it can throw an exception. In C++ an exception can be of any type: such as an <B>int</B>, a <B>float</B>, an object, or a pointer. In Java an exception must be an object of a type derived from <B>java.lang.Exception</B>. You throw an object with the keyword <B>throw</B>:</p>
+
+<pre>
+void f()
+{
+if (error)
+    // throw an int:
+    throw 3;
+}
+</pre>
+
+<p>This throw-expression says to throw the integer 3. To throw an exception of some other type, simply create an object of that type and use it as the argument to <B>throw</B>:</p>
+
+<pre>
+void g()
+{
+if (error)
+    // throw a C-style string:
+    throw "An error occurred";
+}
+
+class Error {};
+
+void h()
+{
+if (error)
+    // throw an object of type Error:
+    throw Error();
+}
+
+void j()
+{
+if (error)
+    // throw a pointer to Error:
+    throw new Error();
+}
+</pre>
+
+<p>The last example is the only correct form if you are coding in Java <a href="#5">[5]</a>: it creates an object and throws it.</p>
+<p>The code that is intended to handle the exception announces its readiness to do so with a <B>try</B> block and a <B>catch</B> clause:</p>
+
+<pre>
+int main()
+{
+try {
+    f();
+    }
+catch(int i)
+    {
+    cerr &lt;&lt; "Exception caught: " &lt;&lt; i 
+         &lt;&lt; '\n';
+    }
+return 0;
+}
+</pre>
+
+<p>The <B>try</B> block tells the compiler to generate code to handle any exceptions thrown as a result of executing code contained in the block. In this example, the <B>catch</B> clause says that the next block of code should be executed whenever an exception of type <B>int</B> has been thrown in the <B>try</B> block. You can have multiple catch clauses to handle different types of exceptions:</p>
+
+<pre>
+int main()
+{
+try {
+    f();
+    g();
+    h();
+    j();
+    }
+catch(char *str)
+    {
+    cerr &lt;&lt; "Exception caught: " &lt;&lt; str 
+         &lt;&lt; '\n';
+    }
+catch(Error&amp; e)
+    {
+    cerr &lt;&lt; "Exception caught:"
+         &lt;&lt; "Error object\n";
+    }
+catch(Error *e)
+    {
+    cerr &lt;&lt; "Exception caught:"
+         &lt;&lt; "pointer to Error\n";
+    delete e;
+    }
+return 0;
+}
+</pre>
+
+<p>When we write a <B>catch</B> clause that can handle a pointer or a reference to a type, that <B>catch</B> clause will also be used for a pointer or reference to a type derived from the type that it handles. For example:</p>
+
+<pre>
+class Error {};
+class DerivedError {};
+
+int main()
+{
+try {
+    j();
+    }
+catch(Error *e)
+    {
+    cerr &lt;&lt; "Exception caught: pointer to Error\n";
+    delete e;
+    }
+return 0;
+}
+</pre>
+
+<p>The <B>catch</B> clause here will be executed whenever code executed inside the <B>try</B> block throws an exception of type pointer to <B>Error</B> or of type pointer to <B>DerivedError</B>. There is no best match rule here: the first <B>catch</B> clause that can handle the type thrown wins, even if a later one looks better:</p>
+
+<pre>
+class Error {};
+class DerivedError {};
+
+int main()
+{
+try {
+    j();
+    }
+catch(Error *e)
+    {
+    cerr &lt;&lt; "Exception caught: pointer to Error\n";
+    delete e;
+    }
+catch(DerivedError *e)
+    {
+    cerr &lt;&lt; "Exception caught: pointer to DerivedError\n";
+    delete e;
+    }
+return 0;
+}
+</pre>
+
+<p>In this case, if <B>j</B> throws a pointer to <B>DerivedError</B>, the first <B>catch</B> clause is the one that will be executed.</p>
+
+<h4><FONT COLOR="#000080">Cleaning up the Stack</FONT></H4>
+
+<p>One of the promises that C++ tries to keep is that if you have created an object of a type that has a destructor, when that object is no longer available its destructor will be run. For an auto object this means that when the function in which it was created returns, its destructor will be run. This provides a powerful model for resource control: obtain resources in constructors, and release them in destructors. We're probably all used to doing this for memory: constructors allocate memory and destructors release it. Any scarce resource should be handled in the same way.</p>
+<p>Keeping this promise requires that destructors be run when a function stops execution early because of an exception. For example:</p>
+
+<pre>
+class C
+{
+public:
+    C() { data = new char[320]; }
+    ~C() { delete [] data; }
+private:
+    char *data;
+};
+
+void f()
+{
+C c;
+throw 3;
+// other processing here
+}
+</pre>
+
+<p>At the point of the throw, the compiler must generate code to destroy c. Otherwise, when the exception is thrown there will be a memory leak.</p>
+<p>Similarly, a function that doesn't throw any exceptions itself but calls a function that can throw an exception must be prepared to run destructors if an exception is thrown:</p>
+
+<pre>
+void g()
+{
+C c;
+f();
+// other processing here
+}
+</pre>
+
+<p>Again, the compiler must generate code to destroy <B>c</B> if <B>f</B> throws an exception. You don't have to write any code to make this happen: the compiler does it for you in order to keep the promise that C++ makes, to destroy objects when they become inaccessible.</p>
+<p>In Java, garbage collection makes things both simpler and more complicated. The resource that most of us deal with most often is memory. Java's garbage collector handles the releasing of unused memory, so we don't need to worry about it. This means that most of what we'd do in a C++ destructor is unnecessary. However, that doesn't mean there is never any cleanup needed when an exception is thrown. Java doesn't have destructors, so you have to write code to handle any necessary cleanup in your functions. You do this with a <B>finally</B> block:</p>
+
+<pre>
+// Java only:
+void f()
+{
+try {
+    // allocate a resource
+    // use the resource
+    }
+finally
+    {
+    // release the resource
+    }
+}
+</pre>
+
+<p>A <B>finally</B> clause will be executed whenever execution of the <B>try</B> block ends, whether because execution simply reached the end of the block or because an exception was thrown.</p>
+
+<h4><FONT COLOR="#000080">Unhandled Exceptions</FONT></H4>
+
+<p>In both C++ and Java, the runtime system ends up handling exceptions that aren't handled by any user-written code. When this happens the application is terminated. In applications that we write here at The Journeyman's Shop, we try to write our code so that this never happens. Running into an unhandled exception is a serious error. Of course, when we're writing a part of a larger application, we can't control what the rest of the application does with exceptions, so we document the exceptions that we throw and the circumstances under which we throw them, and we leave it to the application architect to make sure that they are properly handled.</p>
+
+<h4><FONT COLOR="#000080">Transmitting Error Information with Exceptions</FONT></H4>
+
+<p>In C++, as we've seen, we can throw an object of type <B>int</B>. If you decide to do this, you can encode errors with integral values, as we discussed last time. However, since we can throw objects and catch them according to their type, we have a much more powerful mechanism that we can use: we create different types to represent different errors. Java programmers are already familiar with this: there are over fifty different exception types that can be used to indicate what went wrong in a program. In the code that catches an exception, each <B>catch</B> clause catches a different type, and can then handle the error indicated by that type appropriately.</p>
+
+<h4><FONT COLOR="#000080">Coming Up</FONT></H4>
+
+<p>Next time we'll talk about a subject that we mentioned in passing here: initialization and cleanup. This is an area that often leads to mysterious program bugs, mostly because we don't give it enough thought.</p>
+
+<h4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1]  In actual use, each time we register our own new-handler function we need to make a note of the function that was previously registered, and if our function cannot fix the problem, it should call the previously registered handler. This is easy to do, because <B>set_new_handler</B> returns a pointer to the previous handler. When we unregister our handler we also must restore the previous handler.</p>
+<p><a name="2"></a>[2]  If we do this, we must also provide an appropriate operator delete, that calls <B>free</B>. That way we make sure we're using the same memory manager to allocate memory in operator <B>new</B> and to release it in operator <B>delete</B>.</p>
+<p><a name="3"></a>[3]  In particular, linkers tend to distinguish non-fatal errors, which result in an executable file that might not work right, from fatal errors, which result in no executable file.</p>
+<p><a name="4"></a>[4]  This code uses the extensions provided by Borland's C++Builder. Check your library documentation for implementation-specific signals.</p>
+<p><a name="5"></a>[5]  Yes, yes, I know: there's no <B>throw</B> specifier, and Java is very picky about them. For the moment let's stick to <B>throw</B> expressions and not worry about the surrounding context too much.</p>
+
+<p><i>Pete Becker is Technical Project Leader for Dinkumware, Ltd. He spent eight years in the C++ group at Borland International, both as a developer and manager. He is a member of the ANSI/ISO C++ standardization committee. He can be reached by email at <B>petebecker@acm.org</B>.</i></p>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

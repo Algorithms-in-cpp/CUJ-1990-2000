@@ -1,0 +1,169 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>October 1998/An SQL Client Class</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tococt.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Client/Server</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">An SQL Client Class</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Alexandre Tikhonov</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>It's always a challenge to mix SQL into a program without compromising readability. Here's where classes can really help.</p></BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>During the two last years, I worked for the Russian company TAIS on a large software project to handle airplane ticket sales. The project used a big OLTP (Online Transaction Processing) server containing more than 150 tables in the database. A simple and fast interface to the database was essential. After considering the two most common methods of database access supported by SQL server manufacturers &#151; embedded SQL and dynamic SQL &#151; I concluded that both had such serious drawbacks that they were unusable directly. Embedded SQL requires the programmer to write SQL statements directly in the source code and then preprocess it. A primary problem with this approach is that the preprocessed code isn't readable. What's worse, it can't be debugged without significant knowledge of the SQL client library implementation. Dynamic SQL is much slower, and it also requires some knowledge of the SQL client library. Further, both embedded and dynamic SQL methods vary according to the SQL server in use.</p>
+<p>In this article I present a class library that allows programmers to write database code faster, and without knowledge of the SQL client library. The class library provides a relatively simple interface to SQL databases. Most of the functionality is accessed through a class named <B>Query</B>. My implementation uses dynamic SQL but provides two kinds of caching that yield performance just 0-10% slower than embedded SQL (depending on kind of SQL statement being used).</p>
+<p>We did all the development in C++ on Unix and Windows NT. Initially we used Interbase SQL server. Later we decided to support Sybase SQL server. I was able to make this port just rewriting an implementation of my class library and creating a database converter (again using the same library). Today most of the airplane tickets in Russia are being sold using our server, so this method has been tested in real conditions.</p>
+
+<h4><FONT COLOR="#000080">The Query Class</FONT></H4>
+
+<p>An object of the <B>Query</B> class (<A HREF="fig1.htm">Figure 1</A>) represents a single SQL statement. For frequently used statements this object should be named; this will activate the caching mechanism. The example in <A HREF="fig2.htm">Figure 2</A> illustrates briefly how to use this class.</p>
+<p>Referring to <A HREF="fig2.htm">Figure 2</A>, the constructor does almost nothing. It just initializes some member variables. Function <B>prepare</B> parses the string given in its argument to obtain SQL parameter types. <B>prepare</B> replaces type specifiers by <B>'?'</B> and sends <B>"prepare statement"</B> requests to the SQL server. Thus the statement</p>
+
+<pre>
+"SELECT NAME, BIRTHDAY, PHONE FROM PERSON WHERE DEPT = %s"
+</pre>
+
+<p>passed to function <B>prepare</B> will be transformed into</p>
+
+<pre>
+"SELECT NAME, BIRTHDAY, PHONE FROM PERSON WHERE DEPT = ?"
+</pre>
+
+<p>and sent to the SQL server. The single <B>%s</B> in the string argument to <B>prepare</B> causes the <B>Query</B> object to internally store information that only one parameter will be expected by the SQL server when it executes the prepared statement, and that the parameter is a character string. The SQL server builds a procedure to execute the given statement and returns a handle to this procedure. This handle is also stored in the <B>Query</B> object.</p>
+<p><B>open</B> creates an <B>SQLDA</B> structure, as shown in <A HREF="fig3.htm">Figure 3</A>. An <B>SQLDA</B> structure is a standard dynamic SQL structure. (It is supposed to be the same for all SQL servers; in practice, there are some small differences, particularly in the way character strings are handled.) The <B>SQLDA</B> data structure is the main data structure used to pass data between the application and the SQL client library (provided by the SQL server manufacturer). An <B>SQLDA</B> structure can store one row (record) of database data as an array of <B>SQLVAR</B> structures (<A HREF="fig3.htm">Figure 3</A>), which are also standard dynamic SQL structures. Each <B>SQLVAR</B> structure holds one field of a database record.</p>
+<p><B>open</B> fills the <B>SQLDA</B> structure with the arguments expected by the prepared statement. In the example provided by <A HREF="fig2.htm">Figure 2</A>, the prepared statement expects a single string argument, so <B>open</B> fills the <B>SQLDA</B> structure with the string argument <B>"SALES"</B>. <B>open</B> uses a variable argument list (a C/C++ <B>va_list</B>), so it can take any possible sequence of arguments and types. Like <B>prepare</B>, <B>open</B> can also input a format string and translate the format specifiers (<B>%s, %hd</B>, etc.) into integral type descriptors. This format string is passed as the first parameter to <B>open</B>. Alternatively, <B>open</B> can use the type descriptors previously prepared by <B>prepare</B>. This is the scenario depicted in <A HREF="fig2.htm">Figure 2</a>, since <B>open</B>'s first argument is <B>NULL</B>. In either case, <B>open</B> uses these type descriptors as "instructions" for copying its variable argument list into the <B>SQLDA</B> structure. In this sense, <B>open</B> works much like <B>printf</B>.</p>
+<p>After filling the <B>SQLDA</B> structure, <B>open</B> sends the request to the SQL server to execute the procedure associated with the handle obtained by the <B>prepare</B> function. <B>open</B> actually provides a two-in-one method of use. If the caller provides a non-<B>NULL</B> argument as its first parameter, <B>open</B> treats this argument as an SQL statement. <B>open</B> will call <B>prepare</B> automatically if necessary.</p>
+<p><B>execute</B> works exactly the same way as <B>open</B>. The only difference is that <B>open</B> is to be used in conjunction with SQL <B>SELECT</B> statements (more precisely, any SQL statement that returns a result set), and <B>execute</B> is for any other statement.</p>
+<p><B>fetch</B> navigates through the result set obtained by calling the <B>open</B> function. The <B>Query</B> object contains a buffer to hold one row (the current row) of the resulting set. Immediately after a call to <B>open</B> this current row is undefined. The first call to <B>fetch</B> makes the first row of the result set the current row. You can use subsequent calls to scan the result set. When you attempt to move past the last row, <B>fetch</B> returns <B>FALSE.</B> The version of <B>fetch</B> that takes parameters is one more example of a two-in-one function. It executes the no-parameter version of <B>fetch</B> and then executes <B>read</B> with the given format and parameters if the no-parameter <B>fetch</B> returns <B>TRUE.</B></p>
+<p>Function <B>read</B> copies fields from the current row into user variables. It works similarly to the Standard C library <B>scanf</B> function. It is not necessary to read all the fields in a row in one call to <B>read</B>. All data is available for reading until the next <B>fetch</B> is called.</p>
+<p><B>close</B> releases the result set on the SQL server and all related structures.</p>
+
+<h4><FONT COLOR="#000080">Specifying SQL Parameters</FONT></H4>
+
+<p></B>The original idea for this method of parameter passing came from the C <B>printf/scanf</B> functions. With my method you can create SQL-like statements that contain a sequence of <B>"%&lt;data type&gt;"</B> instead of actual values. My implementation allows you to pass parameters by value or via a pointer. The set of supported types includes standard types such as integer, <B>long</B>, <B>double</B>, character strings, several general-purpose classes such as strings and dates, and a few project-specific types.</p>
+<p>This part of the class design is very flexible. It allows you to add support for any types and classes (if you know how to convert each of them into a single database field). For example, <B>%hd</B> represents <B>short</B> by value, <B>%hD</B> represents <B>short</B> by pointer, <B>%s</B> represents a character string, etc. So the <B>open</B> and <B>execute</B> functions accept parameters either by value or by reference through a pointer. (A pointer parameter is always required when reading data, since a C function cannot pass data back through a parameter that is passed by value.)</p>
+<p>The <B>read</B> function uses a more complicated syntax to map database fields to the program variables. Three forms are provided:</p>
+<p>1)  <B>%[&lt;type&gt;](&lt;name&gt;)</B> &#151; Read the field <B>&lt;name&gt;</B> into the variable of type &lt;type&gt;.</p>
+<p>2)  <B>%[&lt;type&gt;]#&lt;fieldNo&gt;</B> &#151; Read the <B>&lt;fieldNo&gt;</B>th field of the selected row (counting from 0) into the variable of type <B>&lt;type&gt;</B>.</p>
+<p>3)  <B>%[&lt;type&gt;]</B> &#151; Read the field that follows the field previously read (or read the first field if none was previously read). All three methods can be combined in a single read.</p>
+<p>Here are some examples of reads performed on the result set of <B>"SELECT NAME, BIRTHDAY, PHONE FROM PERSON"</B>:</p>
+
+<pre>
+read("%s(NAME)%s(BIRTHDAY)%s(PHONE)", s1, s2, s3)
+</pre>
+
+<p>reads <B>NAME</B> into <B>s1,</B> <B>BIRTHDAY</B> into <B>s2,</B> and <B>PHONE</B> into <B>s3.</B></p>
+
+<pre>
+"%s(NAME)%s%s"
+</pre>
+
+<p>and</p>
+
+<pre>
+"%s#0%s%s"
+</pre>
+
+<p>will do the same.</p>
+
+<pre>
+"%s(PHONE)%#1%s"
+</pre>
+
+<p>reads <B>PHONE</B> into <B>s1,</B> <B>BIRTHDAY</B> into <B>s2</B>, and PHONE into <B>s3.</B></p>
+
+<pre>
+"%s%s#2%(BIRTHDAY)"
+</pre>
+
+<p>reads <B>NAME</B> into <B>s1,</B> <B>PHONE</B> into <B>s2</B>, and <B>BIRTHDAY</B> into <B>s3.</B></p>
+<p>Using field names produces the most readable code, but unfortunately it costs a significant amount of time, especially for wide rows. The reason is very simple: the names of the fields are stored within <B>SQLVAR</B>s in the <B>SQLDA</B> structure. To find which <B>SQLVAR</B> contains the desired field requires a scan of the whole array of <B>SQLVAR</B> structures, comparing field names. If there are hundred or more fields in a row this technique becomes too slow. I have used a fairly standard caching mechanism to accelerate this search, but it still causes up to 10% loss in performance compared to embedded SQL if all fields are read by field names. The loss in performance is not significant for rows with just a few fields, but for wide rows I would recommend reading only the first field by name and reading subsequent fields without giving a field name. The most typical way to do this is with a statement such as:</p>
+
+<pre>
+"%s(NAME)%s%s"
+</pre>
+
+<p>Reading more than one C++ object from a single row requires some caution. Of course it is natural to define a <B>load</B> or <B>read</B> function for each of the objects. This function would typically read object member variables from the current row. In this case, however, any modifications to the database schema or the selected result set might cause problems when reading one of the objects because of a shift in field position or field order. In this situation I have advised other programmers in our project to add a string member variable to their class that enumerates database fields to be selected, fixing their order. A complete SQL SELECT statement can be formed from this string (via <B>sprintf</B>) and sent to the SQL server for preparation <a href="#1">[1]</a>. The <B>load</B> function can then use my <B>read</B> function to read the first field by name and the others by position.</p>
+
+<h4><FONT COLOR="#000080">Caching SQL Statements</FONT></H4>
+
+<p>The "prepare statement" request to the SQL server is usually the most time-consuming procedure in database applications. Selection and updating of the records that can be located using a key take much less time, unless these operations are performed on thousands of records. In general, though, an application does this rarely. That's why the "prepare statement" request makes all difference in performance between embedded SQL and dynamic SQL.</p>
+<p>I have achieved performance that is very close to embedded SQL using a cache of prepared statements. The cache stores query names and associates them with handles to the server procedures and with parameter type information. (In the debug version the cache also stores the SQL statement itself.) Using the cache mechanism, each working process/thread of our server application prepares each statement only once, but uses it hundreds and thousands times, so the loss of performance (from embedded SQL) is less than 1%.</p>
+<p>The need to store statements in the cache in the debug version stems from the following problem. If two different queries exist having the same name, the second query will use the procedure prepared by the first one. This problem is hard to find, so in the debug version the SQL statements are stored and are checked during each call to <B>prepare</B>.</p>
+<p>The drawback of the cache is that it requires additional memory. It takes little memory on the computer that runs our server, but more on the computer running the SQL server (if they aren't the same). In practice, I encountered no problems with this memory requirement. The OLTP server I worked on (about 8 Mb executable, at least 3-4 processes) ran okay on a 32 Mb system, even with the SQL server running on the same computer.</p>
+
+<h4><FONT COLOR="#000080">Implementation</FONT></H4>
+
+<p>Here is an outline of my class library that describes the most important points. The full implementation is rather large. It contains additional features to provide extra reliability, statistics gathering, journal logging, character map conversion, etc. This kind of library requires many general-purpose classes such as strings, lists, dates, etc. that are usually present in any project (see the <A HREF="sidebar.htm">sidebar</A> for a description). Also, the implementation certainly depends on the SQL server and its client library. To save space I describe only the essential parts of the implementation here.</p>
+<p>To provide more flexibility I have created an abstract class <B>Query</B> that declares a user interface (given above in <A HREF="fig1.htm">Figure 1</A>). The real working classes are based on this generic class; they override virtual methods to implement SQL server-dependent functions.</p>
+<p>There are three main supporting classes. Two of them &#151; <B>DbRecordField</B> and <B>DbRecord</B> (<A HREF="fig4.htm">Figure 4</A>) &#151; provide storage for the current row of data and for the set of parameters to be used with the SQL statement, together with a set of necessary methods. The main purpose of the design was to create storage for each row as a single memory block, because multiple memory block allocations are too costly and complicated to copy. <B>DbRecordField</B> contains a description of one field of the data row and a pointer to it (member variable <B>text</B>). This pointer points into the buffer allocated for row storage, which is owned by <B>DbRecord</B>. The <B>length</B> variable isn't the length of the real data but the length of the region reserved within the buffer to hold this data. The real length of the data is stored in the <B>SQLDA</B> structure. <B>operator=</B> fills in the description from the <B>SQLVAR</B> structure referenced by the argument. <B>operator=</B> assumes there's enough space provided in the buffer to store the given variable.</p>
+<p>The <B>DbRecord</B> class stores the row of data as a sequence of <B>DbRecordField</B>s and provides a memory block for storage. This memory block is based on a <B>Dump</B> class (not shown), which is a simple wrapper around dynamic memory allocation functions. <B>DbRecord</B> enables creation of such storage from a pre-filled <B>SQLDA</B> structure, which may have come from a "prepare statement" request or may have been created to hold input parameters for an SQL statement.</p>
+<p>The third class, <B>DbSQLDA</B> (<A HREF="fig5.htm">Figure 5</A>), handles both the <B>SQLDA</B> structure and its associated row of data, providing synchronization and a few access methods. The main purpose of this class is to hide data storage details from upper layers and to provide a simple way to construct and handle <B>SQLDA</B> structures. All public interface functions use <B>SQLVAR</B> and <B>SQLDA</B> structures to handle data. This approach was necessary to make it easier to write implementations of <B>Query</B> for different SQL servers and to encapsulate the storage method.</p>
+<p>This class also provides an option not to store the data row. <B>hasRecord</B> is <B>FALSE</B> when this option is enabled. This feature is required to provide an interface that is unified for handling <B>SQLDA</B> structures that are associated with a data row and for those that are not. The <B>SQLDA</B> structure is stored within the <B>Dump</B> class. The SQL client library requires that the <B>SQLDA</B> data structure be passed with <B>SQLVAR</B> structures immediately following. Storing the <B>SQLDA</B> structure in the <B>Dump</B> class allows simple access to the array of <B>SQLVAR</B> structures.</p>
+<p>The proper sequence of operation while using this class is to construct its internally stored <B>SQLDA</B> structure using <B>create</B> and/or <B>operator&lt;&lt;</B>. You must then call <B>synchronize</B> before issuing any SQL client library call that uses this <B>SQLDA</B>. Calling synchronize is necessary because addition of variables may cause reallocation of the memory block that stores row data, making pointers to data in the <B>SQLDA</B> structure invalid. <B>synchronize</B> solves this problem.</p>
+
+<h4><FONT COLOR="#000080">SQL Statement Cache</FONT></H4>
+
+<p>The next important component is the statement cache. All statements are divided into groups (or "stacks"). The reason is to enable removing a whole group of statements from the cache that have become obsolete. Statements become obsolete, for instance, when a periodic procedure is completed. (The most typical case is a night maintenance procedure.) All cached statements used by this procedure aren't needed until the next time it runs, so it's better to unload them from the cache. Another case in which statements become obsolete is if the cache is shared by several threads or processes. (However, we didn't implement a shared cache in our project because of some problems related to the SQL client library. The library associates the prepared procedure with the connection, or session, to the database.)</p>
+<p>The cache is implemented by two main classes, <B>StoredQuery</B> and <B>StackOfQuery</B> (<A HREF="fig6.htm">Figure 6</A>). I created <B>StoredQuery</B> because it was necessary to inherit it from a class that forms a node in a linked list (<B>LstLink0</B>) and to store some additional data in it. Also part of data stored in <B>Query</B> isn't necessary in the cache, so combining these two classes would be a waste of memory. Here <B>data</B> points to the "refined" <B>Query</B> created by invoking special operations upon a normal <B>Query</B>. <B>ExactString</B> is just a dynamic string. I assume that if two queries have the same <B>CHECK_QUERY_LENGTH</B> first bytes they are the same. There's nothing special about <B>ExactString</B>. I was just greedy for space to store the complete statement, because it tends to be too big for wide tables.</p>
+<p>The <B>StackOfQuery</B> class is just a list of <B>StoredQuery</B> objects with an interface. <B>LstList</B> is a list class; its methods have sufficiently descriptive names to pass over them here.</p>
+
+<h4><FONT COLOR="#000080">Overriding the Query Class</FONT></H4>
+
+<p>I now describe some essential details of the generic <B>Query</B> class implementation. I briefly described this class at the beginning of this article. I will now outline what the overridden SQL server-specific functions should do. <A HREF="fig7.htm">Figure 7</A> shows another view of the <B>Query</B> class, this time with more information, but still leaving out a lot of details due to space constraints. (The full class library is available from the <I>CUJ</I> ftp site. See p. 3 for downloading instructions.)</p>
+<p><B>Query</B> can be in several different states described by flags stored in a state variable. The basic states are as follows:</p>
+
+<UL><LI><B>DQS_PREPARED</B> &#151; the statement is prepared (just prepared or restored from the cache, it makes no difference). <B>Query</B> must be in this state after calling <B>prepare</B> and must leave this state after calling <B>unprepare</B> or <B>drop</B>.</LI>
+    <LI><B>DQS_OPENED</B> &#151; the statement has been executed. In the case that the statement was a <B>SELECT</B> statement and the result set is available, <B>Query</B> will be in the state <B>DQS_HAS_CURSOR.</B> The <B>DQS_OPENED</B> flag should be true after calling <B>open</B> or <B>execute</B> and should become false after calling <B>close</B> or <B>drop.</B> The same applies to the <B>DQS_HAS_CURSOR</B> flag when the statement executed was <B>SELECT</B>.</LI>
+    <LI><B>DQS_CACHED</B> &#151; the <B>Query</B> is named and so should be cached. This flag is set by the <B>Query</B> constructor or by <B>setName.</B></LI>
+    <LI><B>DQS_HAS_STMT</B> &#151; this flag is true if a statement resource was allocated. This state is rather dependent on the SQL client library. I added it to reuse statements in uncached queries and to simplify cleanup in the destructor.</LI></UL>
+
+<p>Implementations for certain SQL servers may have additional states but the behavior described above is supported for all servers. All stored queries are stored in the state <B>DQS_CACHED|DQS_HAS_STMT|DQS_PREPARED.</B></p>
+<p>The <B>Query</B> class consists of two layers. The first layer does conversion between the input API methods and the <B>SQLDA</B> structure, and the second sends requests to the SQL server and receives responses from it. Most of the API methods contains calls for each of these layers. The first layer is almost independent of the SQL server. The only exception is additional parameter types.</p>
+<p>The essential part of the first layer consists of the following functions:</p>
+
+<UL><LI><B>getArg</B> &#151; converts data from an <B>SQLDA</B> structure to a program variable given by the pair (type, pointer);</LI>
+    <LI><B>setArg</B> &#151; applies this conversion in the other direction;</LI>
+    <LI><B>preRead</B> &#151; parses the format string to obtain the index of the field in the data row to be read;</LI>
+    <LI><B>getFormat</B> &#151; scans the SQL statement for the parameters' type specifications;</LI>
+    <LI><B>fillSQLDA</B> &#151; constructs <B>SQLDA</B> from a C/C++ <B>va_list</B>;</LI>
+    <LI><B>_read</B> &#151; reads fields from the data row to the program variables according to the given format string;</LI>
+    <LI><B>typeToShort</B> &#151; converts a symbolic type specifier into the type code.</LI></UL>
+
+<p>Three of these functions are "tunable" in the sense that they can be changed for a specific project to add handling of other types. This feature is necessary if you want to read project-specific objects from the database. In most cases I would recommend reading a class by creating a special method within that class to restore an object from the <B>Query</B>. This approach will allow you to call this special method after each <B>fetch</B>, with a pointer to the <B>Query</B> that will contain the current data row. But in certain cases the handling can be placed within the original <B>setArg/getArg</B> functions. For example, in my project we stored <B>enum</B>s as character strings in the database so we could read records easier using any SQL command processor. Another case is when it is necessary to handle data types specific to the SQL server (dates, for instance). The place to put such a function is in overridden <B>setArg/getArg</B> functions that can forward calls to the original functions for processing standard parameters.</p>
+<p>The second layer is mostly dependent on the SQL server in use. The user will usually just call methods from the first layer and overridden methods from the second one. The second layer also manages <B>Query</B> states and caching of the statements. This layer includes the functions <B>prepare</B>, <B>unprepare,</B> <B>open,</B> <B>close,</B> <B>fetch,</B> <B>read</B>, etc. These functions are declared as virtual (which is generally the case for <B>Query</B> functions that start with an underscore).</p>
+<p>One more function is worthy of note: <B>getFieldNo.</B> This function provides an accelerated way to get the index of a field in the <B>SQLDA</B> structure by its name. <B>getFieldNo</B> uses a hashing algorithm to prevent scanning over all the <B>SQLVAR</B> variables when searching for a matching field name. The <B>fieldByNameAccelerator</B> cache is shared by all <B>Query</B> objects with the same name.</p>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>In writing this article I aimed to share the major concepts of this technique and outline my implementation of it. I am open to discuss new ideas and suggestions and can be reached at <B>alexti@inforoute.net</B>.</p>
+
+<h4><FONT COLOR="#000080">Note</FONT></H4>
+
+<p><a name="1"></a>[1] It is better not to embed literal <B>'%'</B> format specifiers, such as required by my library, within the <B>sprintf</B> format string. Unless you take care, <B>sprintf</B> will interpret them as <I>its own</I> format specifiers. Instead, I recommend you write the <B>sprintf</B> statement similar to the following:</p>
+
+<pre>
+sprintf(statement,
+    "SELECT %s FROM database WHERE %s",
+    requestedfieldsstring,
+    "LastName = %s");
+</pre>
+
+<p> In retrospect, it might have been better if I'd chosen another character instead of <B>'%'</B> to indicate parameter types.</p>
+
+<p><i>Alexandre Tikhonov has been developing database applications in C/C++ since 1992, most of which were client/server applications that worked with various SQL servers. Alexandre has a degree in Applied Mathematics and also has interests in abstract mathematics problems in the area of the control of stochastic systems.</i></p>
+
+<h4><a href="../../../source/1998/oct98/tikhonov.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

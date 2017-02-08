@@ -1,0 +1,328 @@
+<HTML>   
+     <HEAD>
+<TITLE>October 1999/Using auto_ptr Effectively</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tococt.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Using auto_ptr Effectively</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Herb Sutter</FONT></H3>
+
+<BLOCKQUOTE>
+<p>So you've heard about auto_ptr. Now what can you do with it? And what should you <I>not</I> do with it? Find out here.</p>
+</BLOCKQUOTE>
+
+<hr>
+<BLOCKQUOTE>
+
+<p>Most people have heard of the standard <B>auto_ptr</B> smart pointer facility, but not everyone uses it daily. That's a shame, because it turns out that <B>auto_ptr</B> neatly solves common C++ design and coding problems, and using it well can lead to more robust code. This article shows how to use <B>auto_ptr</B> correctly to make your code safer &#151; and how to avoid the dangerous but common abuses of <B>auto_ptr</B> that create intermittent and hard-to-diagnose bugs.</p>
+
+<h4><FONT COLOR="#000080">Why Call It an "Auto" Pointer?</FONT></H4>
+
+<p><B>auto_ptr</B> is just one of a wide array of possible smart pointers. Many commercial libraries provide more sophisticated kinds of smart pointers that can do wild and wonderful things, from managing reference counts to providing advanced proxy services. Think of the Standard C++ <B>auto_ptr</B> as the Ford Escort of smart pointers, a simple general-purpose smart pointer that doesn't have all the gizmos and luxuries of special-purpose or high-performance smart pointers, but that does many common things well and is perfectly suitable for regular daily use.</p>
+<p>What <B>auto_ptr</B> does is own a dynamically allocated object and perform automatic cleanup when the object is no longer needed. Here's a simple example of code that's unsafe without <B>auto_ptr</B>:</p>
+
+<pre>
+// Example 1(a): Original code
+//
+void f()
+{
+   T* pt( new T );
+   /*...more code...*/
+   delete pt;
+}
+</pre>
+
+<p>Most of us write code like this every day. If <B>f</B> is a three-line function that doesn't do anything exceptional, this may be fine. But if <B>f</B> never executes the <B>delete</B> expression, either because of an early return or because of an exception thrown during execution of the function body, then the allocated object is not deleted and we have a classic memory leak.</p>
+<p>A simple way to make Example 1(a) safe is to wrap the pointer in a "smarter" pointer-like object that owns the pointer and that, when destroyed, deletes the pointed-at object automatically. Because this smart pointer is simply used as an automatic object (that is, one that's destroyed automatically when it goes out of scope), it's reasonably called an "auto" pointer:</p>
+
+<pre>
+// Example 1(b): Safe code, with auto_ptr
+//
+void f()
+{
+   auto_ptr&lt;T&gt; pt( new T );
+   /*...more code...*/
+}  // cool: pt's destructor is called
+   // as it goes out of scope, and
+   // the object is deleted automatically
+</pre>
+
+<p>Now the code will not leak the <B>T</B> object, no matter whether the function exits normally or by means of an exception, because <B>pt</B>'s destructor will always be called during stack unwinding. The cleanup happens automatically.</p>
+<p>Finally, using an <B>auto_ptr</B> is just about as easy as using a built-in pointer. To "take back" the resource and assume manual ownership again, we just call <B>release</B>:</p>
+
+<pre>
+// Example 2: Using an auto_ptr
+//
+void g()
+{
+   T* pt1 = new T;
+   // Right now, we own the allocated
+   // object. Pass ownership to an auto_ptr.
+   auto_ptr&lt;T&gt; pt2( pt1 );
+   // use the auto_ptr the same way
+   // we'd use a simple pointer
+   *pt2 = 12;       // same as "*pt1 = 12;"
+   // same as "pt1-&gt;SomeFunc();"
+   pt2-&gt;SomeFunc();
+   // use get() to see the pointer value
+   assert( pt1 == pt2.get() );
+   // use release() to take back ownership
+   T* pt3 = pt2.release();
+   // delete the object ourselves, since now
+   // no auto_ptr owns it any more
+   delete pt3;
+} // pt2 doesn't own any pointer, and
+  // so won't try to delete it... OK,
+  // no double delete
+</pre>
+
+<p>Finally, we can use <B>auto_ptr</B>'s <B>reset</B> function to reset the <B>auto_ptr</B> to own a different object. If the <B>auto_ptr</B> already owned an object, though, it first deletes the already owned object, so calling <B>reset</B> is much the same as destroying the <B>auto_ptr</B> and creating a new one that owns the new object:</p>
+
+<pre>
+// Example 3: Using reset()
+//
+void h()
+{
+   auto_ptr&lt;T&gt; pt( new T(1) );
+   // deletes the first T that was
+   // allocated with "new T(1)"
+   pt.reset( new T(2) );
+}  // finally, pt goes out of scope
+   // and the second T is also deleted
+</pre>
+
+<h4><FONT COLOR="#000080">Wrapping Pointer Data Members</FONT></H4>
+
+<p>Similarly, <B>auto_ptr</B> can be used to safely wrap pointer data members. Consider the following common example that uses the Pimpl (or, compiler-firewall) Idiom <a href="#1">[1]</a>:</p>
+
+<pre>
+// Example 4(a): A typical Pimpl
+//
+// file c.h
+//
+class C
+{
+public:
+   C();
+   ~C();
+   /*...*/
+private:
+   class CImpl; // forward declaration
+   CImpl* pimpl_;
+};
+// file c.cpp
+//
+class C::CImpl { /*...*/ };
+C::C() : pimpl_( new CImpl ) { }
+C::~C() { delete pimpl_; }
+</pre>
+
+<p>In brief, the private details of <B>C</B> are split off into a separate implementation object that's hidden behind an opaque pointer. The idea is that <B>C</B>'s constructor is responsible for allocating the private helper "Pimpl" object that contains the class's hidden internals, and <B>C</B>'s destructor is responsible for deallocating it. Using <B>auto_ptr</B>, however, we find an easier way:</p>
+
+<pre>
+// Example 4(b): A safer Pimpl, using auto_ptr
+//
+// file c.h
+//
+class C
+{
+public:
+   C();
+   /*...*/
+private:
+   class CImpl; // forward declaration
+   auto_ptr&lt;CImpl&gt; pimpl_;
+};
+// file c.cpp
+//
+class C::CImpl { /*...*/ };
+C::C() : pimpl_( new CImpl ) { }
+</pre>
+
+<p>Now the destructor doesn't need to worry about deleting the <B>pimpl_</B> pointer, because the <B>auto_ptr</B> will handle it automatically. In fact, if there's no other reason for explicitly writing a destructor, we don't need to bother with a custom destructor at all any more. Clearly, this is easier than managing the pointer manually, and it follows the good practice of wrapping resource ownership in an object &#151; a job that <B>auto_ptr</B> is well suited for. We'll revisit this example again at the end.</p>
+
+<h4><FONT COLOR="#000080">Ownership, Sources, and Sinks</FONT></H4>
+
+<p>This is nifty stuff all by itself, but it gets better: It's also very useful to pass <B>auto_ptr</B>s to and from functions, as function parameters and return values.</p>
+<p>To see why, first consider what happens when you copy an <B>auto_ptr</B>: An <B>auto_ptr</B> owns the object that it holds a pointer to, and only one <B>auto_ptr</B> may own an object at a time. When you copy an <B>auto_ptr</B>, you automatically transfer ownership from the source <B>auto_ptr</B> to the target <B>auto_ptr</B>; if the target <B>auto_ptr</B> already owns an object, that object is first freed. After the copy, only the target <B>auto_ptr</B> owns the pointer and will delete it in due time, while the source is set back to a null state and can no longer be used to refer to the owned object.</p>
+<p>For example:</p>
+
+<pre>
+// Example 5: Transferring ownership
+// from one auto_ptr to another
+//
+void f()
+{
+   auto_ptr&lt;T&gt; pt1( new T );
+   auto_ptr&lt;T&gt; pt2;
+   pt1-&gt;DoSomething(); // OK
+   pt2 = pt1;  // now pt2 owns the
+               // pointer, and pt1 does not
+   pt2-&gt;DoSomething(); // OK
+} // as we go out of scope, pt2's
+  // destructor deletes the pointer,
+  // but pt1's does nothing
+</pre>
+
+<p>But be careful to avoid the pitfall of trying to use a non-owning <B>auto_ptr</B>:</p>
+
+<pre>
+// Example 6: Never try to do work
+// through a non-owning auto_ptr
+//
+void f()
+{
+   auto_ptr&lt;T&gt; pt1( new T );
+   auto_ptr&lt;T&gt; pt2;
+   pt2 = pt1;  // now pt2 owns the
+               // pointer, and pt1 does not
+   // error! following a null pointer
+   pt1-&gt;DoSomething();
+}
+</pre>
+
+<p>With that in mind, we start to see how well <B>auto_ptr</B> works with sources and sinks. A "source" is a function or other operation that creates a new resource, and then typically hands off and relinquishes ownership of the resource. A "sink" is a function that does the reverse, namely that takes ownership of an existing object (and typically disposes of it). Instead of just having sources and sinks return and take bald pointers, though, it's usually better to return or take a smart pointer that owns the resource:</p>
+
+<pre>
+// Example 7: Sources and sinks
+//
+// A creator function that builds
+// a new resource and then hands off ownership.
+//
+auto_ptr&lt;T&gt; Source()
+{
+   return auto_ptr&lt;T&gt;( new T );
+}
+// A disposal function that takes
+// ownership of an existing resource and frees it.
+//
+void Sink( auto_ptr&lt;T&gt; pt )
+{
+}
+// Sample code to exercise the above: takes ownership
+auto_ptr&lt;T&gt; pt( Source() );
+</pre>
+
+<p>Note the elegance of what's going on here:</p>
+<p>1.  <B>Source</B> allocates a new object and returns it to the caller in a completely safe way, by letting the caller assume ownership of the pointer. Even if the caller ignores the return value (of course, you would never write code that ignores return values, right?), the allocated object will always be safely deleted. At the end of this article, I'll demonstrate why returning an <B>auto_ptr</B> is an important idiom. It turns out that returning a result by wrapping it in something like an <B>auto_ptr</B> is sometimes the only way to make a function strongly exception safe.</p>
+<p>2.  <B>Sink</B> takes an <B>auto_ptr</B> by value and therefore assumes ownership of it. When <B>Sink</B> is done, the deletion is performed as the local <B>auto_ptr</B> object goes out of scope (as long as <B>Sink</B> itself hasn't handed off ownership to someone else). The <B>Sink</B> function as written above doesn't actually do anything with its parameter, so calling <B>Sink(pt)</B> is a fancy way of writing <B>pt.reset(0)</B>, but normally a sink function would do some work with the object before freeing it.</p>
+
+<h4><FONT COLOR="#000080">Things Not to Do, and Why</FONT></H4>
+
+<p>Never use <B>auto_ptr</B>s except in one of the ways I just described above. I have seen many programmers try to use <B>auto_ptr</B>s in other ways just as they would use any other object. The problem is that <B>auto_ptr</B>s are most assuredly not like any other object. Here's the fundamental issue, and I'll highlight it to make sure it stands out &#151; for <B>auto_ptr</B>, copies are <I>not</I> equivalent.</p>
+<p>It turns out that this has important effects when you try to use <B>auto_ptr</B>s with generic code that does make copies and isn't necessarily aware that copies aren't equivalent. (After all, copies usually are!) Consider the following code that I regularly see posted on the C++ newsgroups:</p>
+
+<pre>
+// Example 8: Danger, Will Robinson!
+//
+vector&lt; auto_ptr&lt;T&gt; &gt; v;
+/* ... */
+sort( v.begin(), v.end() );
+</pre>
+
+<p>It is never safe to put <B>auto_ptr</B>s into standard containers. Some people will tell you that their compiler and library compiles this fine, and others will tell you that they've seen exactly this example recommended in the documentation of a certain popular compiler. Don't listen to them.</p>
+<p>The problem is that <B>auto_ptr</B> does not quite meet the requirements of a type you can put into containers, because copies of <B>auto_ptr</B>s are not equivalent. For one thing, there's nothing that says a vector can't just decide to up and make an extra internal copy of some object it contains. For another, when you call generic functions that will copy elements, like <B>sort</B> does, the functions have to be able to assume that copies are going to be equivalent. At least one popular sort internally makes a copy of a pivot element. If you try to make it work on <B>auto_ptr</B>s it will merrily make a copy of the pivot <B>auto_ptr</B> object (thereby taking ownership and putting it in a temporary <B>auto_ptr</B> on the side), do the rest of its work on the sequence (including taking further copies of the now non-owning <B>auto_ptr</B> that was picked as a pivot value). When the sort is over the pivot is destroyed and you have a problem. At least one <B>auto_ptr</B> in the sequence (the one that was the pivot value) no longer owns the pointer it once held, and in fact the pointer it held has already been deleted!</p>
+<p>So the standards committee bent over backwards to do everything it could to help you out. The standard <B>auto_ptr</B> was deliberately and specifically designed to break if you try to use it with the standard containers (or, at least, to break with most natural implementations of the standard library). To do this, the committee used a trick &#151; <B>auto_ptr</B>'s copy constructor and copy assignment operator take non-const references to the copied object. The standard containers' single-element <B>insert</B> functions take a reference to const, and hence won't work with <B>auto_ptr</B>s.</p>
+
+<h4><FONT COLOR="#000080">Interlude: The const auto_ptr Idiom</FONT></H4>
+
+<p>One cute and intentional result of this engineering of <B>auto_ptr</B> is that const <B>auto_ptr</B>s never lose ownership. Copying a const <B>auto_ptr</B> is not permitted. In fact, the only things you can do with a const <B>auto_ptr</B> are dereference it with <B>operator*</B> or <B>operator-&gt;</B> or call <B>get</B> to inquire about the value of the contained pointer. This means that we have a clear and concise idiom to express that an <B>auto_ptr</B> can never lose ownership:</p>
+
+<pre>
+// Example 9: The const auto_ptr idiom
+//
+
+// making pt1 const guarantees that
+// pt1 can never be copied to another
+// auto_ptr, and so is guaranteed to
+// never lose ownership  
+const auto_ptr&lt;T&gt; pt1( new T );
+auto_ptr&lt;T&gt; pt2( pt1 ); // invalid
+auto_ptr&lt;T&gt; pt3;
+pt3 = pt1;              // invalid
+pt1.release();          // invalid
+pt1.reset( new T );     // invalid
+</pre>
+
+<p>Now that's what I call const! So if you want to declare to the world that an <B>auto_ptr</B> can never be changed and will always delete what it owns, this is the way to do it. The const <B>auto_ptr</B> idiom is a useful and common technique, and one that you should keep in mind.</p>
+
+<h4><FONT COLOR="#000080">auto_ptr and Exception Safety</FONT></H4>
+
+<p>Finally, <B>auto_ptr</B> is sometimes essential to writing exception-safe code. Consider the following function:</p>
+
+<pre>
+// Example 10(a): Exception-safe?
+//
+String f()
+{
+   String result;
+   result = "some value";
+   cout &lt;&lt; "some output";
+   return result;
+}
+</pre>
+
+<p>This function has two visible side effects: It emits some output, and it returns a <B>String</B>. A detailed examination of exception safety is beyond the scope of this article <a href="#2">[2]</a>, but the goal we want to achieve is the strong exception-safety guarantee, which boils down to ensuring that the function acts atomically &#151; even if there are exceptions, either all side effects happen or none of them do.</p>
+<p>Although the code in Example 10(a) comes pretty close to achieving the strong exception-safety guarantee, there's still one minor quibble, as illustrated by the following client code:</p>
+
+<pre>
+String theName;
+theName = f();
+</pre>
+
+<p>The <B>String</B> copy constructor is invoked because the result is returned by value, and the copy assignment operator is invoked to copy the result into <B>theName</B>. If either copy fails, then <B>f</B> has completed all of its work and all of its side effects (good), but the result has been irretrievably lost (oops).</p>
+<p>Can we do better, and perhaps avoid the problem by avoiding the copy? For example, we could let the function take a non-const <B>String</B> reference parameter and place the return value in that:</p>
+
+<pre>
+// Example 10(b): Better?
+//
+void f( String&amp; result )
+{
+   cout &lt;&lt; "some output";
+   result = "some value";
+}
+</pre>
+
+<p>This may look better, but it isn't, because the assignment to result might still fail, which leaves us with one side effect complete and the other incomplete. Bottom line, this attempt doesn't really buy us much.</p>
+<p>One way to solve the problem is to return a pointer to a dynamically allocated <B>String</B>, but the best solution is to go a step farther and return the pointer in an <B>auto_ptr</B>:</p>
+
+<pre>
+// Example 10(c): Correct (finally!)
+//
+auto_ptr&lt;String&gt; f()
+{
+   auto_ptr&lt;String&gt; result =
+      new String;
+  *result = "some value";
+  cout &lt;&lt; "some output";
+  return result;  // rely on transfer
+                  // of ownership;
+                  // this can't throw
+}
+</pre>
+
+<p>This does the trick, since we have effectively hidden all of the work to construct the second side effect (the return value) while ensuring that it can be safely returned to the caller using only nonthrowing operations after the first side effect has completed (the printing of the message). We know that, once the insertion to <B>cout</B> is complete, the returned value will make it successfully into the hands of the caller, and be correctly cleaned up in all cases.</p>
+<p>If the caller accepts the returned value, the act of accepting a copy of the <B>auto_ptr</B> causes the caller to take ownership. If the caller does not accept the returned value, say by ignoring the return value, the allocated <B>String</B> will be automatically cleaned up as the temporary <B>auto_ptr</B> holding it is destroyed. The price for this extra safety? As often happens when implementing strong exception safety, the strong safety comes at the (usually minor) cost of some efficiency. Here, it is the extra dynamic memory allocation. But, when it comes to trading off efficiency for correctness, we usually ought to prefer the latter!</p>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>Make a habit of using smart pointers like <B>auto_ptr</B> in your daily work. <B>auto_ptr</B> neatly solves common problems and will make your code safer and more robust, especially when it comes to preventing resource leaks and ensuring strong exception safety. Because it's standard, it's portable across libraries and platforms, and so it will be right there with you wherever you take your code.</p>
+
+<h4><FONT COLOR="#000080">Acknowledgments</FONT></H4>
+
+<p>This article is excerpted from the new book entitled <I>Exceptional C++,</I> by Herb Sutter and published by Addison-Wesley Longman, Inc. &copy; 2000 by Addison-Wesley Longman, Inc., available in November. Reprinted by Permission of Addison-Wesley Longman.</p>
+<p>This book contains further detailed treatments of points touched on briefly in this article, including exception safety, the Pimpl (compiler-firewall) Idiom, optimization, const-correctness, namespaces, and other C++ design and programming topics.</p>
+
+<h4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1]  The Pimpl Idiom is useful for reducing project build times because it prevents wide-ranging recompilations of client code whenever the private portions of C change. For more about the Pimpl Idiom and how best to deploy compiler firewalls, see Items 26 to 30 in <I>Exceptional C++</I>.</p>
+<p><a name="2"></a>[2]  See the article by Scott Meyers, "Exception-Safe Generic Containers" on the <I>Effective C++</I> CD (Addison-Wesley, 1999) and Items 8 to 19 in <I>Exceptional C++.</I></p>
+
+<p><i><B>Herb Sutter</B> (<B>hsutter@peerdirect.com</B>) is Chief Technology Officer at PeerDirect Inc. and the principal architect of PeerDirect's heterogeneous database replication products. He is an active voting member of the ISO/ANSI C++ and SQL standards committees and author of the books </i>Exceptional C++<i> and the forthcoming </i>Peer Distributed Databases<i> (Addison-Wesley). </i></p>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

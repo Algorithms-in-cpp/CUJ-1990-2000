@@ -1,0 +1,64 @@
+<HTML>   
+     <HEAD>
+<TITLE>November 1999/Templates for Efficient Dynamic Type Checking</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocnov.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Templates for Efficient Dynamic Type Checking</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Ivan J. Johnson</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Here's a handy template that makes it easy to check your casts without losing performance.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<p>Casting is unavoidable with today's application frameworks. It is also a known source of bugs. To help make casting safer, I have written <B>assert_cast</B>, a set of C++ function templates. These functions perform dynamic type checking in debug mode, without introducing any overhead in the release build, and without the extra clutter of macros like MFC's <B>ASSERT_KINDOF</B>. A sample usage with MFC is as follows:</p>
+
+<pre>
+CMyView* pView = assert_cast&lt;CMyView*&gt;(GetActiveView());
+</pre>
+
+<p>The above statement verifies that the returned "active view" is really a kind of <B>CMyView</B>.</p>
+<p>I've implemented <B>assert_cast</B> as a pair of overloaded function templates (see <a href="list1.htm">Listing 1</a>, <B>cast.h</B>). The compiler deduces the source type from the function argument and chooses one of the two overloads. The compiler cannot deduce the result type from the argument, so you must specify that explicitly (as in the MFC example above). </p>
+<p>The overloading is needed because <B>dynamic_cast</B> has different semantics for pointers and references. For pointers, a failed <B>dynamic_cast</B> returns a null pointer, while for references, it throws <B>std::bad_cast</B>.</p>
+<p>In the pointer case, <B>assert_cast</B> wraps the <B>dynamic_cast</B> with the <B>assert</B> macro. When <B>NDEBUG</B> is defined, the macro expands to nothing, the <B>dynamic_cast</B> is never evaluated, and the entire function can be inlined to a simple <B>static_cast</B>. On the other hand, when <B>NDEBUG</B> is not defined, the validity of the cast is checked, using RTTI (Run-Time Type Identification) when needed. If the cast is invalid, the equality test fails and the program aborts with a diagnostic <a href="#2">[2]</a>.</p>
+<p>The reference case is similar, but in this case the code catches exceptions explicitly and converts them to assertions. In both cases, the results of <B>dynamic_cast</B> and <B>static_cast</B> are compared to trap the occasional perverse situation in which <B>dynamic_cast</B> succeeds but <B>static_cast</B> produces a different and incorrect result <a href="#3">[3]</a>. If an assertion trips, you can then go in with the debugger, examine the call stack at the moment of termination, and locate the offending cast.</p>
+<p>Note that I've used <B>NDEBUG</B> and <B>assert</B>, rather than <B>_DEBUG</B> and <B>ASSERT</B>. The latter are not part of the C++ Standard, and there's no need for them here. Many development environments (including MSVC) will automatically define <B>NDEBUG</B> when appropriate, but check yours before you rely on it. <B>NDEBUG</B> must be consistently defined (or not defined) for all the files in a program; otherwise, violations of the ODR (One Definition Rule) <a href="#4">[4]</a> may result.</p>
+<p>I designed <B>assert_cast</B> to use assertions instead of exceptions for several reasons. First, I wanted it to be usable even in environments where exceptions are considered unacceptable. Second, I wanted it to have no run-time overhead; this precludes checking in the release build. If exceptions were thrown only in the debug build, a program might inadvertently come to depend on handling them, only to fail when the checking is removed. Finally, any program behavior that differs between debug and release builds can be a source of insidious bugs that elude detection during testing, emerge in the field, then mysteriously vanish again when brought home to the debugger. Assertions can't be "handled," so they avoid this problem.</p>
+
+<h4><FONT COLOR="#000080">Workarounds</FONT></H4>
+
+<p>The templates in <a href="list1.htm">Listing 1</a> look innocuous enough; unfortunately, in practice they can put a strain on a compiler's template argument deduction and overload resolution capabilities. Of the three C++ compilers I tried (Intel 4.0, gcc 2.95, MSVC 6), only the Intel could digest my test module. For the others, various hacks are necessary.</p>
+<p>For gcc, my workaround was to use a class template that feels like a function template. Then I used partial specialization on the result type to distinguish reference casts from pointer casts. (Function templates do not support partial specialization, although a similar technique, partial ordering, can often be used to get the same effect.) With the workaround, the MFC example above would actually construct a temporary object of type <B>assert_cast&lt;CMyView *&gt;</B>, then automatically invoke a conversion operator to return a value of type <B>CMyView *</B>, which would be assigned to <B>pView</B>. The code to implement this is not particularly readable, but normally you don't need to be concerned with the internal details of the template. In practice it's quite efficient and easy to use. The code is shown in <a href="list2.htm">Listing 2</a>, <B>alt_cast.h</B>.</p>
+<p>I declare (but do not define) the general version of <B>assert_cast</B>, so the compiler will understand the specializations that follow. Then I define a specialization for pointer casts. The constructor for <B>assert_cast</B> is itself a template function, which converts the source to the result type via <B>static_cast</B>. (At this point, the compiler will reject any casts that don't qualify for <B>static_cast</B>, such as conversions between unrelated types.) The result of the conversion is stashed away in <B>m_pResult</B>.</p>
+<p>The body of the constructor handles the actual dynamic type checking, using essentially the same assertion as the code in <a href="list1.htm">Listing 1</a>. If the cast is valid, the constructor returns and <B>operator Result*</B> is automatically invoked, returning the pointer stashed in <B>m_pResult</B>.</p>
+<p>The specialization for references works similarly. The reference is converted to a pointer for <B>dynamic_cast</B>, since pointer casts have more convenient semantics.</p>
+<p>The workaround in <a href="list2.htm">Listing 2</a> operates transparently on both pointers and references. Unfortunately, it must rely on template partial specialization, which some compilers (notably MSVC) do not support. For those compilers, an alternative workaround is to rename the function template for references (from <a href="list1.htm">Listing 1</a>) to, say, <B>assert_ref_cast</B>. Since there's no overloading, there are no ambiguities, but the user must remember two different function names, which is a little inconvenient.</p>
+<p>If you're not sure if your compiler needs a workaround, you can download the file <B>democast.cpp</B> from the <I>CUJ</I> ftp site (see p. 3 for downloading instructions) and try compiling it. If you get no errors, you should be able to use the code from <a href="list1.htm">Listing 1</a>. If your compiler chokes, download <B>alt_cast.h</B>, uncomment the line <B>#include "alt_cast.h"</B> in <B>democast.cpp</B>, and try again. If your compiler still chokes, you'll have to rename one of the templates in <B>cast.h</B>.</p>
+
+<h4><FONT COLOR="#000080">Usage</FONT></H4>
+
+<p>So, when should <B>assert_cast</B> be used? First, you might consider whether your program can be designed to avoid casting. Dynamic type checking is "safe" in the sense that it does catch type errors, but the program must first be running. Static typing, on the other hand, catches errors at compile time. This is faster and more reliable. Templates can often eliminate the need for casting, or at least hide it behind a safe interface. (You won't find a single <B>dynamic_cast</B> in the entire STL.)</p>
+<p>When casting can't be avoided, <B>assert_cast</B> becomes an option. For class hierarchy navigation, <B>assert_cast</B> is more robust than either <B>static_cast</B> or the C-style cast. Given a polymorphic type, <B>assert_cast</B> can do downcasts as well as the occasional upcast or cast to a sibling type.</p>
+<p><B>assert_cast</B> does have some limitations. It won't let you accidentally or deliberately cast away constness. Unlike plain <B>dynamic_cast</B>, it cannot do cross-casts and it cannot cast from a virtual base.</p>
+<p>The most common use for <B>assert_cast</B> is in working with frameworks. These frameworks offer services in terms of the frameworks' own types, but users need to operate on their own derived types. To make the conversion, a downcast is required. The MFC code above is an example of this usage. In such cases, <B>dynamic_cast</B> is also an option, but <B>assert_cast</B> will produce smaller, faster code. I have found that since I don't need to worry about run-time overhead with <B>assert_cast</B>, I use it more regularly than I would have used <B>dynamic_cast</B>, and as a result my programs are more thoroughly checked.</p>
+
+<h4><FONT COLOR="#000080">References</FONT></H4>
+
+<p><a name="1"></a>[1]  To be more precise, the example assumes that <B>CMyView</B> is derived from <B>CView</B>, a polymorphic type. <B>GetActiveView</B> returns a <B>CView *</B>. If the returned pointer actually references an object of type <B>CMyView</B> or any type derived from <B>CMyView</B>, the cast will succeed and a valid <B>CMyView *</B> will be returned. On the other hand, if the object is not a kind of <B>CMyView</B>, an assertion will be raised.</p>
+<p><a name="2"></a>[2]  The Standard specifies a call to <B>std::abort</B>, but some implementations will trigger a debug break instead.</p>
+<p><a name="3"></a>[3]  For an example, see the diamond-shaped hierarchy described by Bjarne Stroustrup in <I>The Design and Evolution of C++</I> (Addison-Wesley, 1994), section 14.3.2.1.</p>
+<p><a name="4"></a>[4]  The One-Definition Rule requires that, in a given program, all definitions of a non-local name must be identical. Since the <B>assert</B> macro expands differently depending on whether <B>NDEBUG</B> is defined, the ODR is easily violated if <B>assert</B> is used in inline functions (such as the <B>assert_cast</B> constructor) and <B>NDEBUG</B> is not consistently defined.</p>
+
+<p><i><B>Ivan J. Johnson</B> is a software engineer and consultant in Sacramento, CA. He can be reached at <B>ijohnson@alum.mit.edu</B>.</i></p>
+
+<h4><a href="../../../source/1999/nov99/johnson.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

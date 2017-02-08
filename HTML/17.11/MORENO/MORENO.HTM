@@ -1,0 +1,315 @@
+<HTML>   
+     <HEAD>
+<TITLE>November 1999/Constructing FIR Digital Filters with valarray</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocnov.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Scientific</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Constructing FIR Digital Filters with valarray</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Carlos Moreno</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Digital filtering is ubiquitous, and the Standard C++ Library has remarkably good support for such operations.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>Digital filters are a fundamental tool in DSP (Digital Signal Processing) applications, and in general in data acquisition and processing applications. The uses of digital filters range from simple noise reduction to the complex spectral processing and analysis used in speech processing and recognition, audio, and communications.</p>
+<p>A simplified definition of a digital filter is a system (software or hardware) that produces an output digital signal given an input digital signal, in which each sample of the output signal is a weighted average of a certain number of previous input and output samples. In the case of FIR (Finite Impulse Response) filters, the output is a weighted average of the previous input samples only.</p>
+<p>In this article I present a C++ implementation of an FIR Digital Filters Library. The main focus of the article is the implementation, not the mathematical foundation and details about digital signals and DSP techniques. If you are not familiar with signal analysis and DSP theory, you can study the DSP reference shown at the end of the article <a href="#1">[1]</a>, or any other books on DSP or Digital Filters.</p>
+
+<h4><FONT COLOR="#000080">FIR Digital Filters</FONT></H4>
+
+<p>Given an FIR filter described by a set of <I>N</I> coefficients <I>{h[k]},</I> the value of the output signal at a particular time (i.e., the value of a particular sample of the output signal) is given by the following formula:</p>
+<IMG SRC="equat1.gif"><br>
+(Equation 1)</p>
+<p>where <I>x</I> is the input signal and <I>y</I> is the output signal. The operation described by Equation 1 is called <I>convolution.</I></p>
+<p>This convolution operation produces an output signal that is related to the input signal through a frequency response given by the following formula:</p>
+<IMG SRC="equat2.gif"><br>
+(Equation 2)</p>
+<p>where <I>w</I> is the normalized angular frequency, which must be between -<FONT FACE="Symbol">p</FONT> and <FONT FACE="Symbol">p</FONT>.</p>
+<p>An example of a digital filter is the moving average, in which the output sample is the average of the last <I>N</I> input samples. This is an example of a low-pass filter (i.e., a filter that attenuates the high frequency components of the signal, which are related to abrupt changes and discontinuities in the signal). <a href="fig1.htm">Figure 1</a> shows the effect of applying a moving average of the last five samples to reduce the noise for an input signal.</p>
+<p>Equation 2 shows that given the filter coefficients, it is always possible to obtain the value of the frequency response (magnitude and phase) for a given frequency. The inverse process &#151; obtaining the coefficients given a frequency response &#151; is a far more complicated problem. Designing a digital filter is precisely the process of finding the coefficients given a frequency response specification. This problem has no exact solution in general. The filter designer usually tries to find a set of coefficients that closely match the specifications, while minimizing the effects of deviations with respect to the required frequency response.</p>
+<p>Many methods exist for the design of digital filters. In this article I present an implementation of the frequency sampling method, which in my opinion is the most straightforward method. I also provide methods to directly initialize the coefficients of the filter, so you can use other tools to design the filter, and then use this implementation for the filtering processes in your applications.</p>
+
+<h4><FONT COLOR="#000080">FIR Filter Class Definition</FONT></H4>
+
+<p>An FIR filter is described by a set of coefficients representing the impulse response of the filter (<I>h</I>). Mathematically speaking, these coefficients are usually real numbers. In practice, the particular application defines what is the best data type to represent the coefficients. For this reason, I provide a templatized representation for the FIR filter class, with a default type provided via a typedef:</p>
+
+<pre>
+template &lt;class T&gt;
+class basic_FIR
+{
+    // ...
+
+private:
+    valarray&lt;T&gt; h;
+    // ...
+};
+
+typedef basic_FIR&lt;double&gt; FIR;
+</pre>
+
+<p>Notice the use of the Standard library <B>valarray</B> container. I chose to use <B>valarray</B> to represent the array of filter coefficients, given that the Standard suggests that compilers take maximum advantage of the numeric processing capabilities of processors and perform aggressive optimization techniques when using <B>valarray</B>s.</p>
+
+<h4><FONT COLOR="#000080">Constructors for Class basic_FIR</FONT></H4>
+
+<p>As I mentioned before, an FIR filter is described by an array of coefficients. However, the requirements for filtering applications are typically specified in terms of frequency response; designers must then use this frequency response to obtain the filter coefficients.</p>
+<p>The constructors for class <B>basic_FIR</B> can be divided into two categories: initialization of filter objects given the values of the coefficients, and initialization given frequency response specifications.</p>
+<p>In the first category, I provide two constructors: one that receives a <B>valarray</B> of coefficients representing the impulse response of the filter, and one that receives an array of coefficients plus a count of elements in the array (a C-like array of coefficients).</p>
+<p>In both cases, the constructor's job is to copy the elements to the valarray <B>h</B>, inverting the order of the elements, as shown in <a href="fig2.htm">Figure 2</a> (partial listing of <B>FIR.h</B>). The coefficients are stored in reverse order to accelerate the convolution operation, which will be performed once for each sample of output signal.</p>
+<p>In the second category, I provide several constructors that compute the filter coefficients given frequency response specifications. All these constructors use the frequency sampling method to obtain the coefficients for a linear phase filter design. The linear phase design implies that the impulse response of the filter is symmetric (i.e., <I>h[k] = h[N-1-k]</I> for <I>0 &lt;= k &lt; N,</I> where <I>N</I> is the number of coefficients). Furthermore, I always provide an odd number of coefficients.</p>
+<p>This linear phase design certainly imposes a limitation, but it is a simple design technique and is perfectly useful in many applications. Also, remember that you can always use any other design technique or filter design software to obtain the coefficients and use those values in your code to directly initialize the coefficients of the filter.</p>
+<p><a href="fig2.htm">Figure 2</a> and <a href="fig3.htm">Figure 3</a> (partial listing of <B>filter_types.h</B>) show the details of these constructors. I use three auxiliary structure definitions to provide a convenient syntax to describe the standard filters, which are low-pass, high-pass, and band-pass. These structures contain the following information: cutoff frequency, sampling frequency, and number of frequency samples or constraint points. (The number of filter coefficients is equal to twice this number minus one.)</p>
+<p>These structures allow for clear and convenient expressions to create filter objects, as the following examples show:</p>
+
+<pre>
+// create low-pass filter at 500Hz,
+// Fs = 44.1kHz, filter length = 99
+FIR bass_extraction_filter
+   (Low_pass(500, 44100, 50));
+        
+// create band-pass from 300Hz to
+// 3.5kHz, Fs = 22.05kHz,
+// filter length = 39
+FIR voice_extraction_filter
+   (Band_pass(300, 3500, 22050, 20));
+</pre>
+
+<p>A digital filter's coefficients are independent of the sampling frequency and the actual cutoff frequency. The only thing that determines the values of the coefficents is the ratio between the cutoff frequency and the sampling frequency. However, users of this class can conveniently specify the filters with the actual values from the specifications, without having to compute normalized angular frequencies.</p>
+<p>Class <B>basic_FIR</B> provides two additional constructors, allowing you to initialize the filter object with a function specifying the frequency response or a vector of frequency samples. In the first case, the constructor receives a pointer to a function taking a single <B>double</B> argument and returning a <B>double</B>. In the second case, the constructor receives a vector of <B>Constraint_point</B> structures, which are simple frequency/gain pairs. <a href="fig2.htm">Figure 2</a> shows the implementation of the first constructor. For both these constructors you must provide frequency specifications in terms of normalized angular frequency.</p>
+<p>The frequency sampling method requires solving a set of linear equations, for which I use the Gauss method combined with a <B>Matrix</B> class. I do not discuss the details of solving the equations in this article. You can download the code and see the details, or even modify it to use the matrix processing software of your choice.</p>
+
+<h4><FONT COLOR="#000080">Querying a basic_FIR for Frequency Response</FONT></H4>
+
+<p>Class <B>basic_FIR</B> also provides a method named <B>H</B> to obtain the value of the frequency response (<I>H(w)</I>) at a given normalized angular frequency. This member function returns an <B>std::complex&lt;double&gt;</B> value. You can obtain the magnitude using the <B>complex</B> type's <B>abs</B> function, and the phase using its <B>arg</B> function. <a href="fig2.htm">Figure 2</a> shows the definition of the <B>H</B> member function.</p>
+
+<h4><FONT COLOR="#000080">Filtering Data with Filter Objects</FONT></H4>
+
+<p>Class <B>basic_FIR</B> includes two methods to perform filtering on a sequence of data. The first method computes a single sample of the output signal at a particular position of the input signal (that is, the output which corresponds to a particular sequence of input samples, the last of which is the most recent sample). This member function is called <B>output</B>.</p>
+<p>The templatized member function <B>output</B> receives a pointer or a pointer-like object (e.g., an iterator) to the most recent input sample (the data being filtered) and a reference to the object that will hold the result. An example of using this function is shown below:</p>
+
+<pre>
+noise_reductor.output
+   (&amp;x[current_sample],
+    y[current_sample]);
+</pre>
+
+<p><a href="fig2.htm">Figure 2</a> shows the definition of this member function. It uses the Standard library's <B>inner_product</B> function to compute the result, given that the values of the coefficients are stored in reverse order. It also uses a function <B>convert</B>, which I supply to provide rounding in conversions from floating-point to integer, or any other specific conversion requirements. <a href="fig4.htm">Figure 4</a> (partial listing of <B>conversions.h</B>) shows some of the overloaded versions of <B>convert</B>, and the template function for the default conversions.</p>
+<p>The second method for performing filtering is based on the idea that filtering can be seen as an operation applied to a sequence of data. Usually this data is a digitized signal, but it doesn't have to be. Class <B>basic_FIR</B> provides a templatized member function that overloads <B>operator()</B> and provides an STL-like method to apply a digital filtering process to an arbitrary linear sequence of data. This allows you to code expressions like the following:</p>
+
+<pre>
+// apply low_pass_filter to data
+// array and store the output of the
+// filter in array output_signal
+
+low_pass_filter (&amp;data[10],
+   &amp;data[1000], output_signal);
+
+
+// apply band_pass_filter to the
+// container x (whatever it is &#151;
+// e.g., vector, deque) and store the
+// results in the container y
+band_pass_filter (x.begin(),
+   x.end(), y.begin());
+</pre>
+
+<p><a href="fig2.htm">Figure 2</a> shows the definition for the templatized <B>operator()</B> member function. It applies the method <B>output</B> to each sample in the sequence.</p>
+
+<h4><FONT COLOR="#000080">Representing Signals</FONT></H4>
+
+<p>Digital filtering entails a couple of inconveniences that class <B>basic_FIR</B> does not solve. First, since the filtered output is a weighted average of the past <I>N</I> samples, output values cannot be computed until at least <I>N</I> input samples have been received. To produce outputs at the very beginning of the filter operation, some pseudo-inputs having value zero must be provided. Furthermore, the discontinuity that occurs where the actual input signal begins may produce undesirable output values.</p>
+<p>Second, and most importantly, the examples shown in the previous section assumed that the data samples were stored in consecutive memory locations; that is, the examples assumed there was no memory limitation, so that as much input data as needed could be stored in linear fashion.</p>
+<p>This assumption presents no problem if the amount of data to be filtered is small. But in many situations, particularly involving real-time embedded systems, this and the previously mentioned problem must be addressed in a way that preserves efficient execution.</p>
+<p>In general, the way to solve the finite-storage problem is by storing the input data in a circular buffer. A circular buffer is sufficient because most applications need access to only a fixed number of the most recent input samples. Such a buffer can be implemented efficiently by defining an array with a size equal to a power of two; a circular access pattern is obtained by ANDing a linearly increasing subscript with an appropriate mask. The resulting computed offset remains always within the array. The following C example illustrates this idea:</p>
+
+<pre>
+int data[256];
+int recent_sample_pos = 0;
+
+while (more_data_to_process)
+{
+   data[recent_sample_pos] =
+      get_data();
+   recent_sample_pos =
+      (recent_sample_pos + 1) &amp; 255;
+
+   // now, if we need to access an
+   // element N positions before the
+   // last one (assuming N &lt; 256), we
+   // use:
+
+   data[(recent_sample_pos-N) &amp; 255] 
+
+   // ...
+}
+</pre>
+
+<p>This technique can be encapsulated to provide a convenient object-oriented solution that doesn't necessarily sacrifice run-time efficiency.</p>
+
+<h4><FONT COLOR="#000080">A Class to Represent Signals</FONT></H4>
+
+<p>Template class <B>Signal</B> encapsulates the ideas discussed in the previous section, providing a convenient array-like container that uses a valarray to store the data.</p>
+<p>The constructor for <B>Signal</B> receives and stores the size of the buffer, which should be at least the number of most recent samples required by the filter. However, this constructor resizes the internal <B>valarray</B> to a length equal to the lowest number that is a power of two and is greater than or equal to the requested size. For example, if you declare a <B>Signal</B> of 200 samples, the constructor will allocate 256 elements. The <B>Signal</B> constructor computes the required size, allocates the space, and stores the corresponding mask for the <B>AND</B> operation required for the subscripted element access. (The value of the mask is always the allocated size minus one.)</p>
+<p>The <B>Signal</B> class also includes a data member to store the position of the most recently added sample (<B>recent_sample_pos</B>).</p>
+<p><a href="fig5.htm">Figure 5</a> (<B>Signals.h</B>) shows the definition and implementation of template class <B>Signal</B>.</p>
+
+<h4><FONT COLOR="#000080">Accessing the Data in Signal Objects</FONT></H4>
+
+<p>Accessing samples of a <B>Signal</B> object requires an <B>AND</B> operation with a mask, since the data is stored in a circular buffer. To encapsulate this operation, class <B>Signal</B> provides definitions for random-access iterators (<B>Signal&lt;T&gt;::iterator</B> and <B>Signal&lt;T&gt;::const_iterator</B>), as well as subscripted read-only access to the samples.</p>
+<p>Thus, you can deal with a <B>Signal</B> object in a manner similar to a standard array. You can use negative subscripts to access the past samples, or you can use iterators as pointers to a linear sequence of samples. You need to keep in mind, however, that only a limited number of the previous samples will be available.</p>
+<p><a href="fig5.htm">Figure 5</a> shows the definition of the overloaded subscripting operator and some of the iterator classes.</p>
+<p>To obtain the current (most recent) sample, you can use either subscripted access with subscript 0, or the member function <B>most_recent_sample</B>. You can obtain an iterator to the most recent sample by calling the member function <B>begin</B>. Also, for additional compatibility with the STL idioms, I provide a member function <B>front</B> as an alias for <B>most_recent_sample</B>.</p>
+<p>Class <B>Signal</B> also provides several member functions to insert samples. You can insert one sample to a <B>Signal</B> object with the stream insertion operator, as shown below:</p>
+
+<pre>
+Signal&lt;short int&gt; audio_signal;
+
+// read one audio sample
+sample = get_audio_data();   
+audio_signal &lt;&lt; sample;
+</pre>
+
+<p>You can insert an entire block of samples using the <B>insert_block</B> member function, as shown in this example:</p>
+
+<pre>
+// read block of audio samples
+get_audio_data (samples, SIZE);  
+audio_signal.insert_block
+   (samples, SIZE);
+</pre>
+
+<p>Inserting a block of samples is much more efficient than inserting one sample at a time, since the signal object implements the operation as one or two copy operations (besides the fact that it avoids the overhead of calling a member function once for each sample).</p>
+<p>Additionally, class <B>Signal</B> allows you to fade in samples, to avoid a discontinuity at the first sample. Two methods are available, and may be specified in the constructor: linear or cosine-shaped fade-in. The member function <B>fade_in</B> receives a sample and inserts it in a way similar to the stream insertion operator, except that it multiplies the sample by a factor (between 0.0 and 1.0) that increases with each sample inserted.</p>
+<p><a href="fig5.htm">Figure 5</a> shows the implementation of the stream insertion operator and the <B>insert_block</B> member function.</p>
+
+<h4><FONT COLOR="#000080">Filtering Data in a Signal Object</FONT></H4>
+
+<p>Filter objects can directly perform filtering operations using the data in a <B>Signal</B> object. However, this approach would be inefficient, since it would require repeated use of iterators to the signal (to correctly obtain the previous samples), which would likely prevent the compiler from optimizing the <B>inner_product</B> operation. Class <B>Signal</B> provides a more efficient way of filtering its own data. It takes advantage of the fact that if the most recent sample is not close to the beginning of the array used as a circular buffer, then the array can be treated as a linear buffer. In other words, if the actual position of the current sample (given by the data member <B>recent_sample_pos</B>) is greater than the length of the filter, then the filtering operation is performed using a simple pointer to the most recent sample. Using a pointer means that the compiler may be able to optimize the <B>inner_product</B> operation. Note that if the size of the buffer is much larger than the length of the filter, the increase in the speed of execution may be significant, given that in most cases the operation is done using pointers to linear sequences of data.</p>
+<p><a href="fig5.htm">Figure 5</a> shows the details of these operations, performed by the member functions <B>filtered_output</B> and <B>filtered_block</B>.</p>
+
+<h4><FONT COLOR="#000080">Concrete Examples</FONT></H4>
+
+<p>I now show two concrete examples of using of the <B>basic_FIR</B> and <B>Signal</B> classes. In the first example, I perform real-time filtering one sample at a time. The filtering code is in a function called <B>OnAudioData</B>. The example assumes that this function is automatically called when there is input audio data available. (You can think of this as a message to a callback function, or an event procedure, or an interrupt handler). Furthermore, the example assumes that audio data can be read/written with the functions <B>get_audio_sample</B> and <B>put_audio_sample</B>:</p>
+
+<pre>
+// One audio sample is available
+void OnAudioData ()
+{
+   static Signal&lt;short int&gt;
+      audio_signal(1024);
+
+   // Scale factor of 65536 to
+   // minimize the rounding effect
+   // given that the coefficients are
+   // integer numbers
+   static basic_FIR&lt;long int&gt;
+      filter(Low_pass
+                (3500, 22050, 30),
+             65536L);
+
+   audio_signal &lt;&lt; get_audio_sample();
+   put_audio_sample
+      (audio_signal.filtered_output
+         (filter) / 65536L);
+}
+</pre>
+
+<p>In the second example, I show how to use the block manipulation and filtering capabilities to digitally oversample a signal at four times its rate (say, from a sampling rate of 11.025 kHz to 44.1 kHz). I perform the oversampling operation as follows: 1) I insert one sample from the input (low rate) signal every four samples, 2) fill the rest of the samples with zeros, and 3) apply a very sharp low-pass filter at the original frequency, which corresponds to the maximum frequency component of the input signal normalized with respect to the new (higher) sampling rate.</p>
+<p>This example assumes the same conditions as the first example; furthermore, it assumes that audio can be read and written at different sampling rates with the functions <B>get_audio_sample_block</B> and <B>put_audio_sample_block</B>:</p>
+
+<pre>
+const int oversampling_factor = 4;
+const int SIZE = 256;
+
+// One block of SIZE samples
+// is available
+void OnAudioData ()  
+{
+   static Signal&lt;short int&gt;
+      audio_signal(32*SIZE);
+   static FIR oversampling_filter
+      (Low_pass (5500, 44100, 30));
+   static short int buffer [SIZE],
+   static short int output_buffer
+        [SIZE * oversampling_factor];
+
+   get_audio_sample_block
+      (buffer, SIZE);
+
+   for (int i = 0; i &lt; SIZE; i++)
+   {
+      static short int zeroes
+         [oversampling_factor-1]={0};
+
+      audio_signal &lt;&lt; buffer[i];
+      audio_signal.insert_block
+         (zeroes,
+          oversampling_factor - 1);
+   }
+
+   // Now filter data and send to
+   // output device
+   audio_signal.filtered_block
+      (oversampling_filter,
+       SIZE * oversampling_factor,
+       output_buffer);
+
+   put_audio_sample_block
+      (buffer,
+       SIZE * oversampling_factor);
+}
+</pre>
+
+<p>This code could be simplified &#151; sacrificing efficiency &#151; to read one sample at a time and process blocks of four samples (the input sample plus the three padding zeros):</p>
+
+<pre>
+static short int
+   buffer [oversampling_factor],
+   block [oversampling_factor] = {0};
+
+   // one sample plus 3 padding zeros
+   block[0] = get_audio_sample ();   
+   audio_signal.insert_block
+      (block, oversampling_factor);
+
+   audio_signal.filtered_block
+      (oversampling_filter,
+       oversampling_factor,
+       buffer);
+   put_audio_sample_block
+       (buffer, oversampling_factor);
+</pre>
+
+<h4><FONT COLOR="#000080">Performance Measurements</FONT></H4>
+
+<p><a href="tab1.htm">Table 1</a> shows the results of a simple benchmark to evaluate the performance of the <B>basic_FIR</B> and <B>Signal</B> classes. The test consists of an oversampling to eight times the original sampling rate (similar to the example shown in the previous section). The signal consists of one hundred thousands samples, which means that the test involves filtering eight hundred thousand samples. A timer is used to measure the duration of the filtering process, including the time that it takes to copy data from its source to the signal object, and the time that it takes to copy the filtered data to the output buffer.</p>
+<p>The results show the performance of the block processing and the one-sample-at-a-time processing, and compares the results with a C implementation that performs the filtering using linear blocks of memory (two arrays of eight hundred thousands elements). Two types of filters were used: one with <B>int</B> coefficients, and one with <B>double</B> coefficients. The application was run on a PII-233 machine with 128 MB of memory, working in Win32 console mode. The code was compiled with Visual C++ 6 using the <B>/G5 /O2</B> switches (to optimize for maximum speed using Pentium instructions).</p>
+<p>The code used in this test is distributed with the rest of the source code that you can download from <I>CUJ</I>'s ftp site. The files are called <B>benchmark.cpp</B> and <B>benchmark.c</B>.</p>
+<p>The results show only a slight advantage in the C approach, which I assume is due to the fact that it uses linear memory storage (an unrealistic advantage) rather than any possible overhead or inefficiency in the C++ implementation.</p>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>Digital Filters are a useful and powerful tool in signal and data processing applications. FIR digital filters provide a wide range of frequency response curves with good phase characteristics. In particular, FIR filters can be designed to exhibit linear phase response, which may be important in applications where control over the timing of the filtered signals is important, such as Active Noise Reduction or 3-D sound simulation.</p>
+<p>The C++ implementation presented in this article provides a convenient, object-oriented way of applying FIR digital filtering techniques. Although I tried to provide as efficient an implementation as possible in terms of speed of execution, there is room for improvement. In particular, the idea of processing blocks of data could be combined with fast convolution techniques to provide faster filtering operations. Fast convolution uses FFT (Fast Fourier Transform) techniques to process contiguous blocks of data. An implementation using fast convolution would be even faster if it was used on a platform that had hardware-based FFT facilities.</p>
+<p>Depending on the application, other simpler optimizations could be performed, such as removing the subscript validation in the overloaded subscripting operator in class <B>Signal</B>, or avoiding the throw statements and compiling without support for exceptions.</p>
+
+<h4><FONT COLOR="#000080">Reading List</FONT></H4>
+
+<p><a name="1"></a>[1]  John G. Proakis and Dimitris G. Manolakis. <I>Digital Signal Processing Principles, Algorithms, and Applications, 2nd Edition</I> (Macmillan Publishing Company, 1992).</p>
+<p><a name="2"></a>[2]  Bjarne Stroustrup. <I>The C++ Programming Language, 3rd Edition</I> (Addison-Wesley, 1997).</p>
+<p><a name="3"></a>[3]  Matthew H. Austern. <I>Generic Programming and the STL</I> (Addison-Wesley, 1999).</p>
+
+<p><i><B>Carlos Moreno</B> has a Bachelor's Degree in Electronics Engineering and a Master Engineering diploma in Computer and Electrical Engineering. He has ten years' experience in the development of low-level applications, and currently works as an instructor/trainer in C, C++, Object-Oriented Programming, and Visual Basic, and as an independent consultant and software developer. His main interests are digital signal processing, audio and image processing applications, communications, data encryption and compression, and (of course) computer games development. He can be reached at <B>moreno@mochima.com</B> or on the web at <B>http://www.mochima.com</B>.</i></p>
+
+<h4><a href="../../../source/1999/nov99/moreno.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

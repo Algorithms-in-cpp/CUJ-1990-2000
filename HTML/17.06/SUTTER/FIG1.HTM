@@ -1,0 +1,61 @@
+<HTML><HEAD>
+<TITLE>June 1999/Optimizations That Aren't (In a Multithreaded World)/Figure 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Figure 1:	Various thread-safe and thread-unsafe implementations of COW</A></h4>
+<pre>
+// Thread-unsafe COW: no locks
+//
+void String::EnsureUnique() {
+   if( data_-&gt;refs &gt; 1 ) {
+      StringBuf* newdata = new StringBuf( *data_ );
+      --data_-&gt;refs;   // now all the real work is
+      data_ = newdata; //  done, so take ownership
+   }
+}
+// Thread-safe COW: atomic integer operations
+//
+// Uses atomic integer calls to serialize access to data_-&gt;refs. 
+// Note that the IntAtomic* calls are not necessary function 
+// calls, but can be as efficient as a native assembler 
+// instruction. They still introduce overhead, however, because
+// EnsureUnique must be called by every possibly-mutating String 
+// function, and the IntAtomic* operations are slower than normal 
+// integer operations.
+//
+void String::EnsureUnique() {
+   if( IntAtomicCompare( data_-&gt;refs, 1 ) &gt; 0 ) {
+      StringBuf* newdata = new StringBuf( *data_ );
+      if( IntAtomicDecrement( data_-&gt;refs ) &lt; 1 ) {
+         delete newdata;  // just in case two threads
+         data_-&gt;refs = 1; //  are trying this at once
+      }
+      else {              // now all the real work is
+         data_ = newdata; //  done, so take ownership
+      }
+   }
+}
+// Thread-safe COW: critical sections
+//
+// Each data_ buffer contains a critical section object for 
+// serializing access to data_-&gt;refs. This method is needlessly 
+// inefficient, but it is used in some popular commercial string 
+// libraries. EnsureUnique still is called by every possibly-
+// mutating String function, but the overhead is worse than with 
+// IntAtomic* functions.
+//
+void String::EnsureUnique() {
+   Lock&lt;CriticalSection&gt; l(data_-&gt;cs); //---------
+   if( data_-&gt;refs &gt; 1 ) {
+      StringBuf* newdata = new StringBuf( *data_ );
+      --data_-&gt;refs;
+      data_ = newdata;
+   }
+   l.Unlock(); //---------------------------------
+}
+
+
+</pre>
+</BODY>
+</HTML>

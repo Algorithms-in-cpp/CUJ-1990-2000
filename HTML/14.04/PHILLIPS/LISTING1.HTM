@@ -1,0 +1,598 @@
+
+
+
+
+<HTML><HEAD>
+
+<TITLE>April 1996/Image Processing in C, Part 16: Random Dot Stereograms/Listing 1</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4>
+<A name="HEADING1">Listing 1: pstereo program</A></h4>
+
+
+<pre>
+
+   /***********************************************
+   *
+   *  file pstereo.c
+   *
+   *  Functions: This file contains
+   *     main
+   *     zero_line
+   *     initialize_pattern
+   *     lengthen_pattern
+   *     no_change
+   *     shorten_pattern
+   *     get_random_values
+   *     random_substitution
+   *     read_image_line
+   *     write_image_line
+   *     test_print_line
+   *
+   *  Purpose:
+   *     This file contains a program that will
+   *     make pixel based random dot stereograms.
+   *
+   *  External Calls:
+   *     tiff.c - read_tiff_header
+   *     rtiff.c - read_tiff_image
+   *     wtiff.c - does_not_exist
+   *               round_off_image_size
+   *               create_allocate_tiff_file
+   *               write_array_into_tiff_image
+   *
+   *  Modifications:
+   *     18 March 1995 - created  
+   *
+   *************************************************/
+
+
+#include "cips.h"
+
+#define KONSTANT        2
+#define PATTERN_START   0
+#define PATTERN_END   255
+#define ASCII_SIZE    256
+
+
+short the_image[ROWS][COLS];
+
+void shorten_pattern();
+void lengthen_pattern();
+void no_change();
+void get_random_values();
+void random_substitution();
+void read_image_line();
+void write_image_line();
+void zero_line();
+void initialize_pattern();
+
+
+main(argc, argv)
+   char *argv[];
+   int  argc;
+{
+   char depth_file_name[MAX_NAME_LENGTH],
+        s_file_name[MAX_NAME_LENGTH],
+        pp_file_name[MAX_NAME_LENGTH],
+        response[MAX_NAME_LENGTH];
+
+   FILE *depth_file,
+        *processed_pattern_file,
+        *stereo_file;
+
+   int  current_width,
+        *depth_line,
+        i,
+        j,
+        index, 
+        last_pixel,
+        length,
+        location,
+        max_width,
+        *pattern,
+        pattern_width,
+        pp_index,
+        *processed_pattern,
+        this_pixel,
+        width;
+
+   struct tiff_header_struct image_header;
+
+   if(argc != 5){
+      printf(
+      "\nusage: pstereo pattern-width "
+      "\n               depth-file-name "
+      "stereo-file-name "
+      "\n               processed-pattern-file-name"
+      "\n");
+      exit(1);
+   }
+
+   strcpy(depth_file_name, argv[2]);
+   strcpy(s_file_name, argv[3]);
+   strcpy(pp_file_name, argv[4]);
+
+   if(does_not_exist(depth_file_name)){
+      printf("\nThe depth file %s does not exist",
+             depth_file_name);
+      exit(1);
+   }
+
+   read_tiff_header(depth_file_name, &amp;image_header);
+   round_off_image_size(&amp;image_header, 
+                        &amp;length, &amp;width);
+   
+   image_header.image_length = length*ROWS;
+   image_header.image_width  = width*COLS;
+
+   create_allocate_tiff_file(pp_file_name, 
+                             &amp;image_header,
+                             the_image);
+   create_allocate_tiff_file(s_file_name, 
+                             &amp;image_header,
+                             the_image);
+
+   width         = width*COLS;
+   pattern_width = atoi(argv[1]);
+
+   pattern           = malloc(KONSTANT*width*sizeof(int));
+   depth_line        = malloc(KONSTANT*width*sizeof(int));
+   processed_pattern = malloc(KONSTANT*width*sizeof(int));
+
+
+      /***********************************************
+      *
+      *   This is the major loop of the program.
+      *   It reads one line at a time from the 
+      *   depth file, processes that one line,
+      *   and writes the resulting pattern to the
+      *   processed pattern file.
+      *
+      ***********************************************/
+
+   printf("\npstereo&gt;&gt; %d rows", length*ROWS);
+  
+   for(i=0; i&lt;length*ROWS; i++){
+
+      if(i%10 == 0) printf(" %d", i);
+
+      read_image_line(the_image, depth_file_name,
+                      i+1, depth_line, width);
+
+      zero_line(pattern, KONSTANT*width);
+      zero_line(processed_pattern, KONSTANT*width);
+
+      initialize_pattern(pattern, 
+                         &amp;current_width, 
+                         &amp;max_width, 
+                         pattern_width,
+                         &amp;index);
+
+         /*******************************************
+         *
+         *   Loop through the pixels in the
+         *   depth_line.  Call one of the three
+         *   processing routines based on the
+         *   relationship between the last pixel
+         *   and this pixel.
+         *
+         *******************************************/
+    
+      last_pixel = depth_line[0];
+
+      pp_index = 0;
+      
+      for(j=0; j&lt;width; j++){
+         this_pixel = depth_line[j];
+
+
+         if(this_pixel &gt; last_pixel)
+            shorten_pattern(
+               (this_pixel-last_pixel),
+               pattern, &amp;index, &amp;current_width,
+               width);
+
+
+         if(this_pixel &lt; last_pixel)
+            lengthen_pattern(
+               (last_pixel-this_pixel), 
+               pattern, &amp;index, &amp;current_width, 
+               &amp;width, &amp;max_width);
+
+
+         
+            /****************************************
+            *
+            *   Perform the no_change in every
+            *   pass.  
+            *
+            ****************************************/
+
+         no_change(pattern, processed_pattern,
+                   pp_index, current_width, &amp;index); 
+         pp_index++;
+         
+         
+         if(index &gt;= current_width)
+            index = 0;
+         
+         last_pixel = depth_line[j];
+      }  /* ends loop over j */
+      
+      write_image_line(the_image, pp_file_name, i+1,
+                       processed_pattern, width);
+      random_substitution(processed_pattern, width);
+      write_image_line(the_image, s_file_name, i+1,
+                       processed_pattern, width);
+
+   }   /* ends the major loop */
+
+
+   free(pattern);
+   free(depth_line);
+   free(processed_pattern);
+
+
+   return(111);
+   
+}  /* ends main                 */
+
+
+
+   /***********************************************
+   *
+   *   shorten_pattern(...
+   *
+   *   This funtion shortens the pattern by
+   *   deleting an element from it.  For example,
+   *   if the input pattern is abcdefg, 
+   *   the output pattern could be abcfg.
+   *
+   ***********************************************/
+
+void shorten_pattern(size, pattern, index,
+                     current_width, width)
+   int  *pattern;
+   int  size, *index, *current_width, width;
+{
+   int  *temp_pattern;
+   int  i, new_index, new_width;
+   temp_pattern = malloc(KONSTANT*width*sizeof(int));
+
+   for(i=0; i&lt;width; i++)
+      temp_pattern[i] = pattern[i];
+   zero_line(pattern, KONSTANT*width);
+
+   new_index = 0;
+   new_width = *current_width - size;
+
+      /*********************************************
+      *
+      *   Increase the index by the amount we want
+      *   to shorten the pattern.   Then copy the
+      *   temp_pattern back to the pattern skipping
+      *   over parts of the pattern by the amount
+      *   we want to shorten it.
+      *
+      *********************************************/
+
+   *index = (*index + size) % (*current_width);
+
+   for(new_index=0; new_index&lt;new_width; new_index++){
+      pattern[new_index] = temp_pattern[*index];
+      *index = *index + 1;
+      if(*index &gt;= *current_width)
+         *index = 0;
+   }  /* ends loop over new_index */
+
+   *current_width = new_width;
+   *index         = 0;
+
+   free(temp_pattern);
+
+}  /* ends shorten_pattern */
+
+
+
+   /***********************************************
+   *
+   *   lengthen_pattern(...
+   *
+   *   This funtion lengthens the pattern by
+   *   inserting an element(s) into it.  For example,
+   *   if the input pattern is abcdefg, 
+   *   the output pattern could be abcdefgh.
+   *
+   ***********************************************/
+
+void lengthen_pattern(size, pattern, index,
+                     current_width, width, max_width)
+   int  *pattern;
+   int  size, *index, *current_width, 
+        *width, *max_width;
+{
+   int  *temp_pattern;
+   int  count, i, new_index, new_width;
+
+
+   temp_pattern = malloc(KONSTANT*(*width)*sizeof(int));
+   for(i=0; i&lt;(*width); i++)
+      temp_pattern[i] = pattern[i];
+      
+   zero_line(pattern, KONSTANT*(*width));
+
+   for(count=0, new_index=0; count&lt;size; 
+       count++, new_index++){
+      pattern[new_index] = 
+         count + *max_width + PATTERN_START;
+   }  /* ends loop over count */
+
+   new_width = *current_width + size;
+
+   for( ; new_index &lt; new_width; new_index++){
+      pattern[new_index] = temp_pattern[*index];
+      *index = *index + 1;
+      if(*index &gt;= *current_width)
+         *index = 0;
+   }  /* ends loop over new_index */
+
+   *current_width = new_width;
+   *index         = 0;
+   *max_width     = *max_width + size;
+
+   free(temp_pattern);
+
+}  /* ends lengthen_pattern */
+
+
+
+   /***********************************************
+   *
+   *   no_change(...
+   *
+   *   This function processes the pattern
+   *   and does not make any changes to it.
+   *
+   ***********************************************/
+
+void no_change(pattern, processed_pattern, pp_index,
+               current_width, index)
+   int  *pattern, *processed_pattern;
+   int  pp_index, current_width, *index;
+{
+   processed_pattern[pp_index] = 
+      pattern[*index];
+   *index = *index + 1;
+   if(*index &gt;= current_width)
+      *index = 0;
+
+}   /* ends no_change */
+
+
+
+   /***********************************************
+   *
+   *   initialize_pattern(...
+   *
+   *   This function creates an initial pattern
+   *   that is as wide as the pattern_width
+   *   parameter.
+   *
+   ***********************************************/
+
+void initialize_pattern(pattern, current_width, 
+                        max_width, pattern_width, 
+                        index)
+   int  pattern[];
+   int *current_width,
+       *max_width,
+       *index,
+       pattern_width;
+{
+   int i;
+
+   for(i=0; i&lt;pattern_width; i++)
+      pattern[i] = i+PATTERN_START;
+
+   *index         = 0;
+   *current_width = pattern_width;
+   *max_width     = pattern_width;
+}  /* ends initialize_pattern */
+
+
+
+   /***********************************************
+   *
+   *   zero_line(...
+   *
+   *   This function fills an int array with
+   *   zeros.
+   *
+   ***********************************************/
+
+void zero_line(array, length)
+   int  *array;
+   int  length;
+{
+   int i;
+   for(i=0; i&lt;length; i++)
+      array[i] = 0;
+}  /* ends zero_line */
+
+
+
+   /***********************************************
+   *
+   *   random_substitution(...
+   *
+   *   This function takes the processed_pattern
+   *   array and substitutes random 0's and 1's
+   *   for each value in the array.
+   *
+   ***********************************************/
+
+void random_substitution(processed_pattern, width)
+   int  *processed_pattern;
+   int  width;
+{
+   int  substitution_values[GRAY_LEVELS+1];
+   int  i, place;
+
+   get_random_values(substitution_values);
+
+   for(i=0; i&lt;(KONSTANT*width); i++){
+      place = processed_pattern[i];
+      processed_pattern[i] = 
+         substitution_values[place];
+   }  /* ends loop over i */
+   
+}  /* ends random_substitution */
+ 
+
+                                
+   /***********************************************
+   *
+   *   get_random_values(...
+   *
+   *   This function fills array with 1's and 0's.
+   *   These 1's and 0's come from a random number
+   *   generator.  If the number is odd, use a 1,
+   *   otherwise use a 0.
+   *
+   ***********************************************/
+
+void get_random_values(array)  
+   int  array[];
+{
+   int i, number;
+
+
+/* Only use the 1's and 0's */
+
+   for(i=0; i&lt;GRAY_LEVELS+1; i++){
+       number   = rand();
+       number   = number % 2;
+       if(number == 1) number = PATTERN_END;
+       array[i] = number;
+   }  /* ends loop over i */     
+   
+}  /* ends get_random_values */
+
+
+                                 
+   /***********************************************
+   *
+   *   read_image_line(...
+   *
+   *   This function reads a line of pixels from
+   *   a TIFF image file.
+   *
+   ***********************************************/
+
+void read_image_line(the_image, file_name, 
+                     line_number, array, width)
+   char  file_name[];
+   short the_image[ROWS][COLS];
+   int   *array, line_number, width;
+{
+   int i, il, ie, ll, le, 
+       pixels_to_read, 
+       reading_counter, 
+       still_reading;
+
+   il = line_number;
+   ll = il + 1;
+   ie = 1; 
+   le = ie + COLS;
+
+   if(width &lt; COLS)
+      le  = ie + (width - 1);
+
+   pixels_to_read  = width;
+   reading_counter = 0;
+
+   still_reading = 1;
+   while(still_reading){
+
+      read_tiff_image(file_name, the_image, 
+                      il, ie, ll, le);
+      for(i=0; i&lt;(le-ie); i++)
+         array[i + (reading_counter*COLS)] = 
+            the_image[0][i];
+      reading_counter++;
+
+      pixels_to_read = pixels_to_read - (le-ie);
+      if(pixels_to_read &lt;= 1)
+         still_reading = 0;
+      else{
+         ie = ie + COLS;
+         le = ie + COLS;
+         if(le &gt; width)
+            le = width;
+      }  /* ends else */
+         
+   }  /* ends while still_reading */
+
+}  /* ends read_image_line */
+                                 
+
+                                 
+   /***********************************************
+   *
+   *   write_image_line(...
+   *
+   *   This function writes a line of pixels to
+   *   a TIFF image file.
+   *
+   ***********************************************/
+
+void write_image_line(the_image, file_name, 
+                      line_number, array, width)
+   char  file_name[];
+   short the_image[ROWS][COLS];
+   int   *array, line_number, width;
+{
+   int  i, il, ie, ll, le,
+        pixels_to_write,
+        writing_counter,
+        still_writing;
+
+   il = line_number; 
+   ll = il + 1;
+
+   ie = 1;
+   le = ie + COLS;
+
+   if(width &lt; COLS)
+      le = ie + (width - 1);
+
+   pixels_to_write = width;
+   writing_counter = 0;
+
+   still_writing = 1;
+   while(still_writing){
+      
+      for(i=0; i&lt;(le-ie); i++)
+         the_image[0][i] =
+            array[i + (writing_counter*COLS)];
+      writing_counter++;
+      write_array_into_tiff_image(file_name, the_image,
+                                  il, ie, ll, le);
+
+      pixels_to_write = pixels_to_write - (le-ie);
+      if(pixels_to_write &lt;= 1)
+         still_writing = 0;
+      else{
+         ie = ie + COLS;
+         le = ie + COLS;
+         if(le &gt; width)
+            le = width;
+      }  /* ends else */
+
+   }  /* ends while still_writing */
+
+}  /* ends write_image_line */
+</pre>
+</body></html>

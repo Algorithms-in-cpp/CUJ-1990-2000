@@ -1,0 +1,219 @@
+
+
+
+
+<HTML><HEAD>
+
+<TITLE>May 1996/PopMail! -- A POP3 Mailer for Windows/Listing 1</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4>
+<A name="HEADING1">Listing 1: POPMAIL.C  A Winsock 1.1 complaint POP3 agent</A></h4>
+
+<p></p>
+
+<pre>
+
+/**********************************************************/
+/* POPMAIL.C - A Winsock 1.1 compliant POP3 agent         */
+/**********************************************************/
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include "popmail.rh"   /* resource id file */
+#include "popmail.h"    /* variables and structs global to this module */
+int PASCAL WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpszCmdLine, int nCmdShow)
+  {
+	  WNDCLASS wndClass;
+	  MSG message;
+	  hInst = hInstance;
+	  if (!hPrevInstance)
+		 {
+			 /* create and register the main window class */
+			 wndClass.style = CS_HREDRAW | CS_VREDRAW;
+			 wndClass.lpfnWndProc = WinProc;
+			 wndClass.cbClsExtra = 0;
+			 wndClass.cbWndExtra = 0;
+			 wndClass.hInstance = hInstance;
+			 wndClass.hIcon = LoadIcon(NULL, IDI_APPLICATION);
+			 wndClass.hCursor = LoadCursor(NULL, IDC_ARROW);
+			 wndClass.hbrBackground = GetStockObject(WHITE_BRUSH);
+			 wndClass.lpszMenuName = "Main";
+			 wndClass.lpszClassName = "Popmail";
+			 RegisterClass(&amp;wndClass);
+			 /* create and register the invisible POP3 event handling window class */
+			 wndClass.style = CS_HREDRAW | CS_VREDRAW;
+			 wndClass.lpfnWndProc = Pop3Proc;
+			 wndClass.cbClsExtra = 0;
+			 wndClass.cbWndExtra = 0;
+			 wndClass.hInstance = hInstance;
+			 wndClass.hIcon = LoadIcon(NULL, IDI_APPLICATION);
+			 wndClass.hCursor = LoadCursor(NULL, IDC_ARROW);
+			 wndClass.hbrBackground = GetStockObject(WHITE_BRUSH);
+			 wndClass.lpszMenuName = "";
+			 wndClass.lpszClassName = "Pop3";
+			 RegisterClass(&amp;wndClass);
+		 }
+	  /* create the main window */
+	  hwndMain = CreateWindow
+		 (
+			 "Popmail",
+			 "Simple POP3 Mail Client",
+			 WS_CLIPCHILDREN | WS_OVERLAPPEDWINDOW,
+			 CW_USEDEFAULT,
+			 CW_USEDEFAULT,			 CW_USEDEFAULT,			 CW_USEDEFAULT,
+			 NULL,
+			 NULL,
+			 hInstance,
+			 NULL
+		 );
+	  ShowWindow(hwndMain, SW_SHOWNORMAL);
+	  hwndConfigDlg = 0;
+	  /* the main program message loop */
+	  while (GetMessage(&amp;message, NULL, 0, 0))
+		 {
+			 if (hwndConfigDlg == NULL || !IsDialogMessage(hwndConfigDlg, &amp;message))
+				{
+					TranslateMessage(&amp;message);
+					DispatchMessage(&amp;message);
+				}
+		 }
+	  return message.wParam;
+  }
+long far PASCAL _export WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
+  {
+	  FARPROC lpfnConfigDlgProc;
+	  switch (message)
+		 {
+			 case WM_CREATE:
+				strcpy(ConfigFile, "PopMail.Ini");
+				/* insert an edit control into the window */
+				hwndClient = CreateWindow
+				  (
+					  "Edit",
+					  "",
+					  WS_CHILD | WS_VISIBLE | WS_HSCROLL | WS_VSCROLL | WS_BORDER |
+						 ES_LEFT | ES_WANTRETURN | ES_MULTILINE | ES_AUTOHSCROLL | ES_AUTOVSCROLL,
+					  0,
+					  0,					  0,					  0,
+					  hwnd,
+					  NULL,
+					  hInst,
+					  NULL
+				  );
+				hwndPopWindow = CreateWindow
+				  (
+					  "Pop3",
+					  "",
+					  WS_CHILD,
+					  0,
+					  0,					  0,					  0,
+					  hwnd,
+					  NULL,
+					  hInst,
+					  NULL
+				  );
+				SendMessage(hwndClient, WM_SETFONT, GetStockObject(ANSI_FIXED_FONT), 0);
+				if (!LoadParms())
+				  {
+					  MessageBox(hwnd, "Error reading POPMAIL.INI.  You must "
+						 "enter your configuration data.", "Program Information",
+							MB_OK | MB_ICONINFORMATION);
+					  SendMessage(hwnd, WM_COMMAND, CM_CONFIGURE, 0L);
+				  }
+				SetTimer(hwnd, MAILCHECKTIMER, (Config.Timer * 60000), NULL);
+				NetworkReady = InitNetwork();
+				if (!NetworkReady)
+					MessageBox(hwnd, "The network layer couldn't be initialized.  "
+					  "Subsequent attempts will be made at each scheduled mail "
+						  "check.", "Program Error", MB_OK | MB_ICONINFORMATION);
+				break;
+			 case WM_SIZE:
+				MoveWindow(hwndClient, 0, 0, LOWORD(lParam), HIWORD(lParam),	TRUE);
+				break;
+			 case WM_CLOSE:
+				SendMessage(hwnd, WM_COMMAND, CM_EXIT, 0L);
+				break;
+			 case WM_TIMER:
+				if (!NetworkReady)
+				  NetworkReady = InitNetwork();
+				else
+				  if (wParam == MAILCHECKTIMER)
+					 {
+						 if (strlen(Config.ServerIp) == 0) /* must have the IP */
+							LookupServer(hwndPopWindow);
+						 else
+							ConnectToServer(hwndPopWindow);
+					 }
+				break;
+			 case WM_COMMAND:
+				switch (wParam)
+				  {
+					  case CM_CONFIGURE:
+						 lpfnConfigDlgProc = MakeProcInstance((FARPROC) ConfigProc, hInst);
+						 DialogBox(hInst, "CONFIGURE", hwnd, lpfnConfigDlgProc);
+						 FreeProcInstance(lpfnConfigDlgProc);
+						 break;
+					  case CM_EXIT:
+						 PostQuitMessage(0);
+						 ShutDownNetwork();
+						 break;
+				  }
+				break;
+		 }
+	  return DefWindowProc(hwnd, message, wParam, lParam);
+  }
+BOOL FAR PASCAL _export ConfigProc(HWND hwnd, UINT message, UINT wParam, LONG lParam)  {
+	  char timer[5];
+	  switch (message)
+		 {
+			 case WM_INITDIALOG:
+				if ((Config.Timer &lt;= 0) || (Config.Timer &gt;= 61)) Config.Timer = 1;
+				SendMessage(hwnd, WM_COMMAND, IMSG_PUTDATA, 0L);
+				return TRUE;
+			 case WM_COMMAND:
+				switch (wParam)
+				  {
+					  case IMSG_PUTDATA:
+						 SetWindowText(GetDlgItem(hwnd, CF_SERVERNAME), Config.ServerName);
+						 SetWindowText(GetDlgItem(hwnd, CF_SERVERIP), Config.ServerIp);
+						 SetWindowText(GetDlgItem(hwnd, CF_POP3NAME), Config.Pop3Name);
+						 SetWindowText(GetDlgItem(hwnd, CF_POP3PASS), Config.Pop3Pass);
+						 SetWindowText(GetDlgItem(hwnd, CF_MAILDIR), Config.MailDir);
+						 itoa(Config.Timer, timer, 10);
+						 SetWindowText(GetDlgItem(hwnd, CF_TIMER), timer);
+						 break;
+					  case IMSG_GETDATA:
+						 GetWindowText(GetDlgItem(hwnd, CF_SERVERNAME), Config.ServerName, sizeof(Config.ServerName));
+						 GetWindowText(GetDlgItem(hwnd, CF_SERVERIP), Config.ServerIp, sizeof(Config.ServerIp));
+						 GetWindowText(GetDlgItem(hwnd, CF_POP3NAME), Config.Pop3Name, sizeof(Config.Pop3Name));
+						 GetWindowText(GetDlgItem(hwnd, CF_POP3PASS), Config.Pop3Pass, sizeof(Config.Pop3Pass));
+						 GetWindowText(GetDlgItem(hwnd, CF_MAILDIR), Config.MailDir, sizeof(Config.MailDir));
+						 GetWindowText(GetDlgItem(hwnd, CF_TIMER), timer, sizeof(timer));
+						 Config.Timer = atoi(timer);
+						 break;
+					  case IDCANCEL:
+						 EndDialog(hwnd, 0);
+						 return FALSE;
+					  case IDOK:
+						 SendMessage(hwnd, WM_COMMAND, IMSG_GETDATA, 0L);
+						 if (VerifyParms())
+							{
+							  SaveParms();
+							  EndDialog(hwnd, 0);
+							}
+						 else MessageBox(hwndMain, "Please enter either your mail server's domain name "
+							"or it's IP address (or both)", "Program Information", MB_OK | MB_ICONINFORMATION);
+						 return TRUE;
+				  }
+		 }
+	  return FALSE;
+  }
+BOOL LoadParms(void)  {	  GetPrivateProfileString("PopMail", "ServerName", "", Config.ServerName, sizeof(Config.ServerName), ConfigFile);	  GetPrivateProfileString("PopMail", "ServerIp", "", Config.ServerIp, sizeof(Config.ServerIp), ConfigFile);	  GetPrivateProfileString("PopMail", "Pop3Name", "", Config.Pop3Name, sizeof(Config.Pop3Name), ConfigFile);	  GetPrivateProfileString("PopMail", "Pop3Pass", "", Config.Pop3Pass, sizeof(Config.Pop3Pass), ConfigFile);	  GetPrivateProfileString("PopMail", "MailDir", "", Config.MailDir, sizeof(Config.MailDir), ConfigFile);	  Config.Timer = GetPrivateProfileInt("PopMail", "Timer", 0, ConfigFile);	  return (VerifyParms());  }BOOL VerifyParms(void)  {	  if (Config.Timer == 0) Config.Timer = 1;	  if (strlen(Config.MailDir) == 0) strcpy(Config.MailDir, "\\");	  if (Config.MailDir[strlen(Config.MailDir) - 1] != '\\') strcat(Config.MailDir, "\\");	  if ((strlen(Config.ServerName) == 0) &amp;&amp; (strlen(Config.ServerIp) == 0)) return FALSE;	  if ((strlen(Config.Pop3Name) == 0) || (strlen(Config.Pop3Pass) == 0)) return FALSE;	  return TRUE;  }void SaveParms(void)  {	  char timer[5];	  itoa(Config.Timer, timer, 10);	  WritePrivateProfileString("PopMail", "ServerName", Config.ServerName, ConfigFile);	  WritePrivateProfileString("PopMail", "ServerIp", Config.ServerIp, ConfigFile);	  WritePrivateProfileString("PopMail", "Pop3Name", Config.Pop3Name, ConfigFile);	  WritePrivateProfileString("PopMail", "Pop3Pass", Config.Pop3Pass, ConfigFile);	  WritePrivateProfileString("PopMail", "MailDir", Config.MailDir, ConfigFile);	  WritePrivateProfileString("PopMail", "Timer", timer, ConfigFile);  }void Display(char* strText)  {	  int iSize;	  HLOCAL hBuffer;     char NEAR* npBuffer;	  hBuffer = (HLOCAL) SendMessage(hwndClient, EM_GETHANDLE, 0, 0L);	  LocalUnlock(hBuffer);	  iSize = LocalSize(hBuffer);
+	  LocalReAlloc(hBuffer, iSize + strlen(strText), 0);
+	  npBuffer = (char NEAR*) LocalLock(hBuffer);
+	  strcat(npBuffer, strText);
+	  LocalUnlock(hBuffer);
+	  SendMessage(hwndClient, EM_SETHANDLE, (WPARAM) (HLOCAL) hBuffer, 0);
+  }
+</pre>
+</body></html>

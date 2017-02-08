@@ -1,0 +1,51 @@
+<HTML>   
+     <HEAD>
+<TITLE>May 2000/Thread-Safe Access to Collections</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocmay.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Multithreading</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Thread-Safe Access to Collections</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Jeff Kleber</FONT></H3>
+
+<BLOCKQUOTE>
+<p>The best place to store a thread lock for a shared container is somewhere inside the container &#151; deep inside.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<H4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>This article describes a solution to the problem of accessing a collection in a thread-safe manner. The solution attempts to eliminate concurrency errors by ensuring that the semantics of locking and unlocking the collection are enforced. This is accomplished by deriving all collections from a base class that allocates and releases a critical section, and through the use of stack-based lock template specializations that enter and leave the critical section. Each collection privately inherits from the base class, so access to the critical section methods is not directly available to the user. The lock templates are declared as friends of the collection so they can call the critical section methods. I attempt to ensure that the collection is locked by placing an assertion at the start of each method of the collection. If a method on an unlocked collection is called, the assertion fires and generates a run-time error. Constructors and destructors are used to allocate and release locking resources to guarantee the collection is unlocked after use. This increases exception safety and minimizes the possibility of programmer error.</p>
+
+<H4><FONT COLOR="#000080">Why Collections Need Protection</FONT></H4>
+
+<p>In general, most collections do not provide atomic usage semantics. In other words, a user must call multiple methods to accomplish a single task. For example, the user might query the collection for the number of items it contains, then iterate over all the items in the collection. It is possible to encapsulate thread-safe access in each of the container's methods, by locking at the beginning of the method and releasing at the end. In this example, the container would lock and unlock the method to get the count, and again lock/unlock the method to retrieve each item. However, nothing protects against a thread deleting an item from the collection and making the previously obtained count invalid. Therefore, we need an easy and robust mechanism to ensure the collection is accessed safely.</p>
+
+<H4><FONT COLOR="#000080">Helper Classes</FONT></H4>
+
+<p>I start with a simple class, <B>ThreadSafe</B> (<a href="fig1.htm">Figure 1</a>) to encapsulate the locking and releasing of a critical section. My target platform is Win32, so I use a few calls specific to that environment. The constructor initializes the critical section and the destructor deletes it &#151; ensuring there will be no resource leaks. The lock and unlock functions enter and leave the critical section respectively, which is maintained as a private member state variable, <B>m_cs</B>. I derive my collection from this class.</p>
+<p>To regulate access to the collection, I've created a stack-based lock template, <B>LockAuto</B> (<a href="fig2.htm">Figure 2</a>). The constructor takes a reference to the collection and calls <B>lock</B>. The destructor calls <B>unlock</B>.</p>
+
+<H4><FONT COLOR="#000080">The Collection</FONT></H4>
+
+<p>The collection class, <B>MyCollection</B> (<a href="fig3.htm">Figure 3</a>), derives privately from class <B>ThreadSafe</B> (<a href="fig1.htm">Figure 1</a>) so that users cannot directly access the locking interface. This forces callers to use the stack-based locking classes. Since the locking methods are private, the <B>LockAuto</B> template needs to be a friend of the collection class. There still must be a way to enforce the precondition that the collection be locked before any of its methods are called. Starting the implementation of each method with an assertion is one option and throwing an exception is another. Both of these admittedly seem error prone. They require the implementer to remember to add the precondition checking code; and both generate a run-time error rather than a compile-time error. In lieu of a better choice, I have chosen assertions for this implementation.</p>
+<p>As <a href="fig4.htm">Figure 4</a> illustrates, usage is quite simple. Just create an instance of the <B>LockAuto</B> template and do your work with the collection. The lock is released when the <B>LockAuto</B> instance goes out of scope.</p>
+
+<H4><FONT COLOR="#000080">Adding Flexibility</FONT></H4>
+
+<p>Sometimes it is necessary to lock and unlock the collection within a single scope. To meet this requirement, I have created the <B>LockManual</B> template shown in <a href="fig5.htm">Figure 5</a>.</p>
+<p>This template lets the user lock and unlock the collection whenever necessary, and the destructor still provides a safety net to ensure that the lock is released when the instance goes out of scope, even if an error occurs. The member <B>m_bOwn</B> is very important. It is used to prevent the destructor from releasing the lock if it has been locked by another object &#151; which would be a bad thing. As is the case with <B>LockAuto</B>, the collection that <B>LockManual</B> is used with must declare this template as a friend.</p>
+
+<H4><FONT COLOR="#000080">Implementation Notes</FONT></H4>
+
+<p>In my implementations I use stack-based objects, such as smart pointers and the lock template described here, as much as possible. I like the symmetry of allocation in the constructor and release in the destructor. Such symmetry makes for robust code &#151; I cannot forget to release a resource I have allocated. This is true even if something unexpected happens, such as an exception being thrown. This automatic releasing of resources is especially important in this case. Usually failure to release a resource "only" causes some type of leak. However, in the case of critical sections, it means the protected resource will remain locked until the program is terminated. This is almost certain to cause a deadlock situation, which is obviously not acceptable.</p>
+<p>Many programmers immediately dismiss an implementation that uses friends. They label the implementation as "bad," without giving much thought as to why. I know I used to think that way. The main problem with the use of friends is the coupling it introduces between two classes. I believe a high degree of coupling is responsible for a large percentage of software problems, so my use of friends here bears some explaining. I have two reasons: first, I use friends to create and enforce a paradigm for accessing a resource. By using private inheritance, I hide the interface needed to accomplish the task and force myself to use the stack-based objects. Of course, those objects need access to the private members, therefore they must be friends. The second reason is simple &#151; these classes are supposed to be tightly coupled. They are coupled so tightly that the collection cannot be used without the lock. I would argue that this situation doesn't amount to coupling in the usual sense &#151; the two classes implement a single cohesive operation. In any case, using the <B>friend</B> keyword makes eminently clear my intention for the classes to be used together.</p>
+
+<p><i><B>Jeff Kleber</B> has a Masters in Computer Science from Lamar Univerity. He has nearly ten years of software development experience, the last eight years writing C++ applications for various Windows operating systems. He can be reached at <B>jeffkleber@compuserve.com</B>.</i></p>
+
+<h4><a href="../../../source/2000/may00/kleber.zip">Get Article Source Code</a></h4>
+
+</blockquote></body></html>

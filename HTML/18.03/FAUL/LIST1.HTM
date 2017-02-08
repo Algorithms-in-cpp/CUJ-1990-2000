@@ -1,0 +1,231 @@
+<HTML><HEAD>
+<TITLE>March 2000/An Embedded Memory-Based SQL Class for C++/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1: A stock quote server that uses the EMBSQL library</A></h4>
+<pre>
+// LOADSTOCKS Server program: get stocks from quote.yahoo.com
+// and load them into a Memory based Embedded SQL object
+#include &lt;afxwin.h&gt;
+#include &lt;winsock.h&gt;
+#include &lt;iostream.h&gt;
+#include "EMBSQL.h"
+
+static SOCKET ConnectToTcp(char *host, int port);
+static BOOL Select(SOCKET fd, int secs);    // select a socket
+static void bcopy(char *s, char *d, int n); // unix style copy
+static void bzero(char *s, int n);          // unix style zero
+static int Initialize();                    // init the network
+
+// decompose the HTTP back from yahoo
+static void Decompose(CString buf, CESql*,BOOL); 
+
+// Format of the HTTP get for retrieving a stock quote
+#define spec "GET /d/quotes.csv?s=%s&amp;f=sl1d1t1c1ohgv&amp;e=.csv \
+HTTP/1.0\r\nUser-Agent: http-get/0.1\r\n\r\n"
+
+void TestSelect();
+
+void main(int argc, char *argv[])
+{
+    SOCKET port = 0;      // yahoo's quote server port;
+    int i = 0, len = 0;       
+    char buf[512] = "";   // network read/write buffer
+    CESql* dBase = NULL;  // pointer to the embsql object
+    BOOL first = true;    // first time insert, then update
+
+    if (!Initialize())
+        perror(argv[0]);
+
+    dBase = new CESql();    // construct &amp; def table structure
+    dBase-&gt;Sql("CREATE TABLE stocks (\
+        SYMBOL char(8), \
+        DATE   char(9), \
+        TIME   char(6), \
+        HIGH   float,   \
+        LOW    float,   \
+        LAST   float,  \
+        VOLUME float)");
+
+    while(1) {
+        for (i=1;i&lt;argc;i++) {
+            // Get the web port
+            port = ConnectToTcp("quote.yahoo.com",80); 
+            if (port == 0) {
+                cout &lt;&lt; "Can't connect to Yahoo!\n";
+                exit(1);
+            }
+            // format the cgi query
+            sprintf(buf,spec,argv[i]);
+            len = strlen(buf);
+            if (send(port,(char *)buf,len,0) &lt;= 0) { // transmit
+                cout &lt;&lt; "Error requesting info for " &lt;&lt; buf;
+                exit(1);
+            }
+            // get the response from the web-server, Don't block
+            if (!Select(port,5)) { // wait up to 5 seconds
+                cout &lt;&lt; "Web server timed out! Bye!\n";
+                exit(1);
+            }
+            len = recv(port,(char *)buf,512,0);
+            if (len &lt;= 0) {
+                cout &lt;&lt; "Error retriving info for " &lt;&lt; buf;
+                exit(1);
+            }
+            if (strstr(buf,"HTTP/1.0 200 OK") == NULL) {
+                cout &lt;&lt; "Error: " &lt;&lt; buf;
+                exit(1);
+            }
+            // parse the html &amp; Do SQL
+            Decompose(CString(buf),dBase,first); 
+            closesocket(port);
+        }
+        if (first) 
+            first = false;    // next, do SQL update, not insert
+        Sleep(60000 * 5);      // sleep 5 minutes
+    }
+}
+
+// Decomposes an HTML page containing a stock quote. The first 
+// param, buf, has HTML page. Creates an array of values:
+// [0] = ticker
+// [1] = Last
+// [2] = Date
+// [3] = Time
+// [4] = Change
+// [5] = Open
+// [6] = Day's High
+// [7] = Day's low
+// [8] = Volume
+// Using these values either an SQL insert or update command is, 
+// executed via the dBase's Sql() method, as defined by the 
+// param 'insert'.
+
+static void Decompose(CString buf, CESql* dBase, BOOL insert)
+{
+    CString tokenString, value, values[10], cmd = "";
+    int i = 0;
+
+    tokenString = buf.SpanExcluding("\"");    // break apart
+    buf = buf.Mid(tokenString.GetLength());
+    tokenString = buf.SpanExcluding("\r");
+// Load the array
+    while((value = tokenString.SpanExcluding(",")) != 
+      tokenString) {
+        tokenString = tokenString.Mid(value.GetLength()+1);
+        if (value[0] == '"') {
+            value = value.Mid(1,value.GetLength()-2);
+            value = "'" + value + "'";
+        }
+        values[i++] = value;
+    }
+    values[i++] = tokenString;
+// Format the SQL command, depending on 'insert'
+    if (insert) 
+        cmd = "INSERT INTO STOCKS \
+(SYMBOL,DATE,TIME,LAST,HIGH,LOW,VOLUME) \
+VALUES(" + 
+              values[0] + "," +
+              values[2] + "," +
+              values[3] + "," + 
+              values[1] + "," +
+              values[6] + "," +
+              values[7] + "," + 
+              values[8] + ")";
+    else 
+        cmd = "UPDATE STOCKS SET(DATE=" + values[2] + "," +
+             "TIME =" + values[3] + "," + 
+             "LAST =" + values[1] + "," + 
+             "HIGH =" + values[6] + "," +
+             "LOW  =" + values[7] + "," +
+             "VOLUME=" + values[8] +") WHERE SYMBOL=" + 
+              values[0];
+    if (dBase-&gt;Sql(cmd) == NULL) {
+        cout &lt;&lt; "ERROR: " + dBase-&gt;ReturnError();
+        exit(1);
+    }
+    cout &lt;&lt; cmd &lt;&lt; "\n";
+    cout.flush();
+}
+//
+// Make and connect to TCP socket
+static SOCKET ConnectToTcp(char *host, int port)
+{
+    struct sockaddr_in new_sock;
+    struct hostent *hp;
+    int rc, xc;
+    u_long mode;
+
+    bzero((char *)&amp;new_sock, sizeof(new_sock));
+    new_sock.sin_family = AF_INET;
+    new_sock.sin_port = htons(port);
+
+    hp = gethostbyname(host);  // get the hostent pointer
+    if (hp == NULL) {
+        cout &lt;&lt; "No such name: " &lt;&lt; host;
+        return 0;
+    }
+    // set up the IP structure using the address and port
+    bcopy((char *)hp-&gt;h_addr, (char *)&amp;new_sock.sin_addr, 
+              hp-&gt;h_length);
+    // get a TCP socket
+    rc = socket(AF_INET, SOCK_STREAM, 0);
+    if (rc &lt; 0) {
+        perror("ConnectToTcp::socket");
+        return 0;
+    }
+    mode = 0;
+    // make socket non-blocking
+    ioctlsocket(rc,FIONBIO,&amp;mode);
+    // connect to the web server defined by 'host'
+    xc = connect(rc, (struct sockaddr*)&amp;new_sock, 
+             sizeof(new_sock));
+    if (xc == 0)
+        return(rc);    
+    return 0;
+}
+
+static BOOL Select(SOCKET fd, int sec)
+{
+    static fd_set testSet;
+    struct timeval tval;
+    tval.tv_usec = 0;
+    tval.tv_sec = sec;
+    FD_ZERO(&amp;testSet);
+    FD_SET(fd, &amp;testSet);
+    if (select(fd+1, &amp;testSet, 0, 0, &amp;tval) &lt;= 0)
+        return FALSE;
+    return TRUE;
+}
+
+//
+// UNIX style byte copy
+static void bcopy(char *s, char *d, int n)
+{
+    for (int i=0;i&lt;n;i++) d[i] = s[i];
+}
+
+//
+// UNIX style zero buffer
+static void bzero(char *s, int n)
+{
+    for (int i=0;i&lt;n;i++) s[i] = 0;
+}
+//
+// Initialize winsock
+//
+static int Initialize()
+{
+    WORD wVersionRequested;
+    WSADATA wsaData;
+    int err;
+    wVersionRequested = MAKEWORD( 1, 1 );// version &gt;= 1.1 
+    err = WSAStartup( wVersionRequested, &amp;wsaData );
+    if ( err != 0 )
+         return 0;
+    return 1;
+}
+
+
+</pre></body></html>

@@ -1,0 +1,399 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>March 1999/Uncaught Exceptions</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocmar.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Uncaught Exceptions: Singletons, Five-Liners, and Multiple Inclusion</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Bobby Schmidt</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>Bobby handles a series of small problems, including reentry at Microsoft after lobbing a few brickbats their way.</p>
+</BLOCKQUOTE>
+<HR>
+<BLOCKQUOTE>
+<p><I>Copyright &copy; 1999 Robert H. Schmidt</I><p>
+
+<p><I>To ask Bobby a question about C or C++, send email to </I><B>cujqa@mfi.com</B><I>, use subject line: Questions and Answers, or write to Bobby Schmidt, C/C++ Users Journal, 1601 W. 23rd St., Ste. 200, Lawrence, KS 66046.</I></p>
+
+<p>Last month I ragged a bit on Microsoft and ran a question from a Microsoft reader. A couple of weeks later, small world syndrome struck: after a two-year hiatus, I've once again taken on Microsoft as a client. Part of my mission this time is recommending improvements in documentation and coding style for one particular project team &#151; and as Diligent Readers know, I suffer no shortage of opinions and ideas about the Mighty M's methods.</p>
+<p>I am somewhat dazzled by the cornucopia of new technology &#151; and new technology acronyms. Microsoft's success seems to be built on constant reinvention and rampant user consumption; but I have to wonder how much is new, and how much is really old stuff taken to Earl Scheib. First-week impressions:</p>
+
+<UL><LI>ATL is to COM what MFC is to the Windows API, an attempt to wrap the complex within the inscrutable.</LI>
+    <LI>The bulk of file and registry detritus deposited by MSVC and Office remains astonishing.</LI>
+    <LI>Windows 98 drives like the Windows 95 Brougham edition.</LI>
+    <LI>Windows NT 4 drives like a Windows 95 Humvee.</LI>
+    <LI>I still have to install everything twice on a dual-boot system, just to get the registry entries right. Will we ever have a harmonic registry convergence?</LI></UL>
+
+<p>Most significantly, I can finally watch MSNBC. In a supreme irony, the TCI cable TV service where I live (just a few miles from Microsoft's main campus) doesn't carry the Microsoft cable channel. The only way I see it is in the lobbies of select Microsoft buildings, where the TV plays it all day like some Orwellian telescreen.</p>
+
+<h4><FONT COLOR="#000080">There Can Be Only One!</FONT></H4>
+
+<h4><FONT COLOR="#000080">Q</FONT></H4>
+
+<p>How can I have a class which allows only one object to be created? Thanks &#151; Kirankumar Goli</p>
+
+<h4><FONT COLOR="#000080">A</FONT></H4>
+
+<p>Several techniques leap to mind. If you want to allow multiple objects to be created and destroyed &#151; so long as no more than one object exists at a time &#151; consider a reference counting scheme like</p>
+
+<pre>
+class X
+    {
+public:
+    X()
+        {
+        if (count_ &gt; 0)
+            throw someException;
+        ++count_;
+        }
+    ~X()
+        {
+        --count_;
+        }
+private:
+    static int count_;
+    };
+     
+int X::count_(0);
+</pre>
+
+<p>Once the <B>X</B> constructor is called for the first object, the count is set to one. Subsequent constructions fail, unless and until the count drops back to zero via the class destructor. With this method, at most one object can exist at a time. (You could use a <B>bool</B> instead of an <B>int</B> here, since you need to track only two different states.)</p>
+<p>Instead of constructing and destroying multiple <B>X</B> objects (one at a time), you might instead want to ensure that only one <B>X</B> object can ever be constructed:</p>
+
+<pre>
+class X
+    {
+public:
+    X()
+        {
+        static int count(0);
+        if (count &gt; 0)
+            throw someException;
+        ++count;
+        }
+    ~X()
+        {
+        }
+    };
+</pre>
+
+<p>With this scheme, the reference count can never decrease, so a second object will never be constructed.</p>
+<p>While simple, these techniques are deficient:</p>
+
+<UL><LI>The constructor can throw an exception which the caller must be prepared to catch.</LI>
+    <LI>Even if you intend to create only a single <B>X</B> object, nothing prevents you from accidentally trying to construct others.</LI></UL>
+
+<p>To avoid these problems, hide the constructor and use a simple object broker:</p>
+
+<pre>
+class X
+    {
+public:
+    static X &amp;object()
+        {
+        static X x;
+        return x;
+        }
+private:
+    X();
+    ~X();
+    };
+
+X a; // error, can't access default ctor
+X *b = new X; // error, same reason 
+X c = X::object(); // error, no copy ctor
+X &amp;d = X::object(); // OK
+X &amp;e = X::object(); // OK, yields same object
+</pre>
+
+<p>Now there can be only one instance of <B>X</B>, controlled by the function <B>X::object</B>. (I'm taking my inspiration here from both the so-called Singleton pattern and Microsoft's COM <a href="#1">[1]</a>.)</p>
+
+<h4><FONT COLOR="#000080">Five Easy Pieces</FONT></H4>
+
+<h4><FONT COLOR="#000080">Q</FONT></H4>
+
+<p>Regarding the small functions you present in your September 1998 article: I think that small, generic functions/templates (I call them "five-liners" because their average size is five lines) are a potentially very useful aid in the C++ programmer's toolchest.</p>
+<p>You should build incrementally in your columns a "five-liners library." Function <B>lengthof</B> can be a good starting point. Here is one that is useful in creating error messages and nontrivial strings:</p>
+
+<pre>
+template &lt;class T&gt;
+std::string to_string(const T &amp;a)
+{
+    char Buffer[2048];
+    {
+        std::ostrstream Stream
+            (
+            Buffer,
+            sizeof Buffer
+            );
+        Stream &lt;&lt; a &lt;&lt; '\0';
+    }
+    return Buffer;
+}
+</pre>
+
+<p>This transforms objects quickly into strings. It requires the operator <B>&lt;&lt;</B> to be defined in the classic way for ostreams and objects. The good part is that <B>&lt;&lt;</B> is already implemented for primitive types, so you get something for nothing.</p>
+<p>I should have templatized the function for dealing with wide strings, but my compiler is quite awkward.</p>
+<p>Yours &#151; Andrei Alexandrescu</p>
+
+<h4><FONT COLOR="#000080">A</FONT></H4>
+
+<p>I like the idea of collecting such five liners. Now that you've seeded the process, perhaps other Diligent Readers will contribute more.</p>
+<p>Regarding <B>to_string</B>, the only problems I see are</p>
+
+<UL><LI>Reliance on a magic-sized buffer &#151; we can't guarantee that 2,048 will always be big enough.</LI>
+    <LI>The limitation that <B>T</B> must be a type for which <B>operator&lt;&lt;</B> is defined.</LI>
+    <LI>Construction and destruction of the local <B>ostrstream</B> object, especially if <B>to_string</B> is called a lot.</LI></UL>
+
+<p>In practice, these are nits. I've used similar to-string functions to great effect in my own projects for years.</p>
+
+<h4><FONT COLOR="#000080">Heckle and Decl</FONT></H4>
+
+<h4><FONT COLOR="#000080">Q</FONT></H4>
+
+<p>I recently found a subtle C++ syntax problem in declaring variables in control structures (according to minimal scoping rules).</p>
+<p>Assume I have two variables of different types, which I want to scope only within the block of the <B>for</B> control structures. I tried to write:</p>
+
+<pre>
+for(
+   int i = 0, double val = 0;
+   i&lt;iMax;
+   i++, val += 1
+   )
+{
+   // Whatever
+}
+</pre>
+
+<p>which of course won't work, since the comma is interpreted not as a sequence operator, but as a delimiter in the declarator portion of the expression. Another declaration specifier like <B>double</B> cannot follow.</p>
+<p>A naive change of mine led to the following code, that would compile with Borland C++ 5.0, but nonetheless was wrong:</p>
+
+<pre>
+double val;
+for(
+   int i = 0, val=0;
+   i &lt; iMax;
+   i++, val += 1
+   )
+{
+   // Whatever
+}
+</pre>
+
+<p>Now, <B>val</B> is interpreted to be of type <B>int</B> and hides the outer <B>val</B> for obvious reasons. Other compilers like Visual Age C++ complain about the redeclaration of <B>val</B>; but in any event, this code is wrong and is not what I intended. So the only working solution seems to be the following:</p>
+
+<pre>
+double val = 0.0;
+for(
+   int i = 0;
+   i &lt; iMax;
+   i++, val += 1
+   )
+{
+   // Whatever
+}
+</pre>
+
+<p>With this solution, the code works as expected, but I have to give up the minimal scoping principle &#151; <B>val</B> lives much longer than necessary.</p>
+<p>So now my question goes: is there any reasonable way of declaring both <B>i</B> and <B>val</B>, so that their scope is only the block of the control structure?!</p>
+<p>I find that this is quite a serious hole in the language, since constructs which need more than one loop variable are quite often necessary. This is especially true with STL containers, where there is often the need to have both an iterator and an index.</p>
+<p>Regards &#151; Harald Nowak</p>
+
+<h4><FONT COLOR="#000080">A</FONT></H4>
+
+<p>Yours is a most interesting problem, one I've not come up against before.</p>
+<p>For those wondering what Harald's on about, remove the declaration from the <B>for</B> statement, place it at global scope:</p>
+
+<pre>
+int i = 0, double val = 0;
+</pre>
+
+<p>and compile as either C or C++. Your compiler should balk at <B>double</B>, complaining that it expects an identifier (<B>double</B> is a keyword). As Harald writes, removing the "offending" keyword:</p>
+
+<pre>
+int i = 0, val = 0;
+</pre>
+
+<p>has the result of defining both <B>i</B> and <B>val</B> as <B>int</B>.</p>
+<p>The real solution is to break the declaration into two statements:</p>
+
+<pre>
+int i = 0; double val = 0;
+</pre>
+
+<p>Unfortunately you can't apply this solution to the original <B>for</B> statement:</p>
+
+<pre>
+for (
+    int i = 0; double val = 0;
+    i &lt; iMax;
+    i++, val += 1
+    )
+</pre>
+
+<p>since the compiler wants to see a <B>)</B> after <B>i &lt; iMax</B>.</p>
+<p>Why does the compiler behave this way? Sifting through the C++ Standard, I find that the grammar of a <B>for</B> statement is</p>
+
+<pre>
+  for ( <I>for-init-statement condition<SUB>opt</SUB></I> ;
+        <I>expression<SUB>opt</SUB> </I>)<I> statement</I>
+</pre>
+
+<p>where <I>for-init-statement</I> is defined as either an <I>expression-statement</I> or a <I>simple-declaration</I>. Thus, we can have a <B>for</B> statement that reduces down to</p>
+
+<pre>
+  for ( <I>simple-declaration</I> ; ) <I>statement</I>
+</pre>
+
+<p>Finally, <I>simple-declaration</I> is defined as</p>
+
+<pre>
+  <I>decl-specifier-seq<SUB>opt</SUB> init-declarator-list<SUB>opt</SUB></I> ;
+</pre>
+
+<p>(Fans of Mr. Saks will recognize our old friends the Decl twins, Spec and Arator.) The bottom line: only one declaration statement can fit within the <B>()</B> of a <B>for</B> statement.</p>
+<p>My recommendation is to wrap the <B>for</B> statement in an extra block layer:</p>
+
+<pre>
+{
+int i = 0;
+double val = 0;
+for (; i &lt; iMax; i++, val += 1)
+    {
+    /* ... */
+    }
+}
+/* i and val are now gone */
+</pre>
+
+<p>As long as you sneak no extra statements before or after the <B>for</B> loop, <B>i</B> and <B>val</B> are effectively constrained to the scope you want. In addition to fixing your multiple-declaration problem, this solution has the virtue of working in C, and with C++ compilers not supporting <B>for</B>-scope declarations.</p>
+
+<h4><FONT COLOR="#000080">One Small STSTEP</FONT></H4>
+
+<h4><FONT COLOR="#000080">Q</FONT></H4>
+
+<p>Hello Bobby,</p>
+<p>I am still confused by the way programmers define macros that prevent multiple header-file inclusion:</p>
+
+<pre>
+// #1
+//
+#ifndef _STSTEP_H_
+#define _STSTEP_H_
+// ...
+#endif // !_STSTEP_H_
+     
+// #2
+//
+#ifndef __STSTEP_H
+#define __STSTEP_H
+// ...
+#endif // !__STSTEP_H
+     
+// #3
+//
+#ifndef STSTEPH
+#define STSTEPH
+// ...
+#endif // !STSTEPH
+</pre>
+
+<p>Which is the best style? Why do most programmers use single/double underscores in their header-file macro names?</p>
+<p>Thanks &#151; Brian Ho</p>
+
+<h4><FONT COLOR="#000080">A</FONT></H4>
+
+<p>I don't know that there is a "best" style. I can tell you the style I use (and why), then discuss an extension of that style.</p>
+<p>Of your three examples, only #3 is safe. #1 and #2 use identifier forms reserved for the translator implementation <a href="#2">[2]</a>. If indeed "most" programmers use these two forms, I'm guessing they don't know that the Standard reserves such names for other uses &#151; or wouldn't care if they did know.</p>
+<p>I'm assuming the header file being protected here is called <B>ststep.h</B>. In that case, my current style is</p>
+
+<pre>
+#if !defined INC_STSTEP_
+    #define  INC_STSTEP_
+// ...
+#endif // !defined INC_STSTEP_
+</pre>
+
+<p>Rationale:</p>
+
+<UL><LI>Following the lead of C++ Standard library headers, I don't assume all header names end in <B>.h</B>. I therefore tend to leave the <B>H</B> or <B>_H</B> suffix off of these macro names.</LI>
+    <LI>The <B>INC_</B> prefix implies the protection is based on file inclusion (as opposed to other kinds of protection mentioned below).</LI>
+    <LI><B>#if !defined</B> is more flexible than <B>#ifndef</B>, so I promote its use wherever I can. I also like the symmetry between the opening <B>#if !defined</B> and the closing <B>#endif // !defined</B>. About the closest you can come to similarly match <B>#ifndef is #endif // ndef</B>.</LI>
+    <LI>I indent the <B>#define</B> statement and add a space after, so <B>INC_STSTEP_</B> lines up beneath the same name in the <B>#if</B> statement. This lets me easily ensure the macro names match.</LI></UL>
+
+<p>INC_STSTEP_</B> is only a partial solution. To see why, assume <B>ststep.h</B> contains</p>
+
+<pre>
+typedef int HANDLE;
+</pre>
+
+<p>This is the sort of definition you're likely to use throughout a project. In fact, other project-standard header files may want to make use of this same definition &#151; but at the same time, you may have good reasons not to want large headers including one another. In such an environment, you may decide to replicate this definition into multiple headers.</p>
+<p>In that case, assume <B>HANDLE</B>'s definition appears in both <B>ststep.h</B> and some other massive project header called, oh, let's say <B>windows.h</B>. If you compile code including both headers:</p>
+
+<pre>
+#include "ststep.h"
+#include "windows.h"
+</pre>
+
+<p>you'll get an error about <B>HANDLE</B> being multiply defined. Clearly header-file wrappers are not enough.</p>
+<p>One solution: instead of just wrapping the headers, also wrap the individual definitions contained in those headers:</p>
+
+<pre>
+#if !defined INC_STSTEP_
+    #define  INC_STSTEP_
+     
+#if !defined DEF_HANDLE_
+    #define  DEF_HANDLE_
+    typedef int HANDLE;
+#endif
+     
+// ...
+     
+#endif // !defined INC_STSTEP_
+</pre>
+
+<p>(I use the prefix <B>DEF_</B> to imply I'm defining a single entity instead of including an entire header file.)</p>
+<p>Use this same <B>DEF_HANDLE_</B> wrapper in <B>windows.h</B>. Now <B>HANDLE</B>'s definition appears only once, regardless of how many headers you include, or in what order you include them.</p>
+<p>Another solution: define an auxiliary header <B>handle.h</B> that contains the <B>HANDLE</B> definition, then include that file in <B>ststep.h</B> and <B>windows.h</B>. This makes for more file juggling and file-name collision, but also makes maintenance easier, since <B>HANDLE</B> is defined in exactly one place.</p>
+<p>Lest you think this problem is far-fetched, consider the Standard C and C++ type <B>size_t</B>, which is defined in multiple headers. Among those headers are the Standard C library headers <B>stddef.h</B> and <B>stdlib.h</B>, yet you can compile</p>
+
+<pre>
+#include &lt;stddef.h&gt;
+#include &lt;stdlib.h&gt;
+</pre>
+
+<p>without error. And like the hypothetical example above, the Standard C headers don't include one another.</p>
+<p>If you crack open your compiler's <B>stddef.h</B> and <B>stdlib.h</B>, you will probably see a variation of these solutions in use. As an example, Microsoft Visual C++ uses the former method while Metrowerks CodeWarrior Pro uses the latter.</p>
+
+<h4><FONT COLOR="#000080">Erratica</FONT></H4>
+
+<p>Last month I wrote (in response to Andrew Phillips' critique):</p>
+
+<BLOCKQUOTE>
+<p>The 64K portable limit for a single C++ array is my extrapolation from the C Standard. I expect that some conforming C or C++ implementations &#151; especially for embedded systems &#151; are limited to single arrays/vectors of size 64K</p>
+</BLOCKQUOTE>
+
+<p>That response is misleading on two counts:</p>
+
+<UL><LI>The 64Kb limit is for C9X; C89's limit is 32K. When I wrote about extrapolating from "the C Standard," I really meant "the Draft C9X Standard."</LI>
+    <LI>In either C89 or C9X, the limit applies to hosted environments only. Since embedded systems are typically not considered hosted environments, the Standards apparently make no guarantees about object sizes on those systems.</LI></UL>
+
+<p>The morbidly curious can find these limits described in section 2.2.4.1 of the C89 Standard and section 5.2.4.1 of the Draft C9X Standard.</p>
+<p>Our final thought is courtesy of Mr. Ubiquity down in Oregon:</p>
+<p><I>As for how my CD is coming along, you and your readers can see for yourselves how I (and several others) blew 1998: developing the </I>Effective C++<I> CD. A complete demo is available at http://meyerscd.awl.com/. Though the bleeding edge of HTML technology is a messy place (we never will get those stains out of the carpet), I hope you and your readers will agree that the CD breaks new ground in several areas of electronic publication. I encourage everybody to give it a look-see and let me know what they think: smeyers@aristeia.com. </I>o</p>
+
+<h4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1]  After writing this answer, I discovered that Scott Meyers covers similar territory in Item 26 of his <I>More Effective C++</I>.</p>
+<p><a name="2"></a>[2]  Briefly, C++ identifiers starting with an underscore and an upper-case letter, or containing double underscores anywhere, are reserved. The rules are slightly different in C. Check out my October 1998 <I>CUJ</I> column for more information.</p>
+
+<p><i>Bobby Schmidt is a freelance writer, teacher, consultant, and programmer. He is also an alumnus of Microsoft, a speaker at the Software Development and Embedded Systems Conferences, and an original "associate" of (Dan) Saks &amp; Associates. In other career incarnations, Bobby has been a pool hall operator, radio DJ, private investigator, and astronomer. You may summon him on the Internet via <B>rschmidt@netcom.com</B>.</i></p>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

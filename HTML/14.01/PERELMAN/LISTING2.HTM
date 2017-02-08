@@ -1,0 +1,489 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+          <TITLE>January 1996/Object-Oriented SDI-12 Communications/Listing 2</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H4>Listing 2: Implementation of supporting classes</H4>
+
+<PRE>
+#include "misc.h"    // CLASS HEADERS AND MISCELLANEOUS INCLUDES
+#pragma hdrstop      // STOP PRECOMPILED HEADERS
+#include "sdi12.h"
+
+//-----------------------------------------------------------------------
+//-----------------------------------------------------------------------
+//   class SDI12_UART
+//   Descends from PolledSerialPort class.  
+//   copyright David Perelman-Hall 1995
+//-----------------------------------------------------------------------
+//-----------------------------------------------------------------------
+void SDI12_UART::Setup( const String&amp; portStr )
+{
+   // SET UP THE SDI-12 COMMUNICATIONS PARAMETERS
+	SetPort( portStr );  // port is variable between COM1 and COM4
+  	SetBaud( "1200" );
+	SetData( "7" );
+	SetParity( "even" );
+	SetStop( "1" );
+
+   // CALL PolledSerialPort::OpenPort TO PHYSICALLY SET UP THE UART REGISTERS
+   OpenPort();
+}
+
+
+void SDI12_UART::SendCommand( const String&amp; command ) 
+const
+{
+  timer.Pause18thSeconds(1); // THIS ENSURES THAT BREAK STARTS OK
+  BreakOn(); // SEND BREAK AND MARK TO WAKE UP INSTRUMENT
+  timer.Pause18thSeconds(1);
+  BreakOff(); // STOP BREAK AND MARK
+  timer.Pause18thSeconds(1);
+  SendString( command ); // SEND COMMAND STRING
+
+  // CHECK FOR 1 18TH OF SECOND THAT CHARACTER IS COMING IN FROM SENSOR
+  // IF NO CHARACTER IS PRESENT, THEN RETRY THE COMMAND
+  long currentTime = timer.Get18thSeconds();
+  while( !timer.Past18thSeconds(currentTime,1) ) {
+     if( CharWaiting() )
+        return;  // RETURN IMMEDIATELY TO COLLECT THE DATA FROM SENSOR
+  }
+
+  // REISSUE THE COMMAND AND RETURN FROM FUNCTION TO TRY TO COLLECT THE DATA
+  if( !CharWaiting() )
+     SendString( command );
+}
+
+int SDI12_UART::GetTerminatedString( String&amp; str, int delayTime, char 
+terminator, int length ) 
+const
+{
+   char *buf = new char[length+1];
+   if( buf==0 )
+      assert( !"char allocation failed" );
+   register char c = terminator-1;
+   register int i=0;
+   int currentTime = timer.GetSeconds();
+   while( !timer.PastSeconds(currentTime,delayTime) &amp;&amp; i&amp;ltlength &amp;&amp; 
+c!=terminator ) {
+      if( CharWaiting() ) {
+         buf[i] = c = ReadChar();
+         i++;
+      }
+   }
+   buf[i] = 0;
+   str = buf;
+   delete [] buf;
+   if( c==terminator )
+      return 1;
+   return 0;
+}
+
+
+//-----------------------------------------------------------------------
+//-----------------------------------------------------------------------
+//   class SDI12_Logger
+//   Inherits privately from template class 
+//   copyright David Perelman-Hall 1995
+//-----------------------------------------------------------------------
+//-----------------------------------------------------------------------
+
+String SDI12_Logger::Verify()
+const 
+{ 
+   return TalkToSDI(address+"V!"); 
+}
+
+String SDI12_Logger::Acknowledge()
+const 
+{ 
+   return TalkToSDI( address + "!");
+}
+
+String SDI12_Logger::Identify()
+{ 
+   return identity = TalkToSDI( address + "I!"); 
+}
+
+String SDI12_Logger::Data( const String&amp; consecutive ) 
+{
+   return value = TalkToSDI( address + "D" + consecutive + "!" ); 
+}
+
+String SDI12_Logger::Measure( const String&amp; consecutive )
+const 
+{ 
+   return TalkToSDI( address + "M" + consecutive + "!" ); 
+}
+
+SDI12_Logger::SDI12_REPLY SDI12_Logger::DataReady(const String&amp; str)
+{
+   // THIS FUNCTION SEEKS A SERVICE REQUEST FROM THE SDI12 OBJECT
+   // A SERVICE REQUEST CONSISTS OF "address&amp;ltCR&gt;&amp;ltLF&gt;"
+   // AND IT MUST COME BEFORE THE MAXIMUM TIME THE SENSOR WILL TAKE
+   // BEFORE DATA IS READY, AS REPORTED IN REPLY TO A MEAASURE COMMAND.
+   // PARSE STRING TO SEE HOW LONG SHOULD WAIT BEFORE TIMING OUT
+   if( !ParseReply( str ) )
+      return SDI12_Logger::REPLY_FAIL;
+
+   // SEEK THE DATA READY MESSAGE, WAITING timeOut SECONDS FOR IT
+   String reply;
+   if( method-&amp;gtGetTerminatedString( reply, serviceRequestTime, LF, 
+MAX_BUF_SIZE ) ) {
+      if( reply.contains(replyTerminal) )
+         return SDI12_Logger::REPLY_OK;
+      else
+         return SDI12_Logger::REPLY_FAIL;
+   }
+   else
+      return SDI12_Logger::REPLY_TIMEOUT;
+}
+
+int SDI12_Logger::ParseReply( const String&amp; str ) 
+{
+   cout &lt;&lt; "Parsing reply of " &lt;&lt; str &lt;&lt; endl;
+   String s = str;
+
+   // PARSE OUT THE TIME TILL DATA IS AVAILABLE
+   // AND PARSE OUT THE NUMBER OF DATA VALUES
+   char time[4] = {0,0,0,0}, numVals[2] = {0,0}; // zero out these arrays
+   s.copy( time, 2, s.length() - 4 );
+   s.copy( numVals, 1, s.length() - 1 );
+   serviceRequestTime = atoi( time );
+   numberValues = atoi( numVals );
+   cout &lt;&lt; "Service request within " &lt;&lt; serviceRequestTime &lt;&lt; " seconds.\n";
+   cout &lt;&lt; numberValues &lt;&lt; " data value(s) will be available.\n";
+
+   // DO A SANITY CHECK TO ENSURE DATA WAS OK
+   if( serviceRequestTime &amp;&amp; numberValues )
+      return 1;
+   return 0;
+}
+
+// STATIC PORT MEMBER--SO ALL PORTS CAN ACCESS IT
+StringList PolledSerialPort::portsInUse;
+
+//**************************************************************************
+//**************************************************************************
+//************** POLLED SERIAL PORT CLASS FUNCTIONALITY ********************
+//**************************************************************************
+//**************************************************************************
+
+ostream&amp; operator &lt;&lt; (ostream&amp; os, const PolledSerialPort&amp; sp) 
+{
+   os &lt;&lt; "SERIAL PORT.....: " &lt;&lt; sp.PortText() 
+      &lt;&lt; "\t\tBAUD RATE.......: " &lt;&lt; sp.BaudText() &lt;&lt; endl;
+
+   if( sp.data == _DATABITS8 )
+      os &lt;&lt; "DATA BITS.......: 8";
+   else if( sp.data == (_DATABITS7 | 8) )
+      os &lt;&lt; "DATA BITS.......: 7";
+   else
+      os &lt;&lt; "DATA BITS.......: ?";
+
+   if( sp.stop == STOPBITS1 )
+      os &lt;&lt; "\t\tSTOP BITS.......: 1\n";
+   else if( sp.stop == STOPBITS2 )
+      os &lt;&lt; "\t\tSTOP BITS.......: 2\n";
+   else
+      os &lt;&lt; "\t\tSTOP BITS.......: ?\n";
+
+   if( sp.parity == 0 ) 
+      os &lt;&lt; "PARITY..........: NONE\n";
+   else if( sp.parity == 16 )
+      os &lt;&lt; "PARITY..........: EVEN\n";
+   else
+      os &lt;&lt; "PARITY..........: UNKNOWN\n";
+   return os;
+}
+
+
+PolledSerialPort::PolledSerialPort(WORD p, unsigned b): 
+   baudAsText("undefined"), portAsText(""),
+   baseAddress(p), data(1000), parity(1000), stop(1000),
+   baud(b), portIsOpen(0) {}
+	 
+
+istream&amp; operator &gt;&gt; (istream&amp; is, PolledSerialPort&amp; sp)
+{
+   String portStr, baudStr, dataStr, parityStr, stopStr;
+
+   // GRAB THE PORT NUMBER INFORMATION
+   is &gt;&gt; portStr;
+
+   // GRAB THE BAUD RATE ASSOCIATED WITH THE BUBBLER
+   is &gt;&gt; baudStr;
+
+   // READ IN THE PARITY, STOP BIT, AND DATA BIT
+   is &gt;&gt; parityStr &gt;&gt; stopStr &gt;&gt; dataStr;
+
+   // LOAD THE PORT
+   sp.SetPort( portStr );
+
+   // LOAD THE BAUD RATE
+   sp.SetBaud( baudStr );
+
+   // LOAD THE DATA BITS
+   sp.SetData( dataStr );
+
+   // LOAD THE STOP BIT
+   sp.SetStop( stopStr );
+
+   // LOAD PARITY
+   sp.SetParity( parityStr );
+
+   // SET PORT SETTINGS INTO THE HARDWARE REGISTERS
+   sp.OpenPort();
+
+   return is;
+}
+
+void PolledSerialPort::SetBaud( const String&amp; baudStr )
+{
+   // LOAD THE BAUD RATE
+   if( baudStr=="300" ) {
+      baud = BAUD300;
+      baudAsText = "300";
+	 }
+   else if( baudStr=="1200") {
+      baud = BAUD1200;
+      baudAsText = "1200";
+	 }
+   else if( baudStr=="2400" ) {
+      baud = BAUD2400;
+      baudAsText = "2400";
+	 }
+   else if( baudStr=="4800" ) {
+      baud = BAUD4800;
+      baudAsText = "4800";
+	 }
+   else if( baudStr=="9600" ) {
+      baud = BAUD9600;
+      baudAsText = "9600";
+	 }
+   else {
+      baud = BAUD2400; // default to 2400
+      baudAsText = "2400";
+	 }
+}
+
+void PolledSerialPort::SetStop( const String&amp; stopStr )
+{
+   // LOAD THE STOP BIT
+   if( stopStr=="1" )
+      stop = STOPBITS1;
+   else if( stopStr=="2" )
+      stop = STOPBITS2;
+   else 
+      stop = STOPBITS1; // default
+}
+
+void PolledSerialPort::SetData( const String&amp; dataStr )
+{
+   // LOAD DATA BITS
+   if( dataStr=="8" ) 
+      data = _DATABITS8;
+   else if( dataStr=="7" ) 
+      data = _DATABITS7 | 8; // this also enables parity
+   else 
+      data = _DATABITS8; // default
+}
+
+
+void PolledSerialPort::SetParity( const String&amp; parityStr )
+{
+   // LOAD PARITY
+   if( parityStr=="none" )
+      parity=0;
+   else if( parityStr=="odd" )
+      parity=0;
+   else if( parityStr=="even" )
+      parity=16;
+}
+
+void PolledSerialPort::SetPort( const String&amp; port )
+{
+   // FIND OUT HOW MANY PORTS THERE ARE
+   int numPorts=0;
+   int equipment=biosequip();
+
+   // KEEP MASKING FOR MORE AND MORE PORTS
+   if( (equipment &amp; BIOS_1PORTS_MASK)==BIOS_1PORTS_MASK ) 
+      numPorts=1;
+   if( (equipment &amp; BIOS_2PORTS_MASK)==BIOS_2PORTS_MASK ) 
+      numPorts=2;
+   if( (equipment &amp; BIOS_3PORTS_MASK)==BIOS_3PORTS_MASK ) 
+      numPorts=3;
+   if( (equipment &amp; BIOS_4PORTS_MASK)==BIOS_4PORTS_MASK ) 
+      numPorts=4;
+   cout &lt;&lt; "Found " &lt;&lt; numPorts &lt;&lt; " ports\n";
+
+   // CHANGE CASE FOR EQUALITY TEST
+   String portStr = port;
+   portStr.to_upper();
+
+   // LOAD THE PORT NUMBER
+   // USE COM1 PORT
+   if( portStr == "COM1" ) {
+      if( numPorts &lt; 1 ) {
+         cerr &lt;&lt; "Can't add serial I/O to non-existent COM1\n";
+      }
+      if( !portsInUse.contains("COM1") ) {
+         portsInUse+="COM1";
+			 portAsText = "COM1";
+		 }
+      else {
+         cerr &lt;&lt; "Can't assign 2 ports to COM1\n";
+      }
+      SetAddress( (WORD) 0X3F8 );
+   }
+
+   // USE COM2 PORT
+   else if( portStr == "COM2" ) {
+      if( numPorts &lt; 2 ) {
+         cerr &lt;&lt; "Can't add serial I/O to non-existent COM2\n";
+      }
+      if( !portsInUse.contains("COM2") ) {
+         portsInUse+="COM2";
+			 portAsText = "COM2";
+		 }
+      else {
+         cerr &lt;&lt; "Can't assign 2 ports to COM2\n";
+      }
+      SetAddress( (WORD) 0X2F8 );
+   }
+
+   // USE COM3 PORT
+   else if( portStr == "COM3" ) {
+      if( numPorts &lt; 3 ) {
+         cerr &lt;&lt; "Can't add serial I/O to non-existent COM3\n";
+      }
+      if( !portsInUse.contains("COM3") ) {
+         portsInUse+="COM3";
+			 portAsText = "COM3";
+		 }
+      else {
+         cerr &lt;&lt; "Can't assign 2 ports to COM3\n";
+      }
+      SetAddress( (WORD) 0X3E8 );
+   }
+
+   // USE COM4 PORT
+   else if( portStr == "COM4" ) {
+      if( numPorts &lt; 4 ) {
+         cerr &lt;&lt; "Can't add serial I/O to non-existent COM4\n";
+      }
+      if( !portsInUse.contains("COM4") ) {
+         portsInUse+="COM4";
+			 portAsText = "COM4";
+		 }
+      else {
+         cerr &lt;&lt; "Can't assign 2 ports to COM4\n";
+      }
+      SetAddress( (WORD) 0X2E8 );
+   }
+   else {
+      cerr &lt;&lt; "COM port designation is not COM1-COM4\n";
+   }
+}
+
+void PolledSerialPort::ClearPort()
+const
+{
+   // READ PORT FOR 1 SECOND TO CLEAR ANYTHING IN IT OUT
+   int time=timer.GetSeconds();
+   while( !timer.PastSeconds(time,1) ) {
+      if( CharWaiting() ) 
+            ReadChar();
+   }
+}
+
+
+void PolledSerialPort::BreakOn()
+const
+{
+   unsigned char val=inportb(LCR());
+   val|=BREAK_ON;
+   outportb(LCR(), val);
+}
+
+void PolledSerialPort::BreakOff()
+const
+{
+   unsigned char val=inportb(LCR());
+   val&amp;=BREAK_OFF;
+   outportb(LCR(), val);
+}
+
+
+void PolledSerialPort::SendString( const String&amp; str )
+const
+{
+   for( int i=0; i&amp;ltstr.length(); i++ ) {
+      while( !ReadyToSendChar() )
+         {}
+      SendChar( str[i] );
+   }
+}
+
+
+void PolledSerialPort::SetBaudRate()
+{  
+   //cout &lt;&lt; "Setting baud rate to " &lt;&lt; baudAsText &lt;&lt; endl;
+
+   // SET DLAB FLAG=ONE TO SIGNAL THAT VALUES AT DLL AND DLM RELATED TO BAUD
+   unsigned char oldLCR=inportb(LCR()); 
+   outportb(LCR(),oldLCR | _DLAB);
+
+   // LOAD THE DIVISOR LATCHES FOR SPEED 
+   unsigned char hi=(baud &amp; 0xFF00) &gt;&gt; 8; 
+   unsigned char lo=baud &amp; 0x00FF;
+
+   // SEND BAUD MESSAGE &amp; CLEAR THE DLAB FLAG TO ZERO
+   outportb(DLAB(),lo); 
+   outportb(DLBM(),hi); 
+   outportb(LCR(),oldLCR &amp; !_DLAB);
+}
+
+
+void PolledSerialPort::OpenPort()
+{
+   assert( baudAsText != "undefined" );
+   assert( baseAddress != 0 );
+   assert( baud != 0 );
+   assert( data != 1000 );
+   assert( parity != 1000 );
+   assert( stop != 1000 );
+
+   // SET THE BAUD RATE
+   SetBaudRate();
+
+   // DISABLE INTERRUPTS
+   outportb( IER(),0 );
+
+   // SET DATA, PARITY AND STOP BITS
+   outportb( LCR(), data | parity );
+
+   // ENABLE DTR &amp; RTS 
+   outportb( MCR(), _DTR | _RTS );
+
+   // CLEAR ANY GARBAGE FROM RBR AND LSR
+   unsigned char garbage = inport(RBR());
+   ++garbage = inport( LSR() );
+
+   // SET PORT OPEN FLAG
+   portIsOpen = 1;
+}
+</PRE>
+     </BODY>
+</HTML>

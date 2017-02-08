@@ -1,0 +1,381 @@
+<HTML>   
+     <HEAD>
+<TITLE>August 2000/A Simple Persistence Framework</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocaug.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">A Simple Persistence Framework</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Gary Hsiao</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Think of a persistent object broker as a poor man's database. Then think of all the ways you might use it.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<p>In many applications, objects that are created exist only while the program is executing. However, there are times when it would be useful to preserve the state of an object from one run of the program to the next. Such object persistence can be achieved by saving the object's state to a file or database. Using a database often amounts to overkill; a simpler solution is needed. One simpler solution is to use a Persistent Object Broker, or POB. This article will show how you can use a POB to save objects to files for reuse. The POB presented here also supports modification of persistent objects, permanent deletion, and fast object retrieval.</p>
+<p>The POB gives each instance of a class a unique OID (Object Identifier), which the POB uses to reference and access the instance. The OID is separate from the class data members and cannot be changed by your application. A POB's OID is not to be confused with a UID (Universal Object Identifier) &#151; OIDs are unique only within a given scope, so you can't use the same OIDs on two different POB sets. However, you can change the OID implementation to make it universal and give it the ability to be used across different domains.</p>
+
+<H4><FONT COLOR="#000080">POB Structure</FONT></H4>
+
+<p>The POB consists of two groups of classes. The first group provides an interface for users. It includes the templates <B>POBbase</B> and <B>POBroker</B>, and the <B>POBObj</B> class. The second group provides the core functionality of the POB and includes the classes <B>Gbiostream</B>, <B>Gfactory</B>, and <B>DiskMBTree</B>. I first discuss the POB from a user's perspective, which includes requirements on user classes, and functions the POB provides that enable users to store and retrieve persistent objects.</p>
+
+<H4><FONT COLOR="#000080">The User Interface</FONT></H4>
+
+<p>Every class you want to make persistent must inherit from the <B>POBObj</B> class (see <a href="list1.htm">Listing 1</a>). The two overloaded operators shown in <a href="list1.htm">Listing 1</a> act as the data channel for the object, providing bidirectional streaming of data between the object and the disk object file. The assignment operator, <B>operator=</B>, takes a string as its input parameter. The POB calls this operator in the process of reading an object from the object data file. The other operator, <B>operator const string &amp;</B>, converts an object into a string. The POB uses this conversion operator for writing an object into the object file.</p>
+<p>Your class must override these two operators to translate its internal data from and to <B>std::string</B>s. Specifically, the assignment operator must convert the input string into values and assign them to data members; the conversion operator must convert data members to an output string, and return it.</p>
+<p>The snippet below shows a sample persistent class <B>ABC</B>, and its implementation of the assignment and conversion operators:</p>
+
+<pre>
+class ABC: public POBObj 
+
+{
+public:
+    static POBObj* create()
+    { (POBObj*) return new ABC; }
+    ...
+    operator const string&amp; ();
+    void operator=(const string&amp;);
+    ...
+private:
+    int i;
+    double d;
+    string s;
+    ...
+}
+
+// assignment operator
+void ABC::operator=(const string&amp; str)
+{   
+    putData(str);
+
+    //* your code start from here
+    *this &gt;&gt; i;
+    *this &gt;&gt; d;
+    *this &gt;&gt; s;
+}
+
+// conversion operator
+ABC::operator const string&amp; ()
+
+{
+    clear();
+    
+    //* your code start from here
+    *this &lt;&lt; i;
+    *this &lt;&lt; d;
+    *this &lt;&lt; s;
+
+    return getData();
+
+}
+</pre>
+
+<p>Your implementation of the assignment operator must call the function <B>putData</B> before attempting to stream in any data. <B>putData</B> is a member function of class <B>Gbiostream</B>, which is <B>POBObj</B>'s immediate base class. The <B>putData</B> function takes the input string that was passed to the assignment operator and copies it into a data buffer, which is also a member of <B>Gbiostream</B>. Function <B>putData</B> is defined as follows:</p>
+
+<pre>
+void Gbiostream::putData(const string&amp; str)
+
+{
+    _data = str; // copy string to 
+                 // data buffer
+    idx = 0;
+
+}
+</pre>
+
+<p>After calling <B>putData</B>, your assignment operator can stream in data from the data buffer using overloaded versions of <B>operator&gt;&gt;</B>. These operators are inherited from class <B>Gbiostream</B>; they extract values from the data buffer into their arguments.</p>
+<p>Your implementation of the conversion operator (<B>operator const string &amp;</B>) must call <B>Gbiostream</B>'s member function <B>clear</B> before attempting to stream out any data. <B>clear</B> simply cleans out the data buffer:</p>
+
+<pre>
+void Gbiostream::clear()
+
+{
+    _err[0] = _err[1] = false;
+    _idx = 0;
+    _data.resize(0);
+
+}
+</pre>
+
+<p>After calling <B>clear</B>, your conversion operator can stream data to the data buffer using overloaded versions of <B>operator&lt;&lt;</B>. These operators are also inherited from class <B>Gbiostream</B>; they convert their argument values to strings and insert them into the data buffer.</p>
+<p>Finally, your conversion operator must call the <B>getData</B> function before exiting. <B>getData</B> is another function inherited from <B>Gbiostream</B>. It simply returns a reference to the data buffer:</p>
+
+<pre>
+const string&amp; Gbiostream::getData()
+
+{
+    return _data;
+}
+</pre>
+
+<p>The order in which you send or receive data members doesn't have to match their order in the class declaration; however, the order that you send data in the conversion operator must match the order that you receive it in the assignment operator. This principle is illustrated in the sample class <B>ABC</B> above.</p>
+<p>Note that <B>Gbiostream</B>'s data member, <B>_idx</B>, is reset to zero in both the <B>putData</B> and <B>clear</B> functions. <B>_idx</B> is an index into the data buffer. <B>Gbiostream</B>'s overloaded <B>&gt;&gt;</B> operators use this index (indirectly) to determine where in the data buffer to begin extracting data. This index must be set to zero before your implementation of the assignment operator starts streaming in data from the buffer.</p>
+<p>Your classes must also provide a static class creation function, as shown in the <B>ABC</B> class above. The POB will use this function to create new instances of your classes. You register both your class, and the creation function, by calling the POB's <B>register_creation_function</B>:</p>
+
+<pre>
+// create persistent object broker
+POBroker&lt;POBObj&gt; pob("TEST.OBJ");
+...
+// register class ABC and its create function
+pob.register_creation_function(typeid(ABC).name(), ABC::create)
+...
+</pre>
+
+<p>When you call <B>register_creation_function</B>, the POB in turn registers your class creation function with the <B>GFactory</B> class &#151; a data member of the <B>POBbase</B> class. You call <B>register_creation_function</B> by passing in the class typeid and a pointer to the class creation function. (The typeid is a string returned by C++'s RTTI facility. It returns a unique name for an expression or a type.)</p>
+<p>When the POB retrieves an object from the disk file, <B>GFactory</B> uses the specified class creation function to construct the object instance.</p>
+
+<H4><FONT COLOR="#000080">The POBroker Class</FONT></H4>
+
+<p>The POB consists of two templates: <B>POBroker</B> (<a href="list2.htm">Listing 2</a>) and <B>POBbase</B>.</p>
+<p><B>POBroker</B> acts as the public interface to the objects on the disk file, and provides both sequential and random retrieval, as well as the ability to save, modify, and delete objects. Specifically, using <B>POBroker</B>, you can carry out the following operations:</p>
+
+<UL><LI>   Insertion. You can call the function:
+<pre>
+POBbase&lt;T&gt;::OBJ_ID writeObj(const T&amp;)
+</pre>
+to save your object, of type <B>T</B>, to the object file. If the write is successful, <B>writeObj</B> returns an object identifier.</p>
+<LI>   Reading. The function:
+<pre>
+POBbase&lt;T&gt;::OBJ_ID readObj(T*&amp;)
+</pre>
+performs a sequential read from the object file. As an example of its use, the following code shows how you can easily "dump" all the objects in an object file:</p>
+<pre>
+int main()
+{  
+   POBroker&lt;POBObj&gt; pob("TEST.OBJ");
+   
+   pob.register_create_function(typeid(ABC).name(),
+      ABC::create);
+   pob.register_create_function(typeid(EFG).name(),
+      EFG::create);
+   pob.register_create_function(typeid(HIJ).name(),
+      HIJ::create);
+
+   ...
+
+   ABC* pabc;
+   EFG* pefg;
+   HIJ* phij;
+   while(!pob.eof()) {
+      POBObj* po;
+      if(pob.readObj(po)) {
+         if(typeid(*po) == typeid(ABC)) {
+            ABC* pabc = (ABC*)po;
+            ...
+         }
+         else if(typeid(*po) == typeid(EFG)) {
+            EFG* pefg = (EFG*)po;
+            ...
+         }
+         ...
+         POB_DEL_REF (po);
+      }
+   }  
+   return 0;
+}
+</pre>
+
+<B>readObj(T*&amp;)</B> will return zero if there is no object at the current disk position.</p>
+<p>Note that in the above example, the template <B>POBroker</B> is specialized with the template argument <B>POBObj</B>, the base class for persistent objects. Since so far I have presented <B>POBObj</B> as the only base class to be used for all persistent objects, there will apparently be no need for other specializations &#151; it may seem strange to have made <B>POBroker</B> a template in the first place. I made <B>POBroker</B> a template for design reasons: if I develop different base classes, they can use the same persistent mechanism, so as to separate the object details from the persistent carrier tasks performed on the object.</p>
+<p>A second version of <B>readObj</B> can be used to read a specific object from the object file:</p>
+<pre>
+T* readObj(POBbase&lt;T&gt;::OBJ_ID)
+</pre>
+<p>If you pass this function a valid object identifier it will retrieve the object from the disk file for you. <B>readObj(OBJ_ID)</B> will return a null pointer if no object is found.</p>
+<LI>   Deleting. After you have finished working with an object, use the function:
+<pre>
+bool POB_DEL_REF(T*);
+</pre>
+to free the object from memory. There is another function,</p>
+<pre>
+bool deleteObj(POBbase&lt;T&gt;::OBJ_ID, T*&amp;)  
+</pre>
+which should not be confused with <B>POB_DEL_REF</B>. The <B>POB_DEL_REF</B> function just releases the object from memory, but <B>deleteObj </B>removes the object from both memory and the disk file. In its second parameter, <B>deleteObj</B> will return a pointer to the object deleted from the disk file &#151; it is the user's job to release this object from memory by using <B>POB_DEL_REF</B>.</p>
+<LI>   Updating. As I have shown, you can use <B>readObj</B> to read an object from the disk file and to get a pointer to the object. You can then modify the attributes and data members of that object. After changing the object, you can resave it using:
+<pre>
+POBbase&lt;T&gt;::OBJ_ID modifyObj(T*);  
+</pre>
+</UL>
+
+<p>When the POB writes an object back to the disk file, it may relocate the object in the file if the modified object's size exceeds its original size. <a href="fig1.htm">Figure 1</a> shows the object file format.</p>
+
+<H4><FONT COLOR="#000080">The POBbase Class</FONT></H4>
+
+<p><B>POBbase</B> (see <a href="list3.htm">Listing 3</a>) serves as a base class for the <B>POBroker</B> class. <B>POBbase</B> contains subobjects of type <B>GFactory&lt;&gt;</B>, <B>objAvl</B>, and <B>DskMBTree</B>; <B>POBroker</B> uses these subobjects to accomplish its POB tasks.</p>
+<p>The sole purpose of template class <B>GFactory</B> (see <a href="list4.htm">Listing 4</a>) is to create object instances. In the above example, when the code calls</p>
+
+<pre>
+pob.register_create_function(typeid(ABC).name(), ABC::create);
+</pre>
+
+<p>the call is forwarded to the method</p>
+
+<pre>
+add_function(const string &amp;, &lt;function pointer&gt;)
+</pre>
+
+<p>of the <B>GFactory</B> class.</p>
+<p><B>GFactory</B> uses an STL <B>map</B> to store the association between the object's typeid and its creation function. It stores the typeid string as the key, and the pointer to the creation function as the value.</p>
+<p>The map enables the POB to create objects of a requested type. The POB calls the <B>GFactory</B> method, <B>create</B>, passing it the typeid of the object to be created. The <B>GFactory</B> uses this typeid to look up the correct creation function from its map. This is why it is important to register your class creation function before calling any POB functions.</p>
+<p><B>objAvl</B> (see <a href="list5.htm">Listing 5</a>) is a class that keeps track of empty (available) spaces in the object file. When an object is deleted from the object file, the space freed up is recorded in the <B>objAvl</B> object. By consulting the <B>objAvl</B> object first, the POB can sometimes store new objects to the object file without having to increase its size. Since objects that are stored in the object file have variables sizes, a special data structure is required to keep track of available storage locations. <B>objAvl</B> uses an STL <B>deque</B> of <B>SIZE_POS</B> for this purpose.</p>
+<p><B>SIZE_POS</B> is defined as follows:</p>
+
+<pre>
+typedef pair&lt;size_t, streampos&gt;
+   SIZE_POS;
+</pre>
+
+<p>The first member of the <B>pair</B> is the size of the empty slot in the object file; the second member is the slot's location.</p>
+<p>Class <B>objAvl</B> is itself a persistent class, and inherits from class <B>POBObj</B>; a single instance of class <B>objAvl</B> is embedded in the object disk file along with the other stored objects.</p>
+<p>The deque is kept in sorted order by empty slot size, so that a best-fit strategy can be used when searching for space to hold a new object. The best-fit strategy finds the first available slot closest to the size required to hold the new object.</p>
+<p>The contents of the <B>objAvl</B> object will change frequently, as other objects are deleted, or modified and put back with a different size. To avoid having to frequently relocate the <B>objAvl</B> object on the disk file, the size it occupies on the disk file must be kept from changing. This is accomplished by padding the deque with dummy entries immediately before it is written to the disk, so that the deque always requires the same amount of storage.</p>
+<p>Class <B>objAvl</B> maintains a const data member, <B>_max</B>, which is initialized when an instance of <B>objAvl</B> is constructed. It sets the initial size of the deque that will be written out to disk (with padding).</p>
+
+<pre>
+objAvl::objAvl():_max(100), _pad_size(0)
+{ _acc_size = _max; }
+</pre>
+
+<p>_acc_size</B> is the current value for the size of the deque that will be written to the disk file. (It does not indicate the current value of the deque itself; that value is given by the deque's <B>size</B> member function. The deque will be padded to <B>_acc_size</B> immediately before it is written.)</p>
+<p><B>_pad_size</B> indicates how many dummy entries will be added to the deque before it is written to the disk. <B>_pad_size</B> is recalculated immediately before the deque is written to the disk.</p>
+<p>If the number of entries in the deque exceeds <B>objAvl</B>'s current limit (given by <B>_acc_size</B>), this limit is enlarged by <B>_max/2</B>. It remains at this new value until it has to be increased again.</p>
+<p>The padding of the deque takes place within <B>objAvl</B>'s conversion operator, which is called by the POB to write the contents of the <B>objAvl</B> to the disk file:</p>
+
+<pre>
+objAvl::operator const string&amp; ()
+
+{
+        ...
+
+    if((_pad_size = _acc_size - _avl.size()) &lt; 0) {
+        spaceRecollection(); // empty slot recollection
+        if((_pad_size = _acc_size - _avl.size()) &lt; 0) {
+            _acc_size += _max/2;
+            _pad_size = _acc_size - _avl.size();
+        }
+    }
+    SIZE_POS ps(0, 0);
+    _avl.insert(_avl.begin(), _pad_size, ps); //padding data
+
+    ....
+
+    return getData();
+}
+</pre>
+
+<p>When the object is retrieved from disk file, the padding is filtered out:</p>
+
+<pre>
+void objAvl::operator=(const string&amp; str)
+{
+    putData(str);
+
+    *this &gt;&gt; _acc_size;
+    *this &gt;&gt; _pad_size;
+    *this &gt;&gt; _avl;
+
+    removepad();        // filter out padding data
+
+}
+</pre>
+
+<p><B>objAvl</B> also does some space reclamation work for you, combining two empty slots into a single large slot if two slots on the availability list are physically adjacent.</p>
+
+<H4><FONT COLOR="#000080">The Disk Interface</FONT></H4>
+
+<p>The current version of the POB maintains three disk files. One is an object file for storing all saved objects; one is a multiway tree file which records all object positions in the object file, thus acting as an "index" to access objects from the object file; and the last file enables the POB to manage the multiway tree file disk space &#151; this file records all unused disk space in the multiway tree file. The whole multiway tree resides in the disk file, and only the head node is loaded into RAM when the POB is started.</p>
+<p>As mentioned previously, the POB's goal is not only to save an object for reuse, but also to provide fast retrieval. This is why I chose the multiway tree as the backbone of the POB. In general, reading a block of storage from disk is very slow compared to reading one from memory; but the multiway tree improves the efficiency considerably.</p>
+<p>Normally, users will not need to interact directly with the multiway tree to use the POB. For more information on the multiway tree, see the <a href="sidebar.htm">sidebar</a>.</p>
+
+<H4><FONT COLOR="#000080">Using the POB</FONT></H4>
+
+<p>Using the POB consists of three steps:</p>
+<p>1.  Derive any classes you want to make persistent from the <B>POBObj</B> class.</p>
+<p>2.  Implement your class creation function.</p>
+<p>3.  Implement the two operators previously discussed. These operators must override the virtual operators provided in class <B>POBObj</B>.</p>
+<p>Two examples of how to use the POB are shown here. <a href="list6.htm">Listing 6</a> demonstrates how to modify an object obtained from the POB. In this example, the program first saves the <B>ABC</B> object into the POB. Then the program retrieves the object using its OID, which was returned by the <B>write</B> function. Some of the object's data members are then modified, and the object is saved back into the POB. Finally, the same OID is used to retrieve the object again and display the values of its current data members.</p>
+<p><a href="list7.htm">Listing 7</a> shows how to delete an object from the POB. The program of this example passes the OID from <a href="list6.htm">Listing 6</a> into the POB's <B>deleteObj</B> function to remove the object from the POB. The program also calls the <B>POB_DEL_REF</B> function to release the object from memory, using a pointer which was returned from the <B>deleteObj</B> function.</p>
+
+<H4><FONT COLOR="#000080">Other Considerations</FONT></H4>
+
+<p>Using a best-fit strategy to select an empty slot is intuitively appealing, but it exacts a price. The strategy requires that the POB search through at least a part of the list, not only when it needs to find an empty slot for a new object, but also when recording the space freed up by a newly deleted object. This extra processing time could be significant in some real-time applications.</p>
+<p>The current POB is a simple persistence implementation. A persistent object's data member, which is also an object, doesn't have an object identifier associated with it. The POB does not directly retrieve this data member; rather, this object is simply saved and retrieved as a part of the parent object. Thus, saving two persistent objects that both reference the same data member object will cause two copies of the object to be saved.</p>
+<p>Although the POB relies on object identifiers to insert, search, delete, and modify persistent objects, it is possible to access such objects in a more user-friendly manner. By pairing some unique attribute of an object with its OID, the object can be accessed using that attribute as a key. This is accomplished through use of a <B>map</B>, as shown in the following example.</p>
+<p>Class <B>ABC</B> is a persistent class that has a unique attribute, an order number:</p>
+
+<pre>
+class ABC : public POBObj {
+public:
+...
+   string&amp; orderNumber() { return OrderNumber; }
+...
+
+private:
+   string OrderNumber;
+...
+};
+</pre>
+
+<p>Class <B>OrderTable</B> is another persistent class that associates order numbers with OIDs:</p>
+
+<pre>
+class OrderTable : public POBObj {
+typedef string order_number;
+typedef unsigned long OID;
+map&lt;order_number, OID&gt; odrtbl;
+... public:
+...
+// add key-value pair(odrnum, oi) into odrtbl by using
+// odrtbl's insert() function
+void add_order(order_number odrnum, OID oi);
+// * get OI by passing order number into odrtbl's
+// find() function
+OBJ_ID getOrderOI(order_number);  ...
+... }
+</pre>
+
+<p>The program creates both an <B>ABC</B> object and an <B>OrderTable</B> object:</p>
+
+<pre>
+POBroker&lt;POBObj&gt; pob("TEST.OBJ");
+...
+OrderTable ordtbl;
+ABC abc;
+...
+</pre>
+
+<p>The <B>ABC</B> object is written to disk and the object's order number is associated with its OID through a call to the <B>add_order</B> function:</p>
+
+<pre>
+...
+unsigned long oi = pob.writeObj(abc);
+ordtbl.add_order(abc.orderNumber(), oi);
+...
+</pre>
+
+<p>Later, the program uses the object's order number as a key, to indirectly retrieve the ABC object: </p>
+
+<pre>
+ABC* pabc = 
+   (ABC*)pob.findObj
+      (ordtbl.getOrderOI("AAA0001"));
+</pre>
+
+<H4><FONT COLOR="#000080">Tested Platforms</FONT></H4>
+
+<p>All POB files and examples have been compiled and tested on Solaris X86 and Redhat 6.0 using GNU C++ and SGI STL.</p>
+
+<H4><FONT COLOR="#000080">Acknowledgment</FONT></H4>
+
+<p>I would like to thank my friend and colleague John Ousey for his help, without which this article would not have been possible.</p>
+
+<p><i><B>Gary Hsiao</B> works as a programmer at RBC Dominion Securities Corporation. He has an M.A. in Computer Science from Queens College, City University of New York. He can be reached at <B>ghsiao@rbcds.com</B>.</i></p>
+
+<h4><a href="../../../source/2000/aug00/hsiao.zip">Get Article Source Code</a></h4>
+
+
+</blockquote></body></html>

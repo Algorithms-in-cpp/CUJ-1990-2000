@@ -1,0 +1,135 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>December 1998/Standard C/C++</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocdec.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Standard C/C++: Thread Safety</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">P. J. Plauger</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>The C++ Standard doesn't talk about thread safety, but everyone else does.</p>
+</BLOCKQUOTE>
+<HR>
+<BLOCKQUOTE>
+<h4><FONT COLOR="#000080">Flow of Control</FONT></H4>
+
+<p>I like to remind people, from time to time, what it is that makes the computer such a powerful tool. It is very fast, very accurate, and very stupid. Speed and accuracy are obvious virtues. Billions of simple operations can combine to achieve rather sophisticated goals, provided they get done soon enough and with reasonable reproducibility. But fewer people appreciate the virtue of stupidity in a computer. Like it or not, the machine does exactly what we tell it to do.</p>
+<p>The computer is so stupid, in fact, that it has to be continually reminded what to do next. If you know anything about assembly language programming, you know that an important control register in every computer is something called the program counter. The computer uses the program counter as a pointer to determine where to read the next instruction to execute. As it gathers up the bytes that constitute an instruction, the computer increments the program counter to point past each byte in turn. Once it completes execution of the current instruction, the computer has only one hint as to which instruction to execute next. It is the one pointed to by the program counter. Typically, that is the next instruction in sequence.</p>
+<p>Some instructions can alter the flow of control through a program, however. An unconditional branch simply loads a new value into the program counter. A conditional branch decides, on the basis of some test, whether to leave the program counter alone or to load a new value into it. In either case, the computer depends on the program counter to tell it what to do next. Tell it to start executing somewhere else in the program and it does so, no questions asked.</p>
+<p>Programming in a higher-level language, such as C, insulates us from some of these details, but not from the essential behavior. Flow of control is expressed in terms of various statements, such as <B>if</B>/<B>else</B> and <B>switch</B> to choose alternatives, or <B>while</B> and <B>for</B> to loop. C introduces some intentional uncertainty about flow of control, in a few places, to allow compiler writers some latitude. We do not know, for example, whether the expression statement:</p>
+
+<pre>
+f() + g()
+</pre>
+
+<p>first calls <B>f()</B> or <B>g()</B>. But we do know that the entire expression is evaluated before control passes to the next statement in sequence.</p>
+<p>Calling a function, such as <B>f</B>, adds a bit of complexity to understanding flow of control. The context of the calling expression has to get stacked, as it were. A new execution context for the body of <B>f</B> is pushed down atop the existing context and control passes to the first statement in <B>f</B>. This new context allocates a fresh set of local (auto, argument, and register) objects, hiding any local objects in the calling function. Returning from <B>f</B> pops the context, discarding any local objects. Flow of control continues in the calling expression, with the value returned by the function used as the result of executing the call <B>f()</B>.</p>
+<p>I belabor these simple concepts to lay some important groundwork. Understanding flow of control through a program is essential to understanding what it is designed to do. Indeed, the structured-programming "revolution" of the 1970s dramatically improved programmer productivity by underscoring the importance of readable control flow. The easier it is to trace your way through a program, the less likely it is to contain errors.</p>
+
+<h4><FONT COLOR="#000080">The Bouncing Ball</FONT></H4>
+
+<p>I am reminded of those old sing-along movies where the lyrics appear a line at a time across the bottom of the screen. A ball bounces from syllable to syllable in time to the music. You know where you are in the song by following the bouncing ball. Everyone in the audience sings with the same tempo, if not always in harmony.</p>
+<p>So what happens if there are two (or more) "bouncing balls" going through your program at the same time? Ridiculous, you might say. The whole idea of a program is that it should entertain only one locus of control at a time. A program depends on more than just its program counter to stay sane. There are all those objects with ever changing values to consider, not to mention that stack of contexts for function calls. All these things combine to determine the internal state of a computation, and they must all evolve consistently.</p>
+<p>Consider just the simple loop:</p>
+
+<pre>
+for (i = 0; i &lt; 100; ++i)
+    a[i] = h(i);
+</pre>
+
+<p>Imagine two bouncing balls trying to lead singers through these lyrics. Both are incrementing <B>i</B> from time to time, and storing into elements of <B>a</B>. If they share the same copy of <B>i</B>, each ball is going to loop through the body of the for statement somewhere between zero and 100 times, depending on their relative timings. But just how often each actually loops is almost impossible to predict. And if they don't share the same copy of <B>a</B>, each ball is going to visit a different subset of the elements of each copy. This is not the stuff of reliable, or easily understandable, programming.</p>
+<p>Examples like this make clear that, if you allow two bouncing balls to coexist in the same chunk of code, you'd better keep their activities cleanly separated. At the very least, you'd better know whether an object can be altered via one locus of control and asynchronously altered or accessed by another. And then you'd better do something to ensure that each such object remains at all times in a stable and predictable state.</p>
+<p>Why would you even want to have two balls bouncing through your code at the same time? I can think of two defensible reasons:</p>
+
+<UL><LI>Sometimes it can be a useful way to simplify program structure. A program that reads one data stream and writes another, for example, may benefit from keeping the reader and writer code separate. Each can be specialized to the simpler task, as can the code in the middle that generates the stuff that's written from the stuff that's read.</LI>
+    <LI>Sometimes you can improve the responsiveness of a program. (Note that I do not use the usual word "performance" here. Actual performance usually degrades because of the extra overheads.) Each locus of control can be ready to respond more quickly to what it cares about, without concern for whatever else is going on in the program.</LI></UL>
+
+<p>Please note the repeated use of the word "sometimes." You pay quite a price for making a program safe in the presence of more than one locus of control:</p>
+
+<UL><LI>To protect accesses to each object that is potentially shared, you have to add code that prevents simultaneous operations when they are unsafe. Such code can really slow down execution even when no sharing occurs. And when sharing does occur, it lowers the odds that two or more bouncing balls can make progress at the same time. Make the code too "safe" and you defeat the purpose of allowing more than one locus of control.</LI>
+    <LI>No good tools exist for telling you when, where, or how to protect code properly. Programming becomes <I>much</I> more complex, and hence harder to write correctly in the first place.</LI>
+    <LI>No good tools exist for testing whether the code is correct, and hence the code is harder to debug and validate. Reliability in the field is necessarily compromised.</LI></UL>
+
+<h4><FONT COLOR="#000080">Multithreading</FONT></H4>
+
+<p>Having said all that, I now observe that many programmers seem willing to deal with all these problems because they want the potential payoff. Over the past several decades I have seen repeated attempts to eliminate such complexities from workaday programs. Each has eventually given way, however, to demands from programmers for greater flexibility, however dangerous the resulting tools.</p>
+<p>The Unix operating system is a good case in point, The original implementation of Unix made it easy to assemble "pipelines" of cooperating processes, each of which had its own private address space. All the nasty problems with sharing data and synchronizing execution of processes were pushed down into the operating system, where it could be handled by trained professionals. It was not long, however, before Unix saw the addition of "threads" &#151; lightweight processes that shared the same address space &#151; as a way of sharing data more freely among more than one locus of control.</p>
+<p>The term "thread" is now a common shorthand for all the control information that defines a locus of control. Think of a thread as the bouncing ball plus a stack of calling contexts. The term also has the connotation that it shares an address space with other such threads, unlike processes which keep such matters private. Most popular operating systems are said to be "multithreaded," because they support the creation of additional threads of control besides the one that commences execution of each process.</p>
+<p>I should clarify here that simultaneity is in the eye of the beholder. For two threads to be truly active at the same time, you need a computer with two or more "central" processors. Both must be able to access the address space of the same process. Such machines are still relatively rare, unless you're willing to count direct-to-memory I/O channels as processors (which, of course, they are).</p>
+<p>A typical sophisticated operating system of today can run multiple, simultaneous processes or threads by multiplexing among them. Unless it checks elapsed time, a process or thread has no way of knowing whether it is suspended from time to time to let other agents operate. So the effect is the same as if one central processor is replaced by several slower ones.</p>
+<p>With multithreading comes the obvious need to protect against all the uncertainties that can arise. Various mechanisms exist for protecting "critical regions" of code against hosting two threads of execution at the same time. These have names like "gates," "locks," "semaphores," and "monitors." The topic is too vast for me to address in detail here. All I will observe is that a program that is suitably protected against failures in the presence of multiple thread executions is called "thread safe."</p>
+<p>Essentially no standards exist for implementing multithreading. Various attempts have been made, over the years, to structure the business of running multiple threads, but none has been so compelling as to win out over all others. You will find one style in Windows, another in Unix, still another in the Mac OS, and yet another in Java. None of these resembles very closely the academic attempts to bring order out of chaos that you may have studied in college.</p>
+<p>You should not be surprised to learn, therefore, that there isn't even a clear and universal definition of what it means for a program component to be thread safe. The utility of any protection mechanism depends too strongly on how the program component is used in the program as a whole.</p>
+
+<h4><FONT COLOR="#000080">Practical Thread Safety</FONT></H4>
+
+<p>The C++ Standard is silent on the topic of multithreading. The nearest it comes to considering more than one thread of control is in the description of signals, a mechanism inherited from the Standard C library. Most signals are synchronous, arising directly and more or less predictably from some action performed by the program itself. You can look upon this kind of signal processing as just an extension of the execution of the operation that caused the signal. There is still just one bouncing ball.</p>
+<p>But some signals are asynchronous. Strike the appropriate key on your keyboard (ctl-C often does the job) and you can cause a running C or C++ program to be treated to a <B>SIGINT</B> signal. Whatever the program was doing is suspended while the handler for this signal gets control. The default version simply terminates execution with extreme prejudice, but you can supply your own handler. The C Standard makes clear (by being evasive) that you can't reliably do much that's portable in an asynchronous signal handler. It's just too hard to coordinate the activity of the two bouncing balls.</p>
+<p>Nevertheless, programmers have been writing such handlers for years, to terminate long printouts or to ensure proper cleanup before a program terminates. The successful ones have learned to be very careful when writing asynchronous signal handlers. The unsuccessful ones write programs that fail intermittently.</p>
+<p>My particular interest here, as usual, is the Standard C++ library. The burning question is, what should a good implementation of that library do to be a good citizen in a multithreading environment? If a program is going to fail intermittently, the failures should not be directly attributable to how the Standard C++ library is written. But those weasel words that the C++ Standard inherited from C about signals don't give much guidance. Practical answers must come from more practical sources.</p>
+<p>What follows is a compendium of principles I have accrued over the years in making compiler vendors (and their eventual customers, working programmers) happy. None are profound, but all have proved to be useful. Let me deal with the fairly obvious principles first.</p>
+<p><I>The Standard C++ library can't solve all your multithreading problems.</I></p>
+<p>Even if every library call were thread safe, your program might still not be. A critical section in your code may well involve calls to several library functions. Locking each call doesn't make the critical section thread safe. And if you supply the thread lock to make the critical section safe, then the locks on the individual calls just slow things down.</p>
+<p>The programming language Java provides an interesting contrast. It builds synchronization right into the language. It's very easy to lock a critical section in Java, or every method call for a class if you choose. It supplies library classes that are protected as necessary so that each library method call is thread safe. But you can still get race conditions and deadlocks in a Java program. You may not notice all the extra locking overhead in an interpreted environment that's slow to begin with, but you don't profit all that much from the overkill either.</p>
+<p><I>The Standard C++ library should minimize the need for thread locking.</I></p>
+<p>The best way to make code thread safe is to make multithreading irrelevant. A pure function such as <B>sqrt</B>, for example, should have nothing to worry about. It can do all its work in local storage, which is private to each thread. Indeed, you'd have to go out of your way to make problems with such a function.</p>
+<p>One way to make problems is to maintain writable static objects in a class or function. The Standard C library has several notorious functions of this ilk. <B>strtok</B>, for example, stores state information between calls. It's rather hard to support two or more threads using <B>strtok</B> to advantage, at least not without adding some protective code. The Standard C++ library tries not to <I>require</I> such shared writable statics. A good implementation shouldn't add them where they are not strictly required.</p>
+<p>Another, more subtle, way to make problems for multithreading is through the use of "mutable" member objects. You may think you're only reading the contents of an object, but in reality you're causing the internal state of the object to change. For example, an apparent read may cause a cache to be updated. The net effect is that two threads may innocently try to read a shared object, which is generally a safe operation that requires no protection. But the secret writes can interfere, possibly curdling one or more reads, or even leaving the object in an inconsistent state. A good implementation uses mutable member objects only where necessary, and supplies locked access to keep reads as safe as they appear to outsiders.</p>
+<p><I>All locks should be encapsulated.</I></p>
+<p>Exceptions happen (to paraphrase a popular bumper sticker). They can even happen in critical sections. When they do, the last thing you want is to leave a lock set forever. So you want to put the unlocking code somewhere that is sure to get executed even if an exception is thrown. That place, as you doubtless know, is in the destructor of a local object.</p>
+<p>So the essential discipline of thread locking is to encapsulate the locking operations in a class. <A HREF="fig1.htm">Figure 1</A> shows the prototype class <B>_Lockit</B> that I use. It does nothing, which is highly desirable behavior for a single-threaded environment. You can make it multithread ready, however, by doing what the comments say. Put the locking code in the constructor and the unlocking code in the destructor. Every critical section is then written as a compound statement that looks like:</p>
+
+<pre>
+{_Lockit _Lock;	// lock this block
+// critical section
+}
+</pre>
+
+<p>Note that the prototype class also has provision for accepting an optional <B>int</B> argument, for a system that supports multiple flavors of locks.</p>
+
+<h4><FONT COLOR="#000080">Thread Safety in Action</FONT></H4>
+
+<p>The best example of encapsulated locks can be found in the iostreams classes. Classes <B>basic_istream&lt;char&gt;</B> and <B>basic_ostream&lt;char&gt;</B> (a.k.a. <B>istream</B> and <B>ostream</B>) each define a nested class <B>sentry</B>. <A HREF="fig2.htm">Figure 2</A> shows in essence how <B>istream::sentry</B> can be defined. (I sidestep some irrelevant template complexities here.) A <B>sentry</B> object contains a <B>_Lockit</B> object. Every extractor then follows the pattern:</p>
+
+<pre>
+istream&amp; operator&gt;&gt;(int&amp; _X)
+    {ios_base::iostate _St =
+        ios_base::goodbit;
+    const sentry _Ok(*this);
+    if (_Ok)
+        {..... }
+    setstate(_St);
+    return (*this); }
+</pre>
+
+<p>The stream is locked until the entire field is extracted, but whether or not any of the conversion code throws an exception, the stream is assuredly unlocked.</p>
+<p>The Standard Template Library is a major component of the Standard C++ library. It has received considerable attention in recent months as a potential source of thread-safety problems. The folks at Silicon Graphics have continued to enhance STL, as a freely available product, carrying on the excellent tradition begun at Hewlett-Packard. They advance a working definition of thread safety for STL containers that is eminently practical:</p>
+<UL><LI>A container object can safely be read by two or more threads. (A container contains no unprotected mutable objects.)</LI>
+    <LI>A container object can safely be read by one thread while a different container object of the same type is being written by another thread. (A container class contains no unprotected sharable statics.)</LI>
+    <LI>A container object cannot be safely written by one thread and read or written by another. (It's up to you, the programmer, to protect against obvious conflicts.)</LI></UL>
+
+<p>Put simply, these rules promise that the Standard C++ library (or at least the STL part) won't surprise you in a multithreaded program. Equally, it won't go out of its way to help you, lest that help be ill advised.</p>
+<p>When I wrote my implementation of the Standard C++ library, I had these rules more or less in mind. But because I hadn't articulated them explicitly, I slipped up in one or two places. Most notably, I implemented class <B>basic_string</B> using a technique called "reference counting." The same string contents can be shared among multiple string objects, at least until one tries to alter the shared contents. It then makes its own private version. But the reference count behaves for all the world just like a shared writable static object, and I failed to protect it properly. I thus had reason enough to eliminate reference counting, at least in a multithreading environment.</p>
+<p>I did something similar with the implementation of red-black trees that underlies the template classes <B>map</B>, <B>multimap</B>, <B>set</B>, and <B>multiset</B>. Following the lead of the original Hewlett-Packard implementation, I gave each tree a shared static "nil" node. While this trick simplifies many tree operations, it also introduces a static object that happens to get scribbled on from time to time. I'm still not convinced that the scribbles interfere with each other, but shared statics also cause problems for dynamic link libraries in Microsoft Visual C++. I again had reason enough to get rid of the shared nil node.</p>
+<p>The bottom line is that Visual C++ as shipped by Microsoft is not completely thread safe. This is true of both V5.0 and V6.0, despite some effort on the part of Microsoft to fix the known problems. On the other hand, you can now obtain a complete set of fixes from:</p>
+
+<pre>
+http://www.dinkumware.com/vc_fixes.html
+</pre>
+
+<p>With these changes, VC++ is indeed thread safe, at least as defined by Silicon Graphics.</p>
+<p>I conclude by observing that writing a thread-safe program is still hard. Recent attention to the subject has had the salutary effect of making library implementations better, but that's only the beginning. Programmers still need to be better educated in how to use multithreading to advantage. Most important, they need to learn to use it only as needed. Multithreading is too fragile a technique to employ lightly.</p>
+
+<p><i>P.J. Plauger is Senior Editor of <I>C/C++ Users Journal</I> and President of Dinkumware, Ltd. He is the author of the Standard C++ Library shipped with Microsoft's Visual C++, v5.0. For eight years, he served as convener of the ISO C standards committee, WG14. He remains active on the C++ committee, J16. His latest books are <I>The Draft Standard C++ Library</I>, <I>Programming on Purpose</I> (three volumes), and <I>Standard C</I> (with Jim Brodie), all published by Prentice-Hall. You can reach him at <B>pjp@plauger.com</B>.</i></p>
+
+<h4><a href="../../../source/1998/dec98/plauger.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

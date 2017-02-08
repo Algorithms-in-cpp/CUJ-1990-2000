@@ -1,0 +1,457 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>September 1998/Extending the Reference-Counting Pattern</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocsep.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Extending the Reference-Counting Pattern</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Vladimir Batov</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>It's often nice to have storage management that's a bit smarter than you get with auto_ptr but rather less complex than automatic garbage collection. Here's one style of smart pointers that strikes such a careful balance.</p></BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>Talks and heated discussions about conventional C/C++ pointers go far beyond the C/C++ programming community. Some people love them, some hate them. This situation is understandable, as pointers are difficult creatures to handle. Too many things can go wrong:</p>
+
+<UL><LI>Pointers can point nowhere, being created but not assigned.</LI>
+    <LI>Having been assigned to, they do not guarantee the validity of data they point at. The data can be deleted, leaving the pointer unaware of the deletion.</LI>
+    <LI>Pointers have no strong associations with the data they represent and can lose track of the data, being reassigned to point somewhere else.</LI></UL>
+
+<p>The situation is aggravated by a false sense that the pointer itself is the object. However, it is a separate object that stores the memory address of an object (or maybe not). Marginally different syntax adds to the confusion:</p>
+
+<UL><LI><B>data.something</B> means that <B>data</B> is an object of some class.</LI>
+    <LI><B>data-&gt;something</B> means that <B>data</B> is a pointer that designates an object of some class.</LI></UL>
+
+<p>The above problems lead to memory corruption and memory leaks:</p>
+
+<pre>
+Object* p1;
+Object* p2 = new Object;
+Object* p3 = new Object;
+
+p3 = p2; //Original p3 has been lost
+
+delete p1; // Memory corruption.
+delete p2; // p3 is invalid now.
+delete p3; // Memory corruption
+</pre>
+
+<p>The STL template class <B>auto_ptr</B>, originally proposed by Greg Colvin, helps to address several of these problems. The template class provides a safer alternative to conventional pointers. Code using <B>auto_ptr</B> is often cleaner, shorter, and less prone to the memory management problems shown above:</p>
+
+<pre>
+auto_ptr&lt;Object&gt; p1;
+auto_ptr&lt;Object&gt; p2 = new Object;
+auto_ptr&lt;Object&gt; p3 = new Object;
+
+p3 = p2; // Original p3 has been
+         // deleted.
+         // p3 owns the object
+         // pointed to by p2.
+
+// data will be automatically
+// deleted when auto_ptrs
+// go out of visibility scope.
+</pre>
+
+<p><B>auto_ptr</B> introduces the notion of exclusive data ownership. Only one <B>auto_ptr</B> instance owns the data even if there are several instances pointing at the same object. The <B>auto_ptr</B> instance that owns the data deletes the data when it gets reassigned, or goes out of visibility scope.</p>
+
+<p>Unfortunately, the exclusive ownership concept of the <B>auto_ptr</B> class differs in a subtle way from the shared ownership concept of conventional pointers. The code fragment shown in <A HREF="fig1.htm">Figure 1</A> illustrates a case where the pointers work as expected but the <B>auto_ptr</B> objects do not.</p>
+
+<p>The problem arises because the ownership of the object is first transferred to a copy of <B>obj</B> created on the stack and then to the object <B>tmp</B> within the function <B>foo</B>. When <B>tmp</B> goes out of scope it deletes the object! Therefore, when we return to <B>func</B> from <B>foo</B>, <B>obj</B> no longer owns the controlled object. Worse, it does not even point at valid data. The use of template class <B>auto_ptr</B> creates a false sense of security that it will handle memory-related problems for us. But in order to be used safely, the <B>auto_ptr</B> concept has to be modified to support the notion of shared ownership, as conventional pointers do.</p>
+
+<p>The technique for implementing shared ownership here is called the Reference Counting Pattern. The idea behind the technique is to create "smart" pointers that keep track of all instances referring to (owning) an object. No single instance of a smart pointer is solely responsible for object management. You might say that the object manages itself. When no references to the object are left, among all the smart pointers that can refer to it, it will be destroyed automatically.</p>
+
+<p>There are several benefits to this approach:</p>
+
+<UL><LI>It safely replaces conventional pointers by a class that closely models their behavior.</LI>
+    <LI>It allows for pointer objects that are reasonably transparent and non-intrusive.</LI>
+    <LI>It optimizes resource usage through shared access to objects.</LI>
+    <LI>It simplifies memory management much as <B>auto_ptr</B> does.</LI></UL>
+
+<p>Greg Colvin submitted his version of smart pointers (template class <B>counted_ptr</B>) to the C++ Standards Committee along with <B>auto_ptr</B>. But <B>counted_pointer</B> was eventually removed from the draft C++ Standard. So I present here my version of smart pointers, using the reference-counting concept. It differs from the usual way of implementing the pattern (see [<a href="#1">1</a>-<a href="#3">3</a>]) in several ways:</p>
+
+<UL><LI>It allocates no additional memory blocks.</LI>
+    <LI>It does not introduce an extra level of indirection.</LI>
+    <LI>It forms a natural pointer to data and is therefore reasonably safe to use in mixed or legacy environments.</LI>
+    <LI>It is extended with error processing facilities.</LI></UL>
+
+<h4><FONT COLOR="#000080">Implementation</FONT></H4>
+
+<p><A HREF="list1.htm">Listings 1</A> and <A HREF="list2.htm">2</A> show my implementation of smart pointers using the reference-counting pattern. It uses a two-tiered design composed of template classes <B>Handle</B> and <B>Counted</B>. This approach decouples two fundamentally different tasks and allows them to be implemented separately and cleanly. Reference counting is managed by <B>Counted</B> and lightweight presentation and data sharing are managed by <B>Handle</B>.</p>
+
+<p>The specialization <B>Handle&lt;T&gt;</B> requires that the class <B>T</B> define a default constructor <B>T::T()</B> and a copy constructor <B>T::T(const T&amp;)</B>. I consider this not a restriction but good programming style &#151; part of Coplien's requirements for the "canonical" class implementation (see [<a href="#5">5</a>]). The internal structure is a little unconventional in that an object of class <B>T</B> is itself embedded in class <B>Counted&lt;T&gt;</B> instead of a pointer to the instance:</p>
+
+<pre>
+class Counted
+{.....
+   T          _instance;
+   uint _num_references;
+};
+
+class ConventionalCounted
+{.....
+   T*         _instance;
+   uint _num_references;
+};
+</pre>
+
+<p>This approach has the following advantages:</p>
+
+<p>1.  Only one block of memory is allocated to hold a <B>T</B> instance together with a reference counter, instead of two separate blocks &#151; for a <B>T</B> instance and a <B>ConventionalCounted</B> instance. The conventional approach incurs at least double the memory overhead of the <B>Counted</B> solution.</p>
+
+<p>2.  <B>Counted</B> does not introduce an additional level of indirection as the <B>ConventionalCounted</B> does, so it is at least marginally quicker.</p>
+
+<p>3.  A <B>Handle&lt;Data&gt;</B> instance is a natural pointer to a <B>Data</B> instance. Therefore, using a <B>Handle&lt;Data&gt;</B> object instead of <B>Data*</B> pointer is safe in mixed or legacy environments, and in situations such as:</p>
+
+<pre>
+extern void foo(int, ...);
+
+Data* d = new Data;
+Handle&lt;Data&gt; h; 
+
+foo(5, o);
+foo(5, h); // No Handle-to-Data
+           // conversion invoked
+</pre>
+
+<p>4.  A <B>Data</B> instance is created and destroyed along with each <B>Handle&lt;Data&gt;</B> instance. The existence of a <B>Handle&lt;Data&gt;</B> object thus guarantees the existence of a <B>Data</B> object. The <B>ConventionalCounted</B> approach inherits the usual uncertainty that comes with conventional pointers. It might represent no data at all. For example:</p>
+
+<pre>
+Data* p;
+auto_ptr&lt;Data&gt; a;
+Handle&lt;Data&gt; h;
+
+p-&gt;data_method(); // Disaster
+a-&gt;data_method(); // Disaster
+h-&gt;data_method(); // OK
+</pre>
+
+<p>For the sake of safe and reliable <B>Data</B> resource management, the <B>Handle&lt;Data&gt;</B> object is solely responsible for the creation, accessing, and deletion of a <B>Data</B> object. Such a strong association gives the (accurate) impression that a <B>Handle&lt;Data&gt;</B> object <I>is</I> a <B>Data</B> object, eliminating the need to manipulate and address <B>Data</B> objects directly.</p>
+
+<p>One drawback to this approach, however, is that the internal <B>Data</B> objects are being created with a default constructor only. If a <B>Data</B> object requires special initialization, it has to be done as follows:</p>
+
+<pre>
+Data* p = new Data(name, value);
+auto_ptr&lt;Data&gt; a = new Data(name, value);
+Handle&lt;Data&gt; h = Data(name, value);
+</pre>
+
+<p>or</p>
+
+<pre>
+Handle&lt;Data&gt; h;
+h.initialize(name, value);
+</pre>
+
+<p>From my experience, this limitation is rarely an issue. The overwhelming majority of classes enjoy the benefits of safe and reliable management that the <B>Handle</B> class provides. There are methods of providing customized data initialization (other than default constructors) but such a discussion is beyond the scope of this article.</p>
+
+<p>The reference-counting mechanism is encapsulated within template class <B>Counted</B>, so the <B>Handle&lt;T&gt;</B> class interface is simple and easy to understand. However, I should still say a few words about the two constructors:</p>
+
+<pre>
+Handle(const T&amp;);
+Handle(const T*);
+</pre>
+
+<p>Their existence is very unfortunate as they are <B>T</B>-to-<B>Handle</B> converters and copy an externally provided <B>T</B> instance to an internally stored <B>T</B> instance. Ideally they are not needed, since <B>T</B> instances are created within <B>Handle&lt;T&gt;</B>. But in real life, where <B>T</B> instances may be created explicitly, bypassing the <B>Handle&lt;T&gt;</B> mechanism, the constructors have to be used as a bridge. For example, third-party libraries that we are not able to modify may use <B>T</B> directly instead of <B>Handle&lt;T&gt;</B>. Quite a few old C library functions return pointers to statically allocated internal storage. The constructors take care of such unfortunately designed cases:</p>
+
+<pre>
+extern T* lib_func();
+
+T* t = lib_func(); // Unusable without
+                   // immediate copying
+Handle&lt;T&gt; h = lib_func(); // OK to use
+</pre>
+
+<p>From my experience, the use of the constructors is limited to such areas where new meets old. Such situations can be very well encapsulated and localized.</p>
+
+<h4><FONT COLOR="#000080">Not Too Conventional</FONT></H4>
+
+<p>Being a smart pointer, <B>Handle&lt;Data&gt;</B> is transparent in its interactions with <B>Data</B>. It works very much the same way conventional pointers do, thanks to a family of converters and dereference operators:</p>
+
+<pre>
+operator         T&amp; ();
+operator         T* ();
+operator   const T&amp; () const;
+operator   const T* () const;
+const T* operator-&gt; () const;
+T*       operator-&gt; ();
+</pre>
+
+<p>The operators properly extend the <B>Handle&lt;Data&gt;</B> transparency into the area of <B>const</B> objects. A const <B>Data*</B> pointer accepts no changes to the data it points at. <B>const Handle&lt;Data&gt;</B> behaves the same. Unfortunately, by comparison, <B>auto_ptr</B> uses a single dereference operator:</p>
+
+<pre>
+T* operator-&gt;() const;
+</pre>
+
+<p>Therefore, it does not propagate its constness onto the data it represents and cannot represent const data at all:</p>
+
+<pre>
+class Data
+{
+   ...
+   void change_data();
+};
+
+const Data* d = new Data;
+const Handle&lt;Data&gt; h;
+const auto_ptr&lt;Data&gt; p(d); // Does not compile
+const auto_ptr&lt;Data&gt; p(new Data);
+
+d-&gt;change_data(); // Correctly does not compile
+h-&gt;change_data(); // Correctly does not compile
+p-&gt;change_data(); // Wrongly compiles
+</pre>
+
+<p>The converters always return pointers or references to an internal instance of a <B>Data</B> class. Even non-const converters do that. Here they differ from Kenneth Ngai's implementation published previously in <I>CUJ</I> [<a href="#2">2</a>] where non-const converters duplicate the data. In order to coexist with conventional pointers, a <B>Handle</B> instance has to behave like conventional pointers when used in their place. If a non-const pointer to an object is passed to a function, it is expected that the function can change the content of the object. That is the way <B>Handle</B> works when used in the pointer-oriented environment (functions handling <B>Data*</B> directly). It simulates a <B>Data</B> object being passed by reference:</p>
+
+<pre>
+void
+change0(Data* data)
+{
+   data-&gt;change(); // changes the Data instance.
+}
+
+void
+change1(Handle&lt;Data&gt; data)
+{
+   data-&gt;change(); // changes the Data instance
+}
+
+void
+function()
+{
+   Data* d = new Data;
+   Handle&lt;Data&gt; h;
+
+   change0(d); // changes 'd'
+   change0(h); // changes 'h'
+   change1(h); // changes 'h'
+}
+</pre>
+
+<p>Unfortunately, the converters violate the encapsulation of an internal <B>Data</B> instance within <B>Handle&lt;Data&gt;</B> and expose the instance to the cruelty of the world outside <B>Handle</B>'s care. The whole discussion above about the <B>Handle(const Data*)</B> and <B>Handle(const Data&amp;)</B> constructors applies as well to the converters. They serve as the second unfortunate but necessary part of the bridge to legacy libraries that deal with <B>Data*</B> pointers directly:</p>
+
+<pre>
+extern void old_func1(Data*);
+extern void old_func1(const Data*);
+
+Handle&lt;Data&gt; h;
+
+old_func1(h); // OK
+old_func2(h); // OK
+</pre>
+
+<p>The converters remain largely invisible to the programmer. Sadly, their existence itself is misleading &#151; especially if someone has not grown accustomed to having a <B>Handle&lt;Data&gt;</B> representing a <B>Data</B> instance and tries to access the instance directly:</p>
+
+<pre>
+void
+unfortunate(Handle&lt;T&gt; h)
+{
+   extern void do_something(const T*);
+
+   T* p = h; // Completely unnecessary,
+             // but guaranteed by converters.
+
+   do_something(p);  // Unnecessary.
+// do_something(h); // Much better and safer as p does
+                    // not hang around
+                    // and "Handle-to-T" conversion is
+                    // implicit.
+   delete p;        // Trouble.
+}
+</pre>
+
+<p>Therefore, converters are there, but please do not use them. Luckily, developers of a <B>T</B> class can prepare their class for the integrated use within <B>Handle&lt;T&gt;</B> and prevent such an unfortunate usage by prohibiting public creation and deletion of <B>T</B> objects and letting <B>Handle&lt;T&gt;</B> manage resources instead:</p>
+
+<pre>
+class Foo
+{
+   ...
+   friend class Handle&lt;Foo&gt;; 
+
+   private:
+
+  ~Foo ();
+   Foo ();
+};
+</pre>
+
+<p>or</p>
+
+<pre>
+class Foo
+{
+   ...
+   private:
+
+   operator    new (); // Not implemented.
+   operator delete (); // ditto.
+};
+</pre>
+
+<p><B>Handle&lt;T&gt;</B> keeps the tradition of mimicking conventional pointers in assignment operators. The pointers just forget the data they were pointing at before assignment and certainly do not modify the data. <B>Handle&lt;T&gt;</B> does the same. Additionally, if there are no <B>Handle</B> instances left referencing the data, the data will be deleted. This is often a quick, safe, and clean memory-management solution that does not need special garbage-collection mechanisms:</p>
+
+<pre>
+void
+func()
+{
+   Data* p0 = new Data;
+   Data* p1 = new Data;
+   Handle&lt;Data&gt; h0;
+   Handle&lt;Data&gt; h1;
+
+   p1 = p0; // Original p1 data lost unmodified.
+   h1 = h0; // Original h1 data deleted unmodified.
+}
+</pre>
+
+<p>There are no comparison operators. Implicit conversions are applied, so, comparisons work as expected:</p>
+
+<pre>
+Handle&lt;Data&gt; h0;
+Handle&lt;Data&gt; h1 = h0;
+Handle&lt;Data&gt; h2 = h0.duplicate();
+Handle&lt;Data&gt; h3;
+
+if (h0 == h1) ... // true
+if (h0 == h2) ... // false
+if (h0 == h3) ... // false
+</pre>
+
+<p>There is no implementation of the address-of operator:</p>
+
+<pre>
+Handle&lt;T&gt;* operator&amp; ();
+</pre>
+
+<p>to prevent its being used. The program should have no access to the address of a <B>Handle&lt;T&gt;</B> instance, since such access bypasses the reference-counting mechanism. <B>Handle&lt;T&gt;</B> instances are passed by value (after all, they are only the size of a single pointer). Well, to be more precise, <B>Handle&lt;T&gt;</B> can be passed by reference. But doing so requires a lot of care because it disables the reference-counting mechanism. Consequently, it is theoretically quicker (<B>++_num_references</B> and <B>--_num_references</B> do not cost much). Therefore, it is not advisable to try to gain the questionable advantage of passing <B>Handle&lt;T&gt;</B> instances by-reference. However, such an operation is needed occasionally:</p>
+
+<pre>
+void
+by_value (Handle&lt;Data&gt; h)
+{
+   Handle&lt;Data&gt; brand_new;
+
+   // h is a stack-based copy
+   // The copy(!) is reassigned
+   // The original is unchanged 
+
+   h = brand_new;
+}
+
+void
+by_reference (Handle&lt;Data&gt;&amp; h)
+{
+   Handle&lt;Data&gt; brand_new;
+
+   // h is the original from the 'function'
+   // The original is changed.
+
+   h = brand_new;
+}
+
+void
+function()
+{
+   Handle&lt;Data&gt; h;
+
+   by_value(h); // Does not change h
+   by_reference(h); // Changes h
+}
+</pre>
+
+<h4><FONT COLOR="#000080">An Error Processing Extension</FONT></H4>
+
+<p>A convenient extension to the standard reference counting has been implemented in the area of error processing. Conventional pointers have a nice feature &#151; they have a built-in singular or error value (0, the null pointer). Every time something goes wrong, 0 or an error pointer value can be returned instead of a pointer to data. I find this feature extremely convenient for handling "soft" errors, as opposed to "hard" errors that are best handled by the exception mechanism. Therefore, I have introduced an <B>_error</B> variable within the <B>Handle&lt;T&gt;</B> class (at the expense of the <B>_num_references</B> variable), and a <B>HandleError</B> class for a friendlier error-processing interface.</p>
+
+<p>Two levels of error processing are available, error indication and error reporting. With the former, we do not bother specifying what happened and just indicate an error:</p>
+
+<pre>
+Handle&lt;T&gt;
+do_something()
+{
+   ...
+   if (bad) return Handle&lt;T&gt;::error();
+   ...
+}
+
+void
+func()
+{
+   Handle&lt;T&gt; h = do_something();
+
+   if (h.is_error()) ... // do_something() failed
+}
+</pre>
+
+<p>With the latter, we can return a sophisticated report of what actually went wrong:</p>
+
+<pre>
+HandleError bad_value;
+HandleError bad_format;
+Handle&lt;T&gt;
+do_something()
+{
+   ...
+   if (bad-value)  return Handle&lt;T&gt;.error(bad_value);
+   if (bad-format) return Handle&lt;T&gt;.error(bad_format);
+   ...
+}
+
+void
+func()
+{
+   Handle&lt;T&gt; h = do_something();
+
+   if (h.is_error()) ... // An error
+   {
+      if (h.get_error() ==  bad_value)
+         ... // Process bad-value  error.
+      if (h.get_error() == bad_format)
+         ... // Process bad-format error.
+   }
+</pre>
+
+<p>or:</p>
+
+<pre>
+   if (h.get_error() ==   no_error)
+         ... // Everything is OK
+   else if (h.get_error() ==  bad_value)
+         ... // Process bad-value  error
+   else if (h.get_error() == bad_format)
+         ... // Process bad-format error
+}
+</pre>
+
+<p>The area where the <B>Handle&lt;T&gt;</B> class might be used is potentially very large. Obvious examples are situations where functions have to return something more complex than just an integer, like dynamically allocated strings, structures, etc. An example of a simple <B>String</B> class is shown in <A HREF="list3.htm">Listing 3</A> together with the way of handling various error conditions using <B>Handle</B>.</p>
+
+<h4><FONT COLOR="#000080">Bibliography</FONT></H4>
+
+<p><a name="1"></a>[1]  Scott Meyers. <I>More effective C++</I> (Addison-Wesley, 1996).</p>
+
+<p><a name="2"></a>[2]  Kenneth Ngai. "A Template for Reference Counting," <I>CUJ,</I> August 1997.</p>
+
+<p><a name="3"></a>[3]  R. G. White. "Advantages and Disadvantages of Unique Representation Patterns," <I>C++ Report,</I> September 1996.</p>
+
+<p><a name="4"></a>[4]  Jonathan S. Shapiro. <I>C++ Toolkit</I> (Prentice Hall, 1991).</p>
+
+<p><a name="5"></a>[5]  James O. Coplien. <I>Advanced C++</I> (Addison-Wesley, 1992).</p>
+
+<p><a name="6"></a>[6]  Vladimir Batov. "A Quick And Simple Memory Allocator," <I>CUJ,</I> January 1998.</p>
+
+<p><i>Vladimir Batov is a senior software engineer working for Raytheon Systems Company (Marlborough, MA) and specializing in Air Traffic Control software development. He has 15 years of experience in software development using C/C++. He can be reached at <B>vladimir@iatcmail.ed.ray.com</B>.</i></p>
+
+<h4><a href="../../../source/1998/sep98/batov.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

@@ -1,0 +1,213 @@
+<HTML>   
+     <HEAD>
+<TITLE>January 2000/Easy Dynamic Loading in C++</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocjan.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Easy Dynamic Loading in C++</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Sasha Gontmakher</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Many programs today configure themselves on the fly. Dynamic loading can really benefit from encapsulation, to hide tedious details and system dependencies.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<H4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>Suppose you're building a web-browsing application that will support several kinds of protocols (ftp, http, etc.). For this kind of application, you will probably want to define a set of classes, one for each protocol, with all of them implementing a common interface, as shown in <a href="fig1.htm">Figure 1</a>.</p>
+<p>As the user clicks the link (or types in the URL), the application checks the address for the protocol identification string and instantiates the appropriate class.</p>
+<p>If space is at premium, it would make sense to put only the most frequently used classes into the executable file, and leave the rest in shared libraries that would be loaded on demand. You might also want to use shared libraries if you expected to handle new protocols in the future. You could then define additional protocol classes without needing to recompile the whole application.</p>
+<p>COM and CORBA both implement this sort of mechanism, but using them would be overkill. They would introduce unnecessary complexities to the code and the overhead of a middle-tier system. Fortunately, C++ provides a way to obtain this functionality with very little overhead and with just a minimal amount of work from the programmer.</p>
+
+<H4><FONT COLOR="#000080">Regime &#151; A Dynamic Loading System</FONT></H4>
+
+<p>The basic idea presented here is the same as utilized in COM: knowing the layout of an object's virtual table, you can execute its methods, regardless of whether they are defined inside the executable or in the shared library (see <a href="fig2.htm">Figure 2</a>). C++ calls the correct function automatically, so all you need to do is create an object and obtain a pointer to it through a mechanism commonly known as a factory.</p>
+<p>I call the dynamically loadable classes in this system the <I>products.</I> Because products are dynamically loadable, the main program should be aware only of the base class of their hierarchy. To enable users to specify concrete products to be loaded, I provide a system of <I>keys,</I> which can be simple string types. For example, you can use string keys like <B>"ftp"</B> and <B>"http"</B> to request protocol products.</p>
+<p>To summarize, I designed this system to meet the following requirements:</p>
+
+<UL><LI>   The factory must support several distinct hierarchies in the same program. It must require the absolute minimum of code to register a product and to create it.</LI>
+<LI>   The factory must be able to load libraries dynamically, both on direct request from the user and automatically when a required key is missing. Also, the factory can unload the library on request from the user. When a library is loaded, the user can use the classes defined in it immediately, without having to perform any resolving of functions.</LI>
+<LI>   The user must be able to freely mix products statically linked with the executable file and products dynamically linked via a shared library.</LI>
+<LI>   The products themselves must not be aware in any way of whether they are dynamically linked from a shared library or statically linked with the executable.</LI>
+<LI>   The factory can be queried about which keys are available and which keys are defined in a given shared library.</LI></UL>
+
+<p>I called this library "regime," which stands for REGIstration MEthods. Thus, I have placed all the code in namespace <B>regime</B>.</p>
+
+<H4><FONT COLOR="#000080">Registering a Class</FONT></H4>
+
+<p>The first task in this system is to register the class that will be dynamically loaded. This is where the Factory design pattern comes in. Each dynamically loadable class defined within a hierarchy has an associated creator object. If you know where this object is you can use it to instantiate a product that you need. The creator object's interface looks like this:</p>
+
+<pre>
+class ProtocolCreator {
+   Protocol* create(const string&amp;
+      url_address) = 0;
+};
+</pre>
+
+<p>The creator of http protocol objects looks like this:</p>
+
+<pre>
+class HTTPCreator : ProtocolCreator {
+   Protocol* create(const string&amp;
+      url_address) {
+      return new
+         HTTPProtocol(url_address);
+   }
+};
+</pre>
+
+<p>The following is then a factory that performs the actual creation:</p>
+
+<pre>
+class ProtocolFactory {
+   static Protocol*
+   create(const string&amp; proto,
+   const string&amp; url_address) {
+      ProtocolCreator* c =
+         ... // function that finds
+             // creator for protocol
+      if (c == 0) return 0;
+      return c-&gt;create(address);
+   }
+   static void register(const string&amp; proto,
+                        ProtocolCreator* creator);
+   static void unregister(const string&amp; proto);
+};
+</pre>
+
+<p>The <B>register</B> method should be called by the constructor of the <B>HTTPCreator</B>. What remains to be done is to put the <B>HTTPCreator</B> object in the file scope of the <B>HTTPProtocol.cpp</B> file.</p>
+
+<H4><FONT COLOR="#000080">Automating the Job</FONT></H4>
+
+<p>The essential problem with the method presented above is that it requires a lot of manual work. Also, you must redo it for any class hierarchy you write that needs dynamic registration. This sounds like a perfect case for using templates &#151; and it is. Templates enable an implementation of this technique that requires only one line of code for each registered class <a href="#1">[1]</a>.</p>
+<p>First I define a <B>factory</B> class, as shown in the snippet below (see <a href="fig3.htm">Figure 3</a> for full listing). It must be aware of two things: the base type of the objects it is generating and the type of key used to identify the product. To make different keys available dynamically to any client in the application, <B>factory</B> is designed following the singleton pattern.</p>
+
+<pre>
+template &lt;class KEY, class BASE&gt; class factory {
+public:
+   static BASE* create(const KEY&amp; key);
+   static void register(const KEY&amp; key,
+      CreatorBase&lt;KEY, BASE&gt;* creator);
+   static void unregister(const KEY&amp; key);
+private:
+   static factory&lt;KEY, BASE&gt;&amp; instance();
+};
+</pre>
+
+<p>All the static methods obtain a reference to the factory implementation through the <B>instance</B> method, which instantiates the factory object if necessary.</p>
+<p>Implementing the creator classes is now straightforward:</p>
+
+<pre>
+template &lt;class BASE&gt; class creator_base {
+   virtual BASE* create() const = 0;
+};
+template &lt;class KEY, class BASE, class PRODUCT&gt;
+class creator : public creator_base&lt;BASE&gt; {
+   virtual BASE* create() const { return new PRODUCT; }
+};
+</pre>
+
+<p>Now all the programmer has to do to register a class is create the following object at the file scope within the shared library source file:</p>
+
+<pre>
+static creator&lt;string, Protocol, HTTPProtocol&gt;
+   s_creator("HTTP");
+</pre>
+
+<p>The programmer can even go further and define several creator objects to make the class available under several names (i.e. keys).</p>
+<p>Requesting creation of an object from any module is also simple:</p>
+
+<pre>
+Protocol *p = factory&lt;string, Protocol&gt;::create("HTTP");
+</pre>
+
+<H4><FONT COLOR="#000080">Plugging in a Library</FONT></H4>
+
+<p>There is still a problem when the factory does not find a class creator. Without any additional information, the factory can only report to the user that the object cannot be created, by returning a null pointer. But if the factory knew the name of the shared library that contained the code for the object, it could load the library dynamically. When the library was loaded the constructors for the creators defined within would be executed (because an instance of each creator object is defined at file scope within the library) <a href="#2">[2]</a>. The creator objects would thus register themselves with the factory. An additional search for a creator would then succeed.</p>
+<p>Note that this model of dynamic loading is fundamentally different from what is available in C. In this C++ model, once the library is loaded, the user does not have to manually resolve functions or mess with casts. Type safety is guaranteed by design.</p>
+<p>To be able to tell the factory where to find the shared library, I define a <B>load_strategy&lt;KEY&gt;</B> interface, which users can implement to their liking. For example, a strategy can just append <B>".so"</B> to the key string or it can use a database lookup to find the location of the shared library.</p>
+
+<pre>
+template &lt;class KEY&gt; class load_strategy {
+   virtual string find(const KEY&amp; key) = 0;
+};
+</pre>
+
+<p>A simple way to dynamically configure the set of available keys is just to use a configuration file that provides a mapping between keys and shared library names. An alternative way would be to use the information provided in the shared library itself to get the names of all the keys that are contained in it.</p>
+<p>The factory keeps track of this information as long as it loads the shared library itself. So you can use the factory's <B>load_library</B> method to load the library, and then use the <B>get_keys</B> method to list the keys defined in that library. Note that if the shared library contains keys for factories of several types, you may need to query them all. For this reason, I would recommend putting only keys for one type of factory in a shared library.</p>
+
+<H4><FONT COLOR="#000080">Additional Features</FONT></H4>
+
+<H4><FONT COLOR="#000080">Managing Instances</FONT></H4>
+
+<p>In a typical application, some products need to be singletons, while others in the same hierarchy should be created each time they are requested. To provide this flexibility, I define an additional creator class, <B>SingletonCreator</B>. It remembers the object that it created and returns it next time you request its key.</p>
+<p>In this scheme it is transparent to the user which products are singletons and which are not. However, to enable deletion of a created singleton object, the application needs a data structure that registers all such objects. Such a scheme could be implemented in the factory. But this could impose significant overhead for users that do not use it. Thus, if you need to delete the objects created, define a static <B>set</B> in the root class of the hierarchy, with a constructor that registers the object and a destructor that unregisters it. The only interaction you need with the factory is to tell it that the objects were deleted, so the singleton product creators can reinitialize themselves. You can do this using the factory's <B>clean</B> or <B>clean(const KEY&amp; key)</B> method.</p>
+
+<H4><FONT COLOR="#000080">Unloading the Library</FONT></H4>
+
+<p>If you know that your application no longer needs a shared library, you may want to unload it to save memory. This is done through the <B>unload(const KEY&amp; key)</B> method. The factory keeps track of which creators it has loaded; if you have requested to unload all the keys associated with a library, the factory unloads the library. However, if you use some key from a library for creating an object, the library will be loaded again.</p>
+<p>Note that a shared library cannot be sure that none of the objects it created still exist. It is thus the user's responsibility to keep track of this. You could use an object-counting scheme to automatically request the unloading of a key when all the products of that key have been destroyed.</p>
+<p>A factory keeps track of the keys that the shared library provided for that factory. If the library provided keys for different factories, one factory could decide to unload the library while its keys were still in use by other factories. Then when the user innocently tried to use an object belonging to the second factory, the program would crash. This is one more reason to use one shared library to provide keys of only one type.</p>
+
+<H4><FONT COLOR="#000080">Passing Initialization Parameters</FONT></H4>
+
+<p>In some cases a user may want to customize the way a product is initialized. It is not obvious how to go about this. Note that at compile time, you don't know which class will be created, so all the class constructors must be able to receive the same parameters. This is only logical &#151; all the products should obey the same interface, and the signature of the constructor is part of the interface too.</p>
+<p>In most cases, you could happily use default constructors and use some <B>init</B> method to initialize the classes. However, if you really need to pass parameters to the constructor, you can encapsulate them into a class and use the second factory <B>create</B> method that accepts a parameter.</p>
+
+<pre>
+class MyBase {
+public:
+   class FactoryParams {
+   public:
+      FactoryParams(int, X&amp;);
+      // ...
+   };
+};
+
+template &lt;class BASE, class KEY&gt; class factory {
+   void create(const typename BASE::FactoryParams&amp; params);
+};
+</pre>
+
+<p>To use this method you may have to define two variants of factory &#151; one with second <B>create</B> method and one without.</p>
+
+<H4><FONT COLOR="#000080">Portability</FONT></H4>
+
+<p>I have used the code presented here on all Unix platforms I could get my hands on &#151; including Linux, Solaris, and SGI. The model of Unix shared libraries fits nicely. You could have problems with some antique compiler that does not support templates or namespaces very well, or has an old implementation of the Standard C++ library. For example, you may need to replace the <B>#include &lt;map&gt;</B> with <B>#include &lt;map.h&gt;</B> and remove the <B>std::</B>prefix. In any case, you could use the latest GNU C++ compiler, which will compile this code easily.</p>
+<p>I have compiled this code on Windows. The MS Visual C++ 6.0 compiler handles the code okay, but its model of symbol export from the dynamic libraries is slightly different &#151; you need to prefix the <B>instance</B> method with a <B>_dllexport</B> directive method. Also VC++ provides several versions of the C++ runtime library (shared/static, multithreaded/single-threaded, debug/release), so be sure to choose the same C++ runtime DLL for all modules in your project.</p>
+
+<H4><FONT COLOR="#000080">Technical Issues</FONT></H4>
+
+<p>The typical linkers provided in Unix compiler implementations have an important limitation: when building a shared library, you cannot supply an executable as an argument to the linker, so as to make the shared library import symbols from the executable. I don't think this is a fundamental limitation, it's just an unavailable feature. The workaround here is to put the kernel of the program in a shared library containing all the code and define a small driver executable. The executable is then linked to the kernel, as are the shared libraries defining the products. This situation is depicted in <a href="fig4.htm">Figure 4</a>.</p>
+<p>You would probably want to partition your application in this style anyway, especially if you want to provide several interfaces (GUI and command shell) to your code.</p>
+<p>It can also be tricky getting templates to compile and work correctly. In most cases, it is okay to have multiple instantiations of the same object in a program. Therefore, most compilers by default store template instantiations statically in each object file. However, since the regime system relies heavily on uniqueness of template instances, you will need to ask the compiler to use a template repository. Fortunately, this feature is available in all modern compilers.</p>
+<p>And please remember to <I>always</I> define virtual destructors for your products. While in other programs you may know their exact type when deleting them, when using regime you will have only a pointer to the base class.</p>
+<p>Note that regime is not thread safe. It would impose too big an overhead to serialize all instances of object creation or destruction. You can protect your library in several ways:</p>
+
+<UL><LI>   Use a mutex that guards all the accesses to the same factory. This imposes some overhead, but if your products perform some heavy computation, the overhead will be light in comparison.</LI>
+<LI>   Ensure that all the shared libraries are loaded before multithreaded execution begins. In addition, you must ensure that all the singleton products are created before running multiple threads, or you must guard them with mutexes as well.</LI></UL>
+
+<H4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>Templates present infinite possibilities for automating routine things that programmers are (and should be) lazy about.</p>
+<p>In this article I used templates to implement a simple and flexible scheme for dynamic loading. It provides transparency with respect to how the classes are distributed between executables and shared libraries. The programmer is free to define the distribution in any way he wishes.</p>
+<p>The source code for this article is available on the <I>CUJ</I> ftp site (see p. 3 for downloading instructions.) It includes the files that define the library and several examples that demonstrate its use.</p>
+
+<H4><FONT COLOR="#000080">Acknowledgment</FONT></H4>
+
+<p>I would like to thank Michael Plavnik for careful reviewing of the manuscript and the port to Windows.</p>
+
+<H4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1]  Actually, one line per registered key, but in most cases it is the same.</p>
+<p><a name="2"></a>[2]  The C++ Standard does not guarantee that when a shared library is loaded, that all static objects will automatically be constructed. However, I have used this scheme successfully with Linux, Solaris, Digital Unix, IRIX, and Windows.</p>
+
+<p><i><B>Sasha Gontmakher</B> has a B.A. in Computer Science from the Technion Institute of Technology, Israel, and he is currently working on a Ph.D. He is currently employed as a C++ programmer.</i></p>
+<h4><a href="../../../source/2000/jan00/gontmakh.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE></BODY></HTML>
+

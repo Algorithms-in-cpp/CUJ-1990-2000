@@ -1,0 +1,84 @@
+
+
+<HTML>
+<HEAD>
+
+<TITLE>November 1995/Multithreading in C++</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocnov.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Multithreading</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Multithreading in C++<A name="0181_00E5"><A name="0181_00E5"></font></h2><P>
+<h3 align="center"><font color="#800000"><A name="0181_0000"><A name="0181_0000">Jim Dugger</font></h3><hr><blockquote><P>
+<P><i><A name="0181_0000"><A name="0181_0000">Jim Dugger is currently employed as a software developer by Teubner and Associates, a firm specializing in communications products for heterogeneous networks.</i></P><P>
+<h4><FONT COLOR="#000080"><A name="0181_00E6">Introduction<A name="0181_00E6"></FONT></h4></P>
+Threads are an excellent mechanism for adding concurrent processing capabilities to your application. Compared with traditional concurrency mechanisms, such as the classic UNIX fork call, threads boast greater efficiency, easier shared resource access, and a host of other advantages, making the development of multithreaded applications very attractive. The disadvantage of threads is clear: each thread runs in the same address space as other threads in the process. This is what makes shared resource access and thread context switches so inexpensive &#151; it is also what makes errant threads so dangerous.<P>
+In recent years, multithreading models have appeared on a wide variety of platforms. Some of these systems implement DCE threads, others kernel threads, some both. <I>Kernel threads</I> refers to a thread model in which the thread executes in an address space known by the kernel. In DCE threads, the threading mechanism relies upon an alarm or other timer signals, and the kernel is aware only of the encompassing process, not individual threads. In this article I discuss kernel threads only &#151; from here on it is safe to assume that any reference to threads indicates kernel threads, and information presented may or may not apply to DCE threads.<P>
+Writing multithreaded applications is no more difficult in concept than other forms of concurrent programming, but the concurrency issues in multithreaded applications can be time consuming and tedious to handle properly. With this in mind, this article presents general advice about writing multithreaded applications as well as some simple C++ supporting tools (for some specific do's and don'ts, see the <a href="sidebar1.htm">sidebar</a>). The example code is for OS/2, however it could be easily ported to other operating environments.<P>
+<h4><FONT COLOR="#000080"><A name="0181_00E7">Using C++ Semaphore Classes<A name="0181_00E7"></FONT></h4></P>
+Serializing access to shared resources within a process is best accomplished with mutex (mutual exclusion) semaphores. However, calling OS/2's DosOpenMutexSem, DosRequestMutexSem, and DosReleaseMutexSem every time a semaphore is needed can become quite cumbersome. To ease resource management, I have developed a simple mutex semaphore class (<A href="list1.htm">Listing 1</a>
+and <A href="list2.htm">Listing 2</a>)
+.<P>
+I call classes of this type "side-effects classes," meaning that their whole purpose is to take advantage of the constructor and destructor calls provided by C++. In this case, a mutex semaphore is requested when the mutex object comes into scope, and released when the object falls out of scope. For example, protecting a nonreentrant function is as simple as adding one line of code at the top:<P>
+<pre>void func() {
+   mutex sema( "func_lock" );
+   // ...
+}</pre>
+When the mutex object sema is created, the constructor mutex::mutex( const char* ) attempts to lock a mutex semaphore called "\sem32\func_lock". Should another thread already have this semaphore locked, this constructor will block &#151; that is, it will wait for the semaphore to become available before continuing execution. Should two threads call func at the same time, only one will be allowed to proceed. The second thread will proceed when the first thread returns from func, causing sema to fall out of scope.<P>
+You can use this same technique to serialize access to shared memory objects, such as global variables:<P>
+<pre>int count;
+   foo() {
+      mutex sema( "global_count" );
+   // ...
+}
+bar() {
+   mutex sema( "global_count" );
+   // ...
+}</pre>
+In this example, if two threads call any combination of foo and bar, the later call will block waiting for the first to finish.<P>
+In my applications, I use a naming convention for semaphore names. I usually give semaphores the name <I>classname_member</I> of the object I am trying to protect. However, this naming convention may cause unnecessary thread blocking when used with classes that have many instances in memory. In these cases, the more specific <I>classname_instanceidentifier_member</I> usually accomplishes the desired effect.<P>
+What about deadlock? This is one area where the underlying operating system can be of significance. OS/2 protects against simple deadlock; a thread that locks the same mutex semaphore twice will not block on the second attempt to lock. OS/2 cannot, however, protect against complex situations where thread 1 locks semaphore A and waits on semaphore B after thread 2 has locked semaphore B and is waiting on semaphore A. If you port the mutex semaphore class to another platform, be sure to research into the behavior of your platform's locking mechanism. In cases where multiple semaphores must be locked, strongly consider muxwait (multiple wait) semaphores, and check potential cases of deadlock in the application.<P>
+<h4><FONT COLOR="#000080"><A name="0181_00E8">Signals and Synchronization<A name="0181_00E8"></FONT></h4></P>
+In addition to resource locking, multithreading applications often need a way to signal events between threads. I have developed a simple event semaphore class for OS/2 that works in much the same way as the mutex semaphore class (<A href="list3.htm">Listing 3</a>
+and <A href="list4.htm">Listing 4</a>)
+:<P>
+<pre>void func() {
+   event sema( "MyEvent" );
+   // ...
+}</pre>
+The above code will block at the creation of sema until the "MyEvent" semaphore has been posted by another thread or process. To facilitate posting, the event class has a static function post:<P>
+<pre>void unblock_func() {
+   event::post( ""MyEvent" );
+}</pre>
+Calling unblock_func causes the "MyEvent" semaphore to post, thus unblocking a thread that had called func above. After posting, the event semaphore class resets the semaphore so subsequent requests for "MyEvent" will block until another post is issued. A program can also call event::post <I>before</I> an event instance has been created. Then when an event object does come into scope, the new object will simply reset the event semaphore without blocking.<P>
+You can make your program wait on several resources and/or events by creating several objects within a given level of scope. If you use this technique, you should place the most commonly used resources later in the declarations, as this will help to reduce the number of unnecessary blocks due to semaphore contention.<P>
+<pre>void func() {
+   event ev1( "RareEvent" );
+   mutex res1( "NotUsedMuch" );
+   mutex res2( "UsedModerately" );
+   event ev2( "RealLikelyEvent" );
+   // ...
+}</pre>
+Consider what might happen if the "RareEvent" event semaphore were placed last. The mutex semaphores res1 and res2 might lock their resources, thus preventing other threads from using them, while waiting on this rarely occurring event. Placing the least likely event first minimizes the chances of unnecessary blocks in other threads.<P>
+The average duration of a lock can also be a deciding factor. If "UsedModerately" locks for a relatively long time, placing it before "NotUsedMuch" may be beneficial since locking "NotUsedMuch" for long periods of time waiting for "UsedModerately" may cause an unnecessary block in another thread. Although not presented here, the muxwait semaphore may provide a more elegant solution for the above problem &#151; you may want to consider it before settling on serial semaphore requests.<P>
+<h4><FONT COLOR="#000080"><A name="0181_00E9">Threadsafing Libraries<A name="0181_00E9"></FONT></h4></P>
+One quick browse through the Standard C library will reveal the difficulty of making some of its functions, such as strtok, threadsafe. (In this context, for a function to be threadsafe it must either be reentrant, or protected from reentrant invocation.) With a little forethought, however, you can develop threadsafe libraries of your own.<P>
+A quick and simple method of threadsafing is to place a mutex semaphore around all nonreentrant functions. This method is fairly easy to implement and yields surprisingly good results. Problems do arise, however, when two threads try to use a function that maintains a local buffer between invocations. Consider a multithreaded parser working on two different parts of a document at once, both calling into strtok.<P>
+strtok's expected behavior is to return a new token from its buffer each time it is called. It does so by modifying the buffer upon each invocation, always removing and returning one token from the buffer's "left" side. If you want strtok to exhibit this standard behavior, you must do more than protect it from reentrant invocation &#151; you must block all other calls to strtok until the current instance exhausts its buffer. Of course, as the developer of the library, you get to decide whether or not each thread operates independently, or whether the threads affect one another. Personally, I prefer the latter approach, as this is more consistent with the behavior of threads, but your needs may vary.<P>
+If you can change the prototypes of the function in question you can have it both ways. Simply pass in a pointer to a work area that would normally be static data. For example, change<P>
+<pre>void work( int arg ) {
+   static char workarea[ 20 ];
+   // ...
+   }</pre>
+to this:<P>
+<pre>void work( char* workarea, int arg)
+   { /* ... */ }</pre>
+This technique allows threads to share the same data area when necessary, or use different ones. Of course, this sort of approach is impossible when significant amounts of source depend on the old prototype, such as the case when implementing a C run-time library.<P>
+If independent operation between threads is your goal, you can provide this without changing the existing function prototypes by using a per-thread data area. This approach usually entails querying the current TID (thread id, similar to PID) and checking a table to see if such an entry exists; if not, allocate the necessary local data area, and proceed with the call. C run-time library implementors use tricks such as requiring programmers to call _beginthread instead of DosCreateThread to do this work for them.<P>
+<h4><FONT COLOR="#000080"><A name="0181_00EA">Conclusion<A name="0181_00EA"></FONT></h4></P>
+Multithreading is a powerful tool for solving concurrent programming problems, and has become quite popular and available in recent years on a variety of platforms. As with any powerful tool, effective use of threads takes some practice, but their simplicity and efficiency provide strong motivation for taking the time to learn how to use them.<P>
+
+<h4><a href="../../../source/1995/nov95/dugger.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

@@ -1,0 +1,170 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>November 1998/Template Wrappers for Network Messages</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocnov.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Template Wrappers for Network Messages</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Neil Sear</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>A general message passing service can be very simple &#151; provided you can hide all the complexity inside a few templates.</p>
+</BLOCKQUOTE>
+<HR>
+<BLOCKQUOTE>
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>Many applications require the passing of messages from one system to another, for example, between Windows NT services and applications, or between processes running on different machines. Various standards exist for the connectivity itself. Many commercial libraries implement client/server over TCP/IP, for example, and numerous articles are available to describe such libraries. But there appears to be a lack of mechanisms for handling message construction and deconstruction. Standards also exist (such as DCOM) for both connectivity and message construction, but these rely on controlling fundamental design decisions on both sides of the client/server relationship. This is not always possible, and these standards have a dubious reputation for ease of implementation and performance.</p>
+<p>This article presents a set of template classes that wrap messages in such a way that:</p>
+<UL><p>1.  The class objects can be used extremely efficiently and quite easily.<br>
+2.  Data owned by the class can be accessed simply in linear time (normally a single indirection).<br>
+3.  The structure of the transmitted data is entirely under the control of the developer, and can be made to mimic existing data formats.<br>
+4.  The implementation imposes no constraints on the other end of the link.<br>
+5.  New messages can be constructed usually from a declaration and a single template instantiation, with no additional code.<br>
+6.  Message classes implement inheritance as expected, i.e. the base class appears as a "header" to the derived class.<br>
+7.  The class can sit on top of any memory-allocation model required (heap, shared memory or memory mapped file, etc.).<br>
+8.  The messages can be used for other forms of persistence, such as disk-based data.<br></UL>
+
+<p>In many implementations I've seen, the communication mechanism is itself efficient, but not the construction and deconstruction of the communicated data itself. Deficiencies in the mechanism used to translate application data to or from communications protocols can impact an entire system. It impacts performance, code size, maintainability, and resource requirements (both memory and CPU).</p>
+<p>The message implementation presented here uses a base <B>Message</B> class, from which you derive subclasses to extend the message content. Each derivative adds a new data block. The message obtains details of how to pack and unpack its data block to/from the message through a <I>traits template specialization</I> (explained below), so that the data needs no special methods or attributes. There are no restrictions on the nature of the data block &#151; it can be a POD (Plain Old Data) type, struct or class &#151; save that it contains or can access all the information required to save and re-constitute itself.</p>
+<p><A HREF="list3.htm">Listing 3</A> shows an example use of the message classes. The amount of additional code required to declare a new message type is small. The message object's component parts (fields) are easily accessed, satisfying the first objective. I'll cover the other objectives as I develop the classes.</p>
+
+<h4><FONT COLOR="#000080">Traits Template Specialization</FONT></H4>
+
+<p>The message classes make use of what I call the "traits template specialization" pattern, as used extensively in the STL.</p>
+<p>It is often necessary to get some information about a type, particularly if this type is a template parameter. Embedding this information within the type is not always practical, especially if the type is intrinsic (<B>int</B>, for example) or imported from a third-party library. This pattern makes use of the fact that a template can be explicitly specialized. You can then use a template class without knowing at that time what specialization, if any, applies.</p>
+<p>As a simple example, consider a template class that does a "sensible" binary dump of its parameter. It should dump the value of an object, but the referenced value of a pointer. To do this, the size of the parameter is required. A traits template class may be defined as:</p>
+
+<pre>
+template &lt;class T&gt;
+class DumpTraits {
+public:
+    typedef T &amp;Ref;
+    static void size (Ref v)
+        {return sizeof (v);}
+    static const char *image (Ref v)
+        {return (const char*) &amp;v;}
+};
+</pre>
+
+<p>This implementation will work for most POD types, but not for strings. So, we can specialize <B>DumpTraits</B>:</p>
+
+<pre>
+template &lt;&gt;
+class DumpTraits &lt;const char*&gt; {
+public:
+    typedef const char *Ref;
+    static size_t size (Ref v)
+        {return strlen (v);}
+    static const char *image (Ref v)
+        {return v;}
+};
+</pre>
+
+<p>The <B>dump</B> function can now dump simple objects or character strings, without knowing which is which:</p>
+
+<pre>
+template &lt;class T&gt;
+void dump(std::ostream &amp;s, const T &amp;v)
+{
+    const char *d =
+        DumpTraits&lt;T&gt;::image (v);
+    size_t sz =
+        DumpTraits &lt;T&gt;::size (v);
+    for(int c = 0; c &lt; sz; ++c, ++d) {
+        std::cout &lt;&lt; " "
+                  &lt;&lt; int (d&amp;0xff);
+        }
+}
+</pre>
+
+<p>Other explicit specializations could handle string classes, other pointer types, etc. The pattern is even more powerful if your compiler supports partial specialization &#151; a specialization that still takes a template argument. Unfortunately, not all compilers do so. Partial specialization allows constructs such as the following:</p>
+
+<pre>
+template &lt;class T&gt;
+class DumpTraits &lt;const T*&gt; {
+public:
+    typedef const T *Ref;
+    static size_t size (Ref v)
+        {return sizeof (T);}
+    static const char *image (Ref v)
+        {return (const char*) v;}
+};
+</pre>
+
+<p>Example traits template specializations in the STL are template classes <B>allocator</B> and <B>char_traits</B>. A specialization of these templates is instantiated purely to obtain some information about the template parameter. Another template class (<B>basic_string</B>) uses <B>char_traits</B>, specialized for different types of character. Each specialization has an identical interface of static methods, typedefs, and enumeration constants, to provide the information required by <B>basic_string</B>.</p>
+<p>The pattern has a wide range of uses. This message implementation is just one example. Its biggest advantage, being based on template specialization, is performance. The type "look up" is done at compile time. This is also the biggest weakness and pitfall of the pattern. It uses only the static type of an object, not its run-time type. This doesn't matter for most uses, though.</p>
+
+<h4><FONT COLOR="#000080">Message Buffer</FONT></H4>
+
+<p>The first thing needed is a buffer implementation, to hold the actual message. This varies according to communication requirements, but normally can be based on <B>std::string</B>. Variants may use shared memory (specializing <B>std::basic_string</B> with a custom allocator, or using a separate class). This implementation realizes objectives 7 and 8. <A HREF="list1.htm">Listing 1</A> implements <B>BasicMsgBuf</B>, a class that wraps <B>std::string</B> to provide the minimal interface required by the message classes, mostly raw access and insertion.</p>
+<p>In practice, and for consistency, I use a typedef for the desired <B>BasicMsgBuf</B> implementation. Subsequent classes can take template parameters to use any local variant of <B>BasicMsgBuf</B> required, or instead they can use the single default type. I've done the latter for clarity, using the typedef <B>MsgBuf</B>. In practice, making every message class a template is more powerful, but also more complex and tedious. It would just cloud the issues here.</p>
+
+<h4><FONT COLOR="#000080">Support Classes</FONT></H4>
+
+<p>Now to the interesting bit. I referred earlier to the use of a template class explicitly specialized to provide information about particular types. In this case, the explicitly specialized template class is <B>MsgPart</B> (<A HREF="list2.htm">Listing 2</A>). It has an interface giving enough information to pack and unpack a type to and from a raw message. The template class itself handles POD (Plain Old Data) types where the message format matches the C++ binary format, such as most fixed-size character arrays or bytes.</p>
+<p>The methods <B>size</B> and <B>defaultSize</B> may, at first glance, appear to have very similar functionality. Their use by the message implementation is slightly different: the former determines the size of a part within a message that is already constructed. The latter determines the initial size to reserve and initialize, in the message buffer, for a message part.</p>
+<p>The <B>assign</B> method copies a value into the given message buffer at the given offset. Variable-size types have to add information about the actual size of the data, if that is not already explicit in the data itself.</p>
+<p>The <B>initialize</B> method is called for each part on construction of a message object, as a "constructor" for the message part.</p>
+<p><B>MsgPart</B> must be explicitly specialized when any of the following are true:</p>
+
+<UL><p>1.  The raw C++ type representation doesn't match what's required in the message.<br>
+2.  The data is of variable size (such as a string or collection).<br>
+3.  The C++ type contains data that is not wanted in the message (including any vtable).</p></UL>
+
+<p>Objective 5 is met whenever none of the above restrictions apply. Even then, you need only one specialization for each such type, not every occurrence of it.</p>
+<p>You can construct explicit specializations implementing variable-size arrays, etc. In all cases, the message representation (and hence the <B>MsgPart</B> representation) must contain enough information to determine the size of any variable-length or repeated data. It must also (obviously) contain enough information to reconstruct the data. I've included an example explicit specialization of <B>MsgPart</B> for variable-length, null-terminated strings.</p>
+<p>When explicitly specializing <B>MsgPart</B>, it's particularly important that <B>size</B>, <B>defaultSize</B>, and <B>initialise</B> be consistent. This is especially true for variable-size types. The <B>defaultSize</B> method must return a value consistent with what <B>size</B> would return immediately after initialization, so <B>initialize</B> must correctly populate the portion of data that identifies this size.</p>
+<p>There is an alternative to explicitly specializing <B>MsgPart</B> for types that are of fixed size, but have a different representation in a message. Write a class that has a binary representation matching that required in the message, but behaves just like the type it represents (with implicit type casts, the same operators, assignment, etc.). The message classes will obtain information about this new class from the default <B>MsgPart</B>. Use the same approach where there's a single C++ type that has more than one possible representation in a message. This is a simpler approach for types such as integers when the message should contain an ASCII or network byte-order value. If the value is over used, though, watch out for performance issues when the conversion takes place.</p>
+<p>The third and fourth objectives are now covered: control over the message structure, and new messages defined usually from a declaration and a template instantiation.</p>
+<p>To make the implementation more robust, it needs a class that implements assignable references to message parts. Non-const <B>Message</B> access methods will return objects of this class, to force assignment to pass through the message code without the need for a kludgy assigning interface.</p>
+<p>The object is invalidated if another action modifies the buffer during the lifetime of the reference. This shouldn't matter, as the reference is intended for instantiation <I>only</I> as a temporary. Simultaneously changing the message twice in one expression violates ANSI C++ rules for deterministic expressions. Don't derive from this class, as the <B>Message</B> implementation will return only the base class anyway.</p>
+<p>The class <B>MsgPartRef</B> (<A HREF="list2.htm">Listing 2</A>) implements this reference. It allows construction from a message buffer and offset, or copy construction, but not default construction or assignment from another <B>MsgPartRef</B> (to discourage local copying). It also allows assignment from any type compatible with the type of the message part. And it supports an implicit type cast to the type of the message part, but only as an rvalue. An lvalue could be modified without proper reformatting of the message.</p>
+
+<h4><FONT COLOR="#000080">The Message</FONT></H4>
+
+<p>Message</B> (<A HREF="list2.htm">Listing 2</A>) is the base class for all messages. The obvious way to allow chaining of message parts, so that the data for one appears after the data for another, is inheritance. This also allows implicit casting to a message "Super-type." Don't use the <B>Message</B> class or extend it directly. Extend a message using the <B>MsgExtension</B> template class (<A HREF="list2.htm">Listing 2</A>), giving the base as a template parameter for the message "header" part. The <B>MsgExtension</B> class implements the chaining together of message parts via inheritance, as per objective 6, getting the required information about each part by instantiating the <B>MsgPart</B> template. Remember this class is specialized for any peculiar types we want stored in the message.</p>
+<p>The first template parameter to <B>MsgExtension</B> is the base class. This must be a previous instantiation of <B>MsgExtension</B>, or the base <B>Message</B> class. The second template argument is the type defining the content of the extension, i.e., the class mapped to the corresponding portion of the message buffer. For example, the parameter would be <B>char[10]</B> for a ten-byte ASCII field. No methods in the class need to be overriden or implemented by the extending user, so the specialization can be used as is (the fifth objective).</p>
+<p>This may look a little inefficient at first glance. However, almost all of it evaluates to a small amount of inline code once parsed by the compiler. Access to a particular part of a message usually comes down to a pointer access offset by a number of constants. Summing the constants will take place at compile time, so it all boils down to pointer plus offset. The only exception is for parts coming after a variable-size section of the message. Here, the expression will evaluate (at compile time) to pointer plus two offsets, and one function call to get the size of the variable-size part. This should be a bit more obvious once I've done a dry run through the sample, below.</p>
+<p>The <B>data</B> method might appear a bit pointless, too, but there is a good reason for it. Without it, access to data within the message would have to be by the rather cumbersome form:</p>
+
+<pre>
+msg.struct::operator-&gt;()-&gt;field
+</pre>
+
+<p>where <B>struct</B> is the type embedded in the message. The expression <B>msg.struct::-&gt;</B> doesn't work. The <B>data</B> method simply returns <B>*this</B>, so operators can be applied directly.</p>
+
+<h4><FONT COLOR="#000080">Example Use</FONT></H4>
+
+<p><A HREF="list3.htm">Listing 3</A> defines a structure used as a message header (<B>HeaderData</B>). It then builds up a message type (<B>Message4</B>) consisting of this header, a variable-length null-terminated text field, and an integer. The example manipulates these a bit, using different techniques. For simplicity's sake, the example assumes integers are transmitted in the host system's raw binary format.</p>
+<p>Each access to message parts takes a very similar form. Take for example the line copying <B>FRED</B> into the header file source. What happens? The <B>.class::</B> operator sequence (<B>a.Header::</B> in this case) applied to an object selects the subobject for the specified class. So here it selects the inherited <B>Header</B> subobject. Essentially, it selects the portion of the message we're interested in, without needing any additional code to do so.</p>
+<p>The <B>data</B> call is just syntactic sugar. We want to call <B>operator-&gt;</B> on the subobject we've just extracted, but <B>::-&gt;</B> isn't valid syntax. The <B>data</B> call returns <B>*this</B>, so <B>data()-&gt;</B> achieves the desired result.</p>
+<p>The <B>Header</B> we've now got hold of is an instance of <B>MsgExtension</B>. So, <B>operator-&gt;</B> calls <B>offset</B> to calculate the offset of the message part in the message buffer. It passes this to the <B>value</B> method inherited from <B>Message</B> to extract that portion of the buffer. The <B>value</B> method is fairly straightforward. It's <B>offset</B> that's interesting.</p>
+<p>The <B>offset</B> method first calls <B>offset</B> for the parent class. It can do this because the parent was specified as the first template parameter to <B>MsgExtension</B>. The result of the parent <B>offset</B> call is then passed to <B>calcOffset</B>, which adds the size of the immediate parent (which the parent is called on to provide). So, <B>offset</B> recurses back up the inheritance tree until it reaches <B>Message</B>, whose <B>offset</B> simply returns zero, the length of the head of the message buffer. As the recursion falls back down the inheritance hierarchy, it adds the size of each <B>MsgExtension</B>'s representation in the buffer to derive the offset of the next part. Eventually, we get back to the caller with the sum of sizes of all previous parts, i.e., the offset of the caller in the message buffer.</p>
+<p>The <B>calcOffset</B> method calls on the parent's <B>partSize</B> to establish the size of the parent's representation. This in turn calls on the <B>size</B> method for the <B>Definition</B> of the part's type. <B>Definition</B> is just a typedef for an instantiation of the template class <B>MsgPart</B>, which is where the traits template specialization comes in. If <B>MsgPart</B> is unspecialized for the type of the message part (e.g. the <B>HeaderData</B> or <B>int</B> parts) then the default implementation returns the constant size, using operator <B>sizeof</B>. But, for the <B>char*</B> part there is an explicit specialization, so <B>MsgPart&lt;char*&gt;::size</B> is called instead.</p>
+<p>This processing sounds, and is, a little complex. It's all done at compile time, though, so the generated assembly code (taken from a VC++ V5.0 COD file) is just:</p>
+
+<pre>
+; 18: memcpy (a.Header::data()-&gt;source, "Fred", 4);
+push 8
+lea ecx, DWORD PTR _a$[esp+112]
+mov DWORD PTR __$EHRec$[esp+120], 1
+call MsgBuf::buffer
+mov edx, DWORD PTR "FRED"
+</pre>
+
+<p>Other forms of access to the message content boil down to roughly the same thing. There is very little difference between reading and writing the message content, as the offset is calculated in the same way. So, the second objective (simple access in linear time) has been reached.</p>
+
+<p><i>Neil Sear is an IT consultant specializing in C++ on Windows NT, OO, and performance. He has over seven years experience of C++, ranging through Microsoft, Borland, Sun, and others. He is currently contracting in the UK, primarily as mentor and technical project manager for a British retail bank. He can be reached at <B>nsear@objective.demon.co.uk</B>.</i></p>
+
+
+<h4><a href="../../../source/1998/nov98/sear.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

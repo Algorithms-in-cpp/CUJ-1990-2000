@@ -1,0 +1,324 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>December 1996/Efficient Band Matrix Computations</TITLE>
+     </HEAD>
+     
+     <BODY BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><FONT COLOR="#FF0000"><A href="../tocdec.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          Optimization &amp; Efficiency </FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000"> Efficient Band Matrix
+          Computations</FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">Keith Crowe</FONT></H3>
+          
+          <BLOCKQUOTE>
+               
+               <p> It often pays to reflect the
+                    structure of data in the program that processes it. When the
+                    data is an array with many zero elements, the time and space
+                    savings can be considerable.</p></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <h4><FONT COLOR="#000080">Introduction</FONT></H4>
+               
+               <p>Here's a short quiz. Name something in
+                    common between finite-difference approximations to
+                    differential equations and cubic splines. One answer is that
+                    both, along with many other scientific applications, can
+                    involve the solution of band-linear systems of equations.
+                    Band-linear systems are characterized by a coefficient
+                    matrix with all non-zero elements located near the main 
+                    diagonal. Matrices with this special structure are called
+                    band matrices. </p>
+               
+               <p> It's obvious that some economy in
+                    space can be realized when working with band matrices. Many
+                    storage schemes can be described, but it's most common to
+                    store all the diagonals that contains any non-zero element.
+                    Consider the matrix:</p>
+
+<PRE>
+
+ 2  1  0  0  0  0
+ 8  3 -1  0  0  0
+ 0  0  4 -2  0  0
+ 0  0  1  2  0  0
+ 0  0  0  1  1 -1
+ 0  0  0  0  2  5
+</PRE>
+               
+               <p>Instead of storing 36 elements, 22 of
+                    them zero, we can store the three diagonals, or bands,</p>
+
+<PRE>
+
+1 -1 -2  0 -1
+2  3  4  2  1  5
+8  0  1  1  2
+</PRE>
+               
+               <p>This implementation views an N by N
+                    matrix as 2*N - 1 vectors containing the data in the 2*N - 1
+                    diagonals. Parameterized STL vectors are used for easy
+                    scaling across data types, and only those diagonals with at
+                    least one non-zero entry are stored.</p>
+               
+               <p><A href="crowel1.htm">Listing 1</A>
+                    defines the template class bandStorage. The private members
+                    represent all of the information required to represent a
+                    band matrix. The matrix order N is needed to establish upper
+                    bounds on storage, and for operations like matrix-vector
+                    multiplication. The members upperMostBand and lowerMostBand
+                    define the "bandwidth" of a matrix. The location of the
+                    diagonal in the upper triangle furthest from the main
+                    diagonal that still contains some non-zero element is stored
+                    in upperMostBand. The lower triangular analog is
+                    lowerMostBand. Lastly, we define a to be a vector of vectors
+                    containing the matrix diagonals. </p>
+               
+               <p> Two constructors are defined. One
+                    takes no arguments and simply initializes all members to
+                    zero. The other constructor accepts an integer argument as
+                    the matrix order and creates "slots" for up to 2*N - 1
+                    vectors. </p>
+               
+               <p> Three inline member functions are
+                    defined to access matrix order, upper band width, and lower
+                    band width. The simplifying assumption is made that the
+                    order of an object will not change after its creation and
+                    therefore order does not return a reference. </p>
+               
+               <p> The diag member functions allow
+                    access, both as rvalue and lvalue, to complete bands of the
+                    matrix. This is especially useful for initialization.
+                    </p>
+               
+               <p> operator() is overloaded to allow
+                    access to a band matrix by standard row/column indexing. A
+                    check has to be made to determine if the requested element
+                    lies within the upper and lower bands. If not, zero is
+                    simply returned. Some implications follow from this. Namely,
+                    elements can be changed only if they lie within the current
+                    band width. Furthermore, any bands between the uppermost and
+                     lowermost that contain all zeros must be stored as such.
+                    </p>
+               
+               <p> Since matrix-vector multiplication is
+                    so common, operator* is overloaded to define multiplication
+                    between band matrices and STL vectors. Remember the standard
+                    inner-product algorithm for matrix-vector multiplication? It
+                    goes like this:</p>
+
+<PRE>
+
+for i = 1, ..., n
+   y(i) = 0
+   for j = 1, ..., n
+      y(i) = y(i) + a(i,j) * x(j)
+</PRE>
+               
+               <p><BR>
+                     It is certainly possible to implement operator* in this
+                    manner. There is a real efficiency problem here however. In
+                    this algorithm each access of a(i,j) lies in a diagonal
+                    different from the previous access. Our band data structure
+                    makes row (or column) traversal of a band matrix very
+                    cumbersome. But we know access by diagonal is very
+                    efficient. So we rewrite the matrix-vector algorithm. Moving
+                    from the lowermost band to the uppermost, we grab each band,
+                    caching it in a temporary. We then step contiguously through
+                    that diagonal, multiplying each element by the proper
+                    element in x. As above, each element in the result vector is
+                    used as an accumulator.</p>
+               
+               <h4><FONT COLOR="#000080">SPD Systems</FONT></H4>
+               
+               <p>The coefficient matrices in linear
+                    systems from certain application areas, such as finite
+                    element analysis, are frequently symmetric and positive
+                    definite (SPD). Symmetry simply means that a matrix is equal
+                    to its own transpose, i.e. a(i,j) == a(j,i) for any i and j.
+                    Positive definiteness is really an algebraic property, more
+                    than a structural property. A matrix M is defined to be 
+                    positive definite if and only if trans(x)*M*x is greater
+                    than zero for all non-zero vectors x. We don't really need
+                    to be concerned about the mathematical definition. </p>
+               
+               <p><A href="crowel2.htm"> Listing 2</A>
+                    shows the declaration/definition of a class used
+                    specifically for symmetric and positive definite matrices.
+                    Symmetry plays the key role here. </p>
+               
+               <p> Because an SPD band matrix is still a
+                    band matrix, we use public inheritance to define the Is-A
+                    relationship. The constructors are very standard. More
+                    interesting is the member function diagonal(const int). It
+                    is used to access any diagonal in the matrix. But notice
+                    that it always refers to the lower triangle of A. Since we
+                    know A is symmetric, the convention in this implementation 
+                    has been to store only the lower triangle. </p>
+               
+               <p> The setDiag function is introduced to
+                    simplify assignment of constant values to a band. Many
+                    applications generate band matrices with constant bands.
+                    </p>
+               
+               <p> As I mentioned earlier, the
+                    definition of positive definiteness is of little consequence
+                    here. What's important is that symmetric and positive
+                    definite linear systems can be solved using a special
+                    variant of Gaussian elimination called Cholesky
+                    decomposition. Cholesky decomposition is used to find a
+                    triangular matrix L so that A is the product of L and
+                    trans(L). The solution of the original linear system Ax = b
+                    is then reduced to solving two triangular systems, a fast
+                    and simple process. Also, if the right-hand side b of the
+                    linear system changes, but the coefficient matrix remains
+                    the same, there is no need to recompute the Cholesky factor.
+                    This results in significant performace gains when solving
+                    systems with multiple right-hand sides. Full algorithm 
+                    details can be found in most books on numerical linear
+                    algebra, e.g. Golub and Van Loan [<A href="#REF1">1</a>]
+.
+                    </p>
+               
+               <p> We create a class SPDBandMatrixFactor
+                    to support Cholesky decomposition and forward/backward
+                    triangular system solutions. See <A href="crowel3.htm">Listing
+                         3</a>.
+ The class is derived from bandStorage since the
+                    triangular Cholesky factor is a band matrix with the same
+                    lower band width as the original matrix. </p>
+               
+               <p> The factor function computes and
+                    stores the Cholesky factor internally. Function solve then
+                    applies the Cholesky factor to the right-hand side of a
+                    linear system and returns a solution. </p>
+               
+               <p> The overloaded operator() and
+                    diagonal member function are used as service functions by
+                    factor and solve. </p>
+               
+               <p> <A href="crowel4.htm">Listing 4
+                    </A>shows the solution of an SPD linear system. First some
+                    STL vectors are initialized with the matrix data. Next an
+                    instance of SPDBandMatrix&lt;float&gt; is created, order 9,
+                    with band width of 3. The matrix B is then initialized.
+                    </p>
+               
+               <p> After creating an instance of the
+                    factor object, the Cholesky factor is computed and used to
+                    solve the system Bx = y, where y happens to be the diagonal
+                    of B. The results are printed. </p>
+               
+               <p> The space savings realized by band
+                    storage are clear at this point. It's less obvious that
+                    there are large computational savings with band system
+                    solutions like the the one above. The work involved in
+                    solving an N by N system of equations usually increases
+                    about as fast as N*N*N. For band systems, the work tends to
+                    grow more slowly, more like N*N*B, where B is the bandwidth.</p>
+               
+               <h4><FONT COLOR="#000080">Tridiagonal Systems</FONT></H4>
+               
+               <p>For tridiagonal systems, there is a
+                    dramatic reduction in time complexity. These systems can be
+                    solved in O(N) time, N again being the order of the
+                    coefficient matrix. </p>
+               
+               <p> Since tridiagonal matrices are simply
+                    band matrices, we derive a tridiagonal matrix class from
+                    bandStorage. See<A href="crowel5.htm"> Listing 5</a>.
+
+                    </p>
+               
+               <p> There is no separate factor class
+                    since the factorization is amazingly cheap. It just doesn't
+                    matter that much if it is repeated for the same coefficient
+                    matrix. </p>
+               
+               <p> There are some additional private
+                    members required to store the factorization. This is not a
+                    Cholesky factorization, but rather a more general one known
+                    as LU. It is closely related to Gaussian elimination and
+                    requires no assumptions about positive definiteness or
+                    symmetry. </p>
+               
+               <p> Convenience functions are added to
+                    access the only valid bands. They are subDiagonal,
+                    superDiagonal, and mainDiagonal. The solve function factors
+                    and solves. It is a translation of the equivalent LINPACK
+                    routine. (See Dongarra, et. al. [<A href="#REF2">2</a>]
+)
+                    Partial pivoting is performed and an exception is thrown if
+                    singularity is encountered. </p>
+               
+               <p> <A href="crowel6.htm">Listing 6</A>
+                    shows a simple example solving a tridiagonal system and
+                    checking the results.</p>
+               
+               <h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+               
+               <p>Certain matrices have exploitable
+                    structure. We examined the band case and found it
+                    surprisingly easy to implement usable data structures,
+                    leveraging the work behind STL vectors. Abstracting out the
+                    essential structural features of band matrices into a band
+                    storage class made light work of deriving more specialized
+                    band classes and adding valuable service routines. </p>
+               
+               <p> Some improvements/tradeoffs are
+                    possible. Two examples are:</p>
+               <UL><LI> It is possible to have bandwidth determined
+                         automatically through an update procedure in the
+                         data-insertion functions. </LI>
+                    <LI> Instead of a central data structure built as vector &lt;
+                         vector &lt;T&gt; &gt;, it could be built as list &lt;
+                         vector &lt;T&gt; &gt;. For systems of very large order
+                         and narrow bandwidth, the space savings might be
+                         valuable. The problem is in the slow element access as
+                         the appropriate diagonals are located. o</LI>
+               </UL>
+               
+               <h4><FONT COLOR="#000080">References</FONT></H4>
+               
+               <p>[<A name="REF1">1</a>]
+ Gene H. Golub,
+                    and Charles F. Van Loan. Matrix Computations, 2d ed. (Johns
+                    Hopkins University Press, Baltimore, Maryland, 1989).</p>
+               
+               <p>[<A name="REF2">2</a>]
+ J.J. Dongarra,
+                    J.R. Bunch, C.B. Moler, and G.W. Stewart. LINPACK Users'
+                    Guide. (SIAM, Philadelphia, 1979).</p>
+               
+               <p><I>Keith Crowe has BS and MS degrees
+                    in mathematics and applied mathematics. With ten years of
+                    development work in scientific and numerical computing, he
+                    is currently manager of the Object-Oriented Components group
+                    at Visual Numerics, Inc. He can be reached at
+                    crowe@houston.vui.com.</I></FONT>
+
+<h4><a href="../../../source/1996/dec96/crowe.zip">Get Article Source Code</a></h4>
+
+</P>
+               
+               <P></P></BLOCKQUOTE>
+     </BODY>
+</HTML>

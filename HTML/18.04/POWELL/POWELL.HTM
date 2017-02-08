@@ -1,0 +1,246 @@
+<HTML>   
+     <HEAD>
+<TITLE>April 2000/Views, A New Form of Container Adaptors</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocapr.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Views, A New Form of Container Adaptors</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Gary Powell and Martin Weiser</FONT></H3>
+
+<BLOCKQUOTE>
+<p>There's more than one way to slice a container. Views provide a particularly sharp knife.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+<p>The C++ standard template library has many useful containers for data. It also includes two container adaptors, <B>queue</B> and <B>stack</B>. We have extended this model along the lines of relational database semantics. An adaptor allows the standard algorithms to be used on a subset or modification of the data without having to copy the data elements into a new container. We provide many useful adaptors that can be used together to produce interesting views of data in a container.</p>
+<p>When manipulating large containers of data, it would be handy to be able to use the algorithms in the standard template library. Unfortunately, the standard algorithms often require the data to be in a specific representation or to consist of only a special subset of the data. By using an adaptor, a container can be made to appear to the algorithm as if it contained just the data of interest, producing the required representation or subset on the fly, without any copying.</p>
+<p>We call these container adaptors "views," as they are just another way of looking at the data. By our definition, the creation of a view does not modify the data in the original container. The view is as close to the original container as it can be in access functionality. By this we mean that a random-access data container, if possible, will have a random-access view. Some views are at most only bidirectional.</p>
+<p>Views are designed to work with the standard algorithms and therefore provide iterators. Views are designed to appear as if they were a STL compliant container. The view is not the container, it is instead the transformation of a container into one with different attributes desirable for writing clean, clear, efficent code.</p>
+<p>The current alternative to using a view is to use "smart iterators." (See <a href="#1">[1]</a>.) Smart iterators are adaptors for iterators, while views are adaptors for containers. Although all the standard algorithms work on ranges instead of containers, other useful algorithms sometimes must call on the standard container member functions <B>begin</B> and <B>end</B>, or perhaps even <B>rbegin</B> and <B>rend</B>, as well as <B>size</B> and <B>swap</B>. They may also need to refer to standard container member types, such as <B>iterator</B> and <B>const_iterator</B>. In these cases, smart iterators are not powerful enough.</p>
+<p>By contrast, a view is simply an adaptor that, applied to a container, presents on the fly a controlled sequence with an interface satisfying the requirements of the standard STL containers. Note, however, that several of the views presented here fail to satisfy some of the standard time-complexity requirements, because of the additional functionality they provide. Check the documentation <a href="#2">[2]</a> for a full description of each view type.</p>
+<p>Views are a natural way to write smart-iterator factories. In fact, most of the algorithmic intelligence of views is encapsulated in their iterators.</p>
+<p>Views can simplify writing class interfaces. Assume you have a class that contains nodes, edges, and patches. Perhaps it is a graph package or a finite element mesh &#151; the latter is something we use views for. If you want to provide some restricted access to the graph data, how do you do this? You could make the node, edge, and patch containers public, but this is generally considered poor encapsulation. Maybe the node container is a polymorphic container of interior nodes and boundary nodes. Users of the mesh would then have to deal with a container of pointers.</p>
+<p>Alternatively you could provide member functions such as <B>beginNodes</B>, <B>endNodes</B>, <B>beginEdges</B>, etc. And don't forget <B>numNodes</B>, <B>numEdges</B>, and perhaps <B>node</B> and <B>edge</B>, all as random-access methods. Still like this approach? We didn't. Our solution instead is to present appropriately adapted views that reference the internal containers. Writing calls such as <B>nodes.begin()</B> or <B>edges.size()</B> is better and easier to remember than <B>numEdges</B> &#151; or was it <B>num_edges</B>, or <B>size_edges</B>, or something else? Views present the standard interface people are used to when dealing with STL containers.</p>
+<p>Our views concept is based on the ideas of Jon Seymour <a href="#3">[3]</a> from 1996. He constructed a view that contained a transformation as well as a filter and thus resembled the SQL statements even closer than our current approach. But since transformation and filtering are useful in their own right, we decided to decouple these tasks and to create a lean, orthogonal interface. Of course, the functionality offered by both approaches is the same.</p>
+
+<H4><FONT COLOR="#000080">Examples</FONT></H4>
+
+<p>In the examples that follow, we will be using standard algorithms from STL. All the STL names are declared in namespace <B>std</B>, but rather than clutter up our examples with a lot of <B>std::</B> qualifiers, we have omitted specifing the namespace. In actual code you will have to either open the entire namespace <B>std</B> by writing:</p>
+
+<pre>
+using namespace std;
+</pre>
+
+<p>or list the names you actually use with individual using declarations, as in:</p>
+
+<pre>
+using std::sort;
+</pre>
+
+<p>Or you will have to insert all those <B>std::</B> qualifiers we omitted. Also we will be creating classes whose only method is <B>operator()</B>. These classes are known as "functors," because you can apparently call them just like functions.</p>
+<p>As a first example, say we have a container of employees and we want to find the oldest one. We can use a <B>transform_view</B> from our library. A <B>transform_view</B> stores a transform function, which by definition takes an element of the container and returns a result. (See <a href="fig1.htm">Figure 1</a>.) The transform function stored by <B>transform_view</B> is represented by the template parameter <B>Operation</B>. This template parameter can be either a pointer to a function, or a functor class. For this example, we provide a pointer to a function that returns the age of the employee. Using the <B>transform_view</B> (one of the most useful views) with the transformation just described, we then create a view of the container that presents only the ages. A call to <B>max_element</B> yields an iterator referencing the employee record we desire:</p>
+
+<pre>
+// A really minimal Employee Record
+struct Employee {
+   Date       dateOfBirth;
+   Department department;
+   Salary     salary;
+   Name       name;
+};
+
+typedef container&lt;Employee&gt; EmployeeContainer;
+
+EmployeeContainer AllEmployees;
+
+Time getAge(Employee const&amp; e)
+{ return today() - e.dateOfBirth; }
+
+typedef transform_view&lt;
+           EmployeeContainer,
+           Time (*)(Employee const&amp;)
+        &gt;
+        DateOfBirthView;
+
+// Search global Employee Container.
+Employee&amp; getOldestEmployee()
+{
+DateOfBirthView dobv(AllEmployees, getAge):
+
+DateOfBirthView::iterator OldestAge
+  = max_element(dobv.begin(), dobv.end());
+
+Employee&amp; OldestEmployee = *(OldestAge.get());
+
+return OldestEmployee;
+}
+</pre>
+
+<p>Here we use the type <B>container</B> to represent any STL-compliant container. We have also provided a <B>get</B> function in the <B>transform_iterator</B> class to return the underlying container iterator.</p>
+<p>The <B>DateOfBirthView</B> resembles a projection in relational algebra followed by a simple transformation, as realized by the SQL statement:</p>
+
+<pre>
+SELECT age(DateOfBirth) FROM 
+   AllEmployees.
+</pre>
+
+<p>Now let's say we want to enable only a somewhat limited access to the employee data. Perhaps a specific user should see only the employees of a special department. We can use a <B>filter_view</B> from the views library. A <B>filter_view</B> contains a predicate as well as a reference to a basic container. It presents just the elements for which the predicate is true. Here is the solution using a view:</p>
+
+<pre>
+class Visible {
+   Department visible;
+public:
+   Visible(Department const&amp; v)
+      : visible(v) {}
+
+   bool operator()(Employee const&amp; e)
+   const
+   { return e.department == visible; }
+};
+
+// Create the filter_view type specific to our need.
+typedef filter_view&lt;
+           EmployeeContainer,
+           Visible
+        &gt;
+        VisibleEmployeeViewType;
+
+// Create the actual view.
+VisibleEmployeeViewType 
+vev(AllEmployees,
+   Visible(PublicDepartment));
+</pre>
+
+<p>The <B>vev</B> view can now be made available to the user, who will have up-to-date access to just the employee records that the user is permitted to see. Note that as an alternative to using views, we could have created a copy of the original data and then filtered it with the STL's <B>remove_copy_if</B> algorithm. However, it would not have been easy to keep this filtered data synchronized with the original dataset.</p>
+<p>The <B>filter_view</B> implements the analogy of the relational algebra "select" operation, as realized by the SQL <B>WHERE</B> clause:</p>
+
+<pre>
+SELECT * FROM AllEmployees
+   WHERE department == PublicDepartment
+</pre>
+
+<p>If we want to find the maximum salaried employee from the <B>PublicDepartment</B> we can combine the filter view with the transform view. We create a filter view of just those employees we are interested in and use <B>tranform_view</B> to make <B>max_element</B> see just their salary:</p>
+
+<pre>
+// Create a function to retrieve the Salary data.
+Salary&amp; getSalary()(Employee const&amp; e)
+{ return e.salary; }
+
+typedef transform_view&lt;
+           VisibleEmployeeViewType,
+           Salary (*)(Employee const&amp;)
+        &gt;
+        VisibleSalaryViewType;
+
+VisibleSalaryViewType
+vsvt(oev, getSalary);
+
+VisibleSalaryViewType::iterator iter;
+iter =
+   max_element(vsvt.begin(), vsvt.end() );
+*iter == the maximum salary data.
+
+Employee&amp; DesiredEmployee = *(*(iter.get() ).get();
+</pre>
+
+<p>We can build increasingly complex views of our data by layering these adaptors together.</p>
+<p>The SQL statement corresponding to the <B>vsvt</B> view would be:</p>
+
+<pre>
+SELECT salary FROM AllEmployees WHERE department  
+   == PublicDepartment
+</pre>
+
+<p>If you would like to view this data in reverse order you could apply a <B>reverse_view</B>. The <B>reverse_view</B> does what you would expect by having its member function <B>begin</B> return <B>rbegin</B> from the underlying container. Thus, it requires at least a reversible container. For example:</p>
+
+<pre>
+typedef reverse_view&lt;EmployeeRange&gt;
+    ReverseEmployeeView;
+
+ReverseEmployeeView rrve(vev);
+
+copy(rrve.begin(), rrve.end(),
+   ostream_iterator&lt;Employee&gt;(cout,"\n"));
+</pre>
+
+<H4><FONT COLOR="#000080">A Survey of Views</FONT></H4>
+
+<p>Here is a short survey of some of the views contained in the library. First is <B>downcast_view</B>. This view applies a <B>dynamic_cast </B>on a container of pointers. It then filters out the elements that return a null pointer from the cast and then converts the pointers to references. With this view you can take a container of heterogenous objects, all inheriting from some base class, and view them as a collection of derived objects.</p>
+<p>This sounds way more complicated than it is. We are using two kinds of <B>transform_view</B> and one <B>filter_view</B>. The first transform does the <B>dynamic_cast</B>, then we use the <B>filter_view</B> to skip the elements that return a null pointer. Then we use a <B>transform_view</B> to promote the pointers to references. In fact we realized that for containers of pointers to heterogeneous objects, promotion of a pointer to a reference would be useful on its own. We therefore created the <B>polymorphic_view</B> and used it as part of the the <B>downcast_view</B>.</p>
+<p>The friction between generic programming and object-oriented programming shows up in the problems you have to face when representing polymorphic collections with STL containers. The only possibility is to use a container of pointers to the objects. But then it is unsatisfactory to present a pointer-to-base-class interface when conceptually we have a collection of derived objects. The polymorphic view just puts a dereferentiating layer on top of the pointer-to-base-class interface and presents an interface that matches the concept.</p>
+<p>We have a number of other useful views working on sorted containers, which we can discuss only briefly here:</p>
+
+<UL><LI>   a <B>union_view</B>, which concatenates two containers, head to tail</LI>
+<LI>   a <B>set_intersection_view</B>, which, given two sorted containers, will return the elements that are in both containers</LI>
+<LI>   a <B>set_difference_view</B>, which returns the elements that are in one set and not the other</LI>
+<LI>   a <B>set_symmetrical_difference_view</B>, which returns the elements that are in one or the other set but not in both</LI>
+<LI>   a <B>set_union_view</B>, which returns the elements in two containers less the elements that overlap</LI>
+<LI>   a <B>unique_view</B>, which, returns the elements which are not duplicates.</LI></UL>
+
+<p>We also have <B>intersection_view</B>, <B>difference_view</B>, and <B>symmetric_difference_view</B>, which do not require the elements to be sorted. These views will use the <B>find</B> member function of either container if it exists. While this is not efficient if you had to do it anyway, your alternative is to copy the data into a sorted container, or do this comparison manually. The view at least provides an efficent implementation of an inefficent process.</p>
+<p>How were we able to make all these views without writing code for the last few years? We applied the age-old technique of divide and conquer. For the sorted views we created a group of utility views that could be applied in layers. (See <a href="fig2.htm">Figure 2</a>.) The lowest layer is the <B>equal_range_view</B> applied to each of the two containers. <B>equal_range_view</B> returns a <B>range_view</B> for each group of elements in a container, marking the beginning and end of runs of equal elements. Next we use a <B>pair_merge_view</B>, which combines corresponding runs into pairs. If there is no corresponding run on one side, an empty run is substituted.</p>
+<p>To create the <B>set_*_views</B>, we then applied a transform to select the wanted elements from the pair of runs. For instance, to make a <B>set_intersection_view</B>, we return only the elements from the runs which appear in both <B>pair.first</B> and <B>pair.second</B>. We then apply a <B>concatenation_view</B>, which returns the elements one by one from the transformed view.</p>
+<p>We extracted a common base, which is really just a template of typedefs for the sorted views, and then wrote five transform functors. Since each layer could be tested independently, it was remarkably easy to do. Well, it did take us a while to decipher the error messages, but once we were done we could be confident that the other views would work as well. In fact, that was the case.</p>
+<p>We didn't start out with a layered approach to the sorted container views. We first tried the "each container does all the work" approach and ended up with a very complex set of code that was difficult to debug. It may still not have all the bugs removed. We have abandoned this code. The curious can find it on our web site under the "abandoned" directory.</p>
+<p>Another interesting view that demonstrates the power of views over copying the elements is the <B>crossproduct_view</B>. For two random-access containers, we apply an operation and return the result for each [i, j] pair of elements. The default operation is a pair of references to the elements, but any functor which takes two elements is allowed. This allows for delayed evaluation and sparse storage of a matrix made by (a op b). We did create a proxy template so that <B>crossproduct_view[i][j]</B> returns the correct (i op j) result. Thus, the <B>crossproduct_view</B> is the analog of the "cross join" operation in relational algebra, as realized by the SQL statement:</p>
+
+<pre>
+SELECT * FROM Table1, Table2
+</pre>
+
+<p>In general, this is interesting only in combination with a <B>filter_view</B> eliminating nonmatching rows. And, of course, the views performance will not match that of sophisticated database engines in this case.</p>
+<p>Additionally, there are several convenience views which are not much more than "templated typedefs" of more basic views &#151; for example, to present only the keys or only the values of an associative container. We have included them because they show how easy it is to build layers of views which are then useful on their own.</p>
+<p>Last, there is a <B>range_view</B> class. It is not really a view, in that it does not reference a container but an STL range given by two iterators. All it does is define the needed typedefs and methods to present the standard container interface. Using the <B>range_view</B>, all the views can reference ranges as well as containers.</p>
+
+<H4><FONT COLOR="#000080">Implementation</FONT></H4>
+
+<p>The advanced template mechanisms of C++, such as template template parameters and default template parameters, facilitate the construction of highly configurable yet easy-to-use code. The view will adapt itself to take full advantage of its underlying container, should the type of the container change during development. In this section we will explain some of the aspects that make the views code that flexible.</p>
+
+<H4><FONT COLOR="#000080">Ownership</FONT></H4>
+
+<p>Views can own the underlying container or merely reference it. We did this by specifing an argument to the view's template. The tag <B>view_ref</B> references the container, and <B>view_own</B> has ownership properties. This allows you to nest views together. The innermost view can be specified by the user of the view, the next layers require ownership.</p>
+
+<H4><FONT COLOR="#000080">Mutability</FONT></H4>
+
+<p>Views can be constant or mutable. We provide two tag classes, <B>const_view_tag</B> and <B>mutable_view_tag</B> to allow this specification. A mutable view allows you to modify the data in the underlying container. Users of mutable views should be careful to maintain any data integrity necessary for the container. We default to <B>const_view_tag</B> because, in our practice, we have found that to be the most useful. A const view uses only the <B>const_iterator</B> from the underlying container.</p>
+
+<H4><FONT COLOR="#000080">Sensible defaults</FONT></H4>
+
+<p>Some views limit their iterator categories. A <B>filter_view</B>, for example, is at most bidirectional. Views combining two containers, such as <B>union_view</B>, are limited by the less powerful of the containers involved. The common denominator in both cases is the less powerful iterator category. To be easy to use while keeping flexibility, the views compute the appropriate iterator category as a default template parameter at compile time, thus adapting themselves to the given container(s). See the <a href="sidebar.htm">sidebar</a> for details about the technique we used.</p>
+
+<H4><FONT COLOR="#000080">Comparisons</FONT></H4>
+
+<p>All of the views provide the two basic comparison functions, <B>operator==</B> and <B>operator&lt;</B>. We then provide the generic relational comparison functions <B>operator!=</B>, <B>operator&gt;</B>, <B>operator&lt;=</B>, and <B>operator&gt;=</B>, which can be expressed by combining the first two comparisons. We also provide the conversion operators so that assignment to a <B>const_view</B> from a <B>mutable_view</B> is possible, as is comparison. The swap specializations were also provided so that swapping of two containers would be the most efficient. These comparison operators are also provided for the view iterators.</p>
+<p>Views with these interfaces appear to act just like any other STL containers and can be used with STL algorithms. Views are a thin layer on top of their containers, therefore the overhead of using them is minimal.</p>
+
+<H4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>We use the ISO C++ template features excessively. In general this can lead to code bloat. For every set of template parameters, a corresponding variant of the code is instantiated. This can become a major headache, especially for many template paramters. In the views library, this is a non-issue because it is an extremely thin software layer. Very few methods are more than six lines long. Thus, nearly all the methods will be inlined by a good optimizing compiler.</p>
+<p>In our implementation we have chosen to use the most advanced template features that make the highly flexible implementation possible. This code will not compile on many compilers. We anticipate that more complier vendors will be able to handle our code soon. The compiler we used was GCC 2.95, which is available at the GNU web page <a href="#4">[4]</a> for many systems.</p>
+<p>The current code base is still in development and available free of charge at <a href="#2">[2]</a>. The design architecture appears to have become stable in late 1999. New views seem to occur occasionally as our work projects expand. Contributions and suggestions for the library are welcome.</p>
+<p>The STL containers can be easily adapted to act as subcontainers of their data using these adaptors. The adaptors have been used to help simplify the coding of several projects by the authors. We consider them very useful tools. With the adaptors provided, programmers can build interesting views of their own data, and can easily extend and/or combine these adaptors to view any STL-compliant container in other more interesting ways. These views are not meant to replace the standard algorithms that generate copies of the containers. Rather, they serve as an alternative which may be appropriate for the problem at hand.</p>
+<p>The code is available at the VTL homepage <a href="#2">[2]</a>.</p>
+
+<H4><FONT COLOR="#000080">Acknowledgements</FONT></H4>
+
+<p>The authors would like to thank Jon Seymour for providing them with an initial set of code and the idea of creating views which would work with the STL containers. We would also like to thank Jon for putting us in touch with each other. This is truly an example of the power of the Internet. We would be glad to hear from any users of this code and suggestions for future improvements.</p>
+
+<H4><FONT COLOR="#000080">References</FONT></H4>
+
+<p><a name="1"></a>[1]  Thomas Becker. "Smart iterators," <I>C/C++ User's Journal,</I> September 1998.</p>
+<p><a name="2"></a>[2]  This documentation is available with the <I>CUJ</I> online sources, available at <B>ftp.mfi.com</B> or <B>www.cuj.com</B>. Also see: Gary Powell and Martin Weiser. "View Template Library Container Adaptors," <B>http://www.zib.de/weiser/vtl</B>, 1999.</p>
+<p><a name="3"></a>[3]  Jon Seymour. "Views &#151; a C++ Standard Template Library Extension," <B>http://www.zeta.org.au/~jon/STL/views/doc/views.html</B>, 1996.</p>
+<p><a name="4"></a>[4]  GCC Team. GCC Home Page, <B>http://gcc.gnu.org/</B>, 2000.</p>
+<p><a name="5"></a>[5]  Nathan Myers. "Traits: A New and Useful Template Technique," <I>C++ Report,</I> June 1995.</p>
+<p><a name="6"></a>[6]  Todd Veldhuizen. "Techniques for Scientific C++," <B>http://extreme.indiana.edu/~tveldhui/papers/techniques/techniques.ps</B>, 1999.</p>
+
+<p><i><B>Gary Powell</B> is a senior software engineer at Sierra On-Line. He has a BA in Phyics from Middlebury College VT. While at Sierra, he has worked on numerous games including: "Birthright," "Hellfire," and "Professional Bullrider." His research interests include game AI, and generic programming using C++ templates. He can be reached at <B>gary.powell@sierra.com</B>.</i></p>
+<p><i><B>Martin Weiser</B> is a member of the Numerical Analysis and Modelling Division at Konrad-Zuse-Zentrum f&uuml;r Informationstechnik Berlin, Germany. His research interests are numerical methods for solving nonlinear partial differential equations and optimal control problems. The implementation of such algorithms led him to C++ and object-oriented and generic numerics. He can be reached at <B>weiser@zib.de</B>.</i></p>
+
+<h4><a href="../../../source/2000/apr00/powell.zip">Get Article Source Code</a></h4>
+
+
+</blockquote></body></html>

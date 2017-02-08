@@ -1,0 +1,195 @@
+
+
+
+
+<HTML><HEAD>
+
+<TITLE>June 1997/Macintosh-to-Windows Resource Conversion/Listing 2</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4>Listing 2:	Mac-to-Windows conversion routines</h4>
+
+<pre>
+// MACRES.CPP by Jeff Heaton(jeffheaton@aol.com)
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include "macres.h"
+
+#define GET_LONG(x,y) (MAC_LONG(x[y],x[y+1],x[y+2],x[y+3]))
+
+MAC_RESOURCE::MAC_RESOURCE()
+{
+    buffer=NULL;
+    length=0;
+}
+
+MAC_RESOURCE::~MAC_RESOURCE()
+{
+    length=0;
+    if(buffer!=NULL)
+        delete buffer;
+}
+
+// Setup - Used to read in 'len' bytes from 'fp'
+// into this resource.
+void MAC_RESOURCE::Setup(FILE *fp,long len)
+{
+    if(buffer!=NULL)
+        delete buffer;
+    length=len;
+    buffer=new unsigned char[len+2];
+    fread(buffer,1,len,fp);
+}
+
+MAC_RESOURCE_FILE::MAC_RESOURCE_FILE()
+{
+    fp=NULL;
+    nextTypeLoc=nextResLoc=-1;
+}
+
+// Open - Will open 'fn' and read in all
+// general info.
+void MAC_RESOURCE_FILE::Open(char *fn)
+{
+    if( (fp=fopen(fn,"rb"))==NULL) {
+        printf("%s can't open %s.\n");
+        exit(1);
+    }
+
+// Read MACBINARY Header
+    fread(buffer,1,128,fp);
+    if( buffer[0] ||  buffer[74] || buffer[82] ) {
+        printf("Error: Not a valid MACBINARY file.\n");
+        exit(1);
+    }
+
+    resourceLocation=128+GET_LONG(buffer,83);
+    if(resourceLocation%128)
+        resourceLocation=((resourceLocation/128)+1)*128;
+
+// Read Resource fork header
+    fseek(fp,resourceLocation,SEEK_SET); // Move to resource fork
+    fread(buffer,4,4,fp);
+    offsetResourceData=GET_LONG(buffer,0);
+    offsetResourceMap=GET_LONG(buffer,4);
+    lengthResourceData=GET_LONG(buffer,8);
+    lengthResourceMap=GET_LONG(buffer,12);
+
+// Read in the first resource map entry
+    fseek(fp,resourceLocation+offsetResourceMap,SEEK_SET);
+    fread(buffer,1,30,fp);
+    numTypes=MAC_WORD(buffer[28],buffer[29])+1;
+    locationTypeList=resourceLocation+offsetResourceMap+28;
+}
+
+void MAC_RESOURCE_FILE::Close(void)
+{
+    if(fp!=NULL)
+        fclose(fp);
+    fp=NULL;
+}
+
+// GetFirstType - Used to get the name of the 
+// first type of resource in this file.
+void MAC_RESOURCE_FILE::GetFirstType(char *name)
+{
+    if(fp==NULL)
+        return;
+    nextTypeLoc=locationTypeList+2;
+    GetNextType(name);
+}
+
+// GetNextType - Used in a loop after GetFirstType
+// to each additional resource type in the file.
+void MAC_RESOURCE_FILE::GetNextType(char *name)
+{
+    if(fp==NULL)
+        return;
+    fseek(fp,nextTypeLoc,0);
+    fread(buffer,8,1,fp);
+    memcpy(name,buffer,4);
+    name[4]=0;
+    nextTypeLoc=ftell(fp);
+}
+
+// GetFirstType - Used to get the resource id of the 
+// first resource of the current type in the file.
+void MAC_RESOURCE_FILE::GetFirstResource(short *res)
+{
+    if(fp==NULL)
+        return;
+    fseek(fp,nextTypeLoc-8,0);
+    fread(buffer,8,1,fp);
+
+    numThis=MAC_WORD(buffer[4],buffer[5]);
+    numThis++;
+    offsetReffList=MAC_WORD(buffer[6],buffer[7]);
+    nextResLoc=(unsigned long)offsetReffList
+        +(unsigned long)locationTypeList;
+    GetNextResource(res);
+}
+
+// GetNextType - Used in a loop after GetFirstResource
+// to get each additional resource id of this type
+void MAC_RESOURCE_FILE::GetNextResource(short *res)
+{
+    if(fp==NULL)
+        return;
+    fseek(fp,nextResLoc,0);
+    fread(buffer,12,1,fp);
+    *res=MAC_WORD(buffer[0],buffer[1]);
+    resourceData=MAC_TRI(buffer[5],buffer[6],buffer[7]);
+    resourceData+=offsetResourceData+resourceLocation;
+    nextResLoc=ftell(fp);
+}
+
+// LoadResource - Will load the Mac resource of 'type' and
+// 'id' from the file.
+MAC_RESOURCE *MAC_RESOURCE_FILE::LoadResource(char *type,short id)
+{
+    char n[80];
+    MAC_RESOURCE *rtn;
+    short x,y,s,hold3;
+    long resourceSize,hold1,hold2;
+
+    if(fp==NULL)
+        return NULL;
+
+    hold1=nextTypeLoc;
+    hold2=nextResLoc;
+    hold3=numThis;
+
+// Loop through and then find that resource
+// first lookup the type, and then find the id.
+
+    GetFirstType(n);
+    for(x=0;x&lt;=GetNumTypes();x++) {
+        if(!memcmp(type,n,4)) {
+            GetFirstResource(&amp;s);
+            for(y=0;y&lt;GetNumResources();y++) {
+                if(id==s) {
+                fseek(fp,resourceData,SEEK_SET);
+                fread(buffer,4,1,fp);
+                resourceSize=GET_LONG(buffer,0);
+                rtn=new MAC_RESOURCE;
+                rtn-&gt;Setup(fp,resourceSize);
+                nextTypeLoc=hold1;
+                nextResLoc=hold2;
+                numThis=hold3;
+                return rtn;
+                }
+                GetNextResource(&amp;s);
+            }    
+        
+        }
+        GetNextType(n);
+    }
+    nextTypeLoc=hold1;
+    nextResLoc=hold2;
+    numThis=hold3;
+    return NULL;
+}
+
+//End of File
+</pre>
+</body></html>

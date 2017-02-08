@@ -1,0 +1,259 @@
+
+
+
+<HTML><HEAD>
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+<TITLE>January 1998/Standard C/C++</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<H2><A href="../tocjan.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+<FONT COLOR="#FF0000">Columns</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Standard C/C++: The Facets num_put and numpunct</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">P. J. Plauger</FONT></H3>
+
+<blockquote>
+<p>And you thought printing out an integer was easy.</p></blockquote><hr>
+
+<blockquote>
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>When writing a C program, there's only one sensible way to print out a short object
+n. You call the function printf, declared in &lt;stdio.h&gt;, as in:</p>
+
+<pre>
+printf("%d", n);
+</pre>
+<p>This expression statement writes to the standard output stream a sequence of decimal
+digits, preceded as needed by a minus sign, to represent the value stored in n
+(implicitly converted to type int).<p>
+If you want to print the value in hexadecimal, you change the format string to
+"%x". If you want the display left-justified in a ten-character, space-padded
+field, you write "%-10d". Together with a handful of additional qualifiers,
+these options give you considerable control over the appearance of any integer
+you display.<p>
+Sure, you could write custom code to generate any of these variants, but why
+bother? Unless code size must be kept really small, the greater flexibility you
+get is well worth the extra overhead of including printf and its brethren in
+your program. Not to mention greater reliability &#151; a library function is far
+more likely to be correct than some hand-crafted bit of code you probably never
+get around to testing thoroughly.<p>
+Floating-point values are even harder to convert to displayable form. It's
+terribly easy to lose accuracy, or to generate intermediate overflow or
+underflow, or to just plain get the logic wrong. And you have even more
+formatting options to contend with, such as fixed versus scientific notation.
+No sensible programmer wastes any time writing custom display code for
+floating-point values, given the existence of printf in the Standard C
+library.<p>
+C++ has long favored a friendlier notation for displaying arithmetic (integer
+or floating-point) values. You write:</p>
+
+<pre>
+cout &lt;&lt; n:
+</pre>
+<p>to insert the integer value stored in n in the standard output stream. One of the
+earliest libraries to accompany C++ compilers implemented this notation as part
+of the iostreams family of classes. In particular, cout is an object of class
+ostream, and the operator overload:</p>
+
+<pre>
+ostream&amp; ostream::operator&lt;&lt;(short);
+</pre>
+<p>defines the inserter for values of type short. Class ostream in fact defines a whole
+family of inserters for all the basic arithmetic types, and then some.</p>
+<p>The friendly notation doesn't stop here. Thanks to some other clever
+language tricks, you can intersperse inserters with manipulators to control
+formatting. Manipulators alter various flag values stored in an ostream object,
+which qualify how arithmetic values get displayed. If you want to print the
+value n in hexadecimal, for example, you write:</p>
+
+<pre>
+cout &lt;&lt; hex &lt;&lt; n;
+</pre>
+<p>If you want the display left-justified in a ten-character, space-padded field, you
+write:</p>
+
+<pre>
+cout &lt;&lt; left &lt;&lt; setw(10) &lt;&lt; n;
+</pre>
+<p>Together with a number of additional manipulators, these options give you considerable
+control over the appearance of any integer you display. In fact, anything you
+can do with printf you can do with arithmetic inserters and manipulators, and
+then some.<p>
+It should come as no surprise then that the machineries of printf lie at the
+heart of many, if not all, implementations of class ostream. The draft C++
+Standard makes a point of defining the behavior of inserters in terms of
+equivalent calls to printf. It doesn't require that printf, or one of its
+variants, actually gets called, but the behavior must be as if the equivalent
+call occurs. It took the C Standards committee a lot of work to get the
+description of printf reasonably precise. It would be silly to reproduce all
+that work, or even all that verbiage.<p>
+The first C++ library I wrote, several years ago, made pretty direct use of
+sstream. The inserter for short was a simple one-liner:</p>
+
+<pre>
+ostream&amp; ostream::operator&lt;&lt;(int _X)
+  {return (
+    _Print(&amp;"B hoB hxB hd"[_If()],
+      _X)); }
+</pre>
+<p>Here, _If is a private member function that turns the relevant integer formatting
+flags into an index, which selects a subset of the string literal. The private
+member function _Print builds a format string under the guidance of this
+substring, then calls on sprintf to do the actual work of converting _X to a
+sequence stored in an array of char. Member function _Print then emits this
+sequence, possibly adding some padding along the way. Pretty compact.<p>
+But the times have changed. <A href="list1.htm">Listing 1</a>
+shows what you have to write today to
+implement the same inserter. Class ostream has become template class
+basic_ostream, with parameters _E, for the kind of stream element, and _Tr, for
+the "traits" associated with such an element. It has the public base class
+basic_ios&lt;_E, _Tr&gt;. Good old ostream is now just a typedef for
+basic_ostream&lt;char, char_traits&lt;char&gt; &gt;.<p>
+The inserter first constructs a sentry object. This object can be queried to
+determine whether the output stream is in a happy state. It also locks accesses
+to the stream from other threads in a multithreading environment. An exception
+thrown during the conversion and/or insertion results in the setting of badbit
+in the stream state, which can in turn throw an exception.<p>
+Elements are inserted into the stream buffer through the offices of an output
+iterator, of template class ostreambuf_iterator &#151; an extension made to the
+Standard Template Library shortly after it was incorporated into the draft C++
+Standard. A failure to insert an element in the stream can also set badbit.
+Output iterators have no way to report a failure, so this particular version
+has the member function failed to report any failures at the end of all
+attempted element insertions.<p>
+Oh yes, the actual conversion is performed by an object of template class
+num_put, which is the principal subject of this month's column.</p>
+
+<h4><FONT COLOR="#000080">Template Class num_put</FONT></H4>
+
+<p>Template class num_put is yet another locale facet. I've been discussing facets for
+several months now, so I won't repeat many details about how facets work in
+general. <A href="list1.htm">Listing 1</a>
+provides the essential hints about how to use this
+particular facet:</p>
+<UL><LI>The member function ios_base::getloc obtains a copy of the locale object
+        "imbued" into the object of class basic_ostreambuf&lt;_E, _Tr&gt;.</LI>
+    <LI>The template function use_facet&lt;_Nput&gt; obtains from its locale object
+        argument a const reference to the facet _Nput (a typedef for num_put&lt;_E,
+        _Iter&gt; here), which should always be present.</LI>
+    <LI>The facet reference _Fac can be used to call any of several versions of
+        _Fac.put to convert the value _Y (of type long in this case).</LI>
+    <LI>_Fac.put inserts the elements it generates into the stream buffer (obtained
+        by calling _Myios::rdbuf()) using an output iterator of type _Iter (a typedef
+        for ostreambuf_iterator&lt;_E, _Tr&gt;).</LI>
+    <LI>_Fac.put obtains stored formatting information from the object of class
+        *this, and eventually clears the field width stored there as well.</LI>
+    <LI>_Fac.put pads as needed by inserting "fill" characters obtained from the
+        base object by calling _Myios::fill().</LI>
+</UL>
+<p>That's a lot of action for one little facet member function. Now I will tell
+you that the work is actually performed by a protected virtual member function
+called do_put. This is a common scheme for making a class more flexible. You
+can derive another class from it, overriding one or more virtual functions to
+selectively change behavior of objects that masquerade nicely as objects of the
+base class. Polymorphism in action.</p>
+<p>Now consider that roughly the same operations must be performed by a
+num_put facet &#151; by overloading the member functions put and do_put &#151; for the
+basic types bool, long, unsigned long, double, long double, and void *. Then
+consider that every locale object must contain references to two
+specializations of this facet: num_put&lt;char, char_traits&lt;char&gt; &gt;
+and num_put&lt;wchar_t, char_traits&lt;wchar_t&gt; &gt;. Pretty soon, you're
+talking about a lot of code.</p>
+<p>The current breed of compilers can optimize away member functions that are
+not called, provided they are not virtual. But virtual functions are accessed
+through a "v-table," or table of pointers to virtual functions peculiar to
+each class. Compilers today are rarely smart enough to determine that a virtual
+function is never called, so it is always loaded if the class is used at all.
+Pretty soon, you're talking about a lot of unused code as well, in a typical
+C++ program.<p>
+Thus, template class num_put brings a tremendous amount of power to the
+business of displaying numbers. You can hand craft a facet object that prints
+bool values in French and long values in Roman numerals, leaving all other
+conversions unaltered. That's the good news. The bad news is that you pay for
+this power in code space, whether you use it or not, in any program that uses
+cout or its brethren.<p>
+<A href="list2.htm">Listing 2</a>
+shows one way to implement (most of) template class num_put. Unlike
+with the facets I've shown earlier, this time I chose to omit most of the
+implementation-specific magic code. It's just too hard to explain in a small
+space, and it detracts from the principal business of the template class.<p>
+Most of the interesting action occurs in the overloads for do_put. These
+protected virtual member functions reveal sometimes small but interesting
+differences between bool and the different arithmetic types. A few hints to
+minimize the distractions:</p>
+<UL><LI>The macro _WIDEN converts a member of the basic C character set, as type
+        char, to the element type. Typically, this involves little or no work.</LI>
+    <LI>The macros _MAX_INT_DIGIT, _MAX_EXP_DIGIT, and _MAX_SIG_DIGIT are ones I've
+        used for years to specify the number of characters (elements) needed to
+        represent the largest possible integer and floating-point values.</LI>
+    <LI>Template class numpunct&lt;_E&gt; specifies various "numeric punctuation"
+        which tends to be locale dependent. I describe it briefly below.</LI>
+    <LI>The protected member function _Iput can handle digit grouping in integers.
+        This is how an unreadable 1000000000 gets turned into 1,000,000,000.</LI>
+</UL>
+<p>Finally, I hasten to point out that the code in <A href="list2.htm">Listing 2</a>
+doesn't do the
+actual conversion from an internal integer or floating-point value to a
+sequence of elements. That work is still done in good old reliable sprintf. You
+just have to look harder to find where it's called.</p>
+
+<h4><FONT COLOR="#000080">Template Class numpunct</FONT></H4>
+
+<p>As I mentioned above, template class num_put has to look elsewhere to determine
+some of the information it cares about. You may have guessed by now that there
+is also a template class num_get, which converts input to internal integer or
+floating-point values. (More to come on that topic next month.) It too needs to
+know such information, such as what character serves as the decimal point in
+the current locale. Put simply, the information of common interest to
+num_get&lt;_E, _Tr&gt; and num_put&lt;_E, _Tr&gt; is stored in yet another
+facet &#151; an object of class numpunct&lt;_E&gt;.<p>
+Every locale object should store references to the facets numpunct&lt;char&gt;
+and numpunct&lt;wchar_t&gt;, for use by the char and wchar_t specializations of
+num_get and num_put.<p>
+<A href="list3.htm">Listing 3</a>
+shows the visible part of template class numpunct. If you're at all
+familiar with locales in C, you can guess pretty accurately the purpose behind
+the various values you can obtain from its member functions. They are
+essentially the numeric fields you obtain from an lconv object by calling the
+Standard C library function localeconv, declared in &lt;locale.h&gt;. If all
+else fails, study how calls to numpunct member functions occur throughout
+<A href="list2.htm">Listing 2</a>.
+<p>
+The C Standard says next to nothing about how locales are actually implemented.
+The draft C++ Standard provides no additional hints. Initializing an object of
+class numpunct&lt;_E&gt; thus requires some amount of implementation-specific
+magic. I won't even attempt to show that sort of underlying machinery here. I
+omit the constructor definition, just as I did for template class num_put
+earlier. (The easy way out for most implementations is to hardwire
+numpunct&lt;char&gt; and numpunct&lt;wchar_t&gt; to support just the "C"
+locale.)<p>
+<A href="list3.htm">Listing 3</a>
+also shows the template class numpunct_byname. It provides a way to
+create a numpunct&lt;_E&gt; object whose behavior is consistent with a locale
+whose name you know. There is no corresponding num_put_byname. Don't ask me
+why. o
+</p>
+
+<p><i>P.J. Plauger is Senior Editor of C/C++ Users Journal and President of
+Dinkumware, Ltd. He is the author of the Standard C++ Library shipped with
+Microsoft's Visual C++, v5.0. For eight years, he served as convener of the ISO
+C standards committee, WG14. He remains active on the C++ committee, J16. His
+latest books are The Draft Standard C++ Library, Programming on Purpose (three
+volumes), and Standard C (with Jim Brodie), all published by Prentice-Hall. You
+can reach him at pjp@plauger.com.
+</i></p>
+
+<h4><a href="../../../source/1998/jan98/plauger.zip">Get Article Source Code</a></h4>
+
+</blockquote>
+</body></html>

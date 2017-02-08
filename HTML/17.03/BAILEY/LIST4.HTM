@@ -1,0 +1,141 @@
+<HTML><HEAD>
+<TITLE>March 1999/A Signal Command and Control Class for Unix/Listing 4</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 4: Implementation of class CmdQMgr</A></h4>
+<pre>
+#include &lt;unistd.h&gt;
+#include &lt;sys/types.h&gt;
+#include &lt;sys/ipc.h&gt;
+#include &lt;sys/msg.h&gt;
+#include &lt;sys/errno.h&gt;
+#include &lt;sys/signal.h&gt;
+#include "CmdQMgr.h"
+
+// constants for the application
+const char *cmdqerrmsg = "QUEUE ERROR";
+const int queuebaseid = 723000000;
+const int max_message = 20;
+
+
+// define data type for message buffer
+typedef struct {
+    long type;
+    char data[max_message + 1]; } msgbuff;
+
+
+// definition of static CmdQMgr class member
+int CmdQMgr::cmdq_creator_count = 0;
+
+// constructor for creator of CmdQMgr class
+CmdQMgr::CmdQMgr(int signal_id): cmdqmgr_signal_id(signal_id) {
+
+    cmdqmgr_type = cmdqmgr_signal_id;
+    cmdqmgr_proc_id = getpid();
+
+    // the key id is based on the class base Id plus the 
+    // process ID
+    cmdqmgr_key = queuebaseid + cmdqmgr_proc_id;
+
+    cmdqmgr_origin = creator;
+
+    //setup queue to handle signal information
+    if ((cmdqmgr_queue_id =
+             msgget(cmdqmgr_key, IPC_CREAT | 0666)) &lt; 0) {
+        throw string ("Could not create message queue for key ");
+    }
+
+    cmdq_creator_count++;
+}
+
+// constructor for sender of CmdQMgr class
+CmdQMgr::CmdQMgr(int signal_id, int proc_id) : 
+    cmdqmgr_signal_id(signal_id), cmdqmgr_proc_id(proc_id){
+
+    cmdqmgr_type = cmdqmgr_signal_id;
+
+    cmdqmgr_key = queuebaseid + cmdqmgr_proc_id;
+
+    cmdqmgr_origin = sender;
+
+    //setup queue to handle signal information
+    if ((cmdqmgr_queue_id = msgget(cmdqmgr_key, 0)) &lt; 0) {
+        throw string ("Could not access message queue for key ");
+    }
+}
+
+// destructor for class
+CmdQMgr::~CmdQMgr(void){
+
+    // if this is a queue creator, then decrement its need by one
+    if ( cmdqmgr_origin  == creator )
+        cmdq_creator_count--;
+
+    // remove the queue if this process no longer has any reading
+    // processes
+    if (cmdq_creator_count == 0){
+        msgctl(cmdqmgr_queue_id, IPC_RMID, (struct msqid_ds *)0);
+    }
+}
+
+int CmdQMgr::send_msg( char *message){
+
+    msgbuff msgout;
+
+    int ret_val;
+
+    //set the entire string to null values
+    bzero(msgout.data, max_message + 1);
+    msgout.type = cmdqmgr_type;
+        
+    strncpy(msgout.data, message, max_message);
+
+    // send the message.  note since we did not set any
+    // flags.  in this state we will wait until we can
+    // place something on the queue.
+
+    // Send the message and then the signal to notify the 
+    // target process
+    if ((ret_val =
+            msgsnd(cmdqmgr_queue_id, (struct msgbuf *) &amp;msgout,
+                sizeof(msgout.data), IPC_NOWAIT)) == 0)
+        ret_val = kill(cmdqmgr_proc_id, cmdqmgr_signal_id);
+
+    return ret_val;
+}
+
+int CmdQMgr::receive_msg(string &amp;received_msg){
+
+    static msgbuff msgin;
+    int ret_val = 0;
+
+    // set received_msg to an empty string.
+    received_msg = "";
+
+    // get a message for the signal type being supported for
+    // the current process
+     ret_val = msgrcv(cmdqmgr_queue_id, (struct msgbuf *)&amp;msgin, 
+                   sizeof(msgin.data), cmdqmgr_type, IPC_NOWAIT);
+
+     switch (ret_val){
+                
+         case ENOMSG : //there were no messages to process
+                       received_msg = cmdqerrmsg;
+                       break;
+         case -1: break;
+         default: // make sure we received some data and that
+                  // there is a null terminator on the string.
+                  if (ret_val &gt; 0 )
+                      received_msg = msgin.data;
+                  else if (ret_val &lt; 0 );
+                      break;
+    }
+
+    return ret_val; 
+}
+
+- End of Listing -
+</pre>
+</BODY>
+</HTML>

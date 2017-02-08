@@ -1,0 +1,299 @@
+<HTML>   
+     <HEAD>
+<TITLE>January 2000/Debugging Component-Based Memory Leaks</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocjan.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Debugging Component-Based Memory Leaks</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Ernesto Guisado</FONT></H3>
+
+<BLOCKQUOTE>
+<p>The best place to catch memory leaks is as close to the source as possible.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<H4><FONT COLOR="#000080">The Problem &#151; Leaking Objects</FONT></H4>
+
+<p>It normally goes like this: the GUI department (programming in VB, Java, C++ Builder, Macromedia Director, or whatever) says the server group (using DCOM/CORBA or some such) isn't releasing all the memory they are using. Before firing up specific memory debugging tools, I resort to a little homegrown C++ class. If I'm lucky it will tell me I'm not releasing several objects. If it doesn't, the memory must be going somewhere else. The class I use for debugging is small, about 30 lines of code. I have used it in several server projects; there is nothing about it specific to COM or CORBA. I've used this class both with Microsoft's ATL or when programming bare-to-the-bones COM.</p>
+<p>You can use this class to tell how many objects your class hierarchy has created, when each one was created, and the type of the instantiated object. It's particularly useful to track down reference counting errors (<B>AddRef</B>/<B>Release</B>) in COM servers.</p>
+<p>In this article I show how this class works and briefly discuss some alternative approaches I tried before coming up with this solution. Finally, I also include a short Perl script that digests the raw info this class generates and transforms it into a report you can show at meetings.</p>
+
+<H4><FONT COLOR="#000080">Logger Output Format</FONT></H4>
+
+<p>I begin by showing what kind of raw output a user can expect from this logging system. <a href="fig1.htm">Figure 1</a> shows an easy-to-parse text format I use often. Since it is comma separated it is easy to parse using Awk or Perl (or even MS-Excel if that is what you like). The source code accompanying this article (see p. 3 for downloading instructions) includes a Perl script for parsing this sort of output, which you can adapt to your own needs. This format is a compromise between readability and size. It is nice to be able to understand the output without using anything more sophisticated than a text editor. On the other side, automatically generated output can easily grow to a size that disallows easy editing.</p>
+<p>In <a href="fig1.htm">Figure 1</a>, a '+' signifies object creation (constructor invoked) and '-' means destruction. The next field is the object ID. Each object created gets a unique ID for identification purposes. The next two fields comprise a time stamp (when was the object created or destroyed). Then there is the memory address and the size of the object. The last field is the class name. In my experience this is more than enough for most cases.</p>
+<p>Note that there are several fields missing from the destruction trace (address, size, and class name). This saves some space in the output file; you can always look them up (using the object ID) in the creation trace.</p>
+<p>The following code produced the output shown in <a href="fig1.htm">Figure 1</a>:</p>
+
+<pre>
+unsigned next_id = 0;
+FILE* fp = NULL;
+
+void log_create
+   (
+   unsigned id,
+   void* self,
+   size_t size,
+   const char* name
+   )
+{
+   if (fp == NULL) {
+      fp = fopen(LOGFILE, "wt");
+      if (fp == NULL) {
+         fprintf(stderr,
+            "Could not open '%s'.\n",
+            LOGFILE);
+         exit(-1);
+      }
+   }
+   struct timeb tb; ftime(&amp;tb);
+   fprintf(fp, "+, %u, %ld, %hd, "
+      "0x%lx, %d, %s\n",
+      id, tb.time, tb.millitm,
+      self, size, name);
+   fflush(fp);
+}
+
+void log_delete(unsigned id)
+{
+   struct timeb tb; ftime(&amp;tb);
+   fprintf(fp, "-, %u, %ld, %hd\n",
+      id, tb.time, tb.millitm);
+   fflush(fp);
+}
+</pre>
+
+<p>Notice how I use <B>fflush</B> to make sure everything gets written to disk. This is nice if you are using these functions to track down a core dump.</p>
+
+<H4><FONT COLOR="#000080">Earlier Approaches</FONT></H4>
+
+<p>Before I describe the technique used to create the output in <a href="fig1.htm">Figure 1</a>, I want to mention a few debugging approaches I used earlier. These are commonly used debugging techniques which, for various reasons, I found unsatisfactory.</p>
+
+<H4><FONT COLOR="#000080">Wrapping Allocation/Deallocation</FONT></H4>
+
+<p>If you create all your objects with <B>new</B> and destroy them with <B>delete</B>, you can create wrapper functions around <B>new</B> and <B>delete</B> that send trace output to a file whenever an object is created or destroyed. This approach has the following drawbacks:</p>
+
+<UL><LI>   It doesn't take into account objects that live on the stack.</LI>
+<LI>   The technique is intrusive: everyone who creates an object needs to remember to use the wrapper functions.</LI>
+<LI>   Your object might not be created by your own code. I've come across this problem twice. If you're using CORBA or DCOM with some helper libraries (ATL or whatever), creating and destroying server objects is a task the framework does for you. You won't be calling any <B>new</B>s or <B>delete</B>s for those objects.</LI></UL>
+
+<H4><FONT COLOR="#000080">Instrumenting the Constructors and Destructors</FONT></H4>
+
+<p>Another approach is to modify the constructor and the destructor for each object you want to instrument.</p>
+<p>The rationale behind this approach is that the objects' contructors will always be invoked. This is true whether you create an object on the stack, as a global, as a static, or using operator <B>new</B>. All end up calling the constructor. This approach works, but there are several catches:</p>
+
+<UL><LI>   If the constructor/destructor don't exist, you must create them for each class you want to trace.</LI>
+<LI>   If you create a destructor, you must remember to use a virtual destructor. Your object might be destroyed through a pointer to some generic base class.</LI>
+<LI>   If your class may be created through several separate contructors, you must remember to modify each of them.</LI></UL>
+
+<H4><FONT COLOR="#000080">Using a Trace Object Data Member</FONT></H4>
+
+<p>A handy property of C++ objects is that any data member is constructed before its containing object and is destroyed after its containing object's destructor is run. These rules can be used to advantage by adding a trace object to the classes that need to monitored:</p>
+
+<pre>
+class log_object {
+public:
+   log_object()
+   {
+      log_creation(this,
+        "log_object");
+   }
+   ~log_object()
+   {
+      log_destruction(this,
+         "log_object");
+   }
+};
+
+class my_document {
+private:
+   log_object log;
+  // Whatever ...
+};
+</pre>
+
+<p>This is not enough, though. The trace file needs contextual information, such as the name of the surrounding class (<B>my_document</B> in this case). It would be nice to initialize the trace object within the enclosing class's definition:</p>
+
+<pre>
+class log_object {
+public:
+log_object(const char* n)
+{
+name = strdup(n);
+log_creation(this, name);
+}
+~log_object()
+{
+log_destruction(this, name);
+free(name);
+} private:
+char* name; };
+
+class my_document {
+private:
+   log_object log = "my_document";   // Not allowed in C++.
+  // Whatever ...
+};
+</pre>
+
+<p>Alas, this is not allowed in C++. The right way to do it is to use the contructor:</p>
+
+<pre>
+class my_document {
+private:
+   my_document() : log("my_document") {}
+   log_object log;
+  // Whatever ...
+};
+</pre>
+
+<p>But modifying the contructor is just a slight variation on the second approach given above &#151; an approach I've already shown to have drawbacks.</p>
+
+<H4><FONT COLOR="#000080">The Final Solution</FONT></H4>
+
+<p>My final solution is to use nested classes to create an "informed" trace object data member:</p>
+
+<pre>
+class log_object { public:
+log_object(const char* n)
+{
+name = strdup(n);
+log_creation(this, name);
+}
+~log_object()
+{
+log_destruction(this, name);
+free(name);
+} private:
+char* name; };
+
+class my_document {
+private:
+   class my_document_logger :
+      public log_object {
+   public:
+      my_document_logger()
+      : log_object("my_document")
+      {}
+   } log;
+  // Whatever ...
+};
+</pre>
+
+<p>This works, but it is a little long to write, so I wrap it in a preprocessor macro:</p>
+
+<pre>
+class log_object { public:
+log_object(const char* n)
+{
+name = strdup(n);
+log_creation(this, name);
+}
+~log_object()
+{
+log_destruction(this, name);
+free(name);
+} private:
+char* name; };
+
+#define OBJECT_LOGGER(name)\
+   class _##name##_logger :\
+      public log_object {  \
+   public:                 \
+      _##name##_logger()   \
+      : log_object(#name)  \
+      {}                   \
+   } __##name##_log_object;
+
+class my_document {
+   OBJECT_LOGGER(my_document)
+  // Whatever ...
+};
+
+class my_gizmo {
+   OBJECT_LOGGER(my_gizmo)
+public:
+private:
+  // Whatever ...
+};
+</pre>
+
+<p>The final solution uses nested class declarations. I want to concentrate all the logging related code in one place &#151; inside the class declaration of the logged object. Nested classes allow just that (as long as only inline functions are used). Here is another fine point: declaring the <B>OBJECT_LOGGER</B> first inside the surrounding class guarantees that the log object will be created first and destroyed last among all the surrounding class's data members (C++'s rules again).</p>
+<p>The files <B>log_object.h</B> and <B>log_object.cpp</B> (available on the <I>CUJ</I> ftp site) provide the full implementation for the trace class. The full implementation is not much longer than what I've already shown. It uses a few more variables for file I/O and internal record keeping, but the overall structure remains the same.</p>
+
+<H4><FONT COLOR="#000080">A Real-Life Example</FONT></H4>
+
+<p>Instead of coming up with some contrived example of how to instrument an existing class hierarchy, I show here how to instrument a freely available C++ class hierarchy.</p>
+<p>VRML (Virtual Reality Modeling Language) is a fairly common 3-D graphics format. It uses plain text, which makes it a nice choice for several types of applications (particularly as an output format for homegrown tools). As an example of how VRML can be used in such a fashion, see <a href="#1">[1]</a>. The starting point for most VRML parsers is QV (Quick VRML parser). VRML is based on Silicon Graphics' 3-D text format for the Open Inventor class library. The author of QV is Paul S. Strauss of Silicon Graphics and the README file states (not surprisingly) it is based on the Open Inventor 2.0.1 source.</p>
+<p>To test the trace utilities I have modified the QV class library. I execute the modified sample program travTest, which comes with QV, on a few VRML files to generate trace output. The modified version of QV with VC++ 5.0 project files is included on the <I>CUJ</I> ftp site.</p>
+
+<H4><FONT COLOR="#000080">Instrumenting QV</FONT></H4>
+
+<p>A VRML file has a tree-like structure, in which each 3-D object is a node in a tree:</p>
+
+<pre>
+#VRML V1.0 ascii
+Separator {
+   PerspectiveCamera { }
+   DirectionalLight {
+      direction 0 0 -1
+   }
+   Translation {
+      translation 0 0 -3 }
+   Sphere { radius .3 }
+   Translation {
+      translation 0 0 2 }
+   Sphere { radius .3 }
+}
+</pre>
+
+<p>In QV this snippet indicates there is a <B>QvNode</B> base class and a different class (derived from <B>QvNode</B>) for each VRML node type. Here's a code snippet showing the node for the <B>Sphere</B> node class:</p>
+
+<pre>
+class QvSphere : public QvNode {
+    QV_NODE_HEADER(QvSphere);
+    // .. Ommited for brevity
+};
+</pre>
+
+<p>Note that the <B>QV_NODE_HEADER</B> line looks similar to my <B>OBJECT_LOGGER</B> line. This might simplify things &#151; I could just modify the <B>QV_NODE_HEADER</B> macro and all the <B>QvNode</B>-derived classes will be automatically instrumented. Said and done. This is the macro with my modification emphasized:</p>
+
+<pre>
+#define QV_NODE_HEADER(name) \
+/* Begin */ \
+class _##name##_logger \
+: public log_object { \
+public: \
+_##name##_logger() \
+: log_object(#name) \
+{} \
+} __##name##_log_object; \
+/* End */ \
+public: \
+name::name(); \
+virtual ~name(); \
+virtual void \
+traverse(QvState *state);
+// Rest omitted
+</pre>
+
+<p>Now running travTest on the minimal VRML file shown above produces the output shown in <a href="fig2.htm">Figure 2</a>.</p>
+<p>If you now run the <B>log_analyzer.pl</B> Perl script on the output file (by default, <B>c:\temp\log_obj.txt</B>), it will produce three tab-separated reports. The first report shows a list of class names, with object creation count and average lifetime per class. The second report shows a list of class names sorted by object creation count. The final report shows a list of all created objects with class name, ID, lifetime, and a flag indicating whether the object has been released or not.</p>
+
+<H4><FONT COLOR="#000080">Wrap Up</FONT></H4>
+
+<p>With just a little work I've come up with what I believe is a good solution to the problem stated in the beginning. This trace system requires just one line of code for each class whose objects you want to trace, and the code for the two trace functions (creation and destruction) is about 30 lines long.</p>
+
+<H4><FONT COLOR="#000080">Reference</FONT></H4>
+<p><a name="1"></a>[1]  Kent Cearley. "Webview II: Network Mapping with VRML," <I>Web Developer,</I> Vol. 2 No.2, May/June 1996.</p>
+
+<p><i><B>Ernesto Guisado</B> works as Software Engineer at Amper Programas S.A., where he is developing Command and Control Systems in C++. You can contact him at <B>erngui@acm.org</B>.</i></p>
+<h4><a href="../../../source/2000/jan00/guisado.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

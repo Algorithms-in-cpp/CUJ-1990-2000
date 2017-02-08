@@ -1,0 +1,446 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>July 1996/C++ Theory and Practice</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><A href="../tocjul.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          <FONT COLOR="#FF0000">Columns</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="CENTER"><FONT COLOR="#800000">C++ Theory and Practice</FONT></H2>
+          
+          <H3 ALIGN="CENTER"><FONT COLOR="#800000"> Dan Saks</FONT></H3>
+          
+          <H3 ALIGN="CENTER"><FONT COLOR="#800000"> Abstract Declarators, Part
+          2</FONT></H3>
+          
+          <BLOCKQUOTE>
+               
+               <p> Building a parser presents lots of
+                    opportunities to try out relatively new features of the
+                    language. Dan uses an STL deque to implement unlimited
+                    lookahead. <BR>
+                     Copyright &copy; 1996 </p> </BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <p>Last month, after several months of
+                    explaining ordinary declarators in C++, I expanded the
+                    discussion to include abstract declarators (see "C++
+                    Theory and Practice: Abstract Declarators, Part 1,"
+                    CUJ, July 1996). I described numerous places where C++
+                    employs abstract declarators. I also explained how
+                    recognizing abstract declarators complicates a parser for
+                    C++ declarations by occasionally forcing it to look ahead
+                    more than one token to determine the next parsing action.
+                    </p>
+               
+               <p> This month, I will augment my
+                    declaration parsing program to handle abstract declarators
+                    (as well as ordinary declarators). Most of the work involves
+                    revising the scanner so that it can look ahead and back up
+                    by more than one token. (Until now, it has allowed at most
+                    one token lookahead.) I think you will find the
+                    implementation interesting because it includes a practical 
+                    application for one of the STL container class templates.</p>
+               
+               <h4><FONT COLOR="#000080">The Way It Was</FONT></H4>
+               
+               <p>I last presented the scanner in its
+                    entirety in "The Column That Needs a Name: Parsing C++
+                    Declarations, Part 2," CUJ, March 1996. I added one
+                    more member function to the scanner class the following
+                    month, in "The Column That Needs a Name: Recovering
+                    From Parsing Errors," CUJ, April 1996. </p>
+               
+               <p> The header scanner.h defines the
+                    scanner class and its accompanying token class.
+                    <A href="saksl1.htm">Listing 1</a>
+sketches the current
+                    definitions for these classes (supporting at most one token
+                    lookahead). </p>
+               
+               <p> The scanner's public interface
+                    consists of five functions. The constructor attaches a
+                    scanner to an istream. get returns the next token scanned
+                    from that istream. unget "pushes" the current
+                    token back into the scanner (to be returned by a future call
+                    to get), and restores the current token to its prior value.
+                    current simply returns the current token. </p>
+               
+               <p> The fifth function, reset, discards
+                    tokens up to and including the next semicolon, newline, or
+                    EOF. It provides a way for the parser to skip the remainder
+                    of an erroneous declaration and hopefully find a clean point
+                    to resume parsing. </p>
+               
+               <p> The scanner class disables the
+                    generated copy constructor and copy assignment by declaring
+                    them private. It also has a private function called scan
+                    that get uses to actually scan tokens from the input stream.
+                    </p>
+               
+               <p> The scanner's current, get, and unget
+                    functions return objects of type token, also defined in
+                    <A href="saksl1.htm">Listing 1</a>.
+ A token object is a
+                    pair of values. The token class has public member functions
+                    for inspecting those values: text returns the token as a
+                    string object, and kind returns an enumeration that
+                    categorizes the token. The public nested type
+                    token::category enumerates the different categories. (<A href="saksl1.htm">Listing
+                         1</a>
+does not show all the category values; they
+                    appear in a later listing.) </p>
+               
+               <p> The token class has a public default
+                    constructor so that the parser can declare tokens to hold
+                    objects returned from scanner::get. It also has a copy
+                    constructor and a copy assignment operator, both
+                    compiler-generated and public. </p>
+               
+               <p> The token class has a third
+                    constructor</p>
+
+<PRE>token(category, const string &amp;);
+</PRE>
+               
+               <p>for manufacturing new token objects.
+                    This constructor is only for the scanner's use. Therefore,
+                    the token class declares the constructor private and then
+                    grants the scanner friendship just so the scanner can access
+                    this private constructor.</p>
+               
+               <p>scanner.h also defines one global
+                    function, image, which converts a value of type
+                    token::category to a null-terminated character string,
+                    primarily for display purposes. </p>
+               
+               <p> <A href="saksl2.htm">Listing 2 </A>shows
+                    how the parser uses get and unget to look ahead one token.
+                    The for loop in decl_specifier_seq repeatedly gets tokens as
+                    long as they are decl-specifiers. When it encounters a name
+                    token, the function must decide if that name is another
+                    decl-specifier or the start of a pointer-to-member
+                    declarator. Thus, decl_specifier_seq gets the next token
+                    (the lookahead token), notes its category, and immediately
+                    ungets it. If the category indicates that the lookahead
+                    token is a ::, then the name is the start of a declarator,
+                    and so decl_specifier_seq breaks out of its loop. </p>
+               
+               <p> The scanner stores the current token
+                    in the private data member current_token. It uses the
+                    private members next_token and previous_token to support
+                    looking ahead and backing up. Calling unget backs up the
+                    scanner by one token. unget copies current_token to
+                    next_token, and copies previous_token to current_token.
+                    Thus, the next call to get won't scan the input stream, but 
+                    rather will take the previously "unget" token
+                    (sitting in next_token) as the current token.</p>
+               
+               <H4><FONT COLOR="#000080">Unlimited Lookahead</FONT></H4>
+               
+               <p>This unget mechanism will let the
+                    parser look ahead one token, but no more. The mechanism does
+                    not work properly if the parser calls unget twice without an
+                    intervening call to get. </p>
+               
+               <p> Although it is possible to enhance
+                    the scanner to allow more than two consecutive ungets, the
+                    unget approach is not very convenient when looking far
+                    ahead. In that case, the parser must count the tokens as it
+                    looks ahead so it knows how many times to call unget. A
+                    scanning function that backs up over all the tokens at once
+                    would be more convenient. </p>
+               
+               <p> Therefore I redesigned the scanner,
+                    giving it a slightly different interface.
+                    <A href="saksl3.htm">Listing 3</a>
+shows a new scanner.h
+                    header that defines scanner and token classes that support
+                    unlimited lookahead. The token class is unchanged from
+                    before. The new scanner still has a constructor, current,
+                    get, and reset functions with the same semantics as before.
+                    However, it no longer has an unget function. Rather, the
+                    scanner has two new functions called mark and backup.
+                    </p>
+               
+               <p> When the parser needs to look ahead,
+                    it calls scanner::mark to "mark" the scanner's
+                    current token. Then it looks ahead by calling scanner::get,
+                    examining the tokens until it finds one that determines how
+                    to interpret the "marked" token. At this point,
+                    the parser simply calls scanner::backup to backup the
+                    scanner to where it (the scanner) was when it was marked.
+                    Subsequently, calls to scanner::get will return the same
+                    tokens in the same order that the parser got them when it
+                    was looking ahead. </p>
+               
+               <p><A href="saksl4.htm"> Listing 4</A>
+                    shows parser::decl_specifier_seq rewritten using the
+                    scanner's new mark and backup functions. Compared to using
+                    unget for single token lookahead, using mark and backup is
+                    only a tiny bit more work. In <A href="saksl2.htm">Listing
+                         2</a>,
+ the code to look at the next token is:</p>
+
+<PRE>tc = input.get().kind();
+input.unget();
+</PRE>
+               
+               <p>In <A href="saksl4.htm">Listing 4</a>,
+
+                    it is:</p>
+
+<PRE>input.mark();
+tc = input.get().kind();
+input.backup();
+</PRE>
+               
+               <H4> <FONT COLOR="#000080">Implementing
+               Unlimited Lookahead</FONT></H4>
+               
+               <p>The scanner's new lookahead mechanism
+                    is built around a queue. The queue comes into play only when
+                    the scanner looks ahead. That is, if the parser never calls
+                    mark (it never looks ahead), each call to get scans one
+                    token from the input stream and stores it in the scanner's
+                    private member current_token. Each time it stores a new
+                    value in current_token, get discards the previous value, so 
+                    the scanner can't back up. </p>
+               
+               <p> The conceptual model for using a
+                    queue to implement lookahead is fairly simple. A call to
+                    scanner::mark initiates lookahead by informing the scanner
+                    to start saving the old token values in a queue. While
+                    looking ahead, each call to get appends the current token to
+                    the queue before scanning the next token from the input
+                    stream. A call to backup tells the scanner to cease looking 
+                    ahead. backup places the current token on the end of the
+                    queue, and grabs the token at the front of the queue as the
+                    new current token. Hence, each call to get removes one token
+                    from the front of the queue until the queue is empty. Then
+                    get reverts to getting tokens from the input stream. </p>
+               
+               <p> The actual implementation is not
+                    quite as simple as the conceptual model. The complications
+                    arise because a call to mark might occur while the scanner's
+                    queue isn't empty. In this case, each call to get uses
+                    successive tokens from the queue as the current token,
+                    without removing them from the queue. Of course, if
+                    lookahead continues beyond the end of the queue, then get 
+                    must get more tokens from the input stream and append them
+                    to the queue. </p>
+               
+               <p> Rather than write my own queue class
+                    from scratch, I used the Standard Template Library's (STL)
+                    deque class template. ("deque" is pronounced "deck.")
+                    A deque&lt;T&gt; is a double-ended queue holding objects of
+                    type T. A deque can grow without bound. It provides
+                    efficient insertions and deletions at its front and back, as
+                    well as access to any element in the middle. </p>
+               
+               <p> deque&lt;T&gt; provides various
+                    functions for inserting, deleting, and inspecting elements
+                    in the queue. My implementation uses only those deque&lt;T&gt;
+                    functions listed in <A href="sakst1.htm">Table 1</a>.
+ You
+                    can find a more complete list of the deque member functions
+                    in [<A href="#REF1">1</a>]
+ or [<A href="#REF2">2</a>]
+.
+                    </p>
+               
+               <p> deque also provides a nested iterator
+                    type. An iterator is a type for objects that you can use to
+                    access each element in a container, without knowing how the
+                    iterator actually locates each element. STL iterators have
+                    the outward appearance of pointers. For example, if p is a
+                    deque&lt;T&gt;::iterator, then *p returns an element of type
+                    T from a deque&lt;T&gt;, and ++p advances p to the next
+                    element in the deque. </p>
+               
+               <p> The function deque&lt;T&gt;::begin
+                    returns an iterator you can use as the starting point for a
+                    loop that visits each element in a deque. The function deque&lt;T&gt;::end
+                    returns an iterator you can compare against to determine if
+                    the loop is done. For example, if di is a deque&lt;int&gt;,
+                    then the following code writes all the elements in di to
+                    cout:</p>
+
+<PRE>deque&lt;int&gt;::iterator p = di.begin();
+while (p != di.end())
+    cout &lt;&lt; ' ' &lt;&lt; *p++;
+</PRE>
+               
+               <p><A href="sakst2.htm"> Table 2</A>
+                    lists the deque&lt;T&gt;::iterator functions used in the
+                    scanner implementation. Again, you can find a more complete
+                    list of iterator functions in [<A href="#REF1">1</a>]
+ and [<A href="#REF2">2</a>]
+.
+                    P.J. Plauger covered iterators in considerable detail in his
+                    CUJ column from February through May of this year. </p>
+               
+               <p> The declarations for the scanner's
+                    private queue and queue iterator appear in
+                    <A href="saksl3.htm">Listing 3</a>
+as:</p>
+
+<PRE>deque&lt;token&gt; in_queue;
+deque&lt;token&gt;::iterator in_queue_iterator;
+</PRE>
+               
+               <p>In effect, in_queue replaces the
+                    private members next_token and previous_token used in the
+                    earlier version of the scanner. (Member current_token is
+                    still there.)</p>
+               
+               <p>The scanner uses two other private
+                    members that record the state of affairs.</p>
+
+<PRE>
+bool looking_ahead;
+</PRE>
+               
+               <p>is true if (and only if) the scanner
+                    is currently looking ahead, that is, if mark has been called
+                    without a subsequent call to backup.</p>
+
+<PRE>
+bool getting_from_queue;
+</PRE>
+               
+               <p>is true if (and only if) the scanner
+                    is currently getting tokens from the queue, rather than
+                    directly from the input stream. Initially, both
+                    looking_ahead and getting_from_queue are false.</p>
+               
+               <p>The remaining scanner implementation
+                    details appear in scanner.cpp (<A href="saksl5.htm">Listing
+                         5</a>)
+. It's a little too much code to describe all of
+                    it line by line, but I think if I walk you through the get
+                    function, and explain a few of the less obvious parts in the
+                    other functions, you should be able to decipher the rest.
+                    </p>
+               
+               <p> The get function really has five
+                    alternatives to consider: New line for each number 1. If it
+                    is not looking ahead and the queue is empty, then it just
+                    gets the next token from the input stream (by calling scan).
+                    2. If it is not looking ahead and there is something in the
+                    queue, then get pops the next token from the front of the
+                    queue. 3. If it is looking ahead but it's not getting from 
+                    the queue, then get pushes the current token on to the end
+                    of the queue, and gets the next token from the input stream.
+                    4. If it is looking ahead, getting from the queue, and it
+                    hasn't reached the end of the queue, then get obtains the
+                    next token via the queue iterator, and advances the
+                    iterator. 5. Last, if it is looking ahead and getting from
+                    the queue, but the iterator is past the queue's end, then
+                    get ceases getting from the queue and reverts to getting
+                    from the input stream. </p>
+               
+               <p> I did not want to figure out what it
+                    means to mark the input if the scanner is already looking
+                    ahead, so I decided to prohibit it with an assertion at the
+                    beginning of the mark function. Similarly, I used an
+                    assertion in the backup function to prevent the scanner from
+                    backing up if it has not been marked. A second assertion in
+                    mark prohibits marking the input if the current token has no
+                     value (if get has not been called the first time). </p>
+               
+               <p> Look again at the fourth alternative
+                    in get (where the scanner is looking ahead and getting from
+                    the queue, but it hasn't reached the end of the queue). In
+                    this case, in_queue_iterator enters get "pointing"
+                    to the element it's about to get, and leaves get "pointing"
+                    to the element it will get next time. If mark finds that the
+                    queue is not empty, it must adjust the queue and the
+                    iterator to create the illusion that the current token (the
+                    one being marked) came from the queue while looking ahead.
+                    With this insight, I think you'll find the mark function
+                    itself is not hard to follow.</p>
+               
+               <H4> <FONT COLOR="#000080">Pragmatics</FONT></H4>
+               
+               <p>As I have all along, I tested this
+                    code against Borland C++ 4.5 and Watcom C++ 10.5 (both under
+                    DOS/Windows 3.1). I have been using these two compilers
+                    because they are the only ones I have up and running that
+                    include a string class that supports the operations I've
+                    been using. Neither of these compilers comes with an STL
+                    implementation, so I had to dig one up one. In fact, I need 
+                    a different version for each compiler. </p>
+               
+               <p> With the Borland compiler, I am using
+                    STL&lt;Toolkit&gt;&#170; Version 1.00.01 from ObjectSpace
+                    (founded by Graham Glass, co-author of [1]). ObjectSpace's
+                    installation is pretty easy, but I had to do a little
+                    detective work to discover that I needed to define a couple
+                    of macros (__MINMAX_DEFINED and DOS_WIN_3_1) to get the code
+                    to compile. </p>
+               
+               <p> I found a copy of the STL
+                    specifically tailored to the Watcom compiler in
+                    Hewlett-Packard's ftp site at butler.hpl.hp.com in the file
+                    stl/wat_stl.zip. The documentation for this version says it
+                    was developed for Watcom C++ 10.0, but it seems to work just
+                    fine (at least for the decl program) when using version
+                    10.5. </p>
+               
+               <p> I understand that both Borland C++
+                    5.0 and Microsoft C++ 4.0 come bundled with STL
+                    implementations. I will try to run my declaration parser
+                    through these compilers in the coming months.</p>
+               
+               <H4> <FONT COLOR="#000080">Next Month</FONT></H4>
+               
+               <p>I have not yet shown you a new version
+                    of the parser that handles abstract declarators. This I will
+                    do next month. I will also add non-empty parameter lists to
+                    the function declarators, along with a few other goodies I
+                    hope you'll enjoy.</p>
+               
+               <H4> <FONT COLOR="#000080">References</FONT></H4>
+               
+               <p>[<A name="REF1">1</a>]
+ David R.
+                    Musser and Atul Saini. STL Tutorial and Reference Guide.
+                    Addison-Wesley, 1996. </p>
+               
+               <p> [<A name="REF2">2</a>]
+ Graham Glass
+                    and Brent Schuchert. The STL &lt;Primer&gt;. Prentice Hall
+                    PTR, 1996.</p>
+               
+               <p><I>Dan Saks is the president of Saks &amp;Associates,
+                    which offers consulting and training in C++ and C. He is
+                    secretary of the ANSI and ISO C++ committees. Dan is
+                    coauthor of C++ Programming Guidelines, and codeveloper of
+                    the Plum Hall Validation Suite for C++ (both with Thomas
+                    Plum). You can reach him at 393 Leander Dr., Springfield OH,
+                    45504-4906, by phone at (513)324-3601 (the area code changes
+                    to 937 after September 1996), or electronically at
+                    dsaks@wittenberg.edu.</I></p>
+
+<h4><a href="../../../source/1996/jul96/saks.zip">Get Article Source Code</a></h4>
+
+ </BLOCKQUOTE>
+     </BODY>
+</HTML>

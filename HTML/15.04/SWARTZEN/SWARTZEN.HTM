@@ -1,0 +1,432 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>April 1997/Dynamic Table Binding with MFC CRecordset Classes</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><FONT COLOR="#FF0000"> <A href="../tocapr.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>Databases/Persistent Objects</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">Dynamic Table Binding with
+          MFC CRecordset Classes</FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">Michael Swartzendruber</FONT></H3>
+          <BLOCKQUOTE>
+          <P>Delayed binding is often a good idea, provided you have enough
+               assistance when the time comes to do the actual binding.</P></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <p>MFC provides database connection
+                    classes that perform data binding, data exchange, and cursor
+                    functions. Compared to other forms of data binding, MFC's
+                    hands-off and automatic method is welcome. MFC's CRecordset
+                    class takes care of binding local program variables to
+                    table-field values and includes support for scrolling
+                    cursors. With a CRecordset interface to a data table, a
+                    database table starts to look like a simple array of
+                    records. Compared to the Bad Old Days of database
+                    programming, this is definite improvement. Another nice
+                    feature of MFC database classes is that they leverage off of
+                    the ODBC interface. A programmer can mix and match MFC and
+                    ODBC calls to take advantage of the best of both worlds.
+                    </p>
+               
+               <p> However, these classes aren't a
+                    panacea. Even experienced MFCusers must overcome some
+                    troublesome obstacles in designing powerful database
+                    applications. For example, whenever a CRecordset is added to
+                    a project, Class Wizard asks the programmer to select a
+                    table. Once this mandatory step is performed, the Wizard
+                    creates a tailor-made class for the selected data table.
+                    This is a nice trick, but there are cases  where this model
+                    (you select a table, I'll construct a "custom"
+                    derived class) breaks down. One of these cases is where the
+                    application's designers do not know what table schema will
+                    be encountered at the application's run time. This situation
+                    is more common than you might think. For example, a
+                    general-purpose database front end may not know in advance
+                    which database table a user is going to access. To overcome
+                    a hurdle such as this, the programmer needs something like a
+                    CRecordset that can do run-time binding to any data table.</p>
+               
+               <h4><FONT COLOR="#000080">A Derived Solution</FONT></H4>
+               
+               <p>This article presents the sort of tool
+                    just described. Specifically, this article illustrates a
+                    CRecordset derived class (<A href="list1.htm">CColumns &#151;
+                         Listing 1</a>)
+ that combines features of the MFC
+                    CRecordset class (primarily the cursor support, and the
+                    data-binding macros) and the ODBC API to create a
+                    CRecordset-derived class that discovers what it is binding
+                    to at run time. </p>
+               
+               <p> CColumns is a bit more complex than
+                    the typical CRecordset-derived class, so I begin this
+                    discussion at a conceptual level before getting down to some
+                    of the gritty details. </p>
+               
+               <p> The first thing a class must do when
+                    connecting to an unknown table is discover some facts about
+                    the table itself. This can be done by issuing a small number
+                    of queries (ODBC calls) against the table. When the class
+                    first connects to any table it scans the columns in the
+                    result set; that is, the class issues certain ODBC function
+                    calls against every field in the table. As it visits (and
+                    queries) each column, it gathers the relevant facts
+                    regarding that field for later use. </p>
+               
+               <p> Among the key pieces of information
+                    that CColumns discovers about the table is the "SQL
+                    data type" of each column. CColumns uses this
+                    information to dynamically allocate the correct type of
+                    local storage space for each column. This free-store
+                    allocated storage will act as the application's local
+                    variable for that field's values. CColumns then passes the
+                    address of each storage location to the Record Field
+                    Exchange (RFX) macros (described below) as the location
+                    where the CRecordset can store data returned from the table.
+                    After this preliminary work is completed, the class is ready
+                    for use. </p>
+               
+               <p> Th RFX-bind-macros encapsulate the
+                    mechanics of mapping a row from a database into a process'
+                    address space. MFC defines these macros and uses them to
+                    manage the data exchange between the buffers (loaded with
+                    data from the database-drivers) and variables local to your
+                    program. In other words, these macros completely automate
+                    the exhange of data between your process and the database.
+                    </p>
+               
+               <p> The RFX macros come in several
+                    specific versions. Each version is designed to exchange data
+                    between a specific variable type (integers, strings,
+                    booleans, byte-arrays, etc.) and a database field that has
+                    been mapped to that type of storage class. For these macros
+                    to move data to your process, they must have access to a
+                    storage location in your process space that enables the data
+                    to be shuttled to and fro.</p>
+               
+               <h4><FONT COLOR="#000080">One Layer Deeper</FONT></H4>
+               
+               <p>In this section I illustrate several
+                    of CColumns' key functions in depth. With this information,
+                    you should know all you need to include/enhance this class
+                    for use in you own projects. </p>
+               
+               <p> Let's start with the CColumnInfo
+                    class. This data-only class stores the relevant facts
+                    concerning each column in the database table. CColumns
+                    allocates an instance of this class for every column in the
+                    table. As you can see, the excerpt below shows that this
+                    class will store the table's SQL "type" (which in
+                    broad terms equates to the type of data that can be found in
+                    the data field, whether it be a number, a floating-point
+                    value, a string, etc.). CColumnInfo also has a member called
+                    pData, which I will explain later:</p>
+
+<PRE>
+
+// Column descriptor class
+class CColumnInfo { public:
+// Following is information from the source column
+//
+SWORD fSqlType; // SQL_xxxx type of column
+SWORD fCType; // Mapped C type
+//
+// ...other members not shown.....
+//
+void * pData; // Memory for the transfer };
+</PRE>
+               
+               <p>The CColumns class will create
+                    instances of the above CColumnInfo class while walking the
+                    fields of the table, during its initial stages of binding.
+                    CColumns does this in the function CColumns::PrepareToOpen.
+                    (This function is not provided in CRecordSet, the base
+                    class.) An application must call function PrepareToOpen
+                    prior to opening the cursor to the database.A typical use of
+                    CColumns appears as follows:</p>
+
+<PRE>
+
+CColumns.PrepareToOpen ( params not shown )
+CColumns.OpenDynamicRowset ( params not shown )
+</PRE>
+               
+               <p>OpenDynamicRowSet is another custom
+                    function of the CColumns class. These functions'
+                    implementations are not shown here, the complete source code
+                    is available electronically (see p. 3 for details).</p>
+               
+               <p>Of the three parameters passed to the
+                    PrepareToOpen method, the second parameter is the one
+                    relevant to the table-binding operations. This parameter
+                    holds the caller's SQL query, which will normally be a
+                    string in the form of:</p>
+
+<PRE>
+
+SELECT * FROM AnyTable WHERE MyConstraints.
+</PRE>
+               
+               <p>For those of you who aren't completely
+                    up on your SQL, this query roughly translates to the
+                    following statement: Give me the array of records from the
+                    table called AnyTable for which the conditions stated as
+                    MyConstraints resolve as true. </p>
+               
+               <p> PrepareToOpen passes control, more or
+                    less immediately, to CColumns::MakeColumnListFromQuery (<A href="list2.htm">Listing
+                         2</a>)
+. This latter method manages the "discovery
+                    phase" operations for the CColumns class. It is within
+                    this method that each column in the table is queried and
+                    facts about that column are stored in a CColumnInfo class
+                    allocated specifically for each column in the result set.
+                    Note that CColumns must be constructed with a valid and
+                    opened CDatabase object. The CDatabase object encapsulates
+                    the connection to the database server on behalf of CColumns
+                    (see MFC documentation on the proper method of instantiating
+                    CRecordset objects, specifically in regards to passing a
+                    CDatabase to the CRecordset constructor). If the CColumns
+                    class is not constructed with a CDatabase object that is
+                    both valid and opened, then it cannot complete the discovery
+                    phase, and it subsequently throws an exception to the
+                    caller. Therefore, I decided that the CColumns class should
+                    simply require an open  database connection so that it could
+                    get down to business and not have to bother with allocating
+                    a CDatabase of its own. </p>
+               
+               <p> MakeColumnListFromQuery's first
+                    operation (after checking for a valid CDatabase) is to call
+                    CColumns::ReplaceWhereClause. This method makes a copy of
+                    the query that was passed to the CColumns class in
+                    PrepareToOpen. ReplaceWhereClause then it strips the WHERE
+                    clause off the query that was passed, and replaces it with
+                    the clause "WHERE 1 = 0". A query with this kind
+                    of constraint (one that can never be true) will always
+                    return as an empty result set. But even though the result is
+                    empty (no rows returned), the "footprint" of a
+                    data row will still be returned to CColumns. This footprint
+                    provides enough visibility to the metadata for CColumns to
+                    allocate appropriate storage for the fields. </p>
+               
+               <p> The modified query is passed to the
+                    database through a call to the ODBC function SQLExecDirect.
+                    This function essentially commands the database driver to
+                    take the command that was given to it and execute it in the
+                    database. If this ODBC function does not return an error,
+                    then CColumns gains access to a valid (albeit empty) column
+                    schema. </p>
+               
+               <p> The number of columns in the result
+                    set can be determined by a call to the ODBC function
+                    SQLNumResultsCols. This value indicates the number of
+                    elements to be stored in the CColumns' pointer array
+                    (m_ColumnList) which will be used to store the addresses of
+                    the dynamically allocated CColumnInfo objects. </p>
+               
+               <p> At this point,
+                    MakeColumnListFromQuery is ready to start "walking the
+                    columns," to discover more about each column that is
+                    included in its result set. In this process, each column
+                    becomes the target of a call to SQLDescribeCol, and a number
+                    of calls to SQLColAttributes (both ODBC functions).
+                    Successive calls to SQLColAttributes entail slight
+                    variations in the parameters passed. These variations are
+                    necessary to tune the call to return a very specific piece
+                    of descriptive information about the column in focus.
+                    </p>
+               
+               <p> When the discovery query for each
+                    column is complete, CColumns has enough information to
+                    determine the type of storage to allocate. The next step is
+                    to allocate the proper local storage type for each data
+                    column. Local storage is allocated in the method CColumns::
+                    </p>
+               
+               <p>AllocStorageForColumnVar. This
+                    function is essentially a big switch statement (you'll see
+                    this again and again in this class) that switches on the
+                    fSqlType member of the CColumnInfo class. All that happens
+                    in this function is that a specific type of storage space is
+                    allocated from the free store. The pointer to this storage
+                    space is stored as part of the CColumnInfo class in the
+                    member pData. This pointer will be used later to access the
+                    data from corresponding database table column. </p>
+               
+               <p> After a CColumnInfo object is
+                    completely prepared its address is stored in CColumns
+                    pointer array and the value of m_nFields is incremented by
+                    one. m_nFields is a member of the base CRecordSet class,
+                    which contains the number of fields in the result set.
+                    Normally, m_nFields is maintained by the CRecordSet base
+                    class, but I had to add some housekeeping so that m_nFields
+                    would maintain the proper value. Otherwise, the CRecordSet
+                    field exchange (RFX) macros would lose sync between moving
+                    data buffers into the process space. This usually ends up in
+                    a program crash. </p>
+               
+               <p> After each CColumnInfo object is
+                    allocated and initialized, the preparation of the CColumns
+                    class is complete. PrepareToOpen sets the m_bWasPrepared
+                    member of CColumns to TRUE. The class is ready to provide
+                    data conduit services to the program. m_bWasPrepared is a
+                    private member of CColumns and reflects whether the CColumns
+                    class was prepared by a successful completion of
+                    PrepareToOpen and its subordinates. (This value is set to
+                    FALSE in the CColumns constructor.)</p>
+               
+               <h4><FONT COLOR="#000080">Transferring Data</FONT></H4>
+               
+               <p>Now it's time to get the show on the
+                    road and start pushing data around between the process and
+                    the dbms. The process will make a call to the custom method
+                    CColumns::OpenDynamicRowSet. This function checks that
+                    m_bWasPrepared is set to TRUE and passes the open request to
+                    the CRecordSet::Open function. OpenDynamicRowSet passes
+                    CRecordSet::Open the query that was orginally passed to the
+                    CColumns class in the PrepareToOpen function, this time in
+                    its unmodified original form. </p>
+               
+               <p> Incidentally, using OpenDynamicRowSet
+                    represents the only safe access to the CRecordSet Open
+                    function. To prevent unsafe calls to the CRecordSet::Open
+                    function, CColumns overrides this method; issuing a call to
+                    CColumns::Open will always result in an exception. </p>
+               
+               <p> If you bring up this class in a debug
+                    session, you can witness the dynamic binding functions by
+                    tracing the operations of CColumns::DoFieldExchange. A
+                    fragment of DoFieldExchange is shown as follows:</p>
+
+<PRE>
+
+void CColumns::DoFieldExchange(CFieldExchange* pFX)
+{
+#define MAX_READ  32767
+
+   UINT     kounter = 0;
+   CColumnInfo* pColInfo;
+
+   //{{AFX_FIELD_MAP(CColumns)
+   //}}AFX_FIELD_MAP
+   pFX-&gt;SetFieldType(CFieldExchange::outputColumn);
+
+   while (kounter &lt; m_nFields)
+   {
+    pColInfo = (CColumnInfo *) m_ColumnList.GetAt(kounter);
+      switch (pColInfo-&gt;fSqlType)
+      {
+          // character family
+          case SQL_CHAR:
+          case SQL_VARCHAR:
+             RFX_Text(pFX,<BR>                      (const char *)pColInfo-&gt;szColumnName,
+                      *((CString *) pColInfo-&gt;pData ) );
+          break;            
+          case SQL_LONGVARCHAR:
+             RFX_Text(pFX,<BR>                      (const char *)pColInfo-&gt;szColumnName, 
+                      *((CString *) pColInfo-&gt;pData),
+                      MAX_READ );
+          break;
+          // Integer family
+          case SQL_BIT:
+             RFX_Bool(pFX,
+                      (const char *)pColInfo-&gt;szColumnName,
+                      *((BOOL *) pColInfo-&gt;pData) );
+          break;            
+//...
+//More cases in source file
+</PRE>
+               
+               <p>Each CRecordset derived class must
+                    include an implementation for DoFieldExchange, as CRecordSet
+                    implements it as a pure virtual function. When
+                    CRecordset::Open is called from CColumns::OpenDynamicRowset,
+                    the overridden DoFieldExchange is invoked to provide data
+                    exchange services between the ODBC drivers and the program's
+                    variables. It is here that CColumns class makes a radical
+                    departure from the cookie-cutter  CRecordset. Again, you'll
+                    find a large switch statement at work in
+                    CColumns::DoFieldExchange. In this case, the switch
+                    statement facilitates looping through the private pointer
+                    array m_ColumnList. (Recall that this is where pointers to
+                    the CColumnInfo objects are stored.) As it references each
+                    of the CColumnInfo objects, DoFieldExchange invokes the
+                    appropriate RFX macro for that column type by switching on
+                    CColumnInfo.fSqlType. I've had to resort to a degree of
+                    pointer casting on CColumnInfo.pData to satisfy the
+                    data-type requirements of each of these macros. This design
+                    allows purely dynamic binding to occur within this class.</p>
+               
+               <p>However, outside of this the CColumns
+                    class works just like derivations of CRecordset, to wit:
+                    this record set can be scrolled back and forth, read from,
+                    written to, and used as you would any other CRecordset
+                    object attached to a database table. As a user of this
+                    class, the nice thing is that you don't have to tell Class
+                    Wizard about it, and you can use it to attach to any table
+                    at run time.</p>
+               
+               <h4><FONT COLOR="#000080">Using The Tool</FONT></H4>
+               
+               <p><A href="list3.htm">Listing 3</A>
+                    shows an example of using the CColumns class to perform a
+                    database update. DynaRowSet is an instance of CColumns,
+                    assumed to have been created elsewhere in the application.
+                    </p>
+               
+               <p> Note the call to
+                    CRecordSet::SetFieldDirty, which is passed as a parameter
+                    the pData member of the appropriate CColumnInfo object.
+                    </p>
+               
+               <p> The complete source code for this
+                    article is available on the CUJ ftp site (see p. 3). You may
+                    need to make some further adjustments to this class to make
+                    it completely suitable to your project. For example, you may
+                    need to adjust for various kinds of SQL type promotions in
+                    the case that the database you are connecting to has
+                    different precedence and/or support for the various ODBC SQL
+                    types. That notwithstanding, this tool is still quite a
+                    powerful foundation for creating applications that can query
+                    and work with any table at any time. </p>
+               
+               <p> By combining MFC with ODBC, powerful
+                    classes can be constructed that make up for the shortcomings
+                    of the CRecordSet class and how Class Wizard creates them.
+                    And while this level of integration is more demanding on the
+                    developer, the flexibility provided by this kind of synergy
+                    is well worth the effort. </p>
+               
+               <p> For more information on programming
+                    with MFC and ODBC, check out recent offerings from Microsoft
+                    Press.</p>
+               
+               <h4><FONT COLOR="#000080">Acknowledgements</FONT></H4>
+               
+               <p>I would like to thank The-Cowboy, and
+                    The-Master for their contributions to this project. I would
+                    also like to thank The-Bossman for his continued guidance
+                    and support. o </p></BLOCKQUOTE>
+<P><I>Michael Swartzendruber is currently a Senior Systems Specialist with a major telecommunications company, where he works as a contributing project leader with a development group that is heavily involved in database development. Over the years, he has had work published in various internationally distributed computing publications whose focus is primarily on computer hardware. This is his first foray into writing for the software publication marketplace.</FONT></I></P> 
+      
+<h4><a href="../../../source/1997/apr97/swartzen.zip">Get Article Source Code</a></h4>
+
+    </BODY>
+</HTML>

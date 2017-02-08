@@ -1,0 +1,150 @@
+<HTML><HEAD>
+<TITLE>July 1999/A Logging Routine for Windows NT Events/Listing 4</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 4: Implementation of function LogEvent</A></h4>
+<pre>
+#include &lt;windows.h&gt; 
+
+static LPSTR DupeString(LPSTR pszIn)
+{
+LPSTR pszOut = (LPSTR)LocalAlloc(LMEM_FIXED,strlen(pszIn)+1);
+strcpy(pszOut,pszIn); return pszOut;
+}
+
+static BOOL GetSystemString(DWORD dwError,LPSTR *ppszOut)
+{
+DWORD rc = 
+   FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | 
+      FORMAT_MESSAGE_IGNORE_INSERTS | 
+      FORMAT_MESSAGE_FROM_SYSTEM, NULL, dwError,
+      MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+      (LPSTR)ppszOut,0,NULL); 
+if (rc == 0) 
+   {
+   *ppszOut = DupeString(""); 
+   if (*ppszOut == NULL) return FALSE;
+   }
+return TRUE;
+}
+
+DWORD 
+LogEvent(LPCSTR pszEvSrc, DWORD dwEventID, LPCSTR pszFormat,...)
+{
+DWORD dwReturn = NOERROR;                
+LPSTR *ppszSubst = NULL;
+ULONG nSubst = 0;
+DWORD dwLastErrorOnInput = GetLastError();
+
+/*--- (1) CREATE nSubst AND pszSubst FOR ReportEvent CALL ---*/
+if (pszFormat != NULL &amp;&amp; *pszFormat != '\0')
+   {
+   /*-- ALLOCATE AN ARRAY OF POINTERS FOR ReportEvent ---*/
+   nSubst = strlen(pszFormat);
+   ppszSubst=
+      (LPSTR*)LocalAlloc(LMEM_FIXED, sizeof(LPSTR)*nSubst);
+   if (ppszSubst == NULL) goto return_last_error; 
+   for (ULONG k=0; k &lt; nSubst; k++) ppszSubst[k] = NULL;
+      
+   /*--- FILL IN THE ARRAY OF POINTERS FROM va_list --*/
+   va_list vl;
+   va_start(vl,pszFormat);
+   for (ULONG i=0; i &lt; nSubst &amp;&amp; dwReturn == NOERROR ;i++)
+       {
+       LPVOID pArg = va_arg(vl, LPVOID);
+       switch (tolower(pszFormat[i])) 
+              {
+              case 's':
+                   ppszSubst[i]=DupeString((LPSTR)pArg);
+                   if (ppszSubst[i]==NULL) dwReturn = GetLastError();
+                   break;
+              case 'd':
+                   {  /*--- FORMAT A DECIMAL DIGIT ---*/
+                   char szDigits[20];  
+                   ppszSubst[i] =
+                      DupeString(itoa((INT)pArg,szDigits,10));
+                   if (ppszSubst[i]==NULL) 
+                      dwReturn = GetLastError();
+                   break;
+                   }
+              case 'x':
+                   {  /*-- FORMAT A HEXIDECIMAL DIGIT, 
+                           C STYLE ---*/
+                   char szDigits[22] = "0x";
+                   ppszSubst[i]=
+                      DupeString(itoa((INT)pArg,
+                         szDigits+2, 16)-2);
+                   if (ppszSubst[i]==NULL) 
+                      dwReturn = GetLastError();
+                   break;
+                   }
+              case 'm':
+                   {
+                   if (!GetSystemString(((DWORD)pArg &amp; 0xFFFF),
+                           &amp;ppszSubst[i])) 
+                      dwReturn = GetLastError();
+                   break;
+                   }
+              default: 
+                   dwReturn = ERROR_INVALID_PARAMETER;
+              }
+       }
+   va_end(vl);
+   if (dwReturn != NOERROR) goto done;
+   }
+
+/*--- (2) GET THE EVENT TYPE FROM THE EVENT ID PARAMETER ---*/
+WORD wType;
+wType = EVENTLOG_INFORMATION_TYPE;
+if ((dwEventID &amp; ERROR_SEVERITY_WARNING) == 
+      ERROR_SEVERITY_WARNING)
+   wType = EVENTLOG_WARNING_TYPE;
+if ((dwEventID &amp; ERROR_SEVERITY_ERROR) == 
+      ERROR_SEVERITY_ERROR)
+   { wType = EVENTLOG_ERROR_TYPE;  }
+
+/*-- (3) WRITE THE EVENT TO THE EVENT LOG ---*/
+HANDLE hEventSource;
+hEventSource = RegisterEventSource(NULL,pszEvSrc);
+if (hEventSource == NULL) goto return_last_error;
+BOOL fSuccess;
+fSuccess = 
+   ReportEvent(hEventSource, wType,
+      0, /*-- USE THE DEFAULT CATEGORY ---*/
+      dwEventID,
+      NULL, /*--- USE THE DEFAULT SID ---*/
+      nSubst,
+      0, /*---- NO DATA ---*/
+      (LPCSTR*)ppszSubst,
+      NULL); /*---- NO DATA ----*/
+if (!fSuccess) 
+   {
+   dwReturn = GetLastError();
+   DeregisterEventSource(hEventSource);
+   goto done; 
+   }
+DeregisterEventSource(hEventSource);
+/*--- END OF STEP (3) ----*/
+
+goto done; /*-- ALL EXIT POINTS ARE BELOW ---*/
+return_last_error:
+dwReturn = GetLastError();
+done:
+if (ppszSubst != NULL)
+   {     /*-- FREE ALL THE MEMORY ---*/
+   for (ULONG i=0; i &lt; nSubst &amp;&amp; ppszSubst[i] != NULL; i++)
+       LocalFree(ppszSubst[i]);
+   LocalFree(ppszSubst);
+   }
+   
+/*-- RESTORE THE GetLastError ON INPUT --*/
+SetLastError(dwLastErrorOnInput); 
+return dwReturn; 
+}
+
+
+
+</pre>
+</BODY>
+</HTML>

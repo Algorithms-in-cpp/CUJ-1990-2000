@@ -1,0 +1,148 @@
+
+
+
+
+<HTML><HEAD>
+
+<TITLE>July 1997/Polyphase Merge Sorting/Listing 3</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4>Listing 3:	MergeFile and PreSort implementations</h4>
+
+<pre>
+/*
+ *  mfile.c
+ */
+
+#include &lt;assert.h&gt;
+#include &lt;mem.h&gt;        //memcpy()
+#include "mfile.h"
+
+MergeFile::MergeFile( const int wd,
+     const size_t blen, const char *mode ) :
+    _width(wd), _fn(0), _tmpfile(1), _holdtmps(0),
+    _actual_runs(0), _null_runs(0), _eofile(0),
+    _items(0), _fmode(mode), _maxitems(blen/wd)
+{   _pbuf = new char[blen];
+    _resetp();
+    _fn = tmpnam(_tmpf);    //temp file name
+    Mf = new ffstream( _fn, _fmode );
+}
+
+MergeFile::~MergeFile()
+{   if( _pbuf )
+        delete _pbuf;
+    if( _tmpfile )
+    {   delete Mf;   //_flushb() redundant
+        if( !_holdtmps )
+            remove( _fn );    //zap temp file
+    }
+}
+
+void MergeFile::AttachStream( ffstream * fs )
+{   _flushb();      //resets pointers
+    if( _tmpfile )   //remove temporary file
+    {   delete Mf;
+        remove( _fn );
+    }
+    Mf = fs;         //attach new stream
+    _fn = 0;         //filename unknown
+    _tmpfile = 0;  //new file is non-temp
+}
+
+int MergeFile::RenameOutput( const char *newname )
+{   _flushb();
+    Mf-&gt;close();
+    int bad = rename( _fn, newname );   // OK == 0
+    if( bad )
+        _fn = tmpnam(_tmpf);   // new temp file name
+    Mf-&gt;open( _fn, _fmode );   // new temp file
+    return bad;  // -1 if "newname" already exists
+}
+
+PCDATA MergeFile::_getb()  //get item at _gpos ...
+{   PCDATA tmp = _gpos;
+    _advp( _gpos );
+    _items--;
+    return tmp;
+}
+
+PCDATA MergeFile::Get() //get next buffered item...
+{   if( _is_empty() )
+        _fillb();
+    return _eofile ? PCDATA(0) : _getb();
+}
+
+PCDATA MergeFile::Nextg() //return next Get() item
+{   if( _is_empty() )
+        _fillb();
+    return _eofile ? PCDATA(0) : _gpos;
+}
+
+PCDATA MergeFile::Put( PCDATA obj )
+{   if( obj )     //place obj at _ppos
+    {   if( _items &gt;= _maxitems )
+            _flushb();
+        memcpy( _ppos, obj, _width );
+        _advp( _ppos );
+        _items++;
+        if( _items &gt; 1 )
+            _advp( _lpos );
+    }
+    return obj;
+}
+
+void MergeFile::_flushb()    //flush buffer
+{   if( !_is_empty() )
+    {   size_t n = Mf-&gt;write( _gpos, _width, _items );
+        assert( n == _items );   //out of disk space?
+    }
+    _eofile = _items = 0;
+    _resetp();
+}
+
+void MergeFile::_fillb()   //fill buffer
+{
+  if( _eofile ) return;
+    _items = Mf-&gt;read( _pbuf, _width, _maxitems );
+    _eofile = !_items;
+    _resetp();
+}
+
+void MergeFile::ResetIOMode( io_mode mode )
+{   _flushb();
+    if( mode == in )     //input
+        Mf-&gt;rewind();   //Get/Nextg calls _fillb()
+    else if( _tmpfile &amp;&amp; (mode == out) )
+    {   Mf-&gt;close();    //truncate file for output
+        Mf-&gt;open( _fn, _fmode );
+        _actual_runs = _null_runs = 0;
+    }
+}
+
+PreSort::PreSort( MergeFile&amp; src,
+                  const InternalSort&amp; insort )
+{   Sf = &amp;src;
+    Ins = &amp;insort;
+    _psbuf = PPCDATA( new PDATA[ Sf-&gt;_maxitems ] );
+}
+
+size_t PreSort::GenerateRun( MergeFile *dest,
+                             int&amp; comp        )
+{   Sf-&gt;_fillb();
+    if( EndOfFile() ) return 0;    //empty
+    _setsbuf();
+    size_t items = Sf-&gt;Items();
+    for( size_t i = items; i; i-- )
+        _putsbuf( Sf-&gt;_getb() );   //fill sort array
+    assert( Sf-&gt;Items() == 0 );    //got 'em all?
+    Ins-&gt;Sort( _psbuf, items );    //sort 'em
+    PCDATA lp = dest-&gt;Lastp();     //OK even if empty
+    comp = Ins-&gt;Compare( &amp;lp, (PPCDATA) _psbuf );
+    _setsbuf();
+    for( size_t j = items; j; j-- )
+        dest-&gt;Put( _getsbuf() );  //output to dest
+    return items;   //return #items in sorted run
+}
+//End of File
+</pre>
+</body></html>

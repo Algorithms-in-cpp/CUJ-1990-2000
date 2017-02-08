@@ -1,0 +1,113 @@
+<HTML>   
+     <HEAD>
+<TITLE>April 1999/Using Asynchronous Calls in COM</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocapr.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   COM &amp; CORBA</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Using Asynchronous Calls in COM</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Greg Heidel</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>Borrowing against the future is a great way to get more done right now, both in real life and in asynchronous programming.</p>
+</BLOCKQUOTE>
+<HR>
+<BLOCKQUOTE>
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>Anyone who has ever used an application with a GUI (graphical user interface) knows the frustration when the dreaded hourglass rears its ugly head. While computers are getting faster and faster, developers must still realize that time-intensive operations, such as database queries, HTTP requests, and sorts, still require more time than the average user is willing to wait. This can be a significant drawback when building interfaces based on COM. COM method calls are synchronous by default, which means that the client thread is blocked until the response is received. In a typical, single-threaded application, this is typically how method invocation works and therefore makes sense as the default behavior. However, synchronous operation is not desirable in all cases. In many cases, such as a lengthy request to retrieve some data, control needs to be returned to the application end-user while the application continues processing the task in the background.</p>
+<p>To avoid the undesirable effects of blocking, developers sometimes resort to writing code to spawn additional threads, or delegating the task to another process. The burden of writing, testing, and debugging this additional code falls on the developer. What's more, spawning threads or processes is not an easy task in some environments, particularly Visual Basic. A better solution is to have the COM object implement this functionality and allow the developers to determine how they want to retrieve the results when they are available. IOUs, also known as futures, provide a means for implementing COM objects that support asynchronous methods. In this article I explain the IOU mechanism and show how you can implement it in your own COM objects. This article assumes knowledge of C++, COM, and ATL.</p>
+
+<h4><FONT COLOR="#000080">Synchronous and Asynchronous Methods</FONT></H4>
+
+<p>First, a quick review of synchronous and asynchronous behavior. Normal function invocations are synchronous. A function performs some operation that produces a result or return value and then returns that result to the caller of the function. The caller's thread of control blocks until the result is finished. A thread may have only one blocking call outstanding at any one time.</p>
+<p>Asynchronous functions return to their caller before their associated operation has finished. Using this technique, your application can execute other operations instead of blocking until the operation completes.</p>
+
+<h4><FONT COLOR="#000080">Enter the IOU</FONT></H4>
+
+<p>An IOU is a promise for a value that is forthcoming. It is a placeholder for that value. Usually the writer of an IOU (perhaps another process or a remote server) and the reader (client) of an IOU are in different threads of control. In this sense IOUs are a mechanism for inter-thread communication. An IOU is a write-once/read-many structure. It may be written to only once, but may be read any number of times.</p>
+<p>A function that is called to launch an asynchronous operation can immediately return an IOU instance that is bound to the future result of that operation. At any time after that point, any thread can attempt to <I>redeem</I> the IOU. Redeeming an IOU is the process of getting the result from the IOU when it is available. If a thread attempts to redeem the IOU before the operation is completed, that thread is blocked until the result is redeemable (available) or the operation is aborted. A thread can obtain the result of an IOU by two methods: it can test if the value has been set, and then redeem the IOU; or it can register to be notified when the IOU is redeemable.</p>
+<p>In the following discussion I present some of the details involved in implementing an IOU. The examples used in this article are supplemented using the ATL class library from Microsoft.</p>
+<p>The class diagram in <A HREF="fig1.htm">Figure 1</A> illustrates the class relationships used in the sample code in this article. The IOU class used in this article is the parameterized class <B>ResultIOU_</B> (<A HREF="fig2.htm">Figure 2</A>). The template parameter <B>T</B> represents the type of the value stored in the result IOU. This type must have a public copy constructor and allow dynamic allocation using the <B>new</B> operator. This is necessary because when the <B>ResultIOU_</B> class is instantiated it will create a new copy of the stored value.</p>
+<p><B>ResultIOU_</B> incorporates the handle-body and reference counting idioms. These techniques are used to simplify memory management, provide for efficient by-value sharing, and provide for automated object lifetime management. The handle is a very lightweight class that can be passed by value. The handle contains a reference to a body. As it is manipulated within an application, the handle increments or decrements a reference count maintained within the body. This count is incremented each time a handle is bound to the body instance and it is decremented each time a handle is detached from the body instance. When the last handle to a given body instance is destroyed, the body instance is deleted.</p>
+<p><B>ResultIOU_</B> uses an event object and a mutex object to coordinate the execution of multiple threads. The event object is used to delay the calling thread until the result is redeemable. An event is simply a mechanism upon which threads can wait and signal. It is the programmer's responsibility to implement the code to wait at the appropriate point of execution when the event is false, and to signal when the event becomes true. The event class is a simple class wrapper for the Windows event object. To delay on an event variable, a thread calls the <B>wait</B> method. The <B>wait</B> method checks the current state. If the state is nonsignaled, the calling thread enters an efficient wait state. Another thread can unblock waiting threads by calling the <B>signal</B> method. <B>ResultIOU_</B> uses an event object to coordinate thread access to the IOU result.</p>
+<p>A mutex object is a synchronization object whose state is set to signaled when it is not owned by any thread, and nonsignaled when it is owned. Only one thread at a time can own a mutex object, whose name comes from the fact that it is useful in coordinating mutually exclusive access to a shared resource. <B>ResultIOU_</B> uses a mutex object to synchronize access to its data members.</p>
+<p>Here's a synopsis of the methods in the IOU class:</p>
+
+<pre>
+void Close(T result)
+</pre>
+
+<p>Set the result. The thread performing the requested asynchronous operation will call this method to set the result in the IOU upon completion of the operation.</p>
+
+<pre>
+bool Redeemable()
+</pre>
+
+<p>Test the IOU to see if it is redeemable. The IOU is redeemable if the result has been set. <B>Redeemable</B> is used in a polling implementation to test the IOU. <B>Redeemable</B> will return immediately.</p>
+
+<pre>
+T Redeem()
+</pre>
+
+<p>Retrieve the result contained in the IOU. This call will block until the IOU is redeemable or until the requested asynchronous operation is aborted.</p>
+
+<pre>
+void Abort()
+</pre>
+
+<p>Cancel the operation. This operation simply releases any threads that are blocking on the IOU. The IOU is redeemable after completion of the abort operation.</p>
+
+<pre>
+bool Aborted()
+</pre>
+
+<p>Test the IOU to see if it is has been aborted This is a non-blocking method. The implementation of <B>ResultIOU_</B> is shown in <A HREF="fig3.htm">Figure 3</A>.</p>
+
+<h4><FONT COLOR="#000080">Notification Mechanisms</FONT></H4>
+
+<p>The holder of the IOU decides how and when to redeem the result held by the IOU. There are three common ways to redeem an IOU.</p>
+<p>1.  Calling the <B>Redeem</B> method. This call will block the caller until the result is ready.</p>
+<p>2.  Polling. Poll the IOU via the <B>Redeemable</B> method. <B>Redeemable</B> returns immediately regardless of whether the IOU is redeemable. An IOU is redeemable if a result has been set or the IOU operation has been aborted.</p>
+<p>3.  Notification. The IOU can notify the calling thread via a defined notification mechanism. Possible options include posting a windows message, invoking a callback function, or using a COM event.</p>
+<p>In this article I use the COM event, also known as COM connectable object, architecture to provide the IOU notification mechanism.</p>
+
+<h4><FONT COLOR="#000080">COM and Connectable Objects</FONT></H4>
+
+<p>The COM standard for providing event notification is connectable objects. Connectable objects provide a standard way to establish two-way communication between an object and a client. Connectable objects stipulate the specifics for creating and destroying this two-way communication between objects.</p>
+<p>In order for the IOU to notify the client using connectable objects, the IOU must support one or more outgoing COM interfaces. An outgoing interface is an interface that the IOU defines but does not implement. Since a connectable object defines the outgoing interface, it knows how to invoke that interface's methods. The holder of the IOU (the client) actually implements this interface. The client then passes the IOU a pointer to this interface when it registers for the notification event. The IOU holds onto this interface pointer and then uses it to notify the client when the result is redeemable. This process is analogous to a C/C++ callback.</p>
+<p>In the sample application (described below) the outgoing interface is <B>IResultNotifier</B>. The <B>IResultNotifier</B> interface defines a single method, <B>RequestComplete</B>. This is the method that the IOU will call when the server has finished processing the request.</p>
+
+<h4><FONT COLOR="#000080">Sample Application</FONT></H4>
+
+<p>I now present a sample application that uses the IOU. The example simulates sending a request to a server. The sample does not actually send a request but merely sleeps for three seconds and then returns a simulated value. The purpose of the sample is to convey the basic IOU framework. The request asks for an address, based on a business name. In a more realistic example the request would go to a remote server, or the request might be for a list of addresses. Either of these cases might require a number of seconds to satisfy the request and are therefore likely candidates for an IOU.</p>
+<p>The sample code includes two class wrappers. The two wrappers primarily hide the COM implementation details from the developer. These details include object creation, error handling, and lifetime management i.e. interface reference counting. The <B>Request</B> class wrapper (<A HREF="fig4.htm">Figure 4</A>) additionally implements the event notification mechanism for asynchronous requests. <B>Request</B> accomplishes this using the class <B>IOUSink</B>. <B>IOUSink</B> (<A HREF="fig5.htm">Figure 5</A>) provides the implementation of the outgoing interface <B>IResultNotifier</B>, and more specifically, the event notification method <B>RequestComplete</B>.</p>
+<p>If asynchronous notification is requested, an <B>IOUSink</B> is created and passed a pointer to the IOU. When the request is completed the <B>RequestComplete</B> method will be called. <B>RequestComplete</B> then calls the virtual method <B>ResultIOUComplete</B> of the IOU class <B>ResultIOU</B>.</p>
+<p>The <B>ResultIOU</B> class wrapper (<A HREF="fig6.htm">Figure 6</A>) provides an empty default implementation of <B>ResultIOUComplete</B>. The sample application illustrates a simple derived class <B>MyIOU</B>. The code is shown in <A HREF="fig7.htm">Figure 7</A>. The code simply creates a <B>MyIOU</B> object and a <B>Request</B> object. <B>Request</B>'s <B>select</B> method is called to simulate the selection criteria for the request and then the <B>send</B> method is invoked. The bool variable <B>notify</B> is set based on a command-line argument; it controls whether the request is sent asynchronously or synchronously. <B>MyIOU</B> overrides the <B>ResultIOUComplete</B> method from <B>ResultIOU</B>. It redeems the IOU, and outputs the value to the standard output.</p>
+<p>The following shows the output that results from running the sample program with and without the <B>/asynch</B> command-line argument:</p>
+
+<pre>
+C:\&gt;ioutest
+701 Brazos St.
+Press Enter to end...
+
+C:\&gt;ioutest /asynch
+Press Enter to end...
+701 Brazos St.
+</pre>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>That's a quick overview of using an IOU to implement asynchronous methods in COM. There are a number of other areas related to the implementation of the IOU and COM. These areas are left as homework for the reader. The IOU code and the sample code is available for download from the <I>CUJ</I> ftp site (see p. 3 for downloading instructions). The sample code includes the complete implementation of the COM objects and the underlying C++ code to support the IOU. The sample application is also available.</p>
+<p>IOUs provide a flexible method for implementing asynchronous COM methods. They allow the developer to choose between blocking, polling, or notification to redeem the value from a method invocation. Additionally, with a small amount of additional work, the developer can provide the user with alternative methods of notification.</p>
+
+<p><i>Greg Heidel is a senior principal at TSC (Technology Solutions Company). TSC delivers business and technology consulting services that help clients transform customer relationships and improve operations.</i></p>
+
+<h4><a href="../../../source/1999/apr99/heidel.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

@@ -1,0 +1,458 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+          <TITLE>April 1996/A Portable Multiprocess Gateway in C++</TITLE>
+     </HEAD>
+     <BODY BGCOLOR="#FFFFFF">
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><FONT COLOR="#FF0000"><A href="../tocapr.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          Unix</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="CENTER"><FONT COLOR="#800000">A Portable Multiprocess
+          Gateway in C++</FONT></H2>
+          
+          <H3 ALIGN="CENTER"><FONT COLOR="#800000">Seekamp, Domrow, Wrobel,
+          and Bulka</FONT></H3>
+          
+          <BLOCKQUOTE>
+               
+               <p>Controlling multiple threads is
+                    intrinsically messy and nonportable. But you can still
+                    implement a remarkably portable interface with some
+                    judicious class design.</p></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <H4><FONT COLOR="#000080">Introduction</FONT></H4>
+               
+               <p>Portability and performance are seldom
+                    friends, but sometimes with a little software design we can
+                    get both of them into the same room. We have designed a
+                    multiprocess SNA gateway in C++ that achieves both
+                    portability and good performance. This article presents our
+                    design of a system to handle multiple child processes,
+                    created on the fly to execute various tasks. Our design goal
+                     was to create a flexible implementation that was easily
+                    portable to other environments, more than just UNIX flavors.</p>
+               
+               <p>What is a gateway? A gateway is a
+                    system (computer and software) that sits between two or more
+                    computers, enabling them to communicate. A gateway typically
+                    connects one upstream server to many downstream clients.
+                    There are two basic types of gateway: protocol converters
+                    and concentrators. Protocol converters connect downstream
+                    clients using one protocol to an upstream server using 
+                    another. One conversion that comes to mind is downstream
+                    TCP/IP to an upstream SNA mainframe. A concentrator gateway
+                    communicates over a single protocol both upstream and
+                    downstream. A concentrator adds value to a network by
+                    performing session managment.</p>
+               
+               <p>The SNA Gateway is a session
+                    concentrator gateway connecting thousands of downstream
+                    workstations to an upstream mainframe host over an SNA
+                    connection. The SNA Gateway is a function of SNA Server,
+                    which is the implementation of the SNA communication
+                    protocol on the RISC System/6000&#170; running the AIX&#170;
+                    operating system. (AIX is a flavor of UNIX.) The SNA Gateway
+                    was originally developed in the IBM Raleigh Networking
+                    Software laboratories, for the AIX operating system.</p>
+               
+               <p>The SNA Gateway allows many downstream
+                    workstations to access one or more upstream mainframes
+                    through a single communications server. This results in
+                    fewer expensive links to remote servers, better resource
+                    utilization, and superior connectivity. SNA Gateway allows
+                    you to manage sessions, automatically logging off unattended
+                    workstations. It can also activate links on demand and 
+                    disconnect them if no traffic is present for some time. This
+                    feature affords significant cost savings when expensive
+                    links are used. The performance of Gateway is described in
+                    reference [<A href="#REF 2">2</a>]
+.</p>
+               
+               <p>Portability played a significant role
+                    in Gateway design. Many of the design decisions followed a
+                    simple principle: system-specific and SNA-specific code
+                    fragments should not be allowed to spread and contaminate
+                    the rest of the code, which is invariant over system and
+                    protocol. We undertook to clearly identify the non-portable
+                    code fragments and isolate them.</p>
+               
+               <p>To avoid redundancy, this article
+                    focuses on a single code fragment that embodies the
+                    principles of portability. This is our portable worker
+                    process. The worker process demonstrates how to separate
+                    away non-portable code fragments and encapsulate them in
+                    clearly identified class member functions.</p>
+               
+               <H4><FONT COLOR="#000080">Designing The Worker
+               Process</FONT></H4>
+               
+               <p>Client-server programming often
+                    follows the model of a server process that delegates the
+                    actual work to child processes [<A href="#REF 3">3</a>]
+.
+                    Gateway currently adopts this model but it did not start out
+                    that way. Initially, Gateway consisted of a single server
+                    process that handled all incoming and outgoing data for all
+                    links. This posed a serious performance problem where slow
+                    links would interfere with data processing on high speed
+                    links. For efficiency, we needed to eliminate the processing
+                    dependency among links. We achieved that by having the
+                    Gateway server process create a worker process per link. The
+                    worker process handles all data processing for its
+                    associated link.</p>
+               
+               <p>For efficiency, these worker processes
+                    must reside in the AIX kernel, rather than in user space.
+                    The AIX operating system provides several system services
+                    for creating kernel processes (kprocs). These services are
+                    analogous to the more familiar fork and exec functions that
+                    are used in user space.</p>
+               
+               <p>We found that understanding how to
+                    create, destroy, and manage kernel processes was not a
+                    trivial learning exercise and required us to know some very
+                    system-specific information. In addition, before we could
+                    use the kernel processes properly, we had to understand some
+                    subtle timing issues. Thus, three advantages for
+                    encapsulating kernel processes in C++ classes became
+                    apparent:</p>
+               <OL><LI> Encapsulation enabled us to
+                         separate code that did the work within a process from
+                         the mechanism of creating, controlling, and destroying
+                         the process.</FONT></LI>
+                    <LI> We could further isolate the
+                         algorithm that created, controlled, and destroyed the
+                         worker process from system-specific services used in
+                         coding it.</FONT></LI>
+                    <LI> If done well, the use of the
+                         kernel process class would prevent other users from
+                         having to learn and understand all the nuances and
+                         complexities of their use.</FONT></LI>
+               </OL>
+               
+               <p>The algorithm that manages the life of
+                    the worker process is captured in the AIXkproc abstract base
+                    class implementation, shown in <A href="listing1.htm">Listing
+                         1</a>.
+ This class clearly isolates AIX-specific code
+                    into member functions. We have named all member functions
+                    that require any kind of system-specific knowledge with the
+                    AIX_ prefix.</p>
+               
+               <p>System-specific implementation becomes
+                    the responsibility of those AIX_* member functions. For
+                    example, the AIXkproc base class contains a member called
+                    thePid, which stores the process ID (PID) of the worker
+                    process. At times the AIXkproc base class needs to know if
+                    the PID is valid. This is system-specific knowledge;
+                    therefore, we have "pushed it down" to the
+                    AIX_PidIsValid function. This member function knows what is
+                    an invalid PID in the AIX kernel environment. The AIXkproc
+                    base class privately stores that knowledge in the AIXkproc
+                    base class as the enumerated type INVALID_PID = -1 [<A href="#REF 1">1</a>]
+.</p>
+               
+               <p>AIXkproc is one example of a
+                    system-specific implementation designed to accomodate the
+                    AIX kernel. Porting this design to another environment
+                    requires little effort. All you need to do is provide your
+                    own system-specific code in place of the AIX_* member
+                    functions. As seen in <A href="listing1.htm">Listing 1</a>,
+
+                    those functions are one liners; no complexity there. Careful
+                    observation reveals that the AIXkproc constructor contains
+                    AIX-specific code, which performs initialization of the lock
+                    and event words. This AIX-specific code represents an
+                    oversight on our part. In a future release we will probably
+                    define two more AIX-specific member functions that will
+                    encapsulate these initializations.</p>
+               
+               <p>Note that AIXkproc is an abstract
+                    class, since it contains a pure virtual function
+                    (processWork), so it cannot be instantiated. The final
+                    implementation step is to derive a task-specific class from
+                    the system-specific one and provide a definition for the
+                    processWork virtual function. This function (<A href="listing2.htm">Listing
+                         2</a>)
+ implements the work to be performed by the
+                    worker process.</p>
+               
+               <p>Put another way, the AIXkproc base
+                    class contains two degrees of freedom system and task. The
+                    system-specific AIX_* member functions determine the system.
+                    The user class derived from it nails down the specific task
+                    in the processWork definition.</p>
+               
+               <H4><FONT COLOR="#000080">Managing Worker
+               Processes</FONT></H4>
+               
+               <p>Kernel process objects are types of "active"
+                    objects [<A href="#REF%205".">5</a>]
+ because they encompass
+                    their own thread of control. Essentially, we are
+                    encapsulating the kernel processs data and processing into
+                    an object. The implementation of these objects raises some
+                    difficulties not encountered with inactive objects. First,
+                    although it is desirable to let the constructor create the
+                    data for the object and then start the task, this proves to
+                    be troublesome. The reason for this is somewhat subtle. We
+                    obviously want the code for creating and starting the task
+                    in the base class, not the one the user has to write.
+                    However, the user might have to do some initialization
+                    during construction, prior to the process actually starting.</p>
+               
+               <p>How can we allow the user to execute
+                    their subclass-specific code during base class construction?
+                    It seems easy enough: have the base class constructor invoke
+                    a virtual function which the subclass overrides. However,
+                    virtual functions cannot be invoked during construction or
+                    destruction [<A href="#REF 4">4</a>]
+, so this wont work.
+                    Our solution is to allow users to put their initialization
+                    code in their constructors (as usual), and to use a separate
+                    function, which they invoke to "start" the
+                    process.</p>
+               
+               <p>We have to deal with similar issues
+                    when terminating a process. Since we are treating the kernel
+                    process as an object, we would like to stop the processing
+                    when we delete the object. However, we must make sure that
+                    the memory for the object is not deleted until the process
+                    has actually stopped working on it. Secondly, we must deal
+                    with the possibility of receiving a SIGTERM signal (a signal
+                    sent by UNIX to kill a process), just as must any other
+                    processes. We want to protect the class user from dealing
+                    with such issues. A simplified version of our AIX kernel
+                    process class, which attempts this protection, is shown in
+                    <A href="listing1.htm">Listing 1</a>.
+</p>
+               
+               <p>As noted earlier, this class is an
+                    abstract base class, by virtue of its containing a pure
+                    virtual function, processWork. To use the class, you must
+                    derive an application-specific class from this base class,
+                    and provide a definition of the processWork function.
+                    processWork must meet two requirements: it must implement
+                    the processing required of the kproc, and it must exit when 
+                    it receives a SIGTERM signal. Note that AIX does not
+                    automatically deliver these signals to the AIX kprocs; the
+                    kproc must explicitly check for the signal. We encapsulate
+                    checking for the SIGTERM signal by requiring the user to
+                    call an AIX_okToContinue function in their processWork
+                    function. If the processWork function finishes its task
+                    prior to receiving the SIGTERM signal, it may exit normally.
+                    In either case, the kproc will be stopped after processWork
+                    exits.</p>
+               
+               <H4><FONT COLOR="#000080">Putting it All
+               Together</FONT></H4>
+               
+               <p>So how does all this come together to
+                    create a worker kernel process on AIX?
+                    <A href="listing2.htm">Listing 2</a>
+shows a usage
+                    example. The user derives a subclass from the AIXkproc class
+                    and supplies a definition to the processWork virtual
+                    function. That definition will determine the task that the
+                    worker must accomplish. The run_kproc routine starts by
+                    creating an instance of the MyKproc class pointed to by
+                    worker. Calling MyKprocs constructor invokes the constructor
+                    for its base class,  AIXkproc.</p>
+               
+               <p>As shown in <A href="listing1.htm">Listing
+                         1</a>,
+ the AIXkproc constructor initializes the data
+                    members of its class, and then calls the AIX_creatP function
+                    to create a new worker process. Next, the user calls the
+                    worker-&gt;start member function. The start function calls
+                    AIX_pidIsValid to ensure that the constructor succeeded and
+                    a new process was properly created. If so, the start
+                    function calls AIX_initP. AIX_initP in turn calls the AIX
+                    system call, initp.</p>
+               
+               <p>On AIX, to call initp you must pass
+                    the process ID, the address of a main routine to execute,
+                    the initialization structure, and the process name. The
+                    process ID and process name were saved by the constructor;
+                    the initialization structure was created by AIX_initP. The
+                    remaining parameter is the function for the new process to
+                    execute.</p>
+               
+               <p>initp expects the address of a C
+                    function. Since the signature of this expected function does
+                    not allow the this pointer as the first parameter, we cannot
+                    use a regular C++ member function. Instead, we use a static
+                    member function since it does not require the passing of the
+                    this pointer as the hidden first argument. Note that start
+                    is a separate function rather than part of the constructor,
+                    for the reasons described earlier.</p>
+               
+               <p>It is important to understand that the
+                    worker (child) process is now separate from the parent
+                    process that invoked the constructor (see
+                    <A href="seef1.htm">Figure 1</a>)
+. The worker process is
+                    now executing the AIX_main function while the parent process
+                    proceeds to do other work, possibly unrelated. Though worker
+                    and parent are separate processes, they do share data. One
+                    tricky collision point between the parent and worker process
+                    arises if the parent deletes the worker object before the
+                    worker completes its task. For this reason, it is critical 
+                    to ensure that the class destructor and the start function
+                    do not execute at the same time. To this end, several
+                    functions use locking to guarantee mutual exclusion during
+                    termination (see Figure 1 for locking logic, Figure 2 for
+                    termination logic. Locking was omitted from
+                    <A href="seef2.htm">Figure 2</a>
+for simplicity).</p>
+               
+               <p>Assuming that AIX_initP succeeds, the
+                    start function sets the started flag, and then exits.
+                    Meanwhile, the newly created kproc begins to execute the
+                    static routine AIX_main. First, AIX_main saves the object
+                    pointer that was passed in the initialization structure.
+                    (Note that in this way we have manually sneaked in the this
+                    pointer to a static function, allowing the static routine to
+                     call class member functions.)</p>
+               
+               <p>The first member function that
+                    AIX_main calls is processWork, which the user defines. This
+                    function will perform the processing required of the worker
+                    process, and exit when it completes or when it receives a
+                    SIGTERM signal. Finally, AIX_main calls destroyProcess to
+                    destroy the process.</p>
+               
+               <p>The remaining two functions, the
+                    destructor and destroyProcess, work closely together. Two
+                    cases merit special consideration. First, assume that the
+                    parent invokes the destructor before the child worker calls
+                    destroyProcess. In this case, the destructor acquires the
+                    lock protecting termination and checks that the worker
+                    process is still active. If so, it sends a SIGTERM signal to
+                     the worker, and calls the AIX_sleepDuringTerm member
+                    function. Again, this is a system-specific function
+                    implemented by the AIXkproc class. The AIX kernel supplies
+                    required functionality via the e_sleepl system call.
+                    e_sleepl will release the indicated lock and wait to be
+                    woken up. Now the parent process is asleep, to be awakened
+                    later by the worker process. Why does the parent go to
+                    sleep? Because the worker process is still executing and
+                    accessing AIXkproc class data. The destructor is not allowed
+                    to complete (and free the shared memory) until the worker is
+                    ready to exit.</p>
+               
+               <p>Meanwhile, the worker process,
+                    executing processWork, detects the SIGTERM signal and
+                    returns. This results in AIX_main calling the destroyProcess
+                    function. destroyProcess then acquires the termination lock,
+                    determines that the parent needs to be awakened, and calls
+                    AIX_notifyTerm. The AIX-specific implementation of this
+                    member function calls e_wakeup to wake up those processes 
+                    waiting on the termination event. e_wakeup then releases the
+                    lock and calls _exit, terminating the kproc.</p>
+               
+               <p>After e_wakeup has been called and the
+                    lock has been released, the code in the destructor
+                    completes.</p>
+               
+               <p>If processWork exits before the
+                    destructor is called, destroyProcess is called to exit the
+                    worker process. The flags set by destroyProcess prevent the
+                    destructor of the AIXkproc class from sending the SIGTERM
+                    signal and going to sleep.</p>
+               
+               <p>You can use <A href="seef2.htm">Figure
+                         2 </A>to understand what happens in the other case, in
+                    which the worker completes processWork before the parent
+                    issues the delete. In this case the worker will die without
+                    notifying the parent and the parent will skip the if clause
+                    in the destructor. The whole sleep/wakeup logic will be
+                    bypassed.</p>
+               
+               <p>The locking included in the class
+                    avoids errors that could occur if the destroyProcess
+                    function and the AIXkproc destructor are running
+                    concurrently (or even simultaneously, on a
+                    multiple-processor machine). Acquiring the lock in the start
+                    function handles the pathological case where the destructor
+                    and start are active at the same time.</p>
+               
+               <p>By looking at the MyKproc example
+                    subclass (<A href="listing2.htm">Listing 2</a>)
+, you can
+                    see how we have greatly decreased the complexity of
+                    implementing a kernel process, allowing the user to
+                    concentrate almost exclusively on the processing they are
+                    trying to implement, and very little, if any, on the
+                    mechanisms of creating, controlling, and destroying kernel
+                    processes.</p>
+               
+               <H4><FONT COLOR="#000080">Summary</FONT></H4>
+               
+               <p>The class hierarchy described in this
+                    article is useful on two separate issues: On one hand, it is
+                    a robust implementation of a generic interface to the
+                    operating-system specific task of implementing and
+                    controlling worker processes. These worker processes serve
+                    to offload processing tasks from the parent process. On the
+                    other hand, it is an example of a portable class hierarchy 
+                    that could be easily adapted to other environments. The
+                    portability burden is largely dealt with by a careful
+                    separation of algorithm logic from specific data structures
+                    used to implement that algorithm. System-specific syntax and
+                    semantics were isolated and encapsulated in the member
+                    functions of the class.</p>
+               
+               <p>Gateway, AIX and RISC System/6000 are
+                    trademarks of IBM.</p>
+               
+               <H4><FONT COLOR="#000080">References</FONT></H4>
+               
+               <p>[<A name="REF 1">1</a>]
+ Scott Meyers.
+                    Effective C++ (Addison-Wesley, 1992) pp. 10-12.</p>
+               
+               <p>[<A name="REF 2">2]</a>
+Kevin Tolley
+                    and David Newman. "Testing UNIX-to-SNA Gateways,"
+                    Data Communications. May 1994, pp. 94-103.</p>
+               
+               <p>[<A name="REF 3">3</a>]
+ Richard
+                    Stevens. UNIX Network Programming (Prentice Hall, 1990).</p>
+               
+               <p>[<A name="REF 4">4</a>]
+ Bjarne
+                    Stroustrup and Margaret A. Ellis. The Annotated C++
+                    Reference Manual (Addison-Wesley, 1990).</p>
+               
+               <p>[<A name="REF 5">5</a>]
+ Grady Booch.
+                    Object Oriented Design with Applications (Benjamin/Cummings
+                    Publishing Company, 1991).</p>
+               
+               <P><I>Chris Seekamp, Gary Domrow, Tony
+                    Wrobel, and Dov Bulka, are C++ developers who have worked on
+                    the Gateway project. They combine 18 years of C++
+                    development experience. Currently, Gary, Tony, and Dov work
+                    for the Networking Software Division at IBM Raleigh. Chris
+                    works for Pacific Communication Sciences, Inc.</FONT></I></P>
+
+<h4><a href="../../../source/1996/apr96/seekamp.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+     </BODY>
+</HTML>

@@ -1,0 +1,88 @@
+<HTML>   
+     <HEAD>
+<TITLE>October 1999/A Recursive Visit Template</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tococt.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">A Recursive Visit Template</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Marc Briand</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Navigation is always a difficult art. Distilling out the common operations in a reusable template can help organize the job.<P>
+</BLOCKQUOTE>
+
+<hr>
+<BLOCKQUOTE>
+
+<p>A template function is a nice mechanism for encapsulating an algorithm. Ideally, a programmer can implement an algorithm in terms of a template function without knowing the types the algorithm will operate on. The user of the algorithm can then just fill in the types and go. Things don't always work out so neat and clean, of course. A lot depends on the nature of the algorithm.</p>
+<p>One algorithm that can be used with this approach is what I call a recursive visit algorithm. This is an algorithm for visiting the elements of a recursive composite structure &#151; a structure that may contain both simple elements and (sub)elements of its own kind. A file-system directory is a good example. It may contain both files (simple elements) and more directories.</p>
+<p>Using a template function, it is possible to encapsulate the behavior of walking through such a structure, without knowing what type of structure it will be. What's more, the template function can be written to apply some function to each element as it is visited &#151; again, without knowing at the time the template function is written what operation is to be performed.</p>
+<p>In this article I present an implementation of such a template function, and show how it used to apply operations to recursive composite structures. It is a fairly simple template function. As a plus, it is not in itself recursive. Recursive functions can often be replaced by iterative algorithms, with the help of a good stack container or two. That is what I've done here <a href="#1">[1]</a>.</p>
+
+<h4><FONT COLOR="#000080">Template Function rVisit</FONT></H4>
+
+<p>The definition of template function <B>rVisit</B> appears in <a href="fig1.htm">Figure 1</a>. Template parameter <B>CompositeType</B> is the type that will be used to represent the composite structure. <B>ProcessType</B> is a type that encapsulates the operations to be applied to the elements of <B>CompositeType</B>. <B>ProcessType</B> has a couple of responsibilities. First, it must supply a pair of functions, <B>processComposite</B> and <B>processSimple</B>, to be applied to each composite and simple element of <B>CompositeType</B>, respectively. Second, <B>ProcessType</B> must supply functions to navigate within the composite structure. Specifically, it must supply the following:</p>
+
+<UL><LI>A function <B>getHandles</B>, which will return "handles" to the composite and simple elements contained at the current level of the composite structure. These handles might be anything, such as strings representing file and directory names, or pointers to nodes of a tree. The types of the handles are defined as public typedefs within the class <B>ProcessType</B>.</LI>
+<LI>A function <B>moveDownTo</B>, which, given a reference to the composite structure and a reference to a composite handle, will move down a level within the structure to the composite element indicated by the handle.</LI>
+<LI>A function <B>moveUp</B>, which, given a reference to the composite structure, will move up a level within the structure.</LI></UL>
+
+<p>This implies that <B>ProcessType</B> must be intimately familiar with <B>CompositeType</B>. It might seem that <B>CompositeType</B> should be responsible for supplying the functions for navigating itself. I made it the responsibility of <B>ProcessType</B> to allow plugging in existing implementations of the <B>CompositeType</B> class without modification. <B>ProcessType</B> thus acts as a sort of adaptor between the <B>CompositeType</B> and <B>rVisit</B>. I show how to create a <B>ProcessType</B> class later. For now, I focus on the template function.</p>
+
+<h4><FONT COLOR="#000080">Function Operation</FONT></H4>
+
+<p><B>rVisit</B> makes use of two stacks, implemented in terms of STL deques. <B>cdeq</B> is a stack of <B>CompositeHandle</B>; <B>ndeq</B> is a stack of <B>int</B>. Each element of <B>ndeq</B> represents how many unexpanded <B>CompositeHandle</B>s are on the <B>cdeq</B> stack at a particular level. In this implementation the code pushes elements to the stack by calling the deque's <B>push_back</B> member function, and it pops the stack by calling <B>pop_back</B>. The top element of each stack is represented by the deque function <B>back</B>.</p>
+<p>The recursive visit function operates as a simple state machine with two states, searching and not searching. In the searching state, the function calls the <B>ProcessType</B> function <B>getHandles</B>, which loads up the vectors <B>tempcvec</B> and <B>svec</B> with handles to the composite and simple elements at the current level. The size of <B>tempcvec</B> (the number of composite handles found) is pushed to <B>ndeq</B> and the elements of <B>tempcvec</B> are pushed to the <B>cdeq</B> stack in reverse order. Thus, the top portion of <B>cdeq</B> represents the composite handles left to be expanded at the current level. The top element of <B>ndeq</B> represents the number of composite handles contained in the top portion of <B>cdeq</B>. After pushing to the stacks, <B>rVisit</B> calls the functions supplied by <B>ProcessType</B> to be applied to the composite and simple elements.</p>
+<p>In the not-searching state, the function checks how many composite handles are left on <B>cdeq</B> at the current level. If there are any unexpanded composite handles at the current level (<B>ndeq.back() &gt; 0</B>) the function tries to move down a level. It attempts to move to the composite element indicated on the top of the <B>cdeq</B> stack, by calling <B>ProcessType::moveDownTo</B>. If all the composite handles at the current level have been expanded (<B>ndeq.back() == 0</B>), the function attempts to move back up a level, by calling <B>ProcessType::moveUp</B>. However, if it's time to move up and the depth is already zero, there's nowhere to go and the algorithm has completed its task.</p>
+
+<h4><FONT COLOR="#000080">A Usage Example</FONT></H4>
+
+<p><a href="fig2.htm">Figure 2</a> shows a <B>Directory</B> class. <B>Directory</B> has a single data member, <B>curr_path</B>, which indicates a directory on the file system. <B>Directory</B>'s sole purpose in life is to return lists of the subdirectory and filenames found in <B>curr_path</B>. <B>Directory</B> doesn't claim exclusive access to a file system (so it doesn't need to be a singleton). It just tells you what's in the directory indicated by <B>curr_path</B>. You can read and change <B>curr_path</B> through the functions <B>getCurrentPath</B> and <B>setCurrentPath</B>. The functions <B>getSubdirNames</B> and <B>getFileNames</B> retrieve the directory and filenames found at <B>curr_path</B>. The function <B>pathIsValid</B> checks whether <B>curr_path</B> is a valid path on the file system. These last three functions contain code specific to the compiler and operating system. Their implementations are not shown here, but are available on the <I>CUJ</I> ftp site (see p. 3 for downloading instructions). I implemented these functions to work with C++Builder 3.0 and Windows 95.</p>
+<p><B>Directory</B> is pretty simple, and you can't do a lot with it. But by supplying a <B>ProcessType</B> class, you can use the <B>rVisit</B> template function to visit every file and directory under <B>Directory::curr_path</B>. You can apply the function of your choice to each directory encountered, and another function of your choice to each file.</p>
+<p><a href="fig3.htm">Figure 3</a> shows the class <B>DirAdapter</B>. It will be used as the base class for a <B>ProcessType</B> class. It contains a single data member, <B>separator</B>, which holds the separator character to be used in pathnames on the file system. <B>DirAdapter</B> declares the two public typedefs, <B>CompositeHandle</B> and <B>SimpleHandle</B>, which are required by the <B>rVisit</B> function. In this case the handles are just strings. <B>DirAdapter</B> supplies the three navigation functions mentioned earlier. The implementations are also shown in <a href="fig3.htm">Figure 3</a>.</p>
+<p>To apply specific operations to the elements of a directory, derive a class from <B>DirAdapter</B> and add member functions <B>processComposite</B> and <B>processSimple</B>. <a href="fig4.htm">Figure 4</a> shows two classes defined to perform two different operations. <B>NamePrinter</B>, when used as the <B>ProcessType</B> class with the <B>rVisit</B> template function, will print all the directories and files found under <B>Directory::curr_path</B> to an output text file. The usage is as follows:</p>
+
+<pre>
+int main()
+{
+   NamePrinter np("outfile.txt");
+   Directory dir("c:\\some_dir");
+     
+   rVisit(dir, np);
+}
+</pre>
+
+<p><B>rVisit</B> deduces the template parameters <B>Directory</B> and <B>NamePrinter</B> from its arguments.</p>
+<p>If you use <B>FileCounter</B> as the <B>ProcessType</B> template parameter, the template function will count all the files under <B>Directory::curr_path</B>:</p>
+
+<pre>
+int main()
+{
+   FileCounter fc;
+   Directory dir("c:\\some_dir");
+     
+   rVisit(dir, fc);
+   cout &lt;&lt; "Number of files is "
+        &lt;&lt; fc.getCount() &lt;&lt; endl;
+}
+</pre>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>Template function <B>rVisit</B> encapsulates an algorithm for walking a recursive data structure. It separates the visitation algorithm &#151; which will always be the same, regardless of element type &#151; from type-specific operations, such as movement from element to element. By supplying an adaptor class, you can use this template function to apply operations to every element of a recursive data structure, without having to write any recursive code.</p>
+<p>This technique could easily be adapted to encapsulate other visitation patterns. It may also be possible to use polymorphism in the adapter class for more versatility. With a little luck and ingenuity, we need never dread working with tree-like data structures again.</p>
+
+<h4><FONT COLOR="#000080">Note</FONT></H4>
+
+<p><a name="1"></a>[1]  I have nothing against recursive function calls except that they have a tendency to blow the program stack when the nesting levels get too deep. That has happened to me often enough that I just don't care to mess with recursion. Besides, I think the iterative code is easier to understand.</p>
+
+<p><i><B>Marc Briand</B> is Editor-in-Chief of </i>C/C++ Users Journal<i>. He loves programming, writing, and too many other things for his own good. However, he hates to work, which is why he is an editor. He may be reached at <B>mbriand@mfi.com</B>.</i></p>
+
+<h4><a href="../../../source/1999/oct99/briand.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

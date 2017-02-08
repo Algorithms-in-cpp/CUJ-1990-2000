@@ -1,0 +1,194 @@
+<HTML>   
+     <HEAD>
+<TITLE>June 1999/Calculating CRC Checksums in C++</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocjun.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Calculating CRC Checksums in C++</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Colin Mahoney</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Here's a handy template that computes a variety of CRC checksums.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<p>A while back I was asked to produce some C++ code to calculate CRC (cyclic redundancy code) checksums. I was given a copy of Ross Williams' article, "A Painless Guide to CRC Error Detection Algorithms" <a href="#1">[1]</a>, which includes a detailed description of the basic CRC algorithm, its optimization using tables and other means, and information about various CRC protocols. The article describes a parameterized model for CRC algorithms called the "Rocksoft&#153; Model CRC Algorithm." The article includes C source code for an implementation of the model. The model seemed to be made to measure for an implementation in C++ using templates. In this article I describe <B>CRCGenerator</B>, a C++ class which I produced based on Ross's original C code. Readers who want a detailed description of CRC algorithms should refer to Ross's original article.</p>
+
+<h4><FONT COLOR="#000080">CRCs &#151; The Basics</FONT></H4>
+
+<p>CRCs create hash values for a block of data. These values can be used to check for file integrity and transmission errors in streams. They should not be used to check for malicious tampering with data, as it is quite easy to change the original data in a way that conserves the original CRC value.</p>
+<p>A CRC checksum is obtained by treating the input data as a very long binary number, and dividing it by a shorter number &#151; usually 16 or 32 bits. The remainder of this division is the CRC value. The quotient is not used and thus does not have to be recorded. The division is carried out modulo two without carries, and can be calculated efficiently using shifts and XORs (exclusive ORs). The divisor is known as the "polynomial," for reasons related to the mathematical theory underlying such calculations. CRC checksums have a useful property: if the checksum is appended to the original data, the new checksum for &lt;data + original checksum&gt; is zero. This makes testing for transmission errors very easy; the checksum can be transmitted after the data, and the receiver has only to check that the checksum for all the data received is zero. </p>
+
+<h4><FONT COLOR="#000080">The CRCGenerator Implementation</FONT></H4>
+
+<p>CRCGenerator</B> (<A HREF="fig1.htm">Figure 1</A> a partial listing of <B>crc.h</B>) uses a nested table class, <B>CRCTable</B>, to do most of the work of calculating the checksum. <B>CRCTable</B> has one data member, <B>Table</B>, and three member functions &#151; a constructor, a subscripting operator, and <B>CalcTableEntry</B>. The latter calculates the values for the elements of the table, and is called repeatedly from the constructor to fill the table. <B>CRCGenerator</B> has a static data member <B>Table</B>, of type <B>CRCTable</B>. The <B>unsigned long</B> member <B>Register</B> holds the current value of the CRC calculation. It is initialized to the value of the template parameter <B>Init</B>. The code uses template parameters in conditional expressions to select the appropriate element of <B>Table</B> when processing data. This will produce a lot of "conditional expression is constant" style messages on compilation. You may want to disable this warning when compiling <B>crc.h</B>.</p>
+<p><B>CRCGenerator</B> is defined in the namespace <B>cdm_crc</B>. Also defined in this namespace are <B>CRCMaxBits</B>, which defines the maximum number of bits that can be held in an <B>unsigned long</B>, and an insertion operator to write the CRC value to an ostream.</p>
+
+<h4><FONT COLOR="#000080">The Rocksoft Model</FONT></H4>
+
+<p>The Rocksoft model uses seven parameters to describe each CRC protocol. Six of these make natural template parameters in C++, while the seventh is a check value used to validate implementations of the algorithm. I wrote the <B>CRCGenerator</B> class to use just five of the Rocksoft parameters as well as one additional parameter. The declaration of the <B>CRCGenerator</B> class is:</p>
+
+<pre>
+template
+   &lt;
+   int Width,
+   unsigned long Poly,
+   unsigned long Init,
+   unsigned long XOrOut,
+   bool Ref,
+   bool Direct=true
+   &gt;
+   class CRCGenerator;
+</pre>
+
+<p>If you want to calculate CRC-16 checksums, you can typedef the type:</p>
+
+<pre>
+typedef CRCGenerator
+   &lt;
+   16,
+   0x8005,
+   0,
+   0,
+   true
+   &gt; CRC16;
+</pre>
+
+<p>The template parameters are as follows.</p>
+
+<h4><FONT COLOR="#000080">Width</FONT></H4>
+
+<p>This parameter describes the width of the polynomial used to calculate the checksum. It is equal to the highest exponent of x used in the polynomial representation of the divisor. <B>CRCGenerator</B> works with polynomials of widths from 8 to 32 bits.</p>
+
+<h4><FONT COLOR="#000080">Poly</FONT></H4>
+
+<p>This parameter is the value representing the polynomial used to calculate the CRC, but <I>not</I> including the most significant bit. This value should have <B>Width</B> bits. The ability of a CRC algorithm to detect errors depends to a large part on the mathematical properties of the polynomial chosen. For this reason it is not really a good idea to "invent" your own polynomial &#151; unless you really know what you're doing you should use one that has been tried and tested.</p>
+
+<h4><FONT COLOR="#000080">Init</FONT></H4>
+
+<p>This is the value used to initialize the CRC value, as given by the CRC protocol in question. Common values are <B>0</B>, as in CRC-16, and <B>0xFFFFFFFF</B>, as in CRC-32.</p>
+
+<h4><FONT COLOR="#000080">XOrOut</FONT></H4>
+
+<p>This is the value to be XORed with the final result of the CRC calculation to obtain the CRC value for the data. If <B>XOrOut</B> is non-zero, the <B>CRCGenerator</B> function <B>GetNormalCRC</B> will not return zero after processing <B>&lt;data+ original checksum&gt;</B>.</p>
+
+<h4><FONT COLOR="#000080">Ref</FONT></H4>
+
+<p>Some CRC protocols process bytes least-significant bit first &#151; the bytes are reflected. <B>Ref</B> controls whether the input bytes should be reflected before being processed, and whether the final CRC value should be reflected before it is read. The Rocksoft model uses separate parameters for input and output, but my implementation uses a single value for both.</p>
+
+<h4><FONT COLOR="#000080">Direct</FONT></H4>
+
+<p>When <B>Direct</B> is true (the default value) each byte processed is passed immediately through <B>Register</B> &#151; that is, there are no bytes sitting in <B>Register</B> waiting to be propagated out by the following data. The effect is as if each byte processed had been pushed through <B>Register</B> by <B>Width</B> zero bits. Any actual data that follows is superimposed on top of these zero bits and then processed in the same way.</p>
+<p>The value that has been fed into <B>Register</B> by the end of the calculation is equal to the total input data augmented by <B>Width</B> zero bits. This is the required behavior for most CRC alorithms. For some algorithms, however, the bytes processed should be placed at the bottom of the register then pushed through it by the following data. You can get this behavior by setting the <B>Direct</B> parameter to <B>false</B>. If you have <B>Direct</B> set to <B>false</B> and you want to force all the data through the register, you can combine calls to <B>Process</B> and <B>ProcessBits</B> to pass <B>Width</B> zero bits through the register after processing all your data.</p>
+<p>The "Check" parameter in the Rocksoft Model is the value that should be obtained when the string <B>"123456789"</B> is processed.</p>
+
+<h4><FONT COLOR="#000080">The CRCGenerator Interface</FONT></H4>
+
+<p>The public interface for <B>CRCGenerator</B> is shown below:</p>
+
+<pre>
+CRCGenerator();
+unsigned long GetCRC() const;
+unsigned long GetNormalCRC() const;
+bool GetDirect() const;
+bool GetReflect() const;
+bool GetWidth() const;
+void LoadRegister
+   (
+   unsigned long value
+   );
+void Process(unsigned char byte);
+void Process
+   (
+   unsigned char* block,
+   int block_size
+   );
+template&lt;class InIter&gt; void
+Process(InIter first, InIter last);
+void ProcessBits
+   (
+   unsigned char bits,
+   int count
+   );
+void Reset();
+void Write(ostream&amp; os) const;
+</pre>
+
+<p>A synopsis of these functions follows.</p>
+
+<h4><FONT COLOR="#000080">CRCGenerator</FONT></H4>
+
+<p>Only a default constructor is required since all the necessary information is given in the template parameters.</p>
+
+<h4><FONT COLOR="#000080">GetCRC</FONT></H4>
+
+<p>This function returns the value in the CRC register after XORing with <B>XOrOut</B>. If the <B>Ref</B> parameter is <B>true</B> this value is bitwise reflected. If you want to feed this value into the CRC calculation, you should do so least significant <I>byte</I> first &#151; you don't need to worry about the bits, as the calculation takes care of reflecting them. If <B>Ref</B> is <B>false</B> the bytes are correctly ordered. The value is returned in the bottom <B>Width</B> bits of the return value.</p>
+
+<h4><FONT COLOR="#000080">GetNormalCRC</FONT></H4>
+
+<p>This function reflects the bytes in the CRC register if <B>Ref</B> is <B>true</B>, and returns the CRC value in the most significant bytes of the return value. The value returned from <B>GetNormalCRC</B> can be fed into the calculation most-significant byte first, irrespective of whether <B>Ref</B> is <B>true</B> or <B>false</B>.</p>
+
+<h4><FONT COLOR="#000080">GetDirect, GetReflect, GetWidth</FONT></H4>
+
+<p>These functions return the values of the <B>Direct</B>, <B>Ref</B>, and <B>Width</B> parameters respectively. These may be useful for shifting or formatting the value returned by <B>GetCRC</B> or <B>GetNormalCRC</B>.</p>
+
+<h4><FONT COLOR="#000080">LoadRegister</FONT></H4>
+
+<p>This function can be called to XOR a value into the register. The value is reflected as necessary. This function should not be required for most calculations.</p>
+
+<h4><FONT COLOR="#000080">Process</FONT></H4>
+
+<p>The three <B>Process</B> functions allow data to be fed into the calculation either one byte at a time or in blocks. An alternative to the version using member templates is provided; it is commented out and can be used if your compiler doesn't support member templates.</p>
+
+<h4><FONT COLOR="#000080">ProcessBits</FONT></H4>
+
+<p>Processes <B>count</B> bits from bits. If <B>Ref</B> is <B>false</B> they are read in least-significant bit first; if <B>Ref</B> is <B>true</B>, most-significant bit first. Unless you want to do something unusual with CRCs having widths that are not integral numbers of bytes you probably won't need to use this function.</p>
+
+<h4><FONT COLOR="#000080">Reset</FONT></H4>
+
+<p>This function sets the CRC register value to the value of the <B>Init</B> parameter.</p>
+
+<h4><FONT COLOR="#000080">Write</FONT></H4>
+
+<p>Writes the CRC value to a stream, taking <B>Ref</B> into account. <B>Write</B> can be used to append the CRC value to a file stream. The file will then produce a CRC value of zero if read in and processed through <B>CRCGenerator</B>.</p>
+
+<h4><FONT COLOR="#000080">An Example: CRC-16</FONT></H4>
+
+<p>I have already shown the typedef used by the standard CRC-16 protocol. The following code runs the test case for the Rocksoft model:</p>
+
+<pre>
+typedef CRCGenerator
+   &lt; 16,
+     0x8005UL,
+     0UL,
+     0UL,
+     true &gt; CRC16;
+unsigned char data[] =
+   {'1','2','3', '4','5','6','7', '8','9'};
+CRC16 crc16;
+crc16.Process(data, 9);
+unsigned long crc_val;
+crc_val=crc16.GetNormalCRC();
+</pre>
+
+<p><A HREF="fig2.htm">Figure 2</A> shows complete code to calculate and print CRC-16 checksums for a list of files specified on the command line. Note the call to <B>infile.unsetf(ios_base::skipws)</B>, which is necessary because <B>istream_iterator&lt;&gt;</B> skips whitespace by default.</p>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>The above examples demonstrate the convenience offered by C++ template classes. The template mechanism takes care of the creation and initialization of the static look-up table, allowing the class user to write code uncluttered by global variables or calls to initialization functions. My intention in writing the <B>CRCGenerator</B> class was to provide efficiency, ease of use, and flexiblity. In as much as this has been achieved, it is because C++ has made these often conflicting goals easily attainable.</p>
+
+<h4><FONT COLOR="#000080">Note</FONT></H4>
+
+<p><a name="1"></a>[1]  Available online at Ross's web site at http://www.ross.net/crc/.</p>
+
+<p><i>Colin Mahoney teaches English and is an independent developer of software for language learners in Sabadell, Spain. He can be contacted at <B>cmahoney@readysoft.es</B>.</i></p>
+
+<h4><a href="../../../source/1999/jun99/mahoney.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

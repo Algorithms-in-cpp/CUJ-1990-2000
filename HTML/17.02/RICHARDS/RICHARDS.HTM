@@ -1,0 +1,139 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>February 1999/Adding Level-2 Thread Safety to Existing Objects</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocfeb.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Adding Level-2 Thread Safety to Existing Objects</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Etienne Richards</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>The code required to share an object among multiple threads is tedious and error prone. But it can be neatly encapsulated.</p>
+</BLOCKQUOTE>
+<HR>
+<BLOCKQUOTE>
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>Many developers identify areas where they can make use of multiple threads, but they refrain from implementing a multithreaded solution because of the fear of unpredictable behavior. A badly implemented multithreaded solution is more trouble than it could be worth.</p>
+<p>There are multiple levels of thread safety, and although the listing presented here is not a formal definition, it will at least enable a reasonable understanding.</p>
+
+<UL><LI>Level-0. The code is not safe for use with multiple threads.</LI>
+    <LI>Level-1. The code does not use global variables. Most STL implementations have Level-1 thread safety. (I have heard that some implementations of STL are not even Level-1 safe.)</LI>
+    <LI>Level-2. The code allows only one thread to operate on an object at a time. These objects are safe for use in a multithreaded environment.</LI></UL>
+
+<p>Multithreaded systems often consist of objects representing resources that are shared among multiple threads. A Java programmer would solve this problem with the <B>synchronized</B> keyword. This article describes a solution with an effect similar to the Java <B>synchronized</B> keyword. The solution described here can be used with most existing classes without changing the implementation of the class that requires synchronized access.</p>
+
+<h4><FONT COLOR="#000080">Synchronization Via Monitors</FONT></H4>
+
+<p>The design is based on the concept of a monitor. C. A. R. Hoare introduced monitors in a 1974 paper published in <I>Communications of the ACM</I> <a href="#1">[1]</a>. A monitor is a special type of object that applies the principle of mutual exclusion to groups of methods of another object. At run time the monitor allows only one thread at a time to execute a method under the monitor's control. The original definition of a monitor includes two special methods that enable the monitor to perform its function. These methods are wait and signal. Executing a wait operation suspends the calling thread until the thread that is active in the monitor calls a signal method as it leaves the monitor. If there are multiple threads performing a signal they will be queued according to the operating system strategy. (Some operating systems support priority queuing.)</p>
+<p>The execution of a monitor should obey the following constraints:</p>
+
+<UL><LI>Only one thread can be active within the monitor at a time.</LI>
+    <LI>Methods of a monitor can access only data local to the monitor; they should not access any variables outside the control of the monitor.</LI>
+    <LI>The variables or data local to a monitor cannot be directly accessed from outside the monitor.</LI></UL>
+
+<p>In Java, each object has a monitor associated with it. Methods that are marked as <B>synchronized</B> will call the wait method on entry and the signal method on exit. These methods are called on the monitor associated with the object. (Note: When referring to "methods of a monitor" I mean the methods of the object that are protected by the monitor. The same is valid for "variables or data local to a monitor.")</p>
+<p>The solution presented here has the following advantages:</p>
+
+<UL><LI>It enables a programmer to use most Level-1 thread-safe objects as Level-2 thread-safe objects.</LI>
+    <LI>No code change is required to existing objects.<LI>
+    <LI>Client code requires minimal code change.</LI>
+    <LI>The code implementing the safety policy is removed from the object being protected. This enables a programmer to change policy without changing the object being protected. The object that is being protected thus need have no knowledge about the environment where it is being used.</LI></UL>
+
+<h4><FONT COLOR="#000080">Solution Outline</FONT></H4>
+
+<p>The solution makes use of three classes. The class <B>CMonMutex</B> (<A HREF="list2.htm">Listing 2</A>, <B>CMonMutex.h</B>) is a Win32 implementation of the <B>IMutex</B> interface that I defined in <A HREF="list1.htm">Listing 1</A>, <B>MutexInterface.h</B> (<B>IMutex</B> defines the interface of a simple mutex). The <B>CMonitor</B> class (<A HREF="list3.htm">Listings 3</A> and <A HREF="list4.htm">4</A>, <B>CMonitor.h</B> and <B>CMonitor.cpp</B>) represents the monitor that is used. This class has a nested <B>CShield</B> class (<A HREF="list3.htm">Listing 3</A>) that helps provide the special behavior of a stack-based object.</p>
+
+<h4><FONT COLOR="#000080">Mutex Semaphore Class CMonMutex</FONT></H4>
+
+<p>The monitor is implemented with the use of mutex semaphores. I could have used the monitor implementation available on most Unix platforms with the functions <B>mon_create</B>, <B>mon_enter</B>, etc., but my target platform was NT and I felt that a mutex would give me more flexibility.</p>
+<p>Mutual exclusion objects are used to restrict access to a shared resource. These objects have either a <I>signaled</I> (owned) or <I>not-signaled</I> (not-owned) state associated with them. If the mutex is <I>not-signaled</I> a thread can signal the mutex and continue execution. A thread that tries to signal a mutex that is already in the <I>signaled</I> state will wait for a specified interval before failing (timeout); or the thread will be blocked until the mutex state changes to <I>not-signaled</I> and the blocked thread continues execution. (Note that this use of the term "signal" is the opposite of the use discussed previously with respect to monitors, in which a thread sends a signal to release a resource, not to acquire it.)</p>
+<p>It is obvious from the definition of a mutex that if a thread signals a mutex and never resets it to the <I>not-signaled</I> state that no other threads will ever be allowed to own the mutex. This is a very good reason not to expect the developer of an object to take care of the signaling of the mutex. The monitor makes use of the mutex, but the developer of the object being protected is never concerned with any issues related to the Level-2 thread safety. (To make this possible, the object must at least conform to the criteria listed above).</p>
+<p>I've implemented a very simple mutex class, <B>IMutex</B>. The interface for this class is as follows:</p>
+
+<pre>
+class IMutex
+{
+public:
+    virtual ~IMutex();
+    virtual void
+    wait(unsigned short usTimeOut)
+        throw (MutexException);
+    virtual void release();
+};
+</pre>
+
+<p>The specific implementation for Windows NT (<B>CMonMutex</B>) appears in <A HREF="list2.htm">Listing 2</A>.</p>
+<p>The <B>wait</B> method takes an argument that specifies the timeout interval. An exception will be thrown if the calling thread cannot acquire the mutex (set its state to <I>signaled</I>) before the timeout expires. The <B>release</B> method changes the mutex state for the calling thread from <I>signaled</I> to <I>not-signaled</I>. This occurs only if this is the release corresponding to the first successful <B>wait</B> performed by the owning thread. The thread owning the mutex can call the <B>wait</B> method multiple times and it will always succeed. It is very important that the release method is called for every successful <B>wait</B> call.</p>
+
+<h4><FONT COLOR="#000080">Stack-Based Shield Class &#151; CShield</FONT></H4>
+
+<p>The <B>Cshield</B> class (<A HREF="list3.htm">Listing 3</A>) is the one doing the real work of protecting the shared object. The shield class is nested within the monitor class and it takes the same template argument as the monitor class. This template argument specifies the type of the object that must be protected. When calling the <B>Safe</B> method on the monitor object the monitor will return a stack-based shield object. The stack-based shield object is created when the monitor returns a copy of an instance created internally to the monitor.</p>
+<p>The shield class has four attributes. The first is a pointer to the mutex used by the monitor; the second is a pointer to the shared object being protected by the monitor; and the third is the timeout to use when performing a wait on the mutex. The fourth attribute is a flag that indicates if the shield was created with the regular constructor or the copy constructor. </p>
+<p>A shield object is created with the copy constructor if it is to be used for protection of the shared object, in which case the copy constructor will call <B>wait</B> on the mutex just before it returns. The shield object's destructor must know if the object was created with the copy constructor (used for protection) or if it was created with the regular constructor (used by the monitor to create its local copy of the shield). The shield destructor will call <B>release</B> on the mutex if the object was created with the copy constructor.</p>
+<p>The shield class also prohibits creation of a shield object with a copy constructor if the object from which it is being created was created with the copy constructor. In other words, you may not make a copy of a copy of a shield. (Allowing something like making a copy of a copy, or assigning two shield objects to each other would complicate the use of the monitor. Also, there would be no way to guarantee that a <B>release</B> was called for every <B>wait</B>.) The shield class has an <B>element</B> method that returns a reference to the shared object being protected by the monitor. Calling this <B>element</B> method should be the only way for the outside world to gain access to the shared object.</p>
+<p>There is a very important reason why I am putting so much emphasis on the stack-based instance of the shield object. I want a solution that is close to the <B>synchronized</B> feature of Java, because this feature removes the protection responsibility from the user of the class. Compare the two samples of pseudo-code for calling the <B>Add</B> method on a shared object that must be protected:</p>
+<p>Example 1</p>
+
+<pre>
+monitor.wait();
+monitor.element().Add(entry);
+monitor.release();
+</pre>
+
+<p>Example 2</p>
+
+<pre>
+monitor.Safe().element().Add(entry);
+</pre>
+
+<p>The first way of protecting the shared object puts a lot more responsibility on the user of the code. What if the user forgets to call <B>release</B> or does not call <B>wait</B> before calling the <B>element</B> method to get access to the shared object? Also, the code in Example 1 will not work if the <B>Add</B> method of the shared object could throw an exception.</p>
+<p>The second way of solving the problem might require a bit more typing but the compiler will remember to call <B>wait</B> and <B>release</B>. Here is a breakdown of the call sequence. <B>monitor.Safe()</B> returns a stack-based shield object from the monitor. The <B>wait</B> method is called on the monitor mutex in the copy constructor for the stack-based instance of the shield. The shield object now lives on stack and all its methods are accessible. Next, <B>monitor.Safe().element()</B> invokes the <B>element</B> method of the shield, which returns a reference to the shared object. Finally, the <B>Add</B> method of the shared object is invoked with <B>monitor.Safe().element().Add(entry)</B>. The stack-based shield will be destroyed as soon as the end of this statement is reached. There are ways of shortening the statement to access the shared object, but doing so here would make its operation a lot more difficult to explain.</p>
+<p>The shield will also work if the shared object is a primitive type such as an integer. The following statement would return a reference to the integer protected by the monitor:</p>
+
+<pre>
+Monitor.Safe().element()
+</pre>
+
+<p>A statement such as shown in Example 3 below would be also valid and it would produce the expected results. This line of code will acquire the mutex of the shared object and two will be added to the value. The mutex will be released only after the value of the integer has been changed.</p>
+<p>Example 3</p>
+
+<pre>
+Monitor.Safe().element() += 2;
+</pre>
+
+<p>or</p>
+
+<pre>
+Monitor.Safe().element() = monitor.Safe().element() + 2;
+</pre>
+
+<h4><FONT COLOR="#000080">The Monitor Class &#151; CMonitor</FONT></H4>
+
+<p><B>CMonitor</B> (<A HREF="list3.htm">Listings 3</A> and <A HREF="list4.htm">4</A>) is a template class that takes the type of object that must be protected as a template argument. This same template argument is used for the nested shield class declared inside the monitor class. The constructor of the monitor takes a reference to the object that must be protected and the timeout value that must be used by the mutex as arguments. An instance of a shield object is created as the last step in the monitor's constructor. This instance of the shield is the only one created for the monitor using the shield's regular constructor; all other instances of the shield object are created via the shield's copy constructor.</p>
+<p>The monitor's <B>Safe</B> method returns a copy of the internal shield object. As described previously, the copy constructor of the shield object triggers a sequence of <B>wait</B> and <B>release</B> on the mutex used by the monitor.</p>
+
+<h4><FONT COLOR="#000080">A Simple Example</FONT></H4>
+
+<p>Unpredictable behavior in a multithreaded system is not easily demonstrated, because it usually only happens when you do not expect it to happen. To demonstrate the benefits of the monitor I wrote a small class called <B>Foo</B>, which has two methods. The <B>inc</B> method simulates a method that increments the attribute of the class; the value of that attribute is invalid while the <B>inc</B> method is active. The <B>value</B> method returns the value of the <B>Foo</B> class attribute. <A HREF="list5.htm">Listing 5</A>, <B>Foo.h</B>, shows the <B>Foo</B> class definition; <A HREF="list6.htm">Listing 6</A>, <B>Test.cpp</B>, shows the test program. When the test program is executed with no parameters it will start two threads, which will not use a monitor. If the test program is started with the command-line argument <B>'M'</B> it will start two threads that will use monitors to produce more predictable results. Executing the test program will demonstrate the advantage of using the monitor.</p>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>The solution presented here will not work in all situations but it should cover at least 80 percent of the cases you might encounter. If the solution is used correctly it will automatically ensure the acquiring and releasing of the mutex that protects the shared object, enabling the code implementing the protection to be separated from the code implementing the shared object. This separation will also enable you to change the protection policy without affecting the class being protected. As an example, you could extend the monitor to allow only two threads to have access to a shared object at a time without any code change in the shared object. The amount of typing required to work with the monitor can also be reduced with a simple macro. The statement <B>Monitor.Safe().element() += 2;</B> could be replaced with <B>monitor(Monitor) += 2;</B> which makes reading the code a lot easier.</p>
+
+<h4><FONT COLOR="#000080">Reference</FONT></H4>
+
+<p><a name="1"></a>[1]  C. A. R. Hoare. "Monitors: An Operating System Concept," <I>Communications of the ACM</I>, no. 17, October 1974. pp. 549-557.</p>
+
+<p><i>Etienne Richards is a software engineer specializing in smart card related software development and OO-based transaction processing systems. He is currently consulting to South African banks to help them integrate smart card based electronic cash into their existing systems. His interests include object-oriented programming, operating system development, and electronics.</i></p>
+
+<h4><a href="../../../source/1999/feb99/richards.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

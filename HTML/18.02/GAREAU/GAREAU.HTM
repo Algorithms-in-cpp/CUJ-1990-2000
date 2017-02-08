@@ -1,0 +1,177 @@
+<HTML>   
+     <HEAD>
+<TITLE>February 2000/Tracking Memory Leaks under Windows CE</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocfeb.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Embedded Systems</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Tracking Memory Leaks under Windows CE</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Jean L. Gareau</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Visual C++ omits the darndest things in its support for Windows/CE. Too bad memory tracking is one of those things.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<p>Visual C++, under Windows 9x/NT, provides memory-tracking functions that are extremely useful to detect memory leaks when running an application in debug mode. MFC (Microsoft Foundation Classes) takes advantage of that implementation by dumping unfreed objects upon application termination. Those features, essential to developers to track memory leaks, are not implemented under Windows CE. (They were among those items deemed unnecessary in order to reduce the footprint.) This causes a real problem for developers, since Windows CE is typically used in memory-restricted environments, where memory leaks can truly exhaust system resources. This article presents a simple solution to track those leaks. The source code can be downloaded from <I>CUJ</I>'s ftp site (see p. 3 for downloading instructions).</p>
+
+<H4><FONT COLOR="#000080">VC++ Memory Tracking Under 9x/NT</FONT></H4>
+
+<p>Visual C++'s C library includes special memory-allocation functions (<B>_malloc_dbg</B> and <B>_free_dbg</B>) that keep information about each allocated block, such as the filename and the line number where the allocation was done. I first explain how MFC takes advantage of those functions.</p>
+<p>MFC (specifically, <B>Afx.h</B>, included via <B>StdAfx.h</B>, which is itself typically found in any MFC project) defines the <B>DEBUG_NEW</B> symbol as a call to a new-expression that takes two arguments <a href="#1">[1]</a>: <B>THIS_FILE</B> and <B>__LINE__</B>. This definition, in itself, does nothing, but consider that <B>AppWizard</B> always generates the following at the beginning of each source (<B>.cpp</B>) file:</p>
+
+<pre>
+#ifdef _DEBUG
+#define new DEBUG_NEW
+#undef THIS_FILE
+static char THIS_FILE[] = __FILE__;
+#endif
+</pre>
+
+<p>In debug mode, this translates a statement such as:</p>
+
+<pre>
+char * p = new char[10];
+</pre>
+
+<p>into:</p>
+
+<pre>
+char * p =
+   new(THIS_FILE, __LINE__) char[10];
+</pre>
+
+<p><B>THIS__FILE</B> and <B>__LINE__</B> are two macros that the compiler automatically translates into the current filename and the current line number. Consequently, the previous statement could become:</p>
+
+<pre>
+char * p =
+   new("E:\MyApp\MyApp.cpp",
+      41) char[10];
+</pre>
+
+<p>This new-expression results in a call to an overloaded global <B>operator new</B>, which internally (in <B>AfxMem.cpp</B>) invokes <B>_malloc_dbg</B>, passing the filename and the line number. Upon program termination, the information passed to <B>_malloc_dbg</B> is dumped for every memory block that hasn't been released. For instance, the memory block allocated in the previous statement, if never released, results in the following dump in the Output window, in debug mode:</p>
+
+<pre>
+Detected memory leaks!
+Dumping objects -&gt;
+E:\MyApp\MyApp.cpp(41) : {69} normal
+block at 0x00420030, 10 bytes long.
+Data: &lt;          &gt; CD CD CD CD CD CD CD
+CD CD CD
+Object dump complete.
+</pre>
+
+<p>Additionally, MFC redefines <B>operator new</B> and <B>delete</B> for its <B>CObject</B> object (the root class of the MFC hierarchy), to invoke <B>_malloc_dbg</B> and <B>_free_dbg</B> with special parameters. This gives MFC the ability to dump the object of a class. For instance, the following statement:</p>
+
+<pre>
+CWnd * pWnd = new CWnd;
+</pre>
+
+<p>invokes <B>CObject::operator new()</B> and ultimately results in the following dump:</p>
+
+<pre>
+Detected memory leaks!
+Dumping objects -&gt;
+E:\MyApp\MyApp.cpp(50) : {87} client
+block at 0x004210D0, subtype 0, 64 bytes
+long.
+a CWnd object at $004210D0, 64 bytes
+long
+Object dump complete.
+</pre>
+
+<p>Note that in addition to the filename and line number, the class type (a <B>CWnd</B> here) is provided.</p>
+<p>Windows developers have been relying on such useful information to track memory leaks in their applications. Unfortunately, all this is gone under CE: <B>_malloc_dbg</B> and <B>_free_dbg</B> are not available in the SDKs (only <B>malloc</B> and <B>free</B> are), the <B>DEBUG_NEW</B> macro simply translates to <B>new</B>, and although <B>CObject</B> declares its own <B>operator new</B>, it doesn't take any extra arguments. Hence allocating memory but not releasing it remains undetected. Although Windows CE (and all other Windows operating systems) reclaims memory upon process termination, most applications on CE never really stop, as typical CE devices are merely suspended, not powered off. A memory-leaking application will eventually swallow all memory available, and applications will start to crash.</p>
+<p>The solution to this problem is simply to reintroduce memory tracking and leak detection. Whatever approach is adopted, a few requirements must be met: the solution must work with C++ new- and delete-expressions (not only <B>malloc</B> and <B>free</B>, which do not invoke object constructors and destructors), changes to the actual code (if any) must be minimized, and all memory leaks should be dumped automatically upon program termination. Also, the solution disallows changes to the actual C and MFC libraries, so as to keep up with new versions. Ditto for some hacks that could fail on future versions of the compiler or libraries. As a relief, the solution can be limited to MFC applications for CE developed with Visual C++ and running in debug mode. As you're about to see, this can quickly turn into a challenging exercise.</p>
+
+<H4><FONT COLOR="#000080">Tracking Memory</FONT></H4>
+
+<p>Before revealing the final solution, I explore a couple different scenarios.</p>
+<p>The first scenario is to replace <B>malloc</B> and <B>free</B> by some functions with the same names (prefixed by the <B>"extern C"</B> linkage directive) that would additionally track memory, hoping that <B>new</B> and <B>delete</B> would call those functions. This approach must be abandoned, since adding those functions results in compiler errors in C++.</p>
+<p>The second scenario is to override the global <B>operator new</B> and <B>operator delete</B> functions by declaring new implementations. That works, but not for <B>CObject</B>-derived objects, since <B>CObject</B> provides its own <B>operator new</B> and <B>operator delete</B>. Hence, assuming that <B>CMyObject</B> is derived from <B>CObject</B>, executing:</p>
+
+<pre>
+CMyObject * pMyObject = new CMyObject;
+</pre>
+
+<p>does not invoke the global <B>operator new</B>, but rather <B>CObject</B>'s. As a result, the allocation of <B>CObject</B>-derived objects will go undetected. However, redefining <B>CObject::operator new</B> does work. For instance, if you add the following code in your application, it will be called to allocate memory:</p>
+
+<pre>
+void* CObject::operator new(size_t sz)
+{
+    return malloc(sz);
+}
+</pre>
+
+<p>But such an implementation is not useful, since extra parameters are required (the filename and the line number). And since <B>CObject</B> declares only the above form of <B>operator new</B> (under CE), the compiler will not accept any declaration with extra parameters.</p>
+<p>To make things worse, the compiler will accept a custom implementation of <B>CObject::operator delete</B>, but that implementation doesn't get called. Never. Only the original implementation is invoked. It turns out that Visual C++ uses an optimization when deleting an object via <B>delete</B>. This optimization is done via the object's <B>vtable</B> and results in the original <B>CObject::operator delete</B> being invoked. Thus, it is impossible to know which objects get released.</p>
+<p>The third scenario is to use the second approach and hack all <B>vtable</B>s to use the address of the custom <B>delete</B> implementation. But this approach is not good because 1) <B>vtable</B>s are read-only (writing into them crashes the application); 2) this hack that may not work in future versions of the compiler; 3) it still doesn't solve the <B>CObject::operator new</B> problem.</p>
+<p>The only scenario that works is the second: re-implementing the global operators <B>new</B> and <B>delete</B>, but it fails at tracking <B>CObject</B>-derived objects. However, a closer look at the <B>CObject</B>'s allocation operators reveals that under CE, they simply invoke the corresponding global operators. Hence calling either makes no difference under CE. For instance, the following code:</p>
+
+<pre>
+CWnd * pWnd = new CWnd;  // invokes CObject::operator new
+delete pWnd;             // invokes CObject::operator delete
+</pre>
+
+<p>is functionally equivalent to:</p>
+
+<pre>
+CWnd * pWnd = ::new CWnd;  // invokes ::operator new
+::delete pWnd;             // invokes ::operator delete
+</pre>
+
+<p>Since a new-expression can accept arguments using placement syntax <a href="#1">[1]</a>, the previous code can be rewritten as follows:</p>
+
+<pre>
+CWnd * pWnd = ::new(THIS_FILE, __LINE__) CWnd;
+::delete pWnd;
+</pre>
+
+<p>The above code will result in calls to the custom versions of <B>operator new</B> and <B>operator delete</B> and allows us to track all memory allocations, including <B>CObject</B>'s.</p>
+<p>The issue suddenly becomes enforcing the use of the custom global operators (without changing the actual application code) to make sure that <B>CObject</B>'s operators are never called. Luckily, this is something that can be easily achieved through some <B>#define</B> directives, as presented in <a href="fig1.htm">Figure 1</a>. Note that the <B>DEBUG_NEW</B> macro is redefined in debug mode. All that remains at this time is to actually track memory.</p>
+
+<H4><FONT COLOR="#000080">Keeping Track of Memory</FONT></H4>
+
+<p>Keeping track of memory is simple enough: every time a block is allocated (via <B>new</B>), a simple information structure is allocated (via <B>malloc</B>) and initialized with the specified parameters (the size, the filename, and the line number). The requested memory block is also allocated via <B>malloc</B>. But before the custom <B>new</B> returns that address, it stores it in a map and associates it with the information structure (see <a href="fig2.htm">Figure 2</a>). When that block is released (via delete), the associated entry is looked up in the map and discarded. The associated information structure is also released. When the program terminates, the entries that remain in the map are the memory blocks that haven't been freed &#151; the memory leaks. They simply have to be dumped to inform the developer.</p>
+<p>MFC provides type-safe templates for arrays, lists, and maps. Any of those data structures could be used, but maps offer the fastest access, and they are ideal to associate an address to a pointer to a structure. <a href="fig3.htm">Figure 3</a> presents the information structure and the map type.</p>
+<p>The map is defined as a global variable and accessed within the custom implementation of the global <B>operator new</B> and <B>delete</B>. A more object-oriented approach is to encapsulate the map into an object (declared global) and provide simple methods to access it (see <a href="fig4.htm">Figure 4</a>).</p>
+
+<H4><FONT COLOR="#000080">Dumping the Map</FONT></H4>
+
+<p>The map can be dumped by simply listing its content. By formatting each line using the special format <B>filename(line number) : message</B> <a href="#2">[2]</a>, Visual C++ will open the file and kindly position the cursor on the related line when the user double-clicks on it for a quick identification of the source of the leak. Here is an example of such a dump:</p>
+
+<pre>
+1 memory leak(s) found:
+E:\MyApp\MyApp.cpp(19) : block at
+0xef0d5c, 10 byte(s) long
+</pre>
+
+<p>The <B>CMemTrack</B> object destructor looks like the ideal spot to dump the map. By making the object a global variable, its destructor would be invoked at the very end of the program execution. Unfortunately, it doesn't work like that: in debug mode, the destructor is not called at all. Dumping the map then requires adding a statement in the application to dump the code, but it is best not to have to do that, although a static method is provided to do so if required.</p>
+<p>DLLs (dynamic-link libraries) come to the rescue: they are always invoked upon program termination for cleanup. The <B>CMemTrack</B> object can then be implemented in a DLL, which dumps the map when it is invoked for cleanup.</p>
+<p>All in all, the class object and its methods reside in a DLL (<B>MemTrack.dll</B>) and the associated library file (<B>MemTrack.lib</B>), whereas all the definitions are stored in a header file (<B>MemTrack.h</B>).</p>
+
+<H4><FONT COLOR="#000080">Adding Memory Tracking to an Existing MFC Project</FONT></H4>
+
+<p>The only modification required to use the above implementation of memory tracking in an MFC project is to include the header file (<B>MemTrack.h</B>) in the source files. To make things easier, this header file can be included as the last <B>#include</B> in <B>StdAfx.h</B>, making the file visible throughout the entire MFC project. Since the header file (<B>MemTrack.h</B>) also includes a directive to automatically include the library (<B>MemTrack.lib</B>) at link time, the project's settings don't even have to be changed. Every call to <B>new</B> and <B>delete</B> will invoke the inline versions that track memory and produce a list of memory leaks (if any) at the end.</p>
+<p>There are three limitations to this solution: 1) <B>AppWizard</B>'s generated code contains new-expressions that are tracked (such as the <B>IMPLEMENT_DYNCREATE</B> macro), but the corresponding delete-expressions are buried in the MFC's library and go undetected, resulting in a few <I>false</I> memory leaks (that are fortunately easy to recognize); 2) explicit references to the global <B>operator new</B> and <B>delete</B> (i.e. <B>::new</B> and <B>::delete</B>) produce compiler errors; and 3) any object's implementation of <B>operator new</B> and <B>delete</B> will not be called. Fortunately, most applications are not impacted. Otherwise, memory leaks do not go incognito anymore.</p>
+
+<H4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1]  A C++ new-expression can take any number of arguments via the use of <I>placement syntax</I>:</p>
+
+<pre>
+T *ptr = new(arg1, arg2, ...) T;
+</pre>
+
+<p>The arguments are provided to the new-expression immediately after the <B>new</B> keyword. When the compiler encounters this new-expression, it will call the corresponding allocator function (<B>operator new</B>) that has been overloaded to accept the extra arguments.</p>
+<p>The term "new-expression" should not be confused with <B>operator new</B>. The former refers to an expression in the source code (such as the above) that invokes both the allocation and construction of an object. The latter refers to either a global or class-specific function that allocates memory. <B>operator new</B> does not invoke a constructor.</p>
+<p><a name="2"></a>[2]  This format is also the one used by the compiler to output errors.</p>
+
+<p><i><b>Jean L. Gareau</B> is Principal Engineer at Annasoft Systems in San Diego, CA, and the author of the book <I>Windows CE from the Ground Up</I> (Annabooks, 1999). He welcomes your comments at <B>jeangareau@yahoo.com</B>.</i></p>
+
+<h4><a href="../../../source/2000/feb00/gareau.zip">Get Article Source Code</a></h4>
+
+</blockquote></body></HTML>

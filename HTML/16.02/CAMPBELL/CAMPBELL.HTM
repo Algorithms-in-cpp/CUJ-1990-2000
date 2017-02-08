@@ -1,0 +1,443 @@
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+<TITLE>February 1998/Implementing Pascal Data Types in C++</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<H2><A href="../tocfeb.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+<FONT COLOR="#FF0000">Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Implementing Pascal Data Types in C++</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Brian Campbell</FONT></H3>
+
+<blockquote>
+<p>C++ is not just "a better C," it can also be a better Pascal.</p></blockquote><hr>
+<blockquote>
+<p>Pascal and other languages offer a few nice features that are absent in C++.
+However, C++ is highly extensible, and it can be used to emulate those absent
+features in various ways. C++ code can emulate the semantics, and to some
+degree, the appearance, of constructs found in other languages. This article
+presents two kinds of Pascal data types and describes their implementation and
+use in C++. These data types are the scalar subrange and the array.<p>
+First, I show how to emulate the scalar subrange. The subrange is a type
+defined with two scalar constants: a lower bound and an upper bound. It can be
+declared in Pascal as a named type, or as an anonymous type (for example, when
+declaring a variable):</p>
+
+<pre>
+TYPE
+   day_range = 1..7;
+VAR
+   coordinate: -9..9;
+   days : day_range;
+</pre>
+<p>Such
+types are useful when you know that a variable using such a type should never
+hold a value outside the range. The above subrange declarations are like
+Pascal's integer (or int in C++), except that variables are constrained to hold
+integer values within only the given range. A subange type has two advantages
+over Pascal's integer or C++'s int:</p>
+<p>1. It elaborates the nature of the data represented by the type or variable.
+Therefore, it helps document the intent of your code and solution domain.<p>
+2. It allows for run-time checking. That is, when your code assigns a value,
+your program can verify that the assigned value is within the defined range.
+When the assigned value is out of range, the system logs a run time error. For
+example, the following Pascal assignment produces an error because it attempts
+to assign a higher than expected coordinate:</p>
+
+<pre>
+coordinate := 10;
+</pre>
+
+<h4><FONT COLOR="#000080">A Naive Subrange Implementation</FONT></H4>
+
+<p>In C++, you can use a class to create a data type that implements this behavior. A
+straightforward, but naive, implementation follows:</p>
+
+<pre>
+class Subrange {
+   int low, high, value;
+public:
+   Subrange (int l, int h)
+      {low=l; high=h;}
+   operator int () {return value;}
+   operator = (int v) {
+      if (v &gt;= low &amp;&amp; v &lt;= high)
+         value=v;
+      else
+         error();
+      return *this;
+   }
+};
+</pre>
+
+<p>The error routine is a global function (or member function) that can be defined to
+perform some action appropriate to the application. Translating the previous
+Pascal declarations to C++, they would appear as:</p>
+
+<pre>
+typedef Subrange day_range;
+Subrange coordinate(-9,9);
+day_range days(1,7);
+</pre>
+
+<p>Thanks to the class's assignment and type conversion operators, the object variable
+can be "assigned" and "read" like an int variable. For example:</p>
+
+<pre>
+coordinate = -5;
+// e.g. number of days remaining
+// in the week.
+days = 3;
+cout &lt;&lt; (days+1) &lt;&lt; " "
+     &lt;&lt; coordinate &lt;&lt; endl;
+</pre>
+<p>This
+implementation has a couple of problems, however:</p>
+<UL><LI>The subrange values are attached to the class constructor, and therefore
+        tied to the variable declarations. The subrange values are not attached to the
+        type itself, which makes named subrange types (declared with a typedef)
+        useless.</LI>
+    <LI>The subrange values occupy space in each object created, so this class has
+        considerably more space overhead than an int variable.</LI>
+</UL>
+<h4><FONT COLOR="#000080">A Template Subrange Implementation</FONT></H4>
+
+<p>The
+above problems can be solved with a better implementation, courtesy of the C++
+template:</p>
+
+<pre>
+template &lt;int low, int high&gt;
+class Subrange {
+   int value;
+public:
+   Subrange () {}
+   operator int () {return value;}
+   Subrange &amp; operator =
+      (const int v) {
+      if (v &gt;= low &amp;&amp; v &lt;= high)
+         value=v;
+      else
+         error();
+      return *this;
+   }
+};
+</pre>
+<p>The
+declarations now appear as:</p>
+
+<pre>
+typedef Subrange&lt;0,7&gt; day_range;
+Subrange&lt;-9,9&gt; coordinate;
+day_range days;
+</pre>
+<p>Variables
+are assigned and read the same way as in the first implementation. The template
+encapsulates the range numbers as part of the data type, which can then be
+attached to a typedef name. This abstraction allows a programmer to define a
+"restricted" int type, and then refer to it solely by name.</p>
+
+<h4><FONT COLOR="#000080">Implementing Pascal-like Arrays</FONT></H4>
+
+<p>Now
+I want to focus on emulating Pascal arrays. The following snippet shows, in
+simplified form, how arrays are conventionally implemented in C++ component
+libraries:</p>
+
+<pre>
+template&lt;class T&gt;
+class Array {
+   T * value;
+public:
+   Array (int size) {value = new T[size];}
+   T &amp; operator [] (int i) {return value[i];}
+};
+</pre>
+<p>In
+this implementation, the constructor allocates an array on the memory heap,
+according to a dynamically supplied size. The [] operator defines an indexing
+mechanism that allows access to individual array elements, regardless of
+whether the element appears in an arbitrary expression or as an lvalue (that
+is, on the left-hand side of an assignment). For example:</p>
+
+<pre>
+// creates an array with 10 elements, indexed 0 to 9
+Array&lt;int&gt; a(10);
+a[0] = 3;         // update the 1st element
+a[9] = a[0]+1;    // update the last element using the first
+</pre>
+<p>The
+following design provides a more Pascal-like array, in that it supports
+non-zero bounds. Also, the [] operator checks the array index to ensure safe
+access of elements.</p>
+
+<pre>
+template&lt;class T&gt;
+class Array {
+   int low, high;
+   T * value;
+public:
+   Array (int l, int h)
+      {low=l; high=h; value = new T[high-low+1];}
+   T &amp; operator [] (int i) {
+      if (i &gt;= low &amp;&amp; i &lt;= high)
+         return value[i-low];
+      else {
+         error();
+         //Gotta return something; default 1st element
+         return value[0];
+      }
+   }
+};
+</pre>
+<p>The
+above implementation is appropriate for arrays whose bounds you need to define
+at run time. Below are examples of its usage:</p>
+
+<pre>
+// Creates an array with 10 elements, indexed 1..10
+Array&lt;int&gt; a(1,10);
+a[1] = 3;           // Update the 1st element
+a[10] = a[1]+1;     // Update the last element using the first
+</pre>
+<p>However,
+when you can fix the array size at compile time, the following implementation
+is slightly more efficient. The low and high bound values are embedded
+constants rather than class members. Therefore, the compiler may be able to
+produce slightly more efficient code for index checks. Also, the program
+creates the array on the local stack instead of dynamically allocating it from
+the heap.</p>
+
+<pre>
+template&lt;int low, int high, class T&gt;
+class Array {
+   T value[high-low+1];
+public:
+   T &amp; operator [] (int i) {
+      if (i &gt;= low &amp;&amp; i &lt;= high)
+         return value[i-low];
+      else {
+         error();
+         return value[0];  // Gotta return something
+      }
+   }
+};
+</pre>
+<p>This
+implementation allows you to create a named type (via typedef) that includes
+the size of the array. This feature is useful when the array size is an
+integral part of the type.</p>
+
+<pre>
+typedef Array&lt;1,7,String&gt; day_strings;
+day_strings day_names, day_names_en_espanol;
+day_names[1]="Sunday";
+day_names[2]="Monday";
+day_names[3]="Tuesday";
+// etc.
+day_names_en_espanol[1]="domingo";
+day_names_en_espanol[2]="lunes";
+// etc.
+// display 2nd day of the week
+cout &lt;&lt; day_names[2] &lt;&lt; endl;
+// display day in Spanish
+cout &lt;&lt; day_names_en_espanol[2] &lt;&lt; endl;
+</pre>
+<p>If
+you do not add a constructor member to the array template, and if you make the
+data member public, you can create arrays that support static
+initialization:</p>
+
+<pre>
+typedef Array&lt;1,7,String&gt; day_strings;
+day_strings day_names = {"Sunday", "Monday", "Tuesday",
+                         "Wednesday", "Thursday",
+                         "Friday", "Saturday"};
+for (int i=1; i&lt;=7; i++)
+   // display all days of the week
+   cout &lt;&lt; day_names[i] &lt;&lt; endl;
+</pre>
+<p>In
+some contexts, you may find that the initializer requires double braces {{ }};
+that is, you'll need the outer braces for the class declaration, and the inner
+braces for the array member declaration.</p>
+
+<h4><FONT COLOR="#000080">Combining Subrange Types and Arrays</FONT></H4>
+
+<p>It
+is also possible to extend the previously defined Subrange class to create an
+Array class whose bounds are expressed in terms of the Subrange type. This
+technique closely follows the semantics of arrays found in standard Pascal.</p>
+
+<pre>
+template &lt;int low_bound, int high_bound&gt;
+class Subrange {
+   int value;
+public:
+   enum {low = low_bound, high = high_bound};
+   Subrange () {}
+   operator int () {return value;}
+   Subrange &amp; operator = (const int v) {
+      if (v &gt;= low &amp;&amp; v &lt;= high)
+         value=v;
+      else
+         error();
+      return *this;
+   }
+};
+template&lt;class S, class T&gt;
+class Array {
+public:
+   T value[S::high-S::low+1];
+   T &amp; operator [] (const int i) {
+      if (i &gt;= S::low &amp;&amp; i &lt;= S::high)
+         return value[i-S::low];
+      else {
+         error();
+         return value[0];  // Gotta return something
+      }
+   }
+};
+</pre>
+<p>In
+this case the array declarations can appear as:</p>
+
+<pre>
+typedef Array&lt; Subrange&lt;1,10&gt;, int &gt; fixed_array;
+typedef Array&lt; Subrange&lt;1,10&gt;, Subrange&lt;1,100&gt; &gt;
+   another_array;
+</pre>
+<p>Or if you prefer:</p>
+
+<pre>
+typedef Subrange&lt;1,10&gt; fixed_range;
+typedef Subrange&lt;1,100&gt; element_range;
+typedef Array&lt;fixed_range,int&gt; fixed_array;
+typedef Array&lt;fixed_range,element_range&gt; another_array;
+</pre>
+<p>which is analogous to Pascal's:</p>
+
+<pre>
+TYPE
+  fixed_range = 1..10;
+  element_range = 1..100;
+  fixed_array = ARRAY[fixed_range] of INTEGER;
+  another_array = ARRAY[fixed_range] of element_range;
+</pre>
+<p>You
+can re-express the previous "day names" example with the earlier day_range
+type, and express the for loop bounds in terms of that type:</p>
+
+<pre>
+typedef Subrange&lt;1,7&gt; day_range;
+typedef Array&lt;day_range,String&gt; day_strings;
+day_strings day_names = {"Sunday", "Monday", "Tuesday",
+                         "Wednesday", "Thursday",
+                         "Friday, "Saturday"};
+for (int i=day_range::low; i&lt;=day_range::high; i++)
+   // display all days of the week
+   cout &lt;&lt; day_names[i] &lt;&lt; endl;
+</pre>
+<p>You
+can create multidimensional arrays by nesting the array declarations, in other
+words, by creating arrays of arrays. The example below uses a design in which
+the origin (coordinate 0,0) is at the center of a graphics window.</p>
+
+<pre>
+typedef Subrange&lt;-320,319&gt; x_range;
+typedef Subrange&lt;-200,199&gt; y_range;
+typedef Subrange&lt;0,255&gt; pixel;
+typedef Array&lt;x_range, Array&lt;y_range,pixel&gt; &gt; matrix;
+matrix graphics;
+// Clear graphics window
+for (int y=y_range::low; y &lt;= y_range::high; y++)
+   for (int x=x_range::low; x &lt;= x_range::high; x++)
+      graphics[x][y] = pixel::low;
+</pre>
+
+<h4>
+<A name="HEADING7">Addressing Efficiency Concerns</A></h4>
+
+<p>Some
+C++ developers may be concerned about run time performance, using the
+implementations given above. I address these concerns below:<p>
+First, inlining eliminates the overhead of function calls. If your compiler
+obeys inlining requests, then accessing the integer value in the class (via the
+int operator) should be no more costly than accessing an int value directly.
+The same applies to the int assignment function, except that in that case the
+implementation embeds tests into your code which are performed before
+assignments.<p>
+Second, speed is often not an issue during program testing and debugging, but
+becomes an issue when the program is readied for release to users. When this is
+true, you can use two versions of the classes presented here.  Use the "safe"
+versions illustrated above during initial testing and debugging phases. Then
+you can recompile your application with a "performance" version that does not
+include the checks in the assignment or array access methods. Assuming that you
+have each implementation in separate directories, simply switching include
+directories in the C++ compile invocation will do the trick. Here is an example
+of the Subrange assignment as implemented in the "performance" version:</p>
+
+<pre>
+Subrange &amp; operator = (const int v) {value=v;}
+</pre>
+<p>or
+the array access method:</p>
+
+<pre>
+T &amp; operator [] (const int i) {return value[i-S::low];}
+</pre>
+<p>The
+compiler should optimize these inline functions as if you had implemented your
+Subranges and Arrays as built-in ints and C++ arrays, with the exception of the
+embedded subtraction to normalize the array index. The compiler should optimize
+out this subtraction as well if the constant S::low is zero. When it is not
+zero, it is better to implement the subtraction in one place (in the member
+function), rather than hand-coding it in every array access statement. (I've
+found examples of such hand-coding in some ordinary C/C++ array applications.)</p>
+
+<h4>
+<A name="HEADING8">Further Possibilities</A></h4>
+
+<p>You
+can endow these subranges and arrays with additional methods and properties,
+some of which are found in extended Pascal languages. Here are some possible
+enhancements:</p>
+<UL><LI>member constants that return the high bound and low bound values</LI>
+    <LI>member constants that return the number of elements in the range or array</LI>
+    <LI>an array member function that prints its elements (with a supplied
+        separator)</LI>
+    <LI>a subrange iterator</LI>
+    <LI>an array copy function</LI>
+    <LI>an array "slice" function, which constructs a new array from a smaller
+        subrange of the original</LI>
+</UL>
+<p>The techniques outlined in this article, plus many others, were used in in
+our proprietary translator to translate a large Pascal application (greater
+than 100K lines of code) to C++. The translator produced ready-to-execute C++
+code whose statements are readable and clearly map back to the original Pascal
+source statements. No logical design changes were required in the application
+to get the C++ version to work (except for a few dependencies on the system OS
+and hardware).<p>
+C++ developers may find techniques like these useful when porting software from
+other languages. Or, their C++ code can benefit from "extended capabilities"
+that they have encountered and liked while using other languages. o
+</p>
+<p><i>Brian Campbell is a Principal Engineer at AG Communication Systems, a
+developer and manufacturer of advanced telecommunications products and
+services. Brian works with telephone switch databases, providing support
+software for users and developers of these databases. He has many years of
+experience in both Pascal and C++. He is a member of the ACM and the Planetary
+Society. You can reach him via email at campbelb@agcs.com. His company's web
+site is at http://www.agcs.com.
+</i></p></blockquote>
+</body></html>

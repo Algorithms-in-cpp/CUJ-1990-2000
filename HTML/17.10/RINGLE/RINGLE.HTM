@@ -1,0 +1,222 @@
+<HTML>   
+     <HEAD>
+<TITLE>October 1999/Singleton Creation the Thread-safe Way</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tococt.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Objects and Components</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Singleton Creation the Thread-safe Way</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Jonathan Ringle</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Singletons avoid problems with order of construction, at the cost of more problems for multithreading.</p>
+</BLOCKQUOTE>
+
+<hr>
+<BLOCKQUOTE>
+
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>Recently, I was troubleshooting a problem in which some working code, for some reason, stopped working. No changes had been made to the code since the time the code was functioning. After stepping through the code, I discovered that it used a global object A, whose constructor depended upon global object B. Object A and object B were declared in different translation units, and C++ does not have a way to specify the order of construction of non-local static objects (i.e. global objects) across translation units. I found myself in the situation described by Scott Meyers in <I>Effective C++,</I> item 47, where he writes: "Ensure that non-local static objects are initialized before they're used." <a href="#1">[1]</a> So, when the compiler/linker decided by its own whim to change the order of construction, so that object A was now constructed before object B, the code stopped working. Object A's constructor was acting on a non-constructed object B.</p>
+<p>I looked at object A and object B, and decided that both objects were prime candidates for the Singleton Pattern <a href="#2">[2]</a>, and proceeded to wrap each with a singleton implementation. However, a feature of the singleton's global point of access is that the construction of the singleton object does not occur until first use. This presented me with a new problem, because now multiple threads could contend to execute the "first use" code. If the "first use" construction mechanism in the global point of access is not protected properly against the possibility of multiple threads, then it is possible for either multiple instances of the singleton to be created, or for a thread to act on a partially constructed singleton object.</p>
+<p>The global point of access to the singleton is typically implemented through a static member function of the singleton, returning either a pointer or a reference to the singleton instance. My personal preference is for the <B>Singleton::instance</B> function to return a reference to the singleton object. The issue of returning a pointer or a reference is irrelevant to the multithreading issues I am presenting here.</p>
+<p>I describe the context of the problem with a traditional implementation of the singleton in a multithreaded environment. The following code shows how a typical singleton might be coded:</p>
+
+<pre>
+class Singleton
+{
+public:
+  static Singleton&amp; instance();
+     
+protected:
+  Singleton();
+     
+private:
+  static Singleton* _instance;
+};
+     
+Singleton* Singleton::_instance = NULL;
+     
+Singleton&amp; Singleton::instance()
+{
+  if(!_instance) // Race condition
+    _instance = new Singleton;
+     
+  return *_instance;
+}
+</pre>
+
+<p>The problem with this approach is that it is not thread safe. In a multithreaded environment, it is possible for two threads of execution to enter the <B>Singleton::instance</B> method while <B>_instance</B> is still <B>NULL</B>, causing two instances of <B>Singleton</B> to be created. The following race condition is possible: Thread 1 enters <B>Singleton::instance</B> and evaluates <B>if(!_instance)</B> as <B>true</B>. Thread 1 then proceeds to allocate and construct a <B>Singleton</B> instance. Suppose that during the construction of <B>Singleton</B> Thread 1 is preempted by the operating system, and Thread 2 gets control. Thread 2 now enters <B>Singleton::instance</B> and evaluates <B>if(!_instance)</B> as <B>true</B>. Remember that Thread 1 has not yet assigned a value to <B>_instance</B>, because it hasn't yet finished the construction of <B>Singleton</B>. Thread 2 then proceeds to allocate and construct another instance of <B>Singleton</B>!</p>
+
+<h4><FONT COLOR="#000080">Testing Common Solutions</FONT></H4>
+
+<p>When you're faced with a problem, sometimes the solution doesn't come around until you've given your mind a rest and you've slept on it for a little while. The same is true when trying to debug multithreaded programs involving race conditions. "Sleeping" on the problem opens up the race condition timing window so the problem is much easier to reproduce. It is also subsequently easier to test the validity of a proposed solution.</p>
+<p>With a little help from a <B>Sleep</B> statement in the <B>Singleton</B> constructor, the race condition is easy to duplicate. Also, with the addition of some state data in the <B>Singleton</B> &#151; which is initialized after the <B>Sleep</B> function &#151; it is possible to verify that a thread is acting on a fully constructed instance of the <B>Singleton</B>. The singleton can be exercised in a multithreaded manner by a short program as shown in <B>test.cpp</B>, <a href="list1.htm">Listing 1</a>. This program simply spawns off a new thread immediately, and both the main thread and the created thread excercise the singleton with a call to <B>Singleton::instance().show_state</B>. The main thread waits for the spawned thread to terminate. (When a thread terminates it is commonly referred to as "joining" with its parent thread.) The main thread then executes <B>Singleton::instance().show_state</B> one more time and exits. The top of <B>test.cpp</B>, <a href="list1.htm">Listing 1</a>, has a series of commented <B>#include</B> directives, one for each solution to be explored.</p>
+<p>The first attempt, shown in <B>try1.h</B>, <a href="list2.htm">Listing 2</a>, reflects the singleton implementation that was described earlier. Executing this code yields an output similar to the following:</p>
+
+<pre>
+main tid is 244
+Singleton 0x00301F00 has been
+   allocated by tid 244
+thread2 tid is 313
+Singleton 0x00301ED0 has been
+   allocated by tid 313
+Singleton 0x00301F00 -state
+   initialized by tid 244
+show_state(): this=0x00301F00
+   state=0xABCD tid=244
+Singleton 0x00301ED0 -state
+   initialized by tid 313
+show_state(): this=0x00301ED0
+   state=0xABCD tid=313
+show_state(): this=0x00301ED0
+   state=0xABCD tid=244
+</pre>
+
+<p>This output shows that both threads created an instance of <B>Singleton</B>. Clearly, this is not the intended behavior.</p>
+
+<h4><FONT COLOR="#000080">The Local Static Singleton Implementation</FONT></H4>
+
+<p>Another common implementation of <B>Singleton::instance</B> uses a local static object for the singleton instance variable <a href="#1">[1]</a>.</p>
+
+<pre>
+Singleton&amp; Singleton::instance()
+{
+  static Singleton _instance;
+  return _instance;
+}
+</pre>
+
+<p>This implementation relies on the fact that the local static variable <B>_instance</B> will be automatically constructed the first time <B>Singleton::instance</B> is invoked. <I>The C++ Programming Language, 3rd Edition,</I> Section 7.1.2, states the following:</p>
+
+<BLOCKQUOTE>
+<p>If a local variable is declared static, a single, statically allocated object will be used to represent that variable in all calls of the function. It will be initialized only the first time the thread of execution reaches its definition <a href="#3">[3]</a>.</p>
+</BLOCKQUOTE>
+
+<p>At first glance, this implementation appears to be a viable solution, since the language specification will take care of the "first use" code implicitly. However, notice that the above excerpt says nothing about the behavior of the language in a multithreaded environment. In fact, as far as I am aware, the C++ specification is silent on multithreading issues altogether. That means it is up to the compiler implementers to decide what to do about local static objects in a multithreaded environment, if anything at all. Empirical testing with Visual C++ 6.0, using my little test-bed program, reveals that a method of a local static object may be invoked before the local static object is fully constructed! The following is the test program output using the <B>Singleton::instance</B> implementation shown in <B>try2.h</B>, <a href="list3.htm">Listing 3</a>:</p>
+
+<pre>
+main tid is 201
+Singleton 0x00436048 has been
+   allocated by tid 201
+thread2 tid is 310
+show_state(): this=0x00436048
+   state=0x0000 tid=310
+Singleton 0x00436048 -state
+   initialized by tid 201
+show_state(): this=0x00436048
+   state=0xABCD tid=201
+show_state(): this=0x00436048
+   state=0xABCD tid=201
+</pre>
+
+<p>Because the behavior of a local static object is undefined in a multithreaded environment, I have rejected use of this feature as a viable solution.</p>
+
+<h4><FONT COLOR="#000080">Locking the Implementation Down</FONT></H4>
+
+<p>This brings me back to doing something about the original implementation of <B>Singleton::instance</B>. It is clear that the code in the original <B>Singleton::instance</B> must be invoked atomically and that a locking mechanism is required for it to be thread-safe.</p>
+<p>I am a big fan of the "resource acquisition is initialization" C++ idiom to manage resources. Since mutexes and critical sections are resources that can be acquired and released, I have implemented the locking mechanism using resource management techniques. The code for the <B>Critical_Section</B> class and the <B>Lock_Guard</B> template class used appears in <B>sync.h</B>, <a href="list4.htm">Listing 4</a>. The release of the <B>Critical_Section</B> object is guaranteed and exception-safe when the local <B>Lock_Guard</B> object goes out of scope. (For more information on resource management, point your browser to <B>http://www.relisoft.com/resource/index.htm</B> and read Bartosz Milewski's excellent tutorial on the subject <a href="#4">[4]</a>.)</p>
+<p>In <B>try3.h</B>, <a href="list5.htm">Listing 5</a>, a static <B>Critical_Section</B> object is added to the <B>Singleton</B> class definition to provide the locking resource. The pseudo-code for the resulting <B>Singleton::instance</B> implementation is as follows:</p>
+
+<pre>
+{
+  acquire the mutex lock
+     
+  if(_instance == NULL)
+  {
+    allocate and create _instance
+  }
+     
+  release the mutex lock
+     
+  return _instance
+}
+</pre>
+
+<p>Running the <B>try3.h</B> test program shows that the code is functionally correct and thread-safe:</p>
+
+<pre>
+main tid is 276
+Singleton 0x00301E50 has been
+   allocated by tid 276
+thread2 tid is 299
+Singleton 0x00301E50 -state
+   initialized by tid 276
+show_state(): this=0x00301E50
+   state=0xABCD tid=299
+show_state(): this=0x00301E50
+   state=0xABCD tid=276
+show_state(): this=0x00301E50
+   state=0xABCD tid=276
+</pre>
+
+<p>Only one instance of <B>Singleton</B> is created, and function <B>Singleton::show_state</B> always acts on a fully constructed object. However, the locking mechanism costs a great deal in the form of a performance penalty every time <B>Singleton::instance</B> is invoked. This penalty is especially severe considering that the locking is required only when it is time to construct a new singleton.</p>
+<p>One erroneous optimization attempt is to move the check to the outer layer, as follows:</p>
+
+<pre>
+Singleton&amp; Singleton::instance()
+{
+   if(!_instance) // Race condition here
+   {              
+      Lock_Guard&lt;Critical_Section&gt;
+         gate(_key);
+     
+      _instance = new Singleton;
+   }
+   return *_instance;
+}
+</pre>
+
+<p>The above solution only reintroduces the original race condition.</p>
+
+<h4><FONT COLOR="#000080">The Double-Checked Locking Pattern</FONT></H4>
+
+<p>The Double-Checked Locking Pattern <a href="#5">[5]</a> provides an elegant solution to providing synchronization for a critical section of code that is invoked infrequently. In this case, the ICS (infrequent critical section) of code is the allocation and creation of the <B>Singleton</B> instance. This critical code needs to run only once for the lifetime of the <B>Singleton</B>. The pattern is probably best described by the following pseudo-code:</p>
+
+<pre>
+{
+  if(flag == false) // Lock-hint test (Race condition exists)
+  {
+    acquire the mutex lock
+     
+    if(flag == false) // Double-check test (Race resolved)
+    {
+      execute infrequent critical
+        section of code
+      flag = true
+    }
+     
+    release the mutex lock
+  }
+}
+</pre>
+
+<p>The idea here is that a cheap "lock-hint" test is used to test for the abnormal first-use case. If the flag is <B>false</B>, then an expensive locking mechanism is used. The thread that enters first acquires the mutex and proceeds to the double-check test. Since the state of flag has not changed, the thread proceeds to execute the ICS. Any other thread that comes in and evaluates the cheap "lock-hint" test during this time will block trying to acquire the mutex lock. By the time the thread acquires the mutex, the flag will have been set to <B>true</B> by the first thread and will fail the double-check test, resolving the race condition. Refer to <B>solution.h</B>, <a href="list6.htm">Listing 6</a>, for the implementation that makes use of the double-checked locking pattern.</p>
+<p>Using the double-checked locking pattern in a singleton results in a thread-safe implementation that does not impose the performance penalty of a critical section lock for the nominal execution of <B>Singleton::instance</B>. In fact, once <B>_instance</B> has been allocated and constructed, the invocation of <B>Singleton::instance</B> has the same performance as the original non-thread-safe solution.</p>
+
+<h4><FONT COLOR="#000080">What About Singleton Destruction?</FONT></H4>
+
+<p>As it turns out, the Singleton implementation I arrived at requires some different magic at the time of the singleton's destruction. That is the subject of another discussion. Ultimately, since most singletons face the same challenges, the singleton cries out for a templatized solution. I have written a template solution that takes care of the double-checked locking discussed here and also manages the destruction of singletons. The code is available on the <I>CUJ</I> ftp site &#151; perhaps one day I will have the opportunity to describe it in detail. [<I>Elsewhere in this issue, see the article, "Controlling the Destruction Order of Singleton Objects," by Evgeniy Gabrilovich. It does provide a templatized method for ensuring the correct destruction order of singleton objects. However, it is not guaranteed to be thread safe. &#151; mb]</I></p>
+
+<h4><FONT COLOR="#000080">Closing Remarks</FONT></H4>
+
+<p>Before I ran across this problem, I knew that multithreaded programming was difficult. Now I realize it is even more difficult than I had first thought! I gained a new respect for multithreaded programming when I learned that even language features have to be scrutinized in the context of multithreading.</p>
+
+<h4><FONT COLOR="#000080">References</FONT></H4>
+
+<p><a name="1"></a>[1] Scott Meyers. <I>Effective C++: 50 Specific Ways to Improve Your Programs and Designs</I> (Addison-Wesley Longman, 1998), pp. 219-223.</p>
+<p><a name="2"></a>[2] Erich Gamma, et al. <I>Design Patterns: Elements of Reusable Object-Oriented Software</I> (Addison-Wesley, 1995), pp. 127-134</p>
+<p><a name="3"></a>[3] Bjarne Stroustrup. <I>The C++ Programming Language, 3rd Edition</I> (Addison-Wesley, 1997), p. 145</p>
+<p><a name="4"></a>[4] Bartosz Milewski, <I>The Official Resource Management Page,</I> <B>http://www.relisoft.com/resource/index.htm</B>.</p>
+<p><a name="5"></a>[5] Douglas Schmidt and Tim Harrison. "Double-Checked Locking: An Optimization Pattern for Efficiently Initializing and Accessing Thread-safe Objects," <B>http://www.cs.wustl.edu/~schmidt/DC-Locking.ps.gz</B>. (Most of the papers available at Doug's web site are in Postscript format. If you don't have a way to read or print Postscript files, visit <B>http://www.ghostscript.com</B> and obtain the latest version of Ghost Script. It is available on a variety of platforms.) o</p>
+
+<p><i><B>Jonathan Ringle</B> is a software engineer with over 15 years of programming experience, and eight years experience in writing Computer Telephony products for companies both in the United States and internationally. He is currently working for Key Voice Technologies in Sarasota, Florida, on their Unified Messaging product. He can be reached by email at <B>j_ringle@email.com</B>.</i></p>
+
+
+<h4><a href="../../../source/1999/oct99/ringle.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

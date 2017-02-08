@@ -1,0 +1,176 @@
+<HTML>   
+     <HEAD>
+<TITLE>February 2000/The Journeyman's Shop</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocfeb.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">The Journeyman's Shop: Common Design Mistakes, Part 2</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Pete Becker</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Pete offers more examples of how not to rush code to market, from the wonderful world of Java Standard Libraries.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<p>One of the things that intrigues me about Java is its appeal to beginning programmers. In part, that appeal results from of a deliberate decision to keep the language simple. When beginners ask questions about how to do something, they won't be deluged with subtly different answers followed by lengthy debates about which approach is better. With fewer alternatives, less discussion is needed <a href="#1">[1]</a>. That makes it easier to start writing code in Java than in C or C++. The other aspect of Java that contributes to its appeal to beginners is that much of the Java library was designed and implemented by people who were new to object-oriented programming. They made typical beginner's mistakes, and that makes the library comfortable for beginners, because it's written the way they think.</p>
+<p>Having a library designed by beginners leads to a serious problem, however: as beginners learn more about programming, the way they look at programming problems changes, and they begin to look for more sophisticated approaches to their programming tasks. This produces pressure to change the Java libraries to accommodate the gradual increase in sophistication of the average Java user. So byte-oriented I/O has been supplemented by character-oriented I/O, the AWT (Abstract Windowing Toolkit) has been replaced by Swing, classes have proliferated <a href="#2">[2]</a>, and the proposed Java standard has turned into an 8,400-page document <a href="#3">[3]</a>.</p>
+<p>Those of us who are implementing the Java library had hoped that standardization would slow down this otherwise unchecked growth, but Sun has once again decided that the well-established procedures for producing international technical standards are unsuitable for Java <a href="#4">[4]</a>. So Java may well continue to grow in "Internet time," which seems to provide a convenient excuse for inadequately tested class designs and sloppy documentation. Last month we looked at half a dozen beginner's mistakes in the design of the Java libraries. This month we'll look at another half dozen mistakes, all arising from trying to move too fast.</p>
+
+<H4><FONT COLOR="#000080">Pushing Designs Beyond Their Capabilities</FONT></H4>
+
+<p>The Java package <B>java.io</B> includes a class named <B>StreamTokenizer</B>. As its name suggests, you create an object of type <B>StreamTokenizer</B> when you need to read an input stream and parse its contents into tokens such as numbers, keywords, punctuators, and quotes. In its original incarnation, an object of type <B>StreamTokenizer</B> read a byte at a time from an object whose type was derived from <B>java.io.InputStream</B>. You could set whether any particular byte value was part of a keyword, whether it introduced a comment, whether it began a quote, and so on. This made it easy to write code that understood the structure of data in text files.</p>
+<p>The byte values returned by an input stream range from 1 to 255, so the obvious way to implement this class is with an array of 256 integer elements, one for each possible input value. Each array element contains a flag that tells the parser what to do with a character having the value of that element's index. The values in this array are set by various methods in the class:</p>
+
+<pre>
+// mark value as quote delimiter
+public void quoteChar(int ch)
+   {
+   if (0 &lt;= ch &amp;&amp; ch &lt;ctype.length)
+      ctype[ch] |= CC_QTE;
+   }
+</pre>
+
+<p>The main parsing loop, simplified, looks something like this:</p>
+
+<pre>
+int ch;
+while ((ch = in.read()) != -1)
+   {  // process a token
+   if ((ctype[ch] &amp; CC_QTE) != 0)
+      // process quote
+   else if ((ctype[ch] &amp; CC_CHR)!=0)
+      // process word
+   else if ((ctype[ch] &amp; CC_NUM)!=0)
+      // process number
+   else
+      // process ordinary character
+   }
+</pre>
+
+<p><B>InputStream.read</B> returns -1 to indicate the end of the input file, so a value of -1 terminates the loop. For any other value the code checks the value in the <B>ctype</B> array to decide what to do.</p>
+<p>The above worked fine, until the Java designers decided that they needed to provide better support for international character sets. They changed the library by adding a set of classes derived from <B>java.io.Reader</B> and <B>java.io.Writer</B>, that traffic in 16-bit characters instead of eight-bit bytes, providing support for input and output operations of Unicode characters. Now, that's not a bad thing, but in the case of <B>StreamTokenizer</B> it's a problem. The obvious way to extend <B>StreamTokenizer</B> to handle 16-bit characters, by increasing the size of the internal array, isn't practical. An array of 65,536 elements is too big to impose on every use of this class. So the design compromise for <B>StreamTokenizer</B> is to read input data from a <B>Reader</B>, which produces input values in the range - 1 to 65,535, but to preserve the old implementation to the extent possible by treating character values greater than 255 only as ordinary characters. The parser's main loop changes very little. All it needs is an initial check for a value outside the range of the array:</p>
+
+<pre>
+int ch;
+while ((ch = in.read()) != -1)
+   {   // process a token
+   if (ctype.length &lt;= ch)
+      // process ordinary character
+   else if ((ctype[ch] &amp; CC_QTE)!=0)
+      // process quote
+   else if ((ctype[ch] &amp; CC_CHR)!=0)
+      // process word
+   else if ((ctype[ch] &amp; CC_NUM)!=0)
+      // process number
+   else
+      // process ordinary character
+   }
+</pre>
+
+<p>In addition, <B>StreamTokenizer</B> got a new constructor that takes an object whose type is derived from <B>Reader</B>, and the old constructor, taking an object whose type is derived from <B>InputStream</B>, is now deprecated. Now existing code that uses the <B>InputStream</B>-based class hierarchy will continue to work as it did before, and new code can use the <B>Reader</B>-based hierarchy.</p>
+<p>That's all fine, except for one problem: the reason for changing from byte representations of text to character representations throughout the library was to be able to handle text from various international character sets transparently. <B>StreamTokenizer</B> does not do this. Aside from the obvious problem of not being able to set the type of an arbitrary character, there's the problem of numbers: many non-ASCII character sets have their own set of characters that represent numbers, and the values that represent those characters are outside the range that a <B>StreamTokenizer</B> can handle. All numbers must be written in their ASCII equivalent so that the parser can recognize them as numbers.</p>
+<p>This is a problem for programmers because the interface to <B>StreamTokenizer</B>, by supporting construction with a <B>Reader</B> as its input source, implies that it treats all Unicode characters equally when in fact it permits meaningful operations only on the ASCII subset of the Unicode characters. This situation could have been avoided in either of two ways: by rewriting the parser to handle all Unicode characters, or by accepting the limitation to ASCII characters by not adding the constructor that takes a <B>Reader</B>. The former approach would make the class much more complex and significantly slower. The latter would cause problems for people who wanted to parse text from a <B>Reader</B> that they knew returned only ASCII characters. In fact, both of these solutions could have been adopted, using the same technique that the library used to introduce 16-bit streams: leaving the existing <B>StreamTokenizer</B> class alone, and adding a similar class that handled 16-bit characters.</p>
+<p>If you find yourself tempted to write a class that handles just a subset of the data values that you can pass to it, you should probably write it so that you can only pass values in the usable subset.</p>
+
+<H4><FONT COLOR="#000080">Failing to Understand the Implications of Design Changes</FONT></H4>
+
+<p>Another change that came with the addition of 16-bit characters to Java was the addition of the <B>PrintWriter</B> class. Like the <B>PrintStream</B> class, <B>PrintWriter</B> translates numeric values and objects into <B>String</B> representations and inserts the <B>String</B>'s text into a stream. A <B>PrintWriter</B> object writes 16-bit Unicode values. A <B>PrintStream</B> object writes eight-bit ASCII values. At the same time the <B>PrintWriter</B> class was added, the <B>PrintStream</B> class was deprecated. But this was done in a slightly peculiar way: in the JDK 1.1.5 documentation, both constructors for <B>PrintStream</B> are deprecated <a href="#5">[5]</a>. If your code creates a <B>PrintStream</B> object you'll get a warning that you are using a deprecated feature. If you use <B>PrintStream</B> methods, however, you won't get any warnings.</p>
+<p>The reason for this is probably that the <B>PrintStream</B> class is used for writing to the console from a Java application. The class <B>java.lang.System</B> has two static data members of type <B>PrintStream</B> named <B>out</B> and <B>err</B>. Java code is riddled with lines like this:</p>
+
+<pre>
+System.out.println("Hello, world");
+</pre>
+
+<p>Deprecating all the methods in this class would have been impractical. Far too much code relies on this class, although usually without explicitly creating any <B>PrintStream</B> objects. So the library design makes a compromise: you aren't supposed to create <B>PrintStream</B> objects, but if you do get your hands on one it's okay to use it.</p>
+<p>There's a problem with this policy: <B>java.lang.System</B> permits programs to replace the standard streams with streams created by the program. You might replace the standard streams, for example, if you wanted to redirect standard out to a file programmatically. In order to do this, though, you have to create a <B>PrintStream</B> object to use as the replacement for the standard output stream. If you take deprecation seriously, as you should, you can't create a <B>PrintStream</B> object &#151; the <B>PrintStream</B> constructors are deprecated. Fortunately, Sun recognized this problem, and in JDK 1.2 the <B>PrintStream</B> constructors are no longer deprecated. Unfortunately, this reversal on Sun's part sets a precedent; it makes the documentation just a little harder to believe when it says that something is deprecated.</p>
+<p>If you are tempted to tell users of your code that they shouldn't rely on some feature, you should make sure that there are reasonable alternatives. Otherwise your users will insist that you change your mind.</p>
+
+<H4><FONT COLOR="#000080">Removing Documented Features</FONT></H4>
+
+<p>The class <B>java.io.InputStream</B> has a method named <B>read</B> with the following signature:</p>
+
+<pre>
+public int read(byte b[],
+   int off, int len)
+      throws IOException
+   { ..... }
+</pre>
+
+<p>This method reads up to <B>len</B> bytes from the stream, storing them in the array <B>b</B> beginning at index <B>off</B>. In addition, in early versions of Java, if this method was called with a null argument for the byte array, it would read and discard up to <B>len</B> bytes from the stream. Now that's obviously a silly specification: it runs into the same problems as the overworked constructor for <B>java.util.SimpleTimeZone</B> that we looked at last month. But the specification was there, and now it's gone. Today, if you call <B>read</B> with a null argument it will throw an object of type <B>NullPointerException</B> <a href="#6">[6]</a>. That is, code that used to be valid will now fail at run time.</p>
+<p>This is a particularly insidious problem in Java, because the Java library is not distributed as part of an application. Instead, the application gets the library that exists on the system where it is running. Sun has been very careful in this regard: this is the only example of this problem that I know of in the Java standard library. In your own code you also have to be careful, because changes in run-time behavior can be found only by testing, and then only by a test case that executes the changed code.</p>
+<p>Resist the temptation to change library code in a way that makes previously valid input values invalid. Such changes lead to program defects that can often be detected only by extensive and possibly expensive testing. Sometimes you have to live with your mistakes.</p>
+
+<H4><FONT COLOR="#000080">Changing the Semantics of Features</FONT></H4>
+
+<p>The class <B>java.util.BitSet</B>, as its name suggests, supports set, clear, and test operations for an arbitrary sized set of bits. Although its documentation doesn't say so, the implementation in JDK 1.1.5 is thread-safe: you can perform operations on a single <B>BitSet</B> object from multiple threads without having to worry about muddling the object's internal storage. That's because the methods are synchronized internally. Making the methods synchronized is not a good implementation decision, because it makes what should be a fairly speedy test of a single bit very slow. The time spent getting and releasing the object's mutex lock overwhelms the time needed for an individual bit manipulation.</p>
+<p>While it's possible that programmers will sometimes need to share a <B>BitSet</B> object between threads, it's probably much more common to create one for use in a single thread, where the overhead imposed by synchronization is wasted. Sun changed <B>BitSet</B>'s implementation in JDK 1.2: the methods are no longer synchronized. But it's too late for that change. Even though the documentation is silent concerning synchronization, inevitably users will look at the source code to determine whether <B>BitSet</B> objects can be used from multiple threads. Having once provided this capability, Sun should not have removed it. It would have been better to acknowledge the mistake, document the behavior of the <B>BitSet</B> class, and provide a new class, perhaps <B>FastBitSet</B>, providing the same interface but without the internal synchronization. That way the old version would continue to work in the same way, and users who didn't want the speed penalty could switch to the new version.</p>
+<p>If you find yourself tempted to remove visible but undocumented behavior from a class, you should instead provide a new version of the class. Telling your customers that they shouldn't have relied on it because it wasn't documented is a good way of converting them into ex-customers.</p>
+
+<H4><FONT COLOR="#000080">Documenting Features That Don't Exist</FONT></H4>
+
+<p>I mentioned earlier that <B>java.io.InputStream</B> used to allow calling <B>read</B> with a null argument, and the effect would be to skip bytes in the stream. The JDK 1.1.5 documentation tells you that that's how the <B>read</B> method works, but in fact the code for such behavior is not present in the 1.1.5 implementation. Despite what the documentation says, if you call <B>read</B> with a null argument you'll get a <B>NullPointerException</B>. The problem here, of course, is failing to keep the documentation up to date as the code changes. This is usually the result of rushing the product out the door, which is often done by cutting quality checks.</p>
+<p>If you find yourself tempted to eliminate quality checks in order to meet a deadline, you should instead eliminate features or get the deadline extended.</p>
+
+<H4><FONT COLOR="#000080">Documenting Descriptively Instead of Prescriptively</FONT></H4>
+
+<p>The class <B>java.io.InputStream</B> has a method named <B>skip</B> that takes an argument of type <B>long</B>. It's pretty clear from the name that when you call it, it discards as many bytes from the input stream as you specified in the argument. The documentation in JDK 1.2 describes <B>skip</B> as follows:</p>
+
+<BLOCKQUOTE>
+<pre>public long skip(long n) throws IOException</pre>
+
+<p>Skips over and discards <B>n</B> bytes of data from this input stream. The <B>skip</B> method may, for a variety of reasons, end up skipping over some smaller number of bytes, possibly zero. This may result from any of a number of conditions; reaching end of file before <B>n</B> bytes have been skipped is only one possibility. The actual number of bytes skipped is returned. If <B>n</B> is negative, no bytes are skipped.</p>
+<p>The <B>skip</B> method of <B>InputStream</B> creates a byte array and then repeatedly reads into it until <B>n</B> bytes have been read or the end of the stream has been reached. Subclasses are encouraged to provide a more efficient implementation of this method.</p>
+</BLOCKQUOTE>
+
+<p>From reading this description, what does the specification require the following method to do?</p>
+
+<pre>
+public int skipOne(InputStream in)
+   {
+   return in.skip(1);
+   }
+</pre>
+
+<p>The answer is that the only requirement imposed by this specification is that if the stream is at the end of the file, the call to skip <B>will</B> return -1; if not, the function is allowed to do nothing and return zero. Nothing in the specification requires that <B>skip</B> actually do anything other than report the end of the input stream. That's what it says: "[t]he <B>skip</B> method may, for a variety of reasons, end up skipping over some smaller number of bytes, possibly zero." It does not say anything about the circumstances under which a subclass is allowed to  skip over a smaller than requested number of bytes. So if I were writing a class that, say, reads incoming data from a modem, I could write the <B>skip</B> method like this:</p>
+
+<pre>
+public class ModemStream
+   extends InputStream
+{
+public long skip(long n)
+   {
+   return endOfFile() ? -1 : 0;
+   }
+}
+</pre>
+
+<p>This conforms to the specification. And it's utterly useless. Unless you know the actual type of <B>InputStream</B> object you're dealing with, you cannot call <B>skip</B> and expect it to actually change the stream input position.</p>
+<p>The problem here is that the documentation attempts to summarize, rather vaguely, what the <B>skip</B> methods in the various subclasses of <B>InputStream</B> in the Java standard library actually do. <B>ByteArrayInputStream</B> can skip all the bytes that are asked for, up to the end of the file. <B>BufferedInputStream</B> can always skip all the bytes that are currently in the buffer, and more if the stream that it is buffering can skip any bytes. <B>SequenceInputStream</B>, as implemented in the JDK, has quirky behavior. An object of type <B>SequenceInputStream</B> acts like the Unix <B>cat</B> utility: it concatenates streams, but for some reason its <B>skip</B> method works only within the current stream. So if you want to skip more bytes than there are in the current stream you have to call <B>skip</B> more than once. Once the stream switches to the next input stream <B>skip</B> will continue to skip bytes, up to the end of that stream. Faced with such a variety of possible behavior, whoever wrote the documentation decided, wisely, not to try to describe all of the possibilities. Unfortunately, they didn't understand the method well enough to tell writers of subclasses what they have to do.</p>
+<p>Writing good documentation for virtual methods is hard. You have to write requirements, not descriptions. This requires understanding how the class is intended to be used, and understanding the role of the virtual method in implementing the class's specification. For example, <B>InputStream.skip</B> could have been documented as follows:</p>
+
+<BLOCKQUOTE>
+<p>Skips over and discards <B>m</B> bytes of data from this input stream, where <B>m</B> is the minimum of the number of bytes requested, the number of bytes from the current input position to the end of file, and the number of bytes that can be read without blocking.</p>
+</BLOCKQUOTE>
+
+<p>By clearly stating the circumstances under which the method is permitted to skip fewer bytes than were requested, the specification makes it clear what implementers are required to do. This would make the <B>ModemStream</B> example that I gave earlier invalid. It would also make the implementation of <B>SequenceInputStream</B> in the JDK invalid. In both cases, the skip method would be much more useful.</p>
+<p>If you find yourself tempted to document a virtual method by describing what it does, you should give more thought to what you expect subclasses to do. Once you understand what the requirements for the method are, you can write its specification.</p>
+
+<H4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>Last month we looked at design errors in the Java libraries. This month we looked at errors that result from rushing the development of the libraries. I've used Java for these examples because it provides fertile ground for this sort of investigation. By looking at the nature of the mistakes that have been made in Java we can understand better the types of mistakes that we can make in all of our code.</p>
+
+<H4><FONT COLOR="#000080">References</FONT></H4>
+<p><a name="1"></a>[1]  On the other hand, having fewer alternatives often makes it harder to express an algorithm succinctly. But that's a topic for another column.</p>
+<p><a name="2"></a>[2]  The Java 1.0 library had 7 packages and 188 classes. The Java 1.1 library had 22 packages and 477 classes. The Java 1.2 library has 61 packages and 1575 classes.</p>
+<p><a name="3"></a>[3]  The C standard is a little over 200 pages long. The C++ standard is about 750 pages long.</p>
+<p><a name="4"></a>[4]  See <B>http://www.infoworld.com/cgi-bin/displayStory.pl?991119.ececma.htm</B>, "Sun, ECMA Fall Out Over Java Standardization."</p>
+<p><a name="5"></a>[5]  Technically, stating that a feature is deprecated means that it might not be present in a future version, so you should be careful in relying on it. Etymologically it is a much stronger statement: the word "deprecate" comes from the Latin "deprecari," meaning "to avert by prayer."</p>
+<p><a name="6"></a>[6]  I think it's interesting that Java proponents makes a big point of how Java doesn't have pointers, without mentioning that it has a <B>NullPointerException</B>.</p>
+
+<p><i><b>Pete Becker</B> is Technical Project Leader for Dinkumware, Ltd. He spent eight years in the C++ group at Borland International, both as a developer and manager. He is a member of the ANSI/ISO C++ standardization committee. He can be reached by email at <B>petebecker@acm.org</B>.</i></p>
+
+</blockquote></body></html>

@@ -1,0 +1,179 @@
+
+
+<HTML>
+<HEAD>
+
+<TITLE>August 1995/Templates Without Code Bloat</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocaug.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Templates Without Code Bloat<A name="0114_00A4"><A name="0114_00A4"></font></h2><P>
+<h3 align="center"><font color="#800000"><A name="0114_0000"><A name="0114_0000">Dave Gottner</font></h3><hr><blockquote><P>
+<P><i><A name="0114_0000"><A name="0114_0000">David Gottner is a programmer specializing in compilers, interpreters, and graphics programming. He graduated from Colorado State University in 1989, and has been programming in C++ for three years. David can be reached on the Internet at 102027.3544@compuserve.com.</i></P><P>
+<h4><FONT COLOR="#000080"><A name="0114_00A5">Introduction<A name="0114_00A5"></FONT></h4></P>
+C++ templates offer a powerful tool to implement generic container classes that are as efficient as hand-crafted data structures. Unfortunately, templates allow one to reuse <I>source code</I> only. A careless implementation of a data structure can result in code bloat of several megabytes. For this reason, most template classes allow you to store only pointers (because all data pointers are the same size and can be stored as generic (<I>void *</I>) pointers internally). Or they provide only simple data structures that are small enough to make it feasible to instantiate many times (for example, arrays and linked lists).<P>
+With the technique described in this article, it is possible to define template definitions for much more complex data structures (such as B-trees) with only a minimal amount of excess code generation, and with no restrictions on the types of data that may be stored in the data structure. I have used this method in production quality code to implement generic hash-based and AVL-based dictionaries.<P>
+<h4><FONT COLOR="#000080"><A name="0114_00A6">Using Derivation<A name="0114_00A6"></FONT></h4></P>
+Derivation is the tool most widely used to keep the number of instances of a template small. The technique is well documented in many C++ texts. See for example, Bjarne Stroustrup's, <I>The Design and Evolution of C</I>++ (Addison-Wesley, 1994), p. 346. Briefly, the standard technique to reduce object-code bloat works like this:<P>
+1.     Define a naive implementation of a data structure, such as an array, which copies the contained objects in and out of the structure. For example:<P>
+<pre>template &lt;class T&gt;
+class vector {
+   T *data;
+   int size;
+public:
+   vector(int sz)
+      {
+      data = new T[size=sz];
+      }
+   T &amp;operator[](int i)
+      {
+      return data[i];
+      };
+   .....
+   }</pre>
+2.     Instantiate a vector of void pointers:<P>
+<pre>typedef vector&lt;void *&gt; VPvector;</pre>
+3.     Derive a class <I>Pvector</I> from <I>VPvector</I>:<P>
+<pre>template &lt;class T&gt;
+class Pvector : VPvector {
+public:
+   Pvector(int sz) :
+      VPvector(sz) {}
+   T *&amp;operator[](int i)
+      {
+      return (T *&amp;)
+         VPvector::operator[](i);
+      }
+   }</pre>
+In the documentation, the user of the vector package is advised to use the <I>Pvector</I> class in preference to the <I>vector</I> class when maintaining an array of pointers to objects. Heavy use of the <I>Pvector</I> class will minimize the amount of object code because the <I>Pvector</I> class uses only inline functions to implement its functionality.<P>
+This method works well with simple data types (such as arrays) but fails for complex data structures, for the following reasons:<P>
+1.     For more complex data structures (such as B-trees), it is probably not practical to have more than one instance of the data type in a program, due to object-code size.<P>
+2.     Because of this, an implementation may allow the user to copy only pointers to other objects into and out of the structure, to insure that there is only one instantiation per program.<P>
+3.     Pointer-based implementations are, in general, much more difficult to use because the programmer must take responsibility for memory management. The ability to copy in/out arbitrary data types is clearly desirable for a generic container class.<P>
+4.     Many compilers require that template definitions be placed in header files (Currently, both the Borland C++ and the GNU g++ compiler require this.) It is best to keep the amount of generated non-inline code small for these compilers, to reduce <I>make</I> project dependencies on the implementation of the data structures.<P>
+5.     Value-based templates must be shipped with full source code. If you are distributing a commercial and/or proprietary data-structure library, this may not be desirable.<P>
+By using a variation of the standard derivation based on void pointers, however, it is possible to gain the ability to create truly generic C++ data types <I>without any appreciable impact on the size of the executable</I>.<P>
+<h4><FONT COLOR="#000080"><A name="0114_00A7">Separating Algorithms from Data Types<A name="0114_00A7"></FONT></h4></P>
+When you examine many advanced algorithms, you will find that only a tiny portion of an algorithm is specific to the data type. For example, in a typical AVL-tree implementation, the lion's share of the code is getting the balancing right, moving down the links, and occasionally comparing keys. (One line of code to compare keys, vs. 50 or so lines to balance the tree. The deletion algorithm is even more complicated, so the ratio is much higher.)<P>
+<A href="list1.htm">Listing 1</a>, <A href="list2.htm">Listing 2</a>, <A href="list3.htm">Listing 3</a>, and <A href="list4.htm">Listing 4</a>
+show how the separation is performed for a map associative array class. A map (sometimes called a dictionary) is a data type that associates each element in a set of objects (the keys) with another object (the value). The <I>Map</I> class presented here is implemented using hash tables. It works like an associative array (that is, an array where the subscripts may be any type.)<P>
+For example,<P>
+<pre>Map&lt;string, int&gt; M(hash_str, 0);</pre>
+declares a mapping from strings to integers. The <I>hash_str</I> argument is a pointer to a function that computes a hash value for a string, and the second argument (the <I>default value</I>) is the initial value of each element in the map. For example,<P>
+<pre>M["The"] = 5;</pre>
+associates the value 5 with the string<P>
+<pre>"The".</pre>
+When implementing the <I>Map</I> class, the key idea (pun intended) is to note all operations that are dependent on the type(s) stored in the data structure. For a hash table, there are four type-dependent operations on keys, and two type-dependent operations on values:<P>
+1.     Compute a hash value for all possible keys.<P>
+2.     Compare two keys for equality.<P>
+3.     Construct a key from another key (a copy constructor). The input key is copied explicitly when a new key must be inserted into the dictionary.<P>
+4.     Construct a new value from the default value when a new association is created (again, a copy constructor).<P>
+5.     When the dictionary is destroyed, destroy all keys and values in the dictionary (<I>operator delete</I>).<P>
+In this implementation, the base class (class <I>VPmap</I>) delegates these five operations to the derived class (class <I>Map&lt;KEY, VAL&gt;</I>) by means of <I>callback</I> functions. Most of the code is written in the base class. The responsibility of the derived class is merely to inform the base class how to create, destroy, hash, and compare objects.<P>
+The approach used here is not unlike the C library function <I>qsort</I>. When you call <I>qsort</I>, you pass essential data-type information via the comparison function and the size of each element in the array. The difference here is that the derived class fills in the pointers to functions by using standard C++ semantics where appropriate. (<I>operator==</I> is used to compare keys, for example, avoiding the inconvenience of manually supplying a comparison function.) The disadvantage here is that you have to stoop down to the kind of low-level programming that is tucked away in most <I>qsort</I> implementations.<P>
+<h4><FONT COLOR="#000080"><A name="0114_00A8">The Class <B><I>VPmap</I><A name="0114_00A8"></B></FONT></h4></P>
+To paraphrase Chinese wisdom, one line of code is worth a thousand words. <A href="list1.htm">Listing 1</a>
+contains the code for the header file <I>hashmap.h</I>, where most of the ingenuity resides:<P>
+<pre>struct VPAssoc {
+   VPAssoc *next;
+   void * key;
+   void * value;
+   };</pre>
+Each bucket in the hash table is a linked list of key/value associations (type <I>VPAssoc</I>). All the base class knows about keys and values is their address (hence the void pointers). Essential type information is stored in the class <I>VPmap</I>, via the function pointers.<P>
+<pre>class VPmap {
+protected:</pre>
+This is where the bulk of the hash-table code resides. As the name implies, the <I>VPmap</I> class sees keys and values as void pointers. This class has no public members, so you cannot instantiate it directly.<P>
+<pre>typedef int (*KeyCompareEqProc)
+   (const void *a, const void *b)
+   .....
+   KeyCompareEqProc isEqual;</pre>
+This data member is a pointer to a function that is invoked when it is necessary to compare two keys. The statement,<P>
+<pre>   if (isEqual(theKey, item-&gt;key))</pre>
+is used in <I>hashmap.cxx</I> (<A href="list3.htm">Listing 3</a>)
+ to compare two keys.<P>
+<pre>typedef unsigned (*KeyHashProc)
+   (const void *key);
+   .....
+   KeyHashProc hash;</pre>
+This function is invoked when it is necessary to hash a key. It is the only callback function that is not generated automatically at template instantiation time.<P>
+<pre>typedef void (*KeyValCreateProc)
+   (const VPmap *dict,
+    const void *  currentKey,
+    void *&amp;       keyCopy,
+    void *&amp;       newValue);
+   .....
+   KeyValCreateProc CreateKeyVal;</pre>
+This function is invoked when it is necessary to create a new key/value pair. Its signature is dependent on the needs of the derived class. Here, the <I>this</I> pointer is passed as the first parameter to <I>(*CreateKeyVal)</I> because the derived <I>Map</I> class will need to access the default value stored in the dictionary.<P>
+The tight coupling is okay here, because the <I>VPmap</I> class exists merely to assist in implementing a generic container. It is not meant to be extended by users, nor have any other descendants, other than the template <I>Map&lt;KEY, VAL&gt;</I>.<P>
+The actual function will copy the value of <I>currentKey</I> and place a pointer to the copy in <I>keyCopy</I>. It will then set <I>newValue</I> to a copy of the default value (loaded from the dictionary instance.)<P>
+<pre>typedef void (*KeyVal DestroyProc)
+   (void *key, void *value);
+   .....
+   KeyValDestroyProc DestroyKeyVal;</pre>
+This function is invoked when it is necessary to destroy the key and value.<P>
+<pre>VPmap(size_t dict_size,
+     KeyHashProc,
+     KeyCompareEqProc,
+     KeyValCreateProc,
+     KeyValDestroyProc);</pre>
+The constructor initializes a new <I>VPmap</I> object given the size of the hash table and pointers to functions to hash compare, create, and destroy objects.<P>
+<pre>void *index(const void *);</pre>
+This member function implements the essential functionality of the overloaded <I>operator[]</I>. It takes the address of a key and returns the address of the associated value.<P>
+<h4><FONT COLOR="#000080"><A name="0114_00A9">The Template <B><I>Map</I><A name="0114_00A9"></B></FONT></h4></P>
+<pre>template &lt;class KEY, class VAL&gt;
+    struct Map : private VPmap {</pre>
+Thus begins the derivation of the template class <I>Map</I>. Note the use of private derivation, which prevents derived classes from accessing the protected members of the <I>VPmap</I> class. In terms of coupling, the base class and the derived class are treated as one entity.<P>
+<pre>typedef unsigned
+(*HashProc)(const KEY &amp;);
+Map(HashProc,
+   const VAL &amp; = VAL(),
+   size_t = HASHSIZE);</pre>
+This is the only constructor for the <I>Map</I> class. The first argument is a pointer to a function to hash keys. Note that this is the only function that must be explicitly provided. The other required functions are generated automatically when the template is instantiated. The second argument is the default value that will be used when the indexing operator must return a value for a non-existent key, and the remaining argument is the size of the hash table.<P>
+<pre>void Map&lt;KEY, VAL&gt;::CreateKeyVal
+   (const Map&lt;KEY,VAL&gt; &amp;dict,
+    const KEY &amp;key,
+    KEY *&amp;    keyCopy,
+    VAL *&amp;    newValue);</pre>
+The function <I>CreateKeyVal</I> is the first of three automatically generated functions that the <I>VPmap</I> class invokes. All of the callback functions are static members of the template class <I>Map</I>.<P>
+The implementation of <I>Map&lt;KEY, VAL&gt;::CreateKeyVal</I> is trivial: keyCopy = new KEY(theKey);<P>
+<pre>    newValue = new VAL(dict.def_val);</pre>
+Here, <I>operator new</I> invokes the copy constructors for keys and values. The definitions of the remaining callbacks are equally straightforward.<P>
+Finally, the <I>Map</I> constructor must initialize the base class and the default value of the dictionary. The constructor merely needs to cast the static member functions to the function types that the base class expects. The coercion is safe as long as reference parameters are passed as pointers in the C++ implementation. (All implementations that I know about work this way.)<P>
+<h4><FONT COLOR="#000080"><A name="0114_00AA">Drawbacks<A name="0114_00AA"></FONT></h4></P>
+As with many techniques used in computer science, you can't have your space and execution time too. From the user's point of view, the <I>Map</I> class implemented here is just as convenient as many other template containers. However, this class is no longer as efficient as a hand-crafted data structure.<P>
+There is a slight speed penalty because of the function-call overhead. For the <I>Map</I> example, the largest time bottleneck is involved in comparing keys. For many key types, <I>operator==</I> might be an inline function, in which case the performance difference between the <I>Map</I> class and a naive implementation may be significant.<P>
+In the <I>Map</I> example, the overhead could be reduced by making the entire loop that searches for keys in a hash bucket a callback function. That is, replace the following loop in <I>hashmap.cxx</I>:<P>
+<pre>    for (item = *list;
+        item != NULL;
+        item = item-&gt;next)
+    if (isEqual(theKey, item-&gt;key))
+         return item-&gt;value;</pre>
+with a call to a callback function<P>
+<pre>    if (FindKey(theKey, *list))</pre>
+where <I>FindKey</I> implements the loop in the derived class:<P>
+<pre>template &lt;class KEY, class VAL&gt;
+void *Map&lt;KEY,VAL&gt;::FindKey
+(void *theKey,
+    VPassoc *list)
+      {
+      for (item = list;
+          item != NULL;
+          item = item-&gt;next)
+         {
+         if (*(KEY *) item-&gt;key
+               == *(KEY *) theKey)
+               return item-&gt;value;
+         }
+      }</pre>
+Here, the loop is much tighter because the function call has been moved outside of the loop.<P>
+Since the keys and values of the <I>Map</I> class are not embedded in the data structure, but rather are constructed with <I>operator new</I>, use of this technique may also result in more heap fragmentation, especially if the objects are small. (A typical naive implementation of the <I>Map</I> class would embed the keys and values directly in the <I>VPAssoc</I> structure.) Special-purpose class allocators can be used to minimize heap fragmentation.<P>
+<h4><FONT COLOR="#000080"><A name="0114_00AB">Conclusion<A name="0114_00AB"></FONT></h4></P>
+<A href="list4.htm">Listing 4</a>
+shows a sample application that generates two instantiations of the <I>Map</I> template. The example uses the string class provided with Borland C++ 4.0.<P>
+Notice that each instantiation of the <I>Map</I> data structure results in a code size overhead of three (very small) functions and one non-inline constructor. The class is as easy to use as any built-in type because it is value-based. Of course, the hash-dictionary class presented here is small enough that a naive implementation would probably be acceptable in practice. For more heavyweight data structures, the technique presented here is preferable. You get the convenience of value-based data types without the<B><U> </B></U>infamous object-code explosion that is usually associated with templates.<P>
+
+<h4><a href="../../../source/1995/aug95/gottner.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

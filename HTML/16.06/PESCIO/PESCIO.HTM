@@ -1,0 +1,271 @@
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+<TITLE>June 1998/Stack Trace Exceptions in Win32</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<H2><A href="../tocjun.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+<FONT COLOR="#FF0000">Graphics/Image Processing</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Stack Trace Exceptions in Win32</FONT></H2>
+
+<H3 ALIGN="center"><FONT COLOR="#800000">Carlo Pescio</FONT></H3>
+
+<BLOCKQUOTE> 
+<p>Exceptions
+are a useful way to catch errors  if you can catch and interpret the
+exceptions, that is.</p></BLOCKQUOTE>
+
+<hr>
+
+<BLOCKQUOTE>
+<p>Your supposedly bug-free application just crashed. You are left with a
+hexadecimal address from the "box of death" and a rough explanation of what
+the user did. Being an expert developer, you recover the exact source line
+using a MAP file, just to discover it's inside a string-manipulation function
+you are calling from hundreds of different points. One of the callers, whose
+identity you cannot determine, appears to be passing in garbage. You cannot
+reproduce the bug on your development machine, so using just-in-time debugging
+is not an option. Still, you must fix the bug as soon as possible. Sound scary?
+Sound familiar? If you develop applications for a living, you have probably
+found yourself in this situation more than once. However, your program can tell
+you a lot more about the killer exception, if you only know how to ask it. In
+this article I'll show you how.</p>
+
+<h4><FONT COLOR="#000080">Exceptions and Structured Exceptions</FONT></h4>
+
+<p>The
+dreaded "box of death" (a system error message box) can be triggered by two
+events: an uncaught C++ exception (thrown by your own code, a third-party
+library, or from the compiler's runtime library) or an unhandled structured
+exception. Structured exceptions are a Win32-specific concept, somewhat similar
+to C++ exceptions. They are used by the operating system primarily to signal
+abnormal code behavior. For instance, trying to read from or write to an
+address without the appropriate permission will cause an
+EXCEPTION_ACCESS_VIOLATION structured exception to be thrown.<p>
+Most Win32 C++ compilers implement C++ exceptions via structured exceptions.
+There are at least two good reasons to do so. First, all Win32 C++ compilers
+support structured exceptions anyway. Second, using structured exceptions
+guarantees that C++ exceptions will be gracefully propagated through an
+operating system layer and back to C++ code. This is very important in an
+environment such as Win32 that relies heavily on callback functions. If a
+structured exception is not handled, Windows calls UnhandledExceptionFilter,
+which immediately checks if the process is being debugged. If it is, the
+debugger takes control and allows the user to explore the application state. If
+the process is not currently under debugging, the system error message is
+displayed, showing the address that raised the exception.<p>
+Because C++ exceptions are usually implemented in terms of structured
+exceptions, they are ultimately subjected to the same treatment. You can
+recover the offending line from the displayed address using a MAP file.
+However, in most cases this does not tell you much, because the bug may be in
+the caller function, or even deeper in the call stack. If you have a debugging
+environment installed, and the source code available, the system error
+messagebox allows you to start the debugger and then explore the call stack.
+However, in many cases (e.g., beta testing) this is not a viable option. If you
+are a loyal CUJ reader, this scenario may sound familiar. I dealt with a
+similar problem in the June 1997 issue <a href="#1">[1]</a>, in which I showed how to implement
+a stack-aware assertion box. In this article, I show how to obtain the same
+precious information in the event of unhandled exceptions.</p>
+
+<h4><FONT COLOR="#000080">Taking Control of Exceptions</FONT></h4>
+
+<p><A href="fig1.htm">Figure 1</a>
+ shows a sample stack trace. If debugging information is available, you get a
+fairly complete dump containing the module name, filename, function name, and
+line number. If debugging information is not available, only the module name
+and address are shown. Note that you never need access to the source code to
+obtain a detailed stack trace.<p>
+To display exception information, you must gain control when an exception is
+raised but not handled. Since C++ exceptions are mapped to structured
+exceptions, you need only intercept unhandled structured exceptions to manage
+both conditions. There are at least three ways to do this. The first is to use
+the debugging API, but this requires a separate debugger process (see <a href="#2">[2]</a> for
+details) that starts your executable using the DEBUG_PROCESS flag. This is
+inconvenient, because you lose the stack trace if you start the executable
+directly (which is typical).<p>
+The second way is to nest your main or WinMain function inside a __try/__except
+block. This is less than optimal because it requires manual changes to your
+code. You may not even be allowed to do so: if you use a library like MFC,
+WinMain is part of the library code. Also, this technique would intercept
+exceptions raised only in the main thread of execution. To intercept exceptions
+raised in other threads, you would need a __try/__except block around all the
+thread functions, which would be error-prone at best.<p>
+The third way (which I used inside my StackTrace library and use here as well)
+is to install your own unhandled exceptions filter, using the API function
+SetUnhandledExceptionFilter. The only drawback of this technique is that your
+exception filter will not be called if your process is currently being
+debugged, because the debugger will be notified before your code. That's minor,
+though. If you are already debugging the application, you can get your stack
+trace from the debugger. So, it doesn't matter if the stack-trace function is
+never called.</p>
+
+<h4><FONT COLOR="#000080">Installing an Exception Filter</FONT></h4>
+
+<p>There
+are several ways you could install an exception filter in your code. One way
+would be to package the filter in a DLL and export a function such as
+InstallExceptionFilter. However, this leaves it up to the user to call the
+function and requires changes to the code. Not only would this technique be
+error-prone, it would not catch exceptions thrown inside the constructors of
+static objects. Also, if you used a library such as MFC, this technique would
+not catch any exception thrown before the library allowed you to install the
+filter.<p>
+A promising alternative is to install the filter inside DllMain of the
+stack-trace DLL. The runtime library automatically calls DllMain for all the
+statically linked DLLs, relieving you from manual initialization. Also, DLLs
+are mapped into the process space before the initialization of static objects.
+An exception filter installed in DllMain should therefore catch even the
+exceptions thrown by the constructor of static objects.<p>
+Unfortunately, this approach doesn't work as you might expect. It turns out
+that the runtime library sets its own exception filter after mapping DLLs into
+memory, overriding yours.<p>
+What I finally decided on is to export an initialization function from the DLL,
+invoking it automatically using a static object (see <A href="list1.htm">Listing 1</a>)
+. To use this
+filter you simply include StackTrace.H in at least one of your source files,
+since the constructor of the static object stackTraceInitializer calls
+InitStackTraceLibrary. If you include StackTrace.H in more than one file,
+InitStackTraceLibrary will be called more than once. This is okay, though,
+because InitStackTraceLibrary just sets the unhandled exception filter.<p>
+Remember that the order of construction for static objects in different
+translation units is implementation defined. If you want to be sure to catch
+exceptions thrown by the constructor of a static object in a certain file,
+include StackTrace.H before the definition of the static object. Doing so will
+guarantee that the stack trace library is initialized before construction of
+your static object. Finally, if you define DISABLE_EXCEPTION_TRACE, the stack
+trace library will not be initialized. This provides a simple way to turn off
+the exception tracing, for instance in release code where you may want to
+install your own unhandled exception filter.</p>
+
+<h4><FONT COLOR="#000080">Tracing an Unwound Stack</FONT></h4>
+
+<p>Once
+the exception filter is installed, it is called in response to an unhandled
+exception. Were it not for a small detail, you would now be able to walk the
+stack and dump any relevant information. The detail is that by the time the
+filter is called, the stack has already been unwound as part of the system's
+exception handling procedure. Therefore, you cannot simply dump the current
+call stack inside your exception filter routine because the information you
+want is not there. However, you can recover the relevant information by
+exploiting the fields in the EXCEPTION_POINTERS structure that is passed to
+your filter routine (see <A href="fig2.htm">Figure 2</a>)
+. In particular, The CONTEXT structure
+pointed at by ContextRecord contains in its field the extended instruction
+pointer (EIP) for the instruction that raised the exception, and the contents
+of the extended base pointer (EBP) at the time of the exception.<p>
+The EIP is the top of the call stack when the exception is thrown. The EBP can
+be used to dump the rest of the call stack, using the same walking technique I
+used in <a href="#1">[1]</a> for assertions (see <A href="fig3.htm">Figure 3</a>)
+. The EBP points to a standard stack
+frame, where the first DWORD is the EBP for the parent frame, and the second
+DWORD is the return address for the current frame. From the return address, you
+can recover the instance handle of the module that owns the address, then dump
+the related information.<p>
+The problem now is knowing when to stop walking the stack. In my previous
+implementation (the Verbose Assertion DLL), I used the validity of the instance
+handle as a stop condition. I've found that when tracing exceptions this
+indicator is not restrictive enough. Thus, the current code (see <A href="list2.htm">Listing 2</a>)
+
+also requires the EBP to be correctly aligned for a double-word read, and that
+at least eight bytes (the next EBP and EIP) can be read at address EBP.<p>
+In <A href="list2.htm">Listing 2</a>,
+ the actual details of parsing COFF debug information to recover
+the line number and the function name from the EIP value are hidden inside the
+DumpDebugInfo call. For more details, refer to my previous article <a href="#1">[1]</a>, or to
+the source code of the PE_Debug class. Finally, from the EXCEPTION_RECORD
+structure pointed to by the ExceptionRecord field, you can get the exception
+code, which can be used to display useful information about the kind of
+exception, as shown in <A href="fig1.htm">Figure 1</a>.
+ You may want a more detailed dump for some
+kinds of exceptions. For instance, in the case of EXCEPTION_ACCESS_VIOLATION
+you could display the inaccessible address. More details about the
+EXCEPTION_RECORD structure can be found in Richter's Advanced Windows <a href="#3">[3]</a>.</p>
+
+<h4><FONT COLOR="#000080">The StackTrace Library</FONT></h4>
+
+<p>Given
+the similarity (in intents and implementation) between the "old"
+VerboseAssert and the new exception-tracing library, I've merged the two into a
+single DLL and enhanced the code. The stack-walking code is more robust (see
+above). The library is also thread-safe: if two or more threads trigger an
+assertion or an exception, the informative boxes will be serialized. This
+requires a critical section, which is initialized inside DllMain. No more
+resources are allocated dynamically &#151; an important design criterion, because
+the stack-tracing code is executed in a potentially inconsistent state.<p>
+To use the library, first turn on COFF debugging information from your
+compiler's options, then include StackTrace.H in at least one of your source
+files. Since the same header is needed to use the stack-aware assertions, your
+project is likely to already include the header. That's all you have to do. Now
+your program will display an informative box whenever a C++ exception (or a
+structured exception) is thrown and not handled.<p>
+The dialog box (see <A href="fig1.htm">Figure 1</a>)
+ allows you to either terminate the program or
+start a debugger. To abort the program, just return EXCEPTION_EXECUTE_HANDLER
+from the unhandled exception filter. Since there is no handler (otherwise our
+filter wouldn't have been called), the program is automatically terminated. To
+start the debugger, the easiest approach is to return EXCEPTION_CONTINUE_SEARCH
+from the filter. This will cause the standard Win32 UnhandledExceptionFilter to
+be called. The function will open the usual "box of death" and you can use
+its Debug button to start just-in-time debugging. The full source code for the
+StackTrace library is available from the CUJ online sources (see p. 3 for
+downloading instructions) and from my home page
+(http://www.programmers.net/artic/Pescio/pub-eng). The library has been tested
+with Microsoft Visual C++ versions 4 and 5.</p>
+
+<h4><FONT COLOR="#000080">Possible Extensions</FONT></h4>
+
+<p>A
+simple, useful extension would be the ability to save the stack trace to a file
+instead of displaying it on-screen. With this extension, you could leave the
+exception trace enabled on release code as well, and ask the user to send the
+file as part of the bug-report procedure. Another useful (but more difficult to
+implement) extension would be the ability to catch an exception and still get a
+stack trace. Sometimes you must insert a try/catch(...) block around a portion
+of code to prevent errors from killing your process. Classic examples are
+working thread functions and calls to functions in extension DLLs, where you
+may want a firewall to protect your main thread from termination. In those
+cases, you need to catch all the exceptions, but still it would be useful to
+know their source. This information is not easy to obtain because you don't
+have access to the exception information inside a catch (or an __except) block.
+I'm currently experimenting with a somewhat complex solution, but it is not
+entirely stable yet. Interested readers can email me for updates.</p>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></h4>
+
+<p>The
+StackTrace library includes a powerful replacement for the good old assert
+macro, and an auto-magic stack trace facility for uncaught exceptions. Its
+small footprint, along with its ability to work without either source code or
+extensive system resources, makes it possible to ship the library with beta and
+production code. It's so simple to use I predict it will pay you back the first
+time you encounter an unhandled exception.</p>
+
+<h4><FONT COLOR="#000080">References</FONT></h4>
+
+<p><a name="1"></a>[1]
+Carlo Pescio. "Stack Trace Assertions Using COFF." C/C++ Users Journal, June
+1997.<p>
+<a name="2"></a>[2] Randy Kath. "The Win32 Debugging API." MSDN CD-ROM.<p>
+<a name="3"></a>[3] Jeffrey Richter. Advanced Windows, 3rd ed. (Microsoft Press, 1997).
+</p>
+<p><i>Carlo Pescio has a doctoral degree in Computer Science and is a
+consultant and mentor for various European companies and corporations,
+including the Directorate of the European Commission. He specializes in
+object-oriented technologies and is a member of IEEE Computer Society, ACM, and
+the New York Academy of Sciences. He lives in Savona, Italy and can be
+contacted at pescio@acm.org.
+</i></p>
+
+<h4><a href="../../../source/1998/jun98/pescio.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</body></html>

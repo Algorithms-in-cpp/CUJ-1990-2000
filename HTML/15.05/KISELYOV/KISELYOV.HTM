@@ -1,0 +1,482 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>May 1997/Speaking in Iostreams-ese</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><A href="../tocmay.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          <FONT COLOR="#FF0000">Features</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">Speaking in Iostreams-ese</FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">Oleg Kiselyov</FONT></H3>
+          
+          <BLOCKQUOTE>
+               
+               <p>And you thought that iostreams was
+                    just a cute way to avoid calling printf and scanf. That's
+                    only the beginning, if you take a broad enough view of what
+                    constitutes a stream.</p></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <p>The C++ iostreams library was designed
+                    to provide a convenient way to perform mostly text-based
+                    sequential I/O. It popularized the notation of streaming &#151;
+                    writing a chain of data items and manipulators connected
+                    with operator&lt;&lt; or operator&gt;&gt; to form a compound
+                    transaction. But streaming can be a far more general
+                    concept. Indeed, the need to marshal data in a compound
+                    transaction goes far beyond mere reading and writing a text
+                    file or terminal. </p>
+               
+               <p> The iostreams library provides a
+                    convenient interface for the tasks of arranging data into a
+                    collection, taking data from it, and assembling a
+                    transaction. The version specified by the ANSI C++ standard
+                    hints at this generality. The classes defined in the header
+                    &lt;strstream&gt;, for example, look and feel like any other
+                    iostreams, yet they do not interact with physical devices at
+                    all. The strstreams classes merely rearrange data within a
+                    program, typically changing the data's representation.
+                    Similar tasks arise in many other areas, which may actually
+                    have little, if anything at all, to do with textual data or
+                    files.</p>
+               
+               <p> In this article I show a few examples
+                    of these tasks and how iostreams &#151; as defined in the C++
+                    iostreams library, or implemented otherwise but in the same
+                    spirit &#151; can help in expressing the solution. I demonstrate
+                    several typical phrases (idioms) in the iostreams parlance,
+                    which turn up in a variety of situations. I also present a
+                    few verbs (stream applicators and manipulators) that are
+                    useful in expressing data marshaling in a concise and safe
+                    way. I draw illustrative examples from the areas of object
+                    communication (externalizing/internalizing objects to/from a
+                    communication packet), assembling a dictionary of a TIFF
+                    file, and compiling graphics primitives to transfer in
+                    blocks of bits (blit).</p>
+               
+               <h4><FONT COLOR="#000080">Object Communication</FONT></H4>
+               
+               <p>Storing and communicating objects is
+                    known to be a tough problem. The most difficult part is
+                    deciding how to represent the layout of each object (the
+                    schema), and reconstruct an object based on the schema.
+                    Communicating an object's data is a challenge as well, since
+                    data representation &#151; byte ordering, padding, etc. &#151;
+                    varies among different platforms. </p>
+               
+               <p> A binary representation of an object
+                    reference may vary from one invocation of a program to
+                    another even on the same computer. Furthermore,
+                    communicating the content of an object safely may require
+                    that extra information, such as a checksum or authentication
+                    code, be computed, transmitted, and validated. Streams
+                    notation can provide a convenient language for marshaling 
+                    the data that constitutes an object and defining a
+                    transaction that communicates the object. </p>
+               
+               <p> The iostreams library obviously
+                    cannot, in and of itself, solve the problems of
+                    "persistent" references, representation of
+                    meta-information, etc. It can, however, help in structuring
+                    a solution and expressing it clearly. As with other
+                    programming languages, expressiveness does matter. The right
+                    set of words and connectives helps a compiler to catch more
+                    errors, makes it more difficult to compose dubious phrases,
+                    and spares the programmer mundane chores. Besides, a good
+                    language makes code look aestethically pleasing, and
+                    programming more fun. </p>
+               
+               <p> For example, the whole process of
+                    assembling a transmission packet can be neatly and concisely
+                    expressed as:</p>
+
+<PRE>
+void Segment0::send(LAPOut&amp; out_link) const
+{
+SegmentOutStream(out_link)
+    &lt;&lt; (SegmentHeader)(*this)
+    &lt;&lt; file_size &lt;&lt; MTU
+    &lt;&lt; max_seq_no
+    &lt;&lt; byte_array(file_name, sizeof(file_name));
+}
+</PRE>
+               
+               <p>This one single statement in the body
+                    of a method allocates a packet, packs it with
+                    meta-information and payload data, computes a CRC, and sends
+                    the packet out (through out_link). The chores of data
+                    marshaling and conversion, keeping track of the CRC, etc.
+                    are carried out behind the scenes by a segment stream
+                    object, an instance of the SegmentOutStream class. The
+                    instance itself is transient. It is created on the stack and
+                    is not even named. Nevertheless, the segment stream object
+                    looks and feels like a regular ostream, with SegmentHeader
+                    and byte_array acting as inserters. </p>
+               
+               <p> The reverse operation of digesting a
+                    received packet and recovering Segment0, a session control
+                    object, can be expressed in the stream language just as
+                    well:</p>
+
+<PRE>
+void Segment0::complete(SegmentInStream&amp; packet)
+throw (rc_bad_packet) {
+.....
+packet &gt;&gt; const_cast&lt;unsigned long&amp;&gt; (file_size)
+&gt;&gt; const_cast&lt;unsigned char&amp;&gt;(MTU)
+&gt;&gt; max_seq_no
+&gt;&gt; byte_array(file_name, sizeof(file_name));
+if( MTU &gt;= max_MTU || MTU == 0 || file_size == 0 || max_seq_no == 0 )
+    throw rc_bad_packet(rc_bad_packet::bad_segment0);
+}
+</PRE>
+               
+               <p>These segment streams can certainly be
+                    derived from the istream and ostream classes of the C++
+                    iostreams library. However, this seemed to be overkill in
+                    the context of the project from which the examples are taken
+                    &#151; a system which I completed recently that broadcasts
+                    meteorological products over unreliable low-bandwidth,
+                    no-feedback satellite channels. <A href="list1.htm">Listing
+                         1</a>
+shows how simple the SegmentInStream and
+                    SegmentOutStream classes actually are. <A href="list2.htm">Listing
+                         2 </A>shows the implementation of a few typical
+                    methods. </p>
+               
+               <p> A segment-stream manipulator
+                    byte_array is the only nontrivial verb in the stream
+                    expressions above. It looks like a familiar C++ stream
+                    manipulator, yet it has two user arguments. Indeed, any
+                    specification of an arbitrary block of memory requires two
+                    pieces of information, a pointer to the beginning of the
+                    block and the size of the block. The syntax of operator&lt;&lt;,
+                    however, allows only one argument on its right-hand side.
+                    </p>
+               
+               <p> The obvious solution is to group the
+                    two parameters into a structure, a SegmentOutStream::Array
+                    object, and pass it as a single argument to operator &lt;&lt;.
+                    The structure thus contains an embedded foreign pointer,
+                    which acts as a reference to a memory block. A reference
+                    object like this requires special care. You have to make
+                    sure the pointer is at all times valid &#151; the object must
+                    not outlive the part of memory it refers to. </p>
+               
+               <p> To safeguard against such violations,
+                    the Array class is not given any public constructors. The
+                    class does not have any publicly accessible methods either.
+                    This all makes it quite difficult to use Array instances in
+                    any non-transient fashion, letting them linger past the time
+                    the embedded pointer becomes invalid. Incidentally, Array
+                    instances never become garbage &#151; allocated storage that is
+                    no longer accessible. </p>
+               
+               <p> Although these syntactic constraints
+                    are rather strict, the implementation is trivial. In fact,
+                    constructing, passing, and disposing of Array objects is
+                    often optimized away in the object code by a compiler,
+                    resulting therefore in no run-time overhead. Thus the
+                    byte_array manipulator is relatively safe to use, lets the
+                    code run fast, and makes it look good. </p>
+               
+               <p> To demonstrate the expressiveness of
+                    iostream phrases, it is helpful to juxtapose them with more
+                    traditional code. An example of the latter is the following
+                    snippet, taken from a BeOS sample mail client application:</p>
+
+<PRE>
+void  register(const char * user, const char * id)
+{
+BMailMessage    *mail;
+
+mail = new BMailMessage();  // construct mail object
+mail-&gt;AddField(B_MAIL_TO, company, strlen(company));
+mail-&gt;AddField(B_MAIL_SUBJECT, subject, strlen(subject));
+mail-&gt;AddField(B_MAIL_CONTENT, user, strlen(user));
+mail-&gt;AddField(B_MAIL_CONTENT, id, strlen(id), TRUE);
+mail-&gt;Send();
+delete mail;
+}
+</PRE>
+               
+               <p>In iostreams parlance, the whole
+                    procedure body (transaction) can be expressed in one single
+                    statement:</p>
+
+<PRE>
+NBMailMessage()
+    &lt;&lt; BMail::Header(B_MAIL_TO,company)
+    &lt;&lt; BMail::Header(B_MAIL_SUBJECT,subject)
+    &lt;&lt; BMail::Body(user) &lt;&lt; BMail::Body(id)
+    &lt;&lt; endl;
+</PRE>
+               
+               <p>Note that neither the heap nor the
+                    namespaces are polluted with short-lived junk. There are no
+                    pointers to watch over. The statement works just as fast as
+                    the original code. As a matter of fact, it runs faster due
+                    to fewer heap allocation/deallocations. From a grander point
+                    of view, the one-liner above is better because it shows and
+                    emphasizes what BMailMessage really is &#151; a container, or a
+                    stream.</p>
+               
+               <h4><FONT COLOR="#000080">Writing a TIFF File</FONT></H4>
+               
+               <p>Iostreams can be used to express more
+                    sophisticated packing techniques than merely dumping data at
+                    the end of a container. As an example, we will consider
+                    writing a TIFF file. </p>
+               
+               <p> A TIFF file is a database, a
+                    dictionary of items: a pixel matrix, information related to
+                    the pixel matrix (image width, image height, compression
+                    mode), and other meta-information (author's name, picture's
+                    title, etc). Each dictionary item thus consists of an
+                    identifying tag, fields describing an item's data (type,
+                    quantity, size), and the data themselves, as an immediate 
+                    value or a "pointer," an offset to the data's location
+                    elsewhere in the file. </p>
+               
+               <p> Writing a TIFF file is therefore
+                    tantamount to assembling its dictionary. One has to keep in
+                    mind a stipulation that all items in the dictionary must
+                    appear in the increasing order of the values of their tags.
+                    </p>
+               
+               <p> From the applications programmer's
+                    point of view, the requirement to know tag values and to
+                    keep an eye on the order of adding items is a great
+                    imposition. It is far more convenient to allow the
+                    programmer to refer to tags by symbolic labels only, and to
+                    add items in any order. The dictionary stream can take the
+                    responsibility of maintaining the proper order of tags,
+                    letting the programmer worry only about the content of the
+                    items. </p>
+               
+               <p> The following code snippet
+                    illustrates how these smart TIFF directory streams make
+                    creating of TIFF file much easier and clearer. The example
+                    is taken almost literally from my image processing library:</p>
+               
+               <p></p>
+
+<PRE>
+http://pobox.com/~oleg/ftp/README.html#cpp.improc
+</PRE>
+               
+               <p>This library also contains the
+                    complete implementation.</p>
+
+<PRE>
+void IMAGE::write_tiff(
+const char * file_name,const char * title,
+const TIFFUserAction&amp; user_adding_tags) const
+{
+is_valid();
+
+message("\nPreparing a TIFF file with name '%s'\n",
+    file_name);
+
+EndianOut file(file_name);
+TIFFBeingMadeDirectory directory;
+
+directory &lt;&lt; ScalarTIFFDE::New(TIFFTAG_IMAGEWIDTH,
+(unsigned)q_ncols());
+directory &lt;&lt; ScalarTIFFDE::New(TIFFTAG_IMAGELENGTH,
+    (unsigned)q_nrows());
+directory &lt;&lt; ScalarTIFFDE::New(TIFFTAG_COMPRESSION,
+    (unsigned short)COMPRESSION_NONE);
+directory &lt;&lt; RationalTIFFDE::New(TIFFTAG_XRESOLUTION,
+    72, 1);
+if( name != 0 &amp;&amp; name[0] != '\0' )
+    directory &lt;&lt; StringTIFFDE::New(
+        TIFFTAG_IMAGEDESCRIPTION, name );
+user_adding_tags(directory);
+// Give the user a chance to add his own tags
+directory.write(file);
+file.close();
+}
+</PRE>
+               
+               <p>Note the directory stream accepts
+                    items of various kinds (Scalar, Rational, String, etc),
+                    taking care to figure out if an item should be stored within
+                    the dictionary or separately, and making sure the required
+                    order of tag values is maintained. </p>
+               
+               <p> All items being added to a TIFF
+                    dictionary are specialized instances of an abstract class
+                    TIFFNewDirItem. This class, like the Array class in the
+                    previous section, has no public constructors. All its
+                    instances are built only on the heap, through a specialized
+                    (overloaded) static method New. </p>
+               
+               <p> In contrast, all
+                    SegmentOutStream::Array instances can be made only on the
+                    stack. A friend function byte_array (the only available
+                    instance generator) will see to it. Unlike the Array objects
+                    however, ScalarTIFFDE, StringTIFFDE, and other
+                    TIFFNewDirItem instances are supposed to be "permanent,"
+                    since they are to be chained in an ordered list maintained
+                    by the directory stream. That is why these objects must be
+                    constructed on the heap. </p>
+               
+               <p> Note that the programmer actually
+                    never sees these heap pointers. All the static member New
+                    makes is a wrapper object (of class TIFFNewDirItem::ItemRef,
+                    which has no publicly accessible methods. The wrapper
+                    stashes the pointer and passes it from the TIFFNewDirItem
+                    hierarchy onto the directory stream. </p>
+               
+               <p> Thus the present example (the
+                    complete implementation available at the URL above)
+                    demonstrates how to safely and reliably handle pointers to
+                    heap objects. These class hierarchies make it syntactically
+                    impossible</p>
+               <UL><LI> to allocate an object other
+                         than on the heap </FONT></LI>
+                    <LI> to change, cast, or delete its
+                         pointer </FONT></LI>
+                    <LI> to use the pointer in any way
+                         other than intended (which is, to pass it to a
+                         designated recipient, a TIFF directory stream).</FONT></LI>
+               </UL>
+               
+               <p>The mere possibility of misuse,
+                    miscasting, or accidental disposing of an object is thus
+                    eliminated. It may surprise you to know that all this
+                    syntactic sugar carries zero run-time overhead (as the
+                    object code generated by gcc 2.7.2 and Metrowerk's
+                    CodeWarrior versions 7 through 9 testifies).</p>
+               
+               <h4><FONT COLOR="#000080">Efficient Blitting</FONT></H4>
+               
+               <p>The iostream phrases presented in this
+                    section are even further removed from file I/O, dealing
+                    specifically with graphical hardware (accelerator cards),
+                    such as the one found in a BeBox. An accelerator card
+                    receives a graphics command &#151; for example, a line drawing
+                    primitive &#151; from an application thread, rasterizes the line
+                    in a buffer, and blits it into screen memory. </p>
+               
+               <p> The card operates as its fastest when
+                    it is given a block of several graphics primitives to
+                    execute in a single transaction. To arrange such a block, a
+                    low-level BeOS graphics API provides several tools, which
+                    are typically used as follows:</p>
+
+<PRE>
+BPoint pt(viewer_pos.xe,viewer_pos.ye);
+BeginLineArray(2);
+AddLine(pt-BPoint(viewer_pos.gx,viewer_pos.gy),
+    pt+BPoint(4*viewer_pos.gx,4*viewer_pos.gy),color);
+AddLine(pt-BPoint(viewer_pos.gy,viewer_pos.gx),
+    pt+BPoint(2*viewer_pos.gy,2*viewer_pos.gx),color);
+EndLineArray();
+</PRE>
+               
+               <p>The AddLine function, which adds a
+                    graphical primitive, must be used within a transaction
+                    boundaries set by calling BeginLineArray and EndLineArray.
+                    Furthermore, BeginLineArray must be told in advance how many
+                    calls to AddLine are to follow.</p>
+               
+               <p>Thus to use this accelerator card API,
+                    you must abide by several semantic constraints, which
+                    however are not reinforced syntactically. The API burdens
+                    the programmer with extra chores (like counting calls to
+                    AddLine). It also makes the code difficult to maintain. For
+                    example, one always has to remember to update the count in
+                    BeginLineArray when adding/deleting calls to line-drawing 
+                    primitives. A few classes, defined and implemented in
+                    <A href="list3.htm">Listing 3</a>,
+ do away with these
+                    headaches, making the job of arranging a graphical
+                    transaction much more pleasant, not to mention safer. With
+                    these classes, one can write:</p>
+
+<PRE>
+LineArray lines(view);
+lines &lt;&lt; BPoint(20,20)
+      &lt;&lt; LineArray::rline_to(-10,-10);
+lines &lt;&lt; LineArray::line_from_to(
+BPoint(10,20), BPoint(20,10));
+lines.offset_by(BPoint(100,100));
+lines.stroke();
+or even
+LineArray(view)
+    &lt;&lt; LineArray::line_from_to(BPoint(0,0),
+        BPoint(20,10))
+    &lt;&lt; LineArray::rline_to(30,30) &lt;&lt; endl;
+</PRE>
+               
+               <p>The classes reinforce the
+                    Begin/EndLineArray policy, and make it simply impossible to
+                    violate the API's usage patterns. An applications programmer
+                    no longer needs to count line segments in a line path. The
+                    LineArray class takes care of all that. The run-time
+                    overhead is near zero, as most of the class methods are
+                    inlined (a few of them are merely syntactic sugar anyway), 
+                    and almost always temporary buffers are allocated on the
+                    stack.</p>
+               
+               <h4><FONT COLOR="#000080">A Simple C++ Stream</FONT></H4>
+               
+               <p>I finish where I started, with the C++
+                    iostreams library. The iostreams library is designed to
+                    provide a convenient access to (mostly text-based)
+                    sequential I/O. It's standard, rather voluminous,
+                    implementation &#151; the one that usually comes with the
+                    compiler &#151; is not the only implementation possible. I show
+                    instead a very simple alternative. </p>
+               
+               <p> The need for it arose when I was
+                    porting to BeOS my linear-algebra and image-processing code,
+                    which uses the standard iostreams library a great deal. It
+                    quickly became obvious that Metrowerk's C++ development
+                    environment for BeOS DR8, alas, comes without the C++
+                    iostreams library. I could not afford to implement the full
+                    hierarchy, but the prospect of going through all my code and
+                     replacing all occurrences of operator&lt;&lt; with
+                    corresponding printf calls was daunting. </p>
+               
+               <p> As it turned out however, this task
+                    can be easily accomplished without any modification to the
+                    code, with the right definitions of operator&lt;&lt; and
+                    cout. <A href="list4.htm">Listing 4</a>
+shows this simple
+                    implementation. It totals 60 lines, including empty lines.
+                    This single file, included as iostream.h, provides the bulk
+                    of commonly used C++ standard iostreams functionality. With
+                    this .h file, much source code written to use the
+                    traditional streams cin and cout compiles as is, and runs
+                    correctly. o </p>
+               
+               <p><I>Oleg Kiselyov is a computer
+                    scientist/software developer with Computer Sciences Corp.
+                    (CSC) in Monterey, CA. He's been programming professionally
+                    for 17 years. He can be reached at oleg@pobox.com. </I></p>
+     
+<h4><a href="../../../source/1997/may97/kiselyov.zip">Get Article Source Code</a></h4>
+
+          </BLOCKQUOTE>
+     </BODY>
+</HTML>

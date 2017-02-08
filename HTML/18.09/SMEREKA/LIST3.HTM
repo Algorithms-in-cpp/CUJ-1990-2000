@@ -1,0 +1,158 @@
+<HTML><HEAD>
+<TITLE>September 2000/A TCP/IP Socket Location Server/Listing 3</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 3: Partial listing of the socloc server module socloc.c</A></h4>
+<pre>
+// file socloc.c
+
+#ifdef OS_WIN32
+WSADATA wsaData;
+#endif
+
+int server_port = 0;
+char s_log_file[128];
+
+struct sloc_entry
+   {
+   char *service_name;
+   char *host_name;
+   int port_number;
+   char *ip_addr;
+   struct sloc_entry *next;
+   };
+
+struct sloc_entry *sloc_base;
+
+void main(void)
+{
+   char localHost[128];
+   int isterm;
+
+   if (!srv_initialize())
+      exit(4);
+
+   if (!ipc_init(localHost, server_port))
+      exit(6);
+
+   while(1)
+      {
+      if (ipc_server_wait())
+         {
+         isterm = process_request();
+         (void)ipc_close_client();
+         }
+
+      if (isterm)
+         break;
+      }
+
+#ifdef OS_WIN32
+      WSACleanup();
+#endif
+
+   exit(0);
+}
+
+int srv_initialize(void)
+{
+   char localhost[128], hname[128], ip_ad[128];
+   char *thelist;
+   int i, ret, nentries, port_num;
+
+   if ((ret = sl_config_read(SL_CONFIG_FILE_NAME)) != SL_OK)
+      return(FALSE);
+
+#ifdef OS_WIN32
+   if (WSAStartup(WINSOCK_VERSION, &amp;wsaData))
+      {
+      WSACleanup();
+      return(FALSE);
+      }
+#endif
+
+   if (gethostname(localhost, 127))
+      {
+#ifdef OS_WIN32
+      WSACleanup();
+#endif
+
+      return(FALSE);
+      }
+
+   if ((ret = sl_config_get_nentries(&amp;nentries)) != SL_OK)
+      return(FALSE);
+
+   for(i = 1; i &lt;= nentries; i++)
+      {
+      if ((ret = sl_config_get_nth(i, hname, &amp;port_num,
+          ip_ad)) != SL_OK)
+         return(FALSE);
+
+      if (!strcmp(hname, localhost))
+         server_port = port_num;
+      }
+
+   if (server_port == 0)
+      return(FALSE);
+
+   if ((ret = sl_config_set_ils(server_port, TRUE)) != SL_OK)
+      return(FALSE);
+
+   sloc_base = SLOC_NULL;
+
+   if ((ret = sloc_find_first_active()) != SL_OK)
+      ;
+   else
+      {
+      (void)sloc_bcast_config_add(localhost, server_port,
+                                  (char *)NULL);
+
+      if ((thelist = (char *)malloc(SL_MAXCOMMAND))
+          == (char *)NULL)
+         return(FALSE);
+
+      if ((ret = sloc_config_get_list(thelist)) != SL_OK)
+         {
+         free(thelist);
+         return(FALSE);
+         }
+
+      if ((ret = sl_config_put_list(thelist)) != SL_OK)
+         {
+         free(thelist);
+         return(FALSE);
+         }
+
+      if ((ret = sl_config_set_ils(server_port, TRUE)) != SL_OK)
+         {
+         free(thelist);
+         return(FALSE);
+         }
+
+      if ((ret = sloc_get_list(thelist)) != SL_OK)
+         if (ret == SL_NOT_FOUND)
+            ;
+         else
+            {
+            free(thelist);
+            return(FALSE);
+            }
+
+      if (ret == SL_OK)
+         if ((ret = s_ll_put_list(thelist)) != SL_OK)
+            {
+            free(thelist);
+            return(FALSE);
+            }
+
+      free(thelist);
+      }
+
+   sl_config_debug();
+   s_ll_debug();
+   strcpy(s_log_file, SL_LOG_FILE);
+   return(TRUE);
+}
+</pre></body></html>

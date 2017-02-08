@@ -1,0 +1,458 @@
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+<TITLE>March 1998/Creating a Virtual Listbox with MAPI</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<H2><A href="../tocmar.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+<FONT COLOR="#FF0000">Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Creating a Virtual Listbox with MAPI</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Les Thaler</FONT></H3>
+
+<BLOCKQUOTE>
+<p>MAPI does a lot for you, and with reasonable efficiency, once you learn how to talk to
+it.</p></BLOCKQUOTE><hr>
+<BLOCKQUOTE>
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>Microsoft's Messaging Application Programming Interface (MAPI) is a powerful
+set of Component Object Model (COM) interfaces exposing a rich set of messaging
+services. Whether you're writing a typical email client, a server-based agent,
+a workflow application, or an end-user application that simply needs to send or
+receive email messages, MAPI probably exposes the functionality you need. MAPI
+tables are an important part of this interface specification because messaging
+data is often conveniently represented in tabular form. In this article, I'll
+show you how to use MAPI tables to implement a virtual listbox that displays
+the contents of a user's Sent Items folder. You can generalize my
+implementation to be backed by any MAPI table, or easily adapt it to use a
+non-MAPI data source.</p>
+
+<h4><FONT COLOR="#000080">Basics of MAPI Clients</FONT></H4>
+
+<p>In
+this article I limit my treatment to client-side code, both for the sake of
+brevity and because any implementation of the MAPI table interface is tightly
+coupled to the underlying storage mechanism. So here I will deal with using
+MAPI tables, as opposed to implementing them. Notice that the term "client"
+is slightly overloaded &#151; in client-server computing it means the process that
+initiates a connection. In the MAPI world it means an application (an EXE) that
+logs on to the messaging subsystem to request services from the MAPI runtime
+DLL and the installed messaging drivers, or service providers. In the COM
+context, a client is a chunk of code that obtains COM interfaces from one or
+more COM servers. For our purposes, these subtleties can be safely ignored:
+MAPI clients are always COM clients, seldom COM servers, and never MAPI service
+providers. They obtain COM interfaces from the system, then make method calls
+on those interfaces to request services. (To read more about COM clients, see
+"An Introduction to COM," by Gregory Brill, CUJ, January 1998.)<p>
+The components that implement the requested COM interfaces are called service
+providers. A service provider can be thought of as a special case of a COM
+in-process server, whose main task is to connect a MAPI client to some
+messaging database <a href="#1">[1]</a>. Most MAPI table interfaces a client manipulates will be
+implemented in a service provider DLL. The data populating those tables will
+reside in a database somewhere &#151; either on the local hard disk or on a network
+server. A service provider connects the client to this database by exposing COM
+interfaces such as IMAPITable on the "front end," and by talking to the
+messaging database on the "backend." For server-based systems like Microsoft
+Exchange, a client's method call on a service provider interface is typically
+an RPC request to the backend system to return some data or to initiate an
+action, such as submitting a message.</p>
+
+<h4><FONT COLOR="#000080">Differences from COM</FONT></H4>
+
+<p>Like
+all COM interfaces, a MAPI interface is identified by a well-known Interface
+Identifier, or IID, is derived from IUnknown, and comprises a fixed set of
+methods with well defined semantics. For MAPI tables, the interface is called
+IMAPITable, the IID is IID_IMAPITable, the methods are specified in an abstract
+base class, and the interface's semantics are defined (mostly) in the MAPI
+documentation. Unlike other COM clients, a MAPI client doesn't call the COM
+library directly. Instead, it calls APIs in the MAPI subsystem, which handles
+the details of locating the server, instantiating the desired object, and
+returning an interface pointer to the caller. Once the client has a pointer to
+an interface implemented in a service provider, MAPI gets out of the way: from
+then on, method calls are routed directly to service provider code without any
+intervention from MAPI.<p>
+Purists will notice right away that this mechanism is very different from the
+way other COM clients obtain interfaces from a server. Instead of using
+standard COM activation methods such as CoCreateInstance or CoGetClassObject
+and IClassFactory, a MAPI client makes a call to MAPILogonEx, which returns a
+single interface, IMAPISession. The process of obtaining this first interface,
+or "logging on," is what causes the MAPI runtime to load the provider DLLs,
+and at the same time lets each provider validate the user's logon credentials
+before allowing access to the backend server.<p>
+With a pointer to the IMAPISession interface in hand, a MAPI client can obtain
+other interfaces that let it do useful work. Most of the time, the process of
+obtaining interfaces involves a call to an IMAPISession method, or to a method
+on an interface returned from IMAPISession. COM's IUnknown::QueryInterface,
+although supported by all interfaces, is almost never used. For example, a
+client wanting to access a user's mailbox on the Microsoft Exchange server
+would first call MAPILogonEx, (obtaining an IMAPISession interface) then
+IMAPISession::OpenMessageStore, which returns an IMsgStore interface
+implemented in the Exchange message store provider, EMSMDB32.DLL. This
+IMsgStore object implements RPC-based methods that allow clients to access the
+folders, messages, and attachments in the user's mailbox residing on the remote
+server. This process is illustrated in <A href="list1.htm">Listing 1</a>.
+<p>
+Most other client interfaces, such as IMsgStore, are obtained directly or
+indirectly from IMAPISession. Since MAPI clients don't explicitly activate the
+COM servers whose interfaces they consume, how does MAPI know which servers to
+activate in the call to MAPILogonEx? This information is contained in the
+system registry, in a user profile. Every logon requires a profile, which can
+be selected from a MAPI-supplied dialog, passed as a parameter, or created
+programmatically. For Windows NT, a user's profiles are found under
+HKEY_CURRENT_USER\Software\Microsoft\Windows NT\Current Version\Windows
+Messaging Subsystem\Profiles, which contains one named subkey for each
+profile.<p>
+Each profile subkey contains subordinate keys naming the service provider DLLs,
+along with the initialization data to pass to them when they are loaded. The
+user creates and configures a profile through the control panel's Mail and Fax
+applet, or through a setup program, which gathers configuration data from the
+user (e.g. a server and account name) and then calls MAPI methods to create the
+registry subkey and write out the data. The user profile and the replaceable
+service providers are what really allow a MAPI client to connect to arbitrary
+data sources and send messages through arbitrary transports. For example, my
+home machine currently contains four profiles, each specifying a different
+Exchange server on which I have a mailbox. Within those profiles, I could have
+multiple messages store and address book providers configured, allowing me to
+access data both locally and on the server. Multiple transport providers let me
+send a FAX, access my NetMessaging.com POP3 account, view my Exchange mailbox,
+or page someone from my mail client.<p>
+There are a few more differences between MAPI clients and standard COM clients:
+MAPI clients must also use MAPI's memory allocator instead of the standard OLE
+allocator returned by CoGetMalloc. MAPI objects are allowed to implement some
+methods with stubs that simply return an error code if the implementation
+chooses not to support a given method. MAPI clients differ from other COM
+clients in the way they access data managed by the server. Instead of using
+standard COM mechanisms like IDataObject, MAPI defines a set of properties and
+two interfaces &#151; IMAPIProp and IMAPITable &#151; for accessing an object's data. A
+client holding an IMAPIProp interface can query the object directly for its
+data, which is returned in an array of MAPI-defined data structures.</p>
+
+<h4><FONT COLOR="#000080">MAPI Tables</FONT></H4>
+
+<p>MAPI
+tables also let a client access an object's properties, but in this case, the
+table is a read-only view of a collection of objects. A row in the table
+represents a particular object from the collection, while the columns
+correspond to the object's data (properties). I mentioned earlier that most
+MAPI tables are implemented by service providers. This is something of an
+over-simplification, since MAPI also implements some important tables itself.
+Nevertheless, clients will most often access tables in either the message store
+provider &#151; to view the contents of the store's database (messages, folders,
+and attachments, for example) &#151; or in an address book provider to get data
+about recipients and distribution lists.<p>
+The MAPI table interface is an important innovation because messaging data is
+frequently stored in some server-based database. Server-based systems like
+Microsoft Exchange or Lotus' Notes are essentially database applications that
+store and retrieve documents (e.g. messages and attachments), and maintain
+directories. Because these databases comprise large sets of similar objects,
+it's natural to represent the data in tabular form. For example, the set of
+messages in a folder, the recipients or attachments in a message, and the set
+of entries in an address book are all represented by a MAPI table.<p>
+MAPI tables also let a client query the database for specific data, or order
+the data according to its needs. Instead of defining a formal query language,
+MAPI tables expose methods that let callers do "quasi-relational" operations,
+such as column selection, and filtering. But by far the most attractive feature
+of MAPI tables is that they make it easy to populate Windows controls. In the
+virtual listbox sample presented here, you'll see how MAPI tables simplify the
+task of managing user interface components that expose large quantities of
+data.<p>
+You get data back from a MAPI table by constructing a query, then executing it
+by calling IMAPITable::QueryRows. This method returns the query results in an
+SRowSet structure, which is essentially a counted array of rows, where each row
+is a counted array of properties. Because a MAPI property (an SPropValue
+structure) supports all the intrinsic data types, as well as binary data,
+FILETIME, ANSI and UNICODE strings, GUIDS, and so on, an SRowSet's data can be
+easily pumped into a Windows control without the added step of decoding a byte
+stream into Windows data types.<p>
+IMAPITable also has methods that make it easy to move forward and backward in
+the table, sort the data, filter the table, find specific rows, and generally
+change the view in response to user actions or changes in the underlying data.
+The following list describes the most important methods. Most of these methods
+are demonstrated in the virtual listbox code.</p>
+<UL><LI>SetColumns selects columns for inclusion in the view returned by
+        QueryRows. The columns are properties of the objects represented by each row.
+        The order is significant: when a query is executed, the SRowSet is returned
+        with the properties in the same order as given in SetColumns. (See <A href="list2.htm">Listing
+        2</a>a.)</LI>
+    <LI>SortTable sorts the view on one or more keys.The primary key is listed
+        first, the secondary key next, and so on. Note that the sort order of
+        individual keys can be either ascending or descending. (See <A href="list2.htm">Listing 2</A>b.) The
+        SizedSSortOrderSet macro is used to declare and initialize the SSortOrder data
+        structure passed in the first parameter.</LI>
+    <LI>Restrict filters the view to include only rows that match caller-defined
+        criteria. You construct a parse tree of a boolean expression using arrays of
+        SRestriction structures. Each table row is evaluated against the expression and
+        included in the view if the expression evaluates to TRUE. (See <A href="list2.htm">Listing 2</A>c.)</LI>
+</UL>
+<p>Restrict filters the view to contain only rows matching a condition. The
+condition here is the Boolean expression "subject contains 'C/C++ User's
+Journal' AND body size &gt; 100". You can even restrict a folder's contents
+table to include only messages whose recipient table or attachment table meet
+certain criteria. This restriction is called a subrestriction because although
+the Restrict method is called on the folder's contents table, the criteria is
+applied to a table embedded within each message. As an example, you could
+restrict the Inbox folder's contents table to include only messages to "Les
+Thaler." (See <A href="list2.htm">Listing 2</A>d.)</p>
+<UL><LI>CreateBookMark saves the table cursor's current position so that the
+        cursor can be reset to an absolute row.</LI>
+    <LI>SeekRow positions the table cursor on a specific row, moving it forward or
+        backward some number of rows from a given bookmark. SeekRowApprox positions the
+        cursor on a specific row based on a fractional value. For example, passing 500
+        in the first parameter and 1,000 in the second means either "move the cursor
+        to row 500 of a 1,000 record table" or "move the cursor to the approximate
+        halfway point in the table." Service providers are free to implement this
+        method either way. The Exchange providers, however, always seek to an exact
+        position &#151; a fact exploited by the virtual listbox example. <A href="list2.htm">Listing 2</A>e shows
+        both calls.</LI>
+    <LI>QueryPosition returns the current cursor position as a fractional value. For
+        example, if 100 is returned in the second parameter and 500 in the third, it
+        means the cursor is on row 100 in a 500 row view. The Microsoft Exchange
+        service providers return exact positions, although MAPI only requires
+        approximations to be returned.</LI>
+    <LI>ExpandRow and CollapseRow. A row usually represents an object, but for
+        "categorized tables" a row can also be a "category heading," under which
+        rows representing objects that share a set of common properties are grouped.
+        The view can contain only the "header" row (the row is "collapsed") or the
+        header row and all rows in the header's category (the row is "expanded").
+        ExpandRow makes the rows under the header visible, and CollapseRow hides them.
+        This is really handy for populating a treeview or listview control where
+        messages are grouped according to sender or subject.</LI>
+    <LI>QueryRows executes a query constructed in previous calls to Restrict,
+        SortTable, SetColumns, and SeekRow, and returns an SRowSet data structure to
+        the caller. Although you can request any number of rows, most implementations
+        will return only a relatively small rowset in a single call. A client must
+        check the SRowSet::cRows member to know how many rows were actually returned,
+        and should be prepared to call QueryRows repeatedly to obtain the number
+        requested. As a special case, QueryRows will return zero rows if you try to
+        query past the end (or beginning) of the table. For example, the wrapper
+        function in <A href="list2.htm">Listing 2</a>
+shows how the client should handle multiple calls to
+        QueryRows.</LI>
+    <LI>Advise registers the caller for notification callbacks on specific events
+        pertaining to the data backing the table. The caller implements an
+        IMAPIAdviseSink object and passes this in the advise method. When the
+        registered event occurs, the object calls each registrant's
+        IMAPIAdviseSink::OnNotify method. <A href="tab1.htm">Table 1</a>
+shows the events for which the caller
+        can receive notifications. Notice that MAPI tables can also support
+        asynchronous operations, in which case the caller will get a notification
+        callback when the operation completes.</LI>
+</UL>
+<p>MAPI tables offer some quasi-relational capabilities, but aren't truly
+relational. You can't join two tables, for example, and the query capabilities
+are generally much weaker than those of relational database systems. Table
+implementations can support arbitrarily complex queries, but can also bail out
+(by returning an error code) if the request is too difficult to honor.<p>
+IMAPITable also provides a read-only view of a set of objects. You can change
+the data in the objects themselves (e.g. by setting or deleting an object's
+properties), and you add or remove objects from the set, but you can't write
+directly to the table.</p>
+
+<h4><FONT COLOR="#000080">Creating a Virtual Listbox</FONT></H4>
+
+<p>Now
+that you know what MAPI tables can and can't do, it's time to see how they are
+used in practice. The sample code fragments shown below come from VListVu, a
+MAPI client that displays the contents of the default store's Sent Items
+folder. The complete source code is available via anonymous login at
+ftp.NetMessaging.com and on the CUJ ftp site (see p. 3 for downloading
+instructions). This client displays the contents table in a virtual list box &#151;
+a listbox control where only a portion of the data is resident at any one
+time.<p>
+The contents tables of address book containers or message store folders are
+frequently very large <a href="#2">[2]</a>. In fact, it's not uncommon for a large enterprise to
+have tens of thousands of recipients in its address book database or large
+numbers of messages in a public folder. Since an end user can only see one
+listbox page's worth of data at a time, it doesn't make sense to preload the
+listbox with the complete data set when most of it will never be seen.<p>
+Not only is preloading the control wasteful of memory, but more importantly,
+it's extremely inefficient to query the table for such a large chunk of data.
+Consider an Exchange Global Address List with 20,000 entries. If each entry
+occupies 1K of memory, the total data transfer would be 1.6 X 10<sup>8</sup>
+bits. Remember that this data is coming from the Exchange server, courtesy of a
+MAPI table implemented in the address book provider. Even at maximum bandwidth,
+a single chunk of data this size would take 16 seconds to download over a
+10BaseT Ethernet LAN. Now add the overhead of the remote procedure call,
+account for other LAN traffic, the processing that occurs on both ends, and
+average server loading, and you're more likely to see latencies on the order of
+two to three minutes. With response times like that, your end-users will be
+reaching for the reset button long before your listbox is loaded.<p>
+So the moral of the story is, "don't query a large table for the entire rowset
+in one chunk." Instead, implement a virtual listbox. What this means in terms
+of MAPI table operations is that you only make calls to QueryRows to cache a
+few page's worth of data at a time. In this article's example, a page is an
+SRowset containing the maximum number of rows that the Exchange store's
+contents table will return in a single QueryRows call. When the user scrolls
+past the last resident row (or pages up or down), the program queries the table
+again for the next page. Keeping the page size small, say around 40 rows,
+reduces the latency to approximately 0.3 seconds per call, well within
+acceptable user interface response times.<p>
+All that's needed to make this scheme work is a way to detect when to call
+QueryRows for a new page of data. I modeled my implementation after a virtual
+memory manager, complete with a page table and simple cache. If you think of
+the rows in the table as the virtual address space, the row numbers (and
+listview indices) as memory addresses, and the control's viewable area as a
+memory page (of 40 rows, for example) then the solution becomes simple.<p>
+The page table is an array of pointers to SRowSets. Each member of this array
+is non-null if the page is resident, and null otherwise. The page table is
+indexed on the listview index modulo the size of a page, so for example, all
+listbox indices from 0-39 fall in page 0, 40-79 in page 1, and so on.<p>
+The first time I implemented a virtual listbox, there was no clean way to get a
+mapping from the listview's thumb position to an absolute table row. Microsoft
+has since solved that problem by enhancing the listview control to support the
+LVS_OWNERDATA window style. This style bit is new in the version of the common
+controls that ships with the Internet Client SDK. It lets you specify the size
+of the virtual listview in advance, with the expectation that you, the caller,
+will manage a cache of the listview data. You don't preload the control with
+strings; instead, the control initializes its internal data structures and sets
+the thumb range to be whatever size you tell it. It then sends you
+LVN_GETDISPINFO notifications whenever it needs data from your cache.<p>
+You'll get an LVN_GETDISPINFO message whenever the user moves the thumb or
+pages up or down past the last visible row. This message contains the index of
+the row that's just coming into view. VListVu handles this message by
+retrieving a member from the page table's array of SRowSets. It retrieves the
+member whose index equals list_box_index % PAGE_SIZE.<p>
+If the SRowSet pointer is non-null, the page is in the cache, and VListVu gets
+the requested row from the SRowSet. If the pointer comes back null, the data
+isn't resident, so VListVu must generate a "page fault" to access the data.
+In other words, it's time to call QueryRows for the next PAGE_SIZE rows:</p>
+
+<pre>
+LPSRow CPageCache :: IsPageFault(int idx)
+{
+  int i = idx / PAGE_SIZE;
+  if (m_pPageTable[i])
+    return &amp;(m_pPageTable[i] -&gt; aRow[idx % PAGE_SIZE]);
+  return NULL;
+}
+...
+LPSRow  pRow;
+int     iPage    = iRow / PAGE_SIZE,
+        iSRowIdx = iRow % PAGE_SIZE;
+pRow = IsPageFault(iRow);
+
+if (!pRow) PageIn(iRow);
+</pre>
+<p>Before
+calling QueryRows, however, the table cursor is first positioned using
+SeekRowApprox. SeekRowApprox makes it really easy to keep the table cursor in
+sync with the listbox thumb. It takes the index of the desired position in the
+first parameter, ulNumerator, and the total number of rows in the second
+parameter, ulDemoninator . Since VListVu already knows the table size from a
+previous call to IMAPITable::GetRowCount, and the page's index from the page
+table, it can easily "page in" the proper rowset and add it to my page
+table:</p>
+
+<pre>
+
+STDMETHODIMP CPageCache :: PageIn(int iFaultIdx)
+{
+  LPSRowSet prs         = NULL;
+  int       iPageTblIdx = iFaultIdx / PAGE_SIZE;
+
+  // Get table idx of first row in page
+  int iVPageIdx = (iFaultIdx / PAGE_SIZE) * PAGE_SIZE;
+
+  // Position cursor on first row in this page
+  m_pCTbl -&gt; SeekRowApprox(iVPageIdx,m_ulVTblRows);
+
+  // Get one page's worth of rows
+  GetPage(&amp;prs);
+  m_pPageTable[iPageTblIdx] = prs;
+  UpdateCache(iPageTblIdx);
+  ...
+}
+</pre>
+<p>All
+that's left to do is stuff the new page's data into the listbox control. Notice
+that the listbox displays the value of PR_DISPLAY_TO, PR_NORMALIZED_SUBJECT,
+and PR_CLIENT_SUBMIT_TIME for each entry. The explicit call to SetColumns in
+CSession::InitSentmailTbl guarantees that the SRowSets returned will contain
+these properties, if they exist, in the correct order.</p>
+
+<h4><FONT COLOR="#000080">Preventing Thrashing</FONT></H4>
+
+<p>One
+small difficulty arises if the user scrolls quickly through multiple pages. As
+these new pages are scrolled into view, the window procedure is bombarded with
+successive LVN_GETDISPINFO messages and successive page faults occur. The
+virtual listbox, in essence, "thrashes" &#151; spending most of its time handling
+page faults. These pages aren't even needed because the user is scrolling past
+them quickly without really viewing them. It would be nice if there were a way
+to avoid loading those pages that are just scrolling by.<p>
+The solution is to modify the behavior of the listbox. As long as the left
+mouse button is depressed, any scrolling moves the thumb, but doesn't update
+the listview. Any SB_THUMBTRACK messages are swallowed by my ListViewWndProc so
+the listview doesn't try to scroll the view. No paging occurs at this point,
+but VListVu does handle this notification to keep track of the thumb
+position.<p>
+Although the SB_THUMBPOSITION notification also gives you the thumb position in
+the high word of wParam, this value is only 16 bits wide, which is way too
+small for this application! When the left mouse button is released, VListVu
+handles the SB_THUMBPOSITION notification by calculating the virtual table's
+row number from the thumb position saved from the previous SB_THUMBPOSITION
+notification. VListVu pages in another SRowSet if necessary, loads the row's
+strings into the control, and scrolls the listview to the correct position by a
+call to ListView_EnsureVisible. Forcing this behavior from the control required
+subclassing the listview control. (See <A href="list3.htm">Listing 3</a>.
+)</p>
+
+<h4><FONT COLOR="#000080">Other Enhancements</FONT></H4>
+
+<p>VListVu's
+"virtual memory manager" also implements a simple least-recently-used (LRU)
+caching mechanism. Whenever a page is brought into memory, the cache manager
+makes a decision on whether or not to evict an unused page. VListVu maintains a
+small array (CPageTable::m_iCachedPages) which has two columns: the page's age,
+and its index into the page table. Whenever it gets a "hit" on any page, that
+is, a LVN_GETDISPINFO notification, VListVu calls CPageCache::GetTableString .
+This method does two things: it gets the requested data from the cache, paging
+in as needed, and it also calls CPageCache::AgeCache. AgeCache walks the
+m_iCachedPages array and increments the age count of all the non-hit pages and
+clears the age count of the single page containing the hit.<p>
+Whenever a page is brought into memory by CPageCache::PageIn, the cache is
+searched for a vacant spot in the m_iCachedPages array. If there's no empty
+spot, it's time to evict a resident page. The one paged out is the least
+recently accessed page &#151; that is, the one with the highest age count. (See
+<A href="list4.htm">Listing 4</a>.
+)<p>
+A listview control also lets the user sort the data by clicking the column
+heading. (See <A href="list5.htm">Listing 5</a>.
+) Since the control has only a subset of the data in
+memory, it's much easier to do the sorting on the server and simply repopulate
+the control. When the user clicks the column heading, VListVu calls
+CSession::SortOnColumn which calls IMAPITable::SortTable using the selected
+column's property tag as the sort key. The table is only re-sorted if the new
+sort order is different from the current one, and VListVu caches the sort
+column's property tag to use in this comparison. VListVu pages out any resident
+SRowSets and preloads the cache. Easy, huh?</p>
+
+<h4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1]
+This isn't entirely accurate. Address book and message store providers access
+databases, transport providers send and receive messages.<p>
+<a name="2"></a>[2] As of this writing, the Microsoft Global Address List contained nearly
+80,000 entries. I know of one company that has over 400,000 entries.
+</p>
+<p><i>Les Thaler is a software engineer at Microsoft Corporation and founder of
+NetMessaging.Com, a consultancy specializing in messaging and workflow
+solutions. He is co-author of Inside MAPI (Microsoft Press). He can be reached
+at lest@NetMessaging.com.
+</i></p>
+
+<h4><a href="../../../source/1998/mar98/thaler.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</body></html>

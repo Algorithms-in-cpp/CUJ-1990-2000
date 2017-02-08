@@ -1,0 +1,222 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>September 1997/Sending Mail from a CGI Program</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><A href="../tocsep.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          <FONT COLOR="#FF0000">Features</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">Sending Mail from a CGI
+          Program</FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">Bob Kamins</FONT></H3>
+          
+          <BLOCKQUOTE>
+               
+               <P>The Unix sendmail command makes it easy to send mail from a
+                    CGI program, once you get all the plumbing right.</P></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <p>Typically, a CGI program reads a
+                    submitted form and creates a reply page for the browser.
+                    Often, the contents of the form are processed and sent on to
+                    some administrative function, by writing to a database or
+                    keeping a log file which is periodically checked by the
+                    administrator of the form. I have written several CGI
+                    programs where the form administrator did not have the 
+                    knowledge or inclination to check a log file, or deal with a
+                    database manager. So, I thought, why not mail the
+                    information instead? </p>
+               
+               <p> Unfortunately, sending mail from a
+                    CGI program can be a bit tricky. The obvious way is to
+                    create a child process, piping information into sendmail,
+                    perhaps from a file written for the purpose. A problem with
+                    this approach is that when the CGI program starts, standard
+                    input and output have been redirected to communicate
+                    directly with the Web server, confounding the programmer's 
+                    attempts to pipe information into a mail program. </p>
+               
+               <p> The solution is to connect standard
+                    output of the CGI program to standard input of a child
+                    process before running sendmail. This involves creating a
+                    pipe and a child process, setting the pipe up to write from
+                    the parent and read from the child, then sending the mail
+                    header and contents by writing to standard output from the
+                    parent. </p>
+               
+               <p> It's also a good idea to flush
+                    standard output before redirecting it. Communication with
+                    the Web server will be severed as part of the procedure, so
+                    you want to ensure that the browser will get everything you
+                    have sent it from the CGI program.</p>
+               
+               <h4><FONT COLOR="#000080">Creating the Child
+               Process</FONT></H4>
+               
+               <p>Function sendMail creates the pipe and
+                    child process, then calls the appropriate functions within
+                    the parent and child:</p>
+
+<PRE>
+void sendMail (void) {
+    int pfd [2];
+
+    fflush (stdout);
+    pipe (pfd);
+    switch (fork()) {
+    case 0:
+        child (pfd);
+        break;
+    default:
+        parent (pfd);
+        break;
+    }
+}
+</PRE>
+               
+               <p>The child process closes the unused
+                    writing end of the pipe, then closes its standard input, to
+                    make file descriptor 0 (stdin) available. It duplicates the
+                    reading end of the pipe, to make it the standard input. (dup
+                    always uses the first available file descriptor.) It then
+                    closes the (now unused) reading end of the pipe and executes
+                    sendmail:</p>
+
+<PRE>
+void child (int *pfd) {
+    close (pfd [1]);
+    close (0);
+    dup (pfd [0]);
+    close (pfd [0]);
+    execl ("/bin/sendmail", "bob@kamins.com", (char *)0);
+}
+</PRE>
+               
+               <p>Sendmail inherits standard input from
+                    the child process, which gets whatever is going in the
+                    writing end of the pipe. After the next step, that will be
+                    standard output of the parent process. </p>
+               
+               <p> The parent process closes the unused
+                    reading end of the pipe, then closes its own standard output
+                    (previously connected to the Web server's input), which
+                    frees up file descriptor 1 (stdout). Duplicating the writing
+                    end of the pipe causes the first unused file descriptor to
+                    be used (1, which was just made available) so the output
+                    from functions like printf and putchar will now be sent to 
+                    the writing end of the pipe. </p>
+               
+               <p> The (now) unused writing end of the
+                    pipe can then be closed and the mail message can be sent to
+                    stdout. Sendmail expects some header lines (like "Date:",
+                    "From:", and "To:") followed by at least one empty line,
+                    followed by the message text:</p>
+
+<PRE>
+void parent (int *pfd) {
+    close (pfd [0]);
+    close (1);
+    dup (pfd [1]);
+    close (pfd [1]);
+
+    /* send some header lines */
+
+    printf ("To: Administrator\n");
+    printf ("From: WWW\n");
+    printf ("Subject: Test\n");
+    printf ("\n");
+
+    /* send the message here... */
+
+    printf ("This is a test!\n");
+}
+</PRE>
+               
+               <h4><FONT COLOR="#000080">Error Processing</FONT></H4>
+               
+               <p>As written, none of the above function
+                    calls check return codes. Most of the calls are system calls
+                    that seldom fail, but it is good programming practice
+                    anyway, so I have included checking in the complete example
+                    shown later. </p>
+               
+               <p> It is important to realize that
+                    neither stdout nor stderr are going to be very useful for
+                    error reporting from a CGI program. The "user" is just a
+                    Web server. I like to send error messages to a log file for
+                    debugging purposes, using a simple function:</p>
+
+<PRE>
+void err (const char *msg) {
+    FILE *errfile;
+    errfile = fopen ("cgi.err", "at");
+    if (errfile != NULL) {
+        fprintf (errfile, msg);
+        fprintf (errfile, "\n");
+        fclose (errfile);
+    }
+    exit (1);
+}
+</PRE>
+               
+               <p></p>
+               
+               <p>The return codes from fopen and fclose
+                    are ignored. If they fail, there isn't anyone left to tell
+                    about errors anyway.</p>
+               
+               <h4><FONT COLOR="#000080">Example Program</FONT></H4>
+               
+               <p>HTML code for a very simple Web form
+                    is shown in <A href="list1.htm">Listing 1</a>
+and the
+                    resultant browser screen is shown in <A href="fig1c.htm">Figure
+                         1</a>.
+ The code asks the user to enter his or her name
+                    and select a product. The user can then check a box to
+                    request faster-than-normal service (at a slightly higher
+                    price, of course), which triggers the email part of the
+                    program. </p>
+               
+               <p> The program in <A href="list2.htm">Listing
+                         2</a>
+is almost complete. To save space in the
+                    magazine, it is missing a few little things like include
+                    directives, function prototypes, and some common CGI
+                    functions (like the parser and error logging). You can pick
+                    up the really complete program via anonymous ftp from
+                    ftp://ftp.mif.com/pub/cuj/1997/Sep97.zip. You can also
+                    sample the flavor of this program (and pick up the HTML 
+                    code) by browsing http://www.kamins.com/bob/ formtest.html o</p>
+               
+               <p><I>Bob Kamins is a self-employed
+                    contract programmer working in the Toronto area. He has been
+                    programming since 1967 (started in assembler on a Univac
+                    II). He recently finished teaching several sessions of
+                    Computer Studies at Seneca College in Toronto. He has
+                    two-and-a-half feline assistants to help write his favorite
+                    applications &#151; in C on any UNIX system that has a cat
+                    command. He may be reached at bob@kamins.com.  </I></p>
+     
+<h4><a href="../../../source/1997/sep97/kamins.zip">Get Article Source Code</a></h4>
+
+          </BLOCKQUOTE>
+     </BODY>
+</HTML>

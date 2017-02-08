@@ -1,0 +1,123 @@
+<HTML>   
+     <HEAD>
+<TITLE>August 1999/An Automated Process Shutdown DLL</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocaug.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Windows</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">An Automated Process Shutdown DLL</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Paul Carlson</FONT></H3>
+
+<BLOCKQUOTE>
+<p>It's easy to communicate among Win32 processes through a shared DLL, once you get all the machinery in place.</p>
+</BLOCKQUOTE>
+
+<hr>
+<BLOCKQUOTE>
+
+<h4><FONT COLOR="#000080">Introduction </FONT></H4>
+
+<p>Have you ever worked on an application that comprised more than one executable, each running in its own process space, that all needed to be shut down when one of the executables ran into trouble? If the answer is yes, this article is for you! What follows is a simple mechanism to shut down all related processes when one other process runs into trouble. This article also demonstrates some of the power of global memory segments under Win32 and how to spawn a separate thread of execution within a process.</p>
+<p>This article assumes that the reader is familiar with Windows programming, with creating DLLs, and is knowledgeable about the general concepts of processes and threads. For a very thorough introduction to all these topics, please see Charles Petzold's landmark publication <I>Programming Windows</I> <a href="#1">[1]</a>.</p>
+<p>All code in this article was developed under Windows NT using the Microsoft Visual C++ 5.0 compiler.</p>
+
+<h4><FONT COLOR="#000080">Creating a Shared Memory Segment </FONT></H4>
+
+<p>The Shutdown DLL is shown in its entirety in <a href="fig1.htm">Figure 1</a>. The first thing to note are the <B>#pragma</B> statements toward the top of the listing. This particular pragma pairing creates a data section named "shared." The shared data segment is crucial to the functioning of the shutdown dll.</p>
+<p>Using the <B>data_seg</B> pragma, you can name sections whatever you wish, but the linker will use only the first eight characters. All initialized variables after the first <B>#pragma</B> will go into the shared section. It is important to initialize the variables; otherwise, the linker will place them in the normal uninitialized section rather than in the shared section [<a href="#1">1</a>, p. 979]. The second <B>#pragma</B> marks the end of the section.</p>
+<p>Notice that the pragma simply creates a named data segment. The next thing to do is to tell the linker that this data segment is to be shared with all executables that load this DLL. Using the Microsoft line of compilers, this is done with the <B>/SECTION</B> linker flag. In this case, the shared section should be marked as readable, writable, and shared.</p>
+<p>To mark the section via the Microsoft Visual C++ IDE (Integrated Development Environment), simply select Project, then Settings. Select the Link tab. In the Project Options dialog at the bottom of the window, enter the following:</p>
+
+<pre>
+/SECTION:shared,rws
+</pre>
+
+<p>At this point, the shared memory segment is properly set up. All processes that load this DLL will have access to the same variables initialized in this segment (namely, the <B>shutdownProcess</B> flag). </p>
+
+<h4><FONT COLOR="#000080">Spawning a Thread in Win32</FONT></H4>
+
+<p>Spawning a separate thread to execute under Win32 is simple &#151; just make a call to <B>CreateThread</B>. <B>CreateThread</B> has the following method signature:</p>
+
+<pre>
+HANDLE
+CreateThread
+    (
+    LPSECURITY_ATTRIBUTES
+        lpThreadAttributes,
+    DWORD dwStackSize,
+    LPTHREAD_START_ROUTINE
+        lpStartAddress,
+    LPVOID lpParameter,
+    DWORD dwCreationFlags,
+    LPDWORD lpThreadId
+    );
+</pre>
+
+<p>For the purposes of this article, the only parameters that need to be specified are the startup routine (the third parameter) and the thread id (the last parameter). All other parameters can be either zero or null. (See the Win32 SDK documentation for details regarding this function.)</p>
+<p>The call to <B>CreateThread</B> will look like this:</p>
+
+<pre>
+CreateThread
+    (NULL,
+     0,
+     WaitForShutdown,
+     0,
+     0,
+     &amp;ThreadId
+    );
+</pre>
+
+<p>(see <a href="fig1.htm">Figure 1</a>).</p>
+<p>The <B>WaitForShutdown</B> startup routine (the third parameter above) must conform to the following signature, as specified by the Win32 SDK:</p>
+
+<pre>
+DWORD WINAPI ThreadFunc( LPVOID );
+</pre>
+
+<p>So the signature for <B>WaitForShutdown</B> is as follows:</p>
+
+<pre>
+DWORD WINAPI WaitForShutdown(LPVOID);
+</pre>
+
+<p>The implementation of <B>WaitForShutdown</B> is very simple. It simply monitors the status of the global shutdown flag, <B>shutdownProcess</B>. If that flag becomes equal to 1, the function terminates the process by calling <B>ExitProcess</B> <a href="#2">[2]</a>.</p>
+<p>Note the call to <B>Sleep</B>. This call causes the thread to check the shutdown flag only once every second. I added the call to <B>Sleep</B> to minimize CPU usage. Of course, there may be more elegant mechanisms than this polling mechanism for monitoring shutdown status. The suitability of this mechanism depends on the application.</p>
+
+<h4><FONT COLOR="#000080">Pulling It All Together</FONT></H4>
+
+<p>Making an executable (process) subject to "global" shutdown (being shut down by another process) involves the following steps.</p>
+<p>1.  The process to be subject to global shutdown loads the shutdown DLL into its address space via the <B>LoadLibrary</B> call.</p>
+<p>2.  The process invokes the <B>LoadDLL</B> function exported by the shutdown DLL. The <B>LoadDLL</B> function spawns a thread that monitors the global memory segment to see if the shutdown flag has been turned on. If it has, the thread calls <B>ExitProcess</B> and the process is terminated.</p>
+<p>To perform a global shutdown of all monitoring processes, the process initiating the shutdown calls the shutdown DLL's <B>ShutdownProcess</B> method. This call sets the flag that all interested processes are monitoring on their separate threads of execution. When each process sees that the flag is on, it will call <B>ExitProcess</B> as described above. </p>
+
+<h4><FONT COLOR="#000080">Sample Usage</FONT></H4>
+
+<p><a href="fig2.htm">Figures 2</a>, <a href="fig3.htm">3</a>, and <a href="fig4.htm">4</a> provide two sample MFC applications that demonstrate the loading of the DLL and invoking shutdown. The DLL is loaded in the application object's (derived from <B>CApp</B>) constructor via <B>LoadLibrary</B>. The address of the DLL functions to be called (<B>LoadDLL</B> and <B>ShutdownProcess</B>) are assigned to public instance variables. The constructor calls <B>LoadDLL</B>, which starts the shutdown monitoring process. The destructor frees the DLL.</p>
+<p>Whenever a user presses the Shutdown button on one of the test applications, all processes that have invoked the <B>LoadDLL</B> function will be terminated. Pushing the Shutdown button simply invokes the <B>ShutdownProcess</B> method in the <B>CApp</B>-derived class.</p>
+<p>In the sample code available for download from the <I>CUJ</I> website, I've included two MFC-based applications as well as a Win32 console-mode application. If you have all three running at the same time and press the Shutdown button on either of the GUI-based applications, the console application, as well as both GUI applications, will shut down.</p>
+
+<h4><FONT COLOR="#000080">Additional Considerations</FONT></H4>
+
+<p>Since the shutdown logic is wrapped up in a DLL, the DLL could be used in several different programming environments, including not only C++ but Powerbuilder, Visual Basic, and others as well.</p>
+<p>Application shutdown is subject to many considerations and this article provides only a simplistic mechanism for shutting down applications. The intent of this article was to demonstrate the use of shared memory segments and how to spawn threads to monitor system status. The techniques used in the shutdown DLL could easily be extended to accommodate a variety of application needs.</p>
+
+<h4><FONT COLOR="#000080">Notes and References</FONT></H4>
+
+<p><a name="1"></a>[1]  Charles Petzold, et. al, <I>Programming Windows 95</I> (Microsoft Press, 1996).</p>
+<p><a name="2"></a>[2]  <B>WaitForShutdown</B> does not use <B>TerminateProcess</B> because it is unsafe. The Win32 SDK documentation states:</p>
+<p></p>
+
+<BLOCKQUOTE>
+<p>The <B>TerminateProcess</B> function is used to unconditionally cause a process to exit. Use it only in extreme circumstances. The state of global data maintained by dynamic-link libraries (DLLs) may be compromised if <B>TerminateProcess</B> is used rather than <B>ExitProcess</B>.</p>
+</BLOCKQUOTE>
+
+<p><i>Paul Carlson is currently employed as an independent consultant in St. Paul, Minnesota. He holds a B.S. in Computer Science from the University of Wisconsin, River Falls and a Masters degree in Software Engineering from the University of St. Thomas. He has been programming in C/C++ for over ten years and can be reached at <B>p.carlson@computer.org</B>.</i></p>
+
+
+<h4><a href="../../../source/1999/aug99/carlson.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

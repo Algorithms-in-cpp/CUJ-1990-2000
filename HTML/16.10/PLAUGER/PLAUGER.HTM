@@ -1,0 +1,142 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>October 1998/Standard C/C++</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tococt.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Standard C/C++: Exception Safety in STL</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">P. J. Plauger</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>STL was originally written with no concern about exceptions, but the C++ Standard reconciled the two technologies just before it froze.</p></BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>It's been some time since I reviewed the Standard Template Library as it appears in the Standard C++ library (See all installments of my column, "Standard C/C++," <I>CUJ</I> from December 1995 to June 1997 inclusive.) Shortly after the last part of that presentation, the C++ Standards committee began revamping the specification for STL. That task continued through the November 1997 meeting in Morristown, New Jersey, where the draft was finally frozen.</p>
+<p>A number of small changes were made to the STL headers, which I won't attempt to detail here. What I will do, however, is describe a general cleanup the committee made to STL. The most important part of that cleanup was a careful rethinking of how STL containers and algorithms should interact with exceptions. The resulting changes to the C++ Standard require all implementations of STL to become rather more cautious. We implementors are forced to work harder so that programmers can have better guarantees when using the Standard C++ library.</p>
+<p>Here is the essence of the problem. Exceptions are a powerful mechanism for handling error conditions that are, well, exceptional. You don't want to handle them as part of the normal flow of control &#151; they're too much of a distraction from the problem at hand. Instead, you throw an exception at the point you detect the error. Somewhere higher in the nest of control blocks and calling functions, you can catch the thrown exception at a more convenient place for processing it. C++ unwinds the stack and destroys any automatic objects that go out of scope along the way.</p>
+<p>On the other hand, STL containers are a powerful mechanism for organizing homogeneous sequences of objects on your behalf. You want them to make whatever changes you request to the controlled sequences, and leave them in a coherent state each time they return control to you. The last thing you want to do is distract a container partway through some change. Neither you nor the container code is likely to know how to clean up the damage.</p>
+<p>So what happens if an STL container decides to throw an exception, or performs an operation that might do so on its behalf? An obvious example is storage allocation. A container allocates and frees storage as needed to store the elements of the sequence it controls. Any allocation can fail, through no fault of the code requesting the storage, simply because some other agency has used up the last of available storage. Once upon a time, you got a null pointer to signal a failed allocation. Nowadays, the allocator (such as <B>operator new</B>) typically throws an object of class <B>bad_alloc</B>.</p>
+<p>It's hardly asking too much of an implementor to ensure that a container is left in a consistent state if an allocation fails. Perhaps the implementor can't predict <I>when</I> such a failure will occur, but it is pretty obvious <I>where</I> in the code it can happen. You just have to make sure you have a bird in the hand &#151; the allocated storage &#151; before you start altering the stored control information to reflect the change to the container. At the very least, you want the destructor for the container to tidy up sensibly. At the most, you want the container to be ready if some agency catches the exception and tries to perform another operation on the container. It should look like a coherent container.</p>
+<p>STL containers themselves throw exceptions on one or two other occasions. An obvious example is the member function <B>at</B>. When present, it serves as a checked form of indexed access. If <B>vec[i]</B> accesses element <B>i</B>, then <B>vec.at(i)</B> does the same with checking. Should <B>i</B> be an invalid index, the member function throws an object of class <B>out_of_range</B>. Once again, it's not too much to ask of an implementor to ensure that the container be left in a consistent state when it throws the exception.</p>
+<p>But STL containers are templates. You specialize a template by specifying one or more type parameters. You can specify a class that you define yourself. The template expansion then includes code that you yourself have written &#151; constructors, destructors, assignment operators, even types and member functions with prespecified names. Put simply, a template specialization is a cooperative endeavor between you and the library implementor.</p>
+<p>So how do you cooperate when it comes to exceptions? You may want to throw an exception from a constructor you provide when it can't construct an object properly, or destroy it, or assign it, or whatever. A member function defined by the container may be partway through an operation when it defers to your code. If your code throws an exception, the member function had better be prepared to ensure that the container stays in a consistent state. One way is to call programmer-supplied code only in places where it is acceptable to lose control due to a thrown exception. Another way is to call programmer-supplied code from within a try block, so the member function can tidy up as needed before rethrowing the exception.</p>
+<p>Considerations such as these greatly complicate the business of implementing the STL containers. They are hard enough to write to begin with, I can attest &#151; one of the big reasons why STL is such a valuable addition to the Standard C++ Library. In fact, the situation is worse than "greatly complicated." Some talented people have studied the matter in detail. (Two principal contributors are Dave Abrahams, from Mark of the Unicorn, and Greg Colvin, now at Oracle.) They concluded that it is essentially <I>impossible</I> to write containers that are safe against exceptions being thrown from arbitrary places within programmer-supplied code.</p>
+<p>All is not lost, however. If you impose some pretty reasonable constraints on when exceptions can occur, it is possible to write STL containers that are reasonably exception safe. By "reasonably," I mean that if a permissible exception is thrown in programmer-supplied code, the container that calls this code makes one of two promises. In descending order of desirability, the promises are:</p>
+
+<UL><LI>The container is left in the state it was in before the member function for the container was called.</LI>
+    <LI>The container is left in some unspecified state, but it can be safely destroyed.</LI></UL>
+
+<p>In either event, there should be no memory leaks, of course.</p>
+<p>The final C++ Standard spells out the reasonable constraints on programmer-supplied code. It requires that all containers keep the second (weaker) promise above, in the presence of permissible exceptions. And it spells out the places where containers keep the first (stronger) promise above.</p>
+
+<h4><FONT COLOR="#000080">Constraints on Value Types</FONT></H4>
+
+<p>For a comprehensive example, consider the declaration:</p>
+
+<pre>
+typedef map&lt;Mykey, Myval, Mycomp, Myalloc&gt; Mymap;
+</pre>
+
+<p>This specializes the template container <B>map</B>, defined in the header <B>&lt;map&gt;</B>, for the four template parameters:</p>
+
+<UL><LI><B>Mykey</B>, the key type you specify, for describing the keys on which the map is ordered</LI>
+    <LI><B>Myval</B>, the value type you specify, for describing the values that accompany keys in map elements</LI>
+    <LI><B>Mycomp</B>, the function-object type you specify, for comparing keys</LI>
+    <LI><B>Myalloc</B>, the allocator type you specify, for allocating and freeing storage for elements of the map</LI></UL>
+
+<p>Each of these four template parameters can be a class you define, with numerous opportunities for throwing exceptions. I'll discuss them in turn, but first a blanket prohibition. <I>No destructor may throw an exception.</I> There are a host of reasons why:</p>
+
+<UL><LI>It's hard to characterize the state of an object that's only partially destroyed, because its destructor did not complete properly. What can the program do by way of recovery?</LI>
+    <LI>A container may have to destroy a number of objects, both implicitly and explicitly when it destroys itself. Too many scenarios are irrecoverable if one of the destructors throws an exception.</LI>
+    <LI>Destructors for automatic objects must be called while processing an exception. A second exception is most unwelcome during exception processing.</LI></UL>
+
+<p>When can you throw an exception? Consider first the types <B>Key</B> and <B>Value</B>. The container has to construct objects of these types, destroy them, and copy them by assignment. For objects of type <B>Key</B>, it must also compare them using <B>operator()</B> defined by class <B>Mycomp</B>. I've already ruled out throwing exceptions during destruction. But all the other operations can conceivably have occasion to throw an exception.</p>
+<p>Here's the kind of thing you have to do to insert a new element in a map:</p>
+
+<pre>
+iterator
+_Insert(_Nodeptr _X, _Nodeptr _Y, const _Ty&amp; _V)
+{if (max_size() - 1 &lt;= _Size)
+    throw length_error("map&lt;T&gt; too long");
+_Nodeptr _Z = _Buynode(_Y, _Red);
+_Left(_Z) = _Nil, _Right(_Z) = _Nil;
+try
+    {_Consval(&amp;_Value(_Z), _V); }
+catch (...)
+    {_Freenode(_Z);
+    throw; }
+++_Size;
+&lt;do the actual insertion&gt;
+</pre>
+
+<p>Type <B>_Ty</B> is a synonym for:</p>
+
+<pre>
+pair&lt;const Key, Value&gt;
+</pre>
+
+<p>the information stored in each element of the map, a.k.a. a map node. And <B>_Nodeptr</B> is a synonym for a pointer to one of these nodes.</p>
+<p>Note the cautious preparations. First the container ensures that it can represent the new size of the container. If not, it throws an object of type <B>length_error</B> to report the failure. The map remains in a consistent state. The call to <B>_Buynode</B> attempts to allocate a new map node and fill in some of its fields. If the allocation fails, <B>_Buynode</B> can throw an exception. In this case, the member function simply allows the exception to propagate. It is still in a consistent state.</p>
+<p>The template function <B>_Consval</B> attempts to construct the {key, value} pair in the <B>_Value</B> field of the node, using placement semantics. Thus, it calls on the constructor for <B>pair&lt;const Key, Value&gt;</B>, which in turn calls on the constructors for <B>Key</B> and <B>Value</B>. Either of these can throw an exception. If the pair is partially constructed before the throw, it is up to the compiler to ensure that the wreckage is properly destroyed &#151; we don't have to worry at that level. But we do have to worry about what happens to the container when the exception is propagated.</p>
+<p>In this case, the only cleanup required is to call <B>_Freenode</B> to free the allocated node. Note that this can involve destroying the links that were initialized in <B>_Buynode</B>. Generally speaking, these are simply object pointers, which have (implicit) destructors that do nothing. But my implementation of STL does its best to accommodate allocators that return "pointers" which are really classes. If they need destroying, it is up to <B>_Freenode</B> to ensure that the job gets done before the storage is freed.</p>
+<p>Only after the code runs this gauntlet of potential throws does the member function <B>_Insert</B> really believe it can do the insertion. It increments <B>_Size</B>, the size of the container, and proceeds to stitch it into place in the tree structure that represents the ordered map.</p>
+<p>In fact, the code takes one additional precaution not immediately apparent in the above snippet. The arguments to <B>_Insert</B> denote the place in the tree where the insertion should occur. The caller determines this place by climbing over the tree, making any number of key comparisons. Should any of these key comparisons throw an exception, the container doesn't even try to call <B>_Insert</B>. Talk about walking on eggs.</p>
+
+<h4><FONT COLOR="#000080">Other Programmer Constraints</FONT></H4>
+
+<p>Remember that key comparisons are performed by calling <B>operator()</B> defined in class <B>Mycomp</B>. Obviously, this function can throw an exception if the mood strikes it. The STL containers are flexible enough to tolerate a function pointer instead of a proper class for <B>Mycomp</B>. In that case, you needn't worry about the constructor for the pointer throwing an exception.</p>
+<p>But you do have to worry if <B>Mycomp</B> represents a class with a nontrivial constructor. One advantage of using a <I>function object </I>(a.k.a. <I>functoid</I>) of this sort is that you can squirrel away additional data within the object. An accompanying disadvantage is that the constructors or assignment operators for the stored data can throw exceptions. This has implications for container assignment and content swapping. The function object has to be copied along with the controlled sequence, otherwise the ordering rule could change. So a container has to be prepared for an exception thrown by a seemingly innocuous operation such as copying the stored function object.</p>
+<p>And that leaves class <B>Myalloc</B>. An allocator in STL encapsulates the work of allocating and freeing storage for a container. To implement allocators fully, you have to stress a C++ compiler pretty hard. Thus, many implementations of allocators do not conform fully to the final C++ Standard. They instead indulge in various kludges to approximate their required functionality.</p>
+<p>But that's not a major issue with regard to exception safety. Allocators mostly traffic in raw storage. They are expected to throw an exception if they cannot satisfy an allocation request. They are expected <I>not</I> to throw for any (valid) deallocation request. An allocator is indeed an object. It gets squirreled away within a container when the container is constructed and can never be replaced thereafter. Its constructor and assignment operator can throw an exception and its destructor had better not. Beyond that, I won't go into the numerous subtleties surrounding whether allocators can store values.</p>
+<p>A subtler issue is the types that an allocator can define for pointers and references. These include:</p>
+
+<pre>
+pointer
+const_pointer
+reference
+const_reference
+</pre>
+
+<p>The final C++ Standard basically says that these types must correspond to the ordinary pointers and references of C++. It did not always say that. As I mentioned above, I have tried to allow at least for fancier pointers. If you indulge this latitude, however, you'd better be careful. Most of STL assumes that valid operations on iterators, and hence on the pointers they encapsulate, never throw exceptions.</p>
+
+<h4><FONT COLOR="#000080">Library Promises</FONT></H4>
+
+<p>Given the constraints on programmer-defined types outlined above, the Standard C++ library can make a few promises about exception safety. I'll cite chapter and verse from the C++ Standard.</p>
+<p>For <I>all</I> containers, clause 23.1 promises the following:</p>
+
+<UL><LI>If an exception is thrown by an <B>insert</B> function while inserting a single element, that function has no effects.</LI>
+    <LI>If an exception is thrown by a <B>push_back</B> or <B>push_front</B> function, that function has no effects.</LI>
+    <LI>No <B>erase</B>, <B>pop_back</B> or <B>pop_front</B> function throws an exception.</LI>
+    <LI>No copy constructor or assignment operator of a returned iterator throws an exception.</LI>
+    <LI>No <B>swap</B> function throws an exception unless that exception is thrown by the copy constructor or assignment operator of the container's <B>Compare</B> object (if any).</LI></UL>
+
+<p>In the last rule, the <B>Compare</B> object is the one whose type I've been calling <B>Mycomp</B>.</p>
+<p>Not everybody was happy with this list. Some containers can promise more, without incurring serious overheads. There was strong sentiment for having each container promise as much as possible. Template class <B>list</B>, in particular, has the easiest job of all. It turns out not to be too hard to roll back practically <B>any</B> change to a list, if an exception occurs somewhere in the middle of changing several list elements.</p>
+<p>In the end, the C++ Standards committee arrived at what I consider to be a happy compromise. They decided to require template class <B>list</B> to be as predictable as possible, but to impose only the minimum constraints on all other containers. Thus, if you really need a fail-safe container in the presence of exceptions, you'd better make do with a list. Otherwise, you have just the minimum promises outlined above to rely on.</p>
+<p>One last item. Some containers, naturally enough, make use of the algorithms defined as part of STL. These are template functions, mostly inhabiting the header <B>&lt;algorithm&gt;</B>, that do all sorts of useful things on sequences of elements. To meet the exception-safety requirements outlined above, some containers have it much easier if three template functions are obliged to be themselves exception safe. These are the functions <B>uninitialized_copy</B>, <B>uninitialized_fill</B>, and <B>uninitialized_fill_n</B>, all defined in the header <B>&lt;utility&gt;</B>. Here's what clause 20.4.4 now says:</p>
+<p>All the iterators that are used as formal template parameters in the following algorithms are required to have their <B>operator*</B> return an object for which <B>operator&amp;</B> is defined and returns a pointer to <B>T</B>. In the algorithm <B>uninitialized_copy</B>, the formal template parameter <B>InputIterator</B> is required to satisfy the requirements of an input iterator. In all of the following algorithms, the formal template parameter <B>ForwardIterator</B> is required to satisfy the requirements of a forward iterator and also to satisfy the requirements of a mutable iterator and is required to have the property that no exceptions are thrown from increment, assignment, comparison, or dereference of valid iterators. In the following algorithms, if an exception is thrown there are no effects:</p>
+
+<pre>
+uninitialized_copy
+uninitialized_fill
+uninitialized_fill_n
+</pre>
+
+<p>To see the effect of this more stringent requirement, see <A HREF="fig1.htm">Figures 1</A> and <A HREF="fig2.htm">2</A>. <A HREF="fig1.htm">Figure 1</A> shows the way these three template functions were once written. <A HREF="fig2.htm">Figure 2</A> shows the new way. I've shown the macros <B>_TRY_BEGIN</B>, etc. in earlier code, so I'll leave it to your imagination to guess what they do here. The basic message is that the logic is messier, but not outrageously complex.</p>
+<p>And that is the basic message of exception safety in the Standard C++ library. I believe the payoff in usefulness is well worth the added complexity.</p>
+
+<p><i>P.J. Plauger is Senior Editor of <I>C/C++ Users Journal</I> and President of Dinkumware, Ltd. He is the author of the Standard C++ Library shipped with Microsoft's Visual C++, v5.0. For eight years, he served as convener of the ISO C standards committee, WG14. He remains active on the C++ committee, J16. His latest books are <I>The Draft Standard C++ Library</I>, <I>Programming on Purpose</I> (three volumes), and <I>Standard C</I> (with Jim Brodie), all published by Prentice-Hall. You can reach him at <B>pjp@plauger.com</B>.</i></p>
+
+<h4><a href="../../../source/1998/oct98/plauger.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

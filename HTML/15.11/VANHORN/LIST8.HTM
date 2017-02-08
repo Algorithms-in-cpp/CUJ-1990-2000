@@ -1,0 +1,107 @@
+
+
+
+
+<HTML><HEAD>
+
+<TITLE>November 1997/Rolling Your Own Input Iterators/Listing 8</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4>Listing 8:	const_db_btree.C</h4>
+
+<pre>
+#include &lt;errno.h&gt;
+#include &lt;string.h&gt;
+#include "except_util.h"
+#include "const_db_btree.h"
+     
+namespace {
+     
+  template &lt;class T&gt;
+  DBT pod2dbt(T &amp; x)
+  {
+    DBT t;
+    t.size = sizeof(T);
+    t.data = (void *)&amp;x;
+    return t;
+  }
+     
+  template &lt;class T&gt;
+  void dbt2pod(DBT dbt, T &amp; x)
+  { memcpy((void *)&amp;x, dbt.data, dbt.size); }
+     
+  int compare(DBT const * px, DBT const * py) 
+  {
+    Date d1, d2;
+    dbt2pod(*px, d1);
+    dbt2pod(*py, d2);
+    return d1 &lt; d2 ? -1 : d1 &gt; d2 ? +1 : 0;
+  }
+     
+}
+     
+void const_db_btree::datagen::set(Key * startk, Key * endk) 
+{ 
+  if (startk) {
+    key = pod2dbt(*startk);
+    flag = R_CURSOR;
+  }
+  else
+    flag = R_FIRST;
+  if (endk) {
+    ek = *endk;
+    endkey = pod2dbt(ek);
+  }
+  else
+    endkey.data = 0;
+}
+     
+bool const_db_btree::datagen::next() 
+{
+  if (flag == R_SETCURSOR) { // used only in db_btree
+    int code = dbp-&gt;put(dbp, &amp;key, &amp;data, flag); 
+    if (code &lt; 0)
+      throw unix_error(errno);
+  }
+  else {
+    int code = dbp-&gt;seq(dbp, &amp;key, &amp;data, flag); 
+    if (code &lt; 0)
+      throw unix_error(errno); 
+    else if (code &gt; 0 || endkey.data &amp;&amp; compare(&amp;key, &amp;endkey) &gt; 0)
+      return false;
+    dbt2pod(key, value_.first);
+    dbt2pod(data, value_.second);
+  }
+  flag = R_NEXT;
+  return true;
+}
+     
+void const_db_btree::ctor(
+  char const * fname, bool multi, int flags, int mode
+)
+{
+  BTREEINFO info;
+  bzero(&amp;info, sizeof(info));
+  info.prefix = 0;  // Null pointer
+  info.compare = &amp;compare;
+  if (multi)
+    info.flags = R_DUP;
+  body.dbp = dbopen(fname, flags, mode, DB_BTREE, (void *)&amp;info); 
+  if (!body.dbp)
+    throw unix_error(errno);
+}
+     
+bool const_db_btree::get(Key k, Data &amp; x) const 
+{
+  DBT key = pod2dbt(k), data;
+  int code = body.dbp-&gt;get(body.dbp, &amp;key, &amp;data, 0); 
+  int e = errno;
+  if (code &lt; 0)
+    throw unix_error(e);
+  else if (code &gt; 0)
+    return false;
+  dbt2pod(data, x);
+  return true;
+}
+//End of File
+</pre>
+</body></html>

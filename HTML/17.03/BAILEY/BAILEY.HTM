@@ -1,0 +1,151 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>March 1999/A Signal Command and Control Class for Unix</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocmar.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Unix</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">A Signal Command and Control Class for Unix</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Patrick Bailey</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>Signals are a useful way to communicate under Unix, provided you have enough to go around.</p>
+</BLOCKQUOTE>
+<HR>
+<BLOCKQUOTE>
+<p>This article presents two C++ classes you can use to leverage Unix signals. The two classes combine the power of signals, Unix message queues, and the Standard C++ library <B>map</B> container template class. To help readers appreciate the capability offered by these classes, I provide a brief overview of signals and their implementation.</p>
+
+<h4><FONT COLOR="#000080">Overview of Signals</FONT></H4>
+
+<p>Signals under Unix System V, Release 4 provide a powerful mechanism for externally controlling applications. A signal is an interprocess communication (IPC) mechanism, which interrupts an application to perform an action. Signal types are identified by integers. The operating system provides a default action in response to most signals. Default actions include ignoring the signal as well as stopping the application.</p>
+<p>In general, the Unix "kill" utility or the Unix system call <B>kill</B> are used to send signals to processes. The signal sender must provide the ID number of the signal being sent and the PID (Process ID) of the receiving process. Below is an example of the Unix command line to send a <B>TERMINATE</B> signal (15) to a process with PID 1234. (The <B>TERMINATE</B> signal is usually used to notify applications that the operating system is about to be shut down.)</p>
+
+<pre>
+kill  -TERM  1234
+</pre>
+
+<p>The Unix system call <B>signal</B> allows developers to customize actions taken for many of the standard signals that applications receive. The prototype for the signal call is in the header file <B>&lt;sys/signal.h&gt;</B> and is declared as follows:</p>
+
+<pre>
+int signal (int signal_id, void (*)());
+</pre>
+
+<p>The <B>signal</B> call takes two arguments. The first is an integer to identify the signal type, and the second is a function pointer to the custom routine.  Using the example above, a developer may provide a special function named <B>stop_gracefully</B> to do some cleanup before stopping the application. The following snippet illustrates how this is accomplished:</p>
+
+<pre>
+#include &lt;sys/signal.h&gt;                        
+void stop_gracefully(int);        
+int main(void){        
+    signal(SIGTERM, stop_gracefully);
+    // more code follows              
+}
+</pre>
+
+<p>Notice that the <B>stop_gracefully</B> function prototype takes a single integer argument. When the application receives a signal, the argument to <B>stop_gracefully</B> will be set to the type of signal sent. This implementation requirement was a key consideration in designing the <B>CmdControl</B> class, described later.</p>
+<p>Two signals defined in <B>&lt;sys/signal.h&gt;</B> are specifically for customized use: <B>SIGUSR1</B> and <B>SIGUSR2</B>. For example, I knew one developer who incorporated these signals into a run-time diagnostic routine. If a higher level of diagnostics was desired, the application was sent the <B>SIGUSR1</B> signal; the <B>SIGUSR2</B> signal had the reverse effect.</p>
+
+<h4><FONT COLOR="#000080">The Command Control Classes</FONT></H4>
+
+<p><B>SIGUSR1</B> and <B>SIGUSR2</B> are convenient, but if they have already been used (not uncommon), the developer must find some other means to activate other features in the application. Even if the developer uses other signals offered by the operating system, sooner or later the supply of signals will be depleted. This limitation is addressed with the two classes presented in this article.</p>
+
+<h4><FONT COLOR="#000080">The CmdControl Class</FONT></H4>
+
+<p>The first class, <B>CmdControl</B>, is the "Command and Control" class. Using <B>CmdControl</B>, a developer can assign an almost unlimited number of actions to a signal. The second class, <B>CmdQMgr</B> is the "Command Control Queue Message Manager." As its name implies, it manages communications between the <B>CmdControl</B> class and the outside world.</p>
+<p>I'll review the design and implementation of the <B>CmdControl</B> class first. <B>CmdControl.h</B> (<A HREF="list1.htm">Listing 1</A>) provides the header file for the <B>CmdControl</B> class. <B>CmdControl.c</B> (<A HREF="list2.htm">Listing 2</A>) shows implementation of its member functions. The code listings for this article were compiled and tested with the GNU C++ compiler g++ under Caldera's OpenLinux (v1.2).</p>
+<p>The <B>CmdControl</B> class is best described as a class that creates associations. It creates associations that identify which signal belongs to which instance of the class. Furthermore, the <B>CmdControl</B> class associates symbolic references with actions. These associations are supported with C++'s standard template library container <B>map</B> class. <B>CmdControl</B>'s member object <B>cmd_sigobjref</B> provides the association between signals and the instance of the class that handles them. This explains why it is declared as a static member. The <B>cmd_runstring</B> object associates a function within an application with a symbolic string.</p>
+<p>The <B>CmdControl</B> constructor (<A HREF="list2.htm">Listing 2</A>) requires a single parameter. This is the identification number of the Unix signal it will manage for an application. An application should contain only a single instance of <B>CmdControl</B> per signal.</p>
+<p>When the <B>CmdControl</B> class is instantiated, it invokes Unix's system call <B>signal</B>. This associates the signal with the static member function <B>CmdControl::cmd_handler</B>, a generic function for signal handling.</p>
+<p>One of the things I found particularly challenging in designing this class was dealing with non-member function pointers. As noted above, the prototype of the signal call requires a pointer to a function. However, this function must be either a non-member function or declared as static within the class. Stroustrup points out that a pointer to a member function is actually an offset and does not point directly to a piece of memory <a href="#2">[2]</a>. Since a static member function isn't associated with a specific instance of an object, its address can be used as an ordinary pointer. Taking this into consideration, <B>cmd_handler</B> was declared as a static member within the class to retain encapsulation.</p>
+<p>The second step in the constructor is associating the signal with the specific instance of the class. To create this association, the constructor adds an element to the <B>CmdControl::cmd_sigobjref</B> map. This element must consist of a key and a value. The constructor uses the signal ID as the key and it uses the pointer to the current instance (<B>this</B>) as the value.</p>
+<p>Finally, the constructor creates an instance of the <B>CmdQMgr</B> object and assigns its address to the pointer <B>cmd_msg_object</B>. If the <B>CmdQMgr</B> constructor fails, it throws an exception. The <B>CmdControl</B> constructor catches this exception and throws its own exception, a string with the contents <B>"Error"</B>, to the calling application.</p>
+
+<h4><FONT COLOR="#000080">The CmdQMgr Class</FONT></H4>
+
+<p>Before describing how all of this comes together, I provide an overview of the <B>CmdQMgr</B> class. (See <A HREF="list3.htm">Listing 3</A>, <B>CmdQMgr.h</B>, and <A HREF="list4.htm">Listing 4</A>, <B>CmdQMgr.c</B>.) As I previously mentioned, the <B>CmdControl</B> class associates an application function with a symbolic string. <B>CmdControl</B> invokes the function when it receives the symbolic string in a message. It is the <B>CmdQMgr</B> class that links those messages between a separate user application and a process's instance of <B>CmdControl</B> created for a particular signal.</p>
+<p>The basic building block for exchanging messages used by <B>CmdQMgr</B> is the Unix message queue IPC resource. Briefly, a Unix queue is created by a calling application, which provides the queue a unique key value. Messages on a queue have a basic structure, defined in the standard header file <B>&lt;sys/msg.h&gt;</B>:</p>
+
+<pre>
+struct  msgbuf{
+    long type;
+    char data[1];   
+};
+</pre>
+
+<p>The <B>type</B> member provides an identification number to a message. In the implementation of this structure, the data can be one or more bytes in length. Using this model the following data type definition was created:</p>
+
+<pre>
+typedef struct {
+    long type;
+    char data[max_message + 1];
+} msgbuff;
+</pre>
+
+<p>The message size for this application is set to the value of the constant <B>max_message</B>, also defined in the source file for <B>CmdQMgr</B>. The additional byte was added to support the null string terminator.</p>
+<p>The <B>CmdQMgr</B> object can operate in one of two contexts. The first context is as a creator of a service. A creator controls the queue's existence. Any instance of <B>CmdQMgr</B> created by the <B>CmdControl</B> class acts as a creator of a service. The second context is that of the sender of a message. The sender merely identifies an existing queue to which it can send messages.</p>
+<p>The context of a <B>CmdQMgr</B> instance is based on the constructor used. The first constructor format is used in the creator context. This constructor requires a single integer argument, which is used as a signal number. This signal number is the identification number of the signal that will be managed. The signal ID is assigned to the private member <B>cmdqmgr_type</B>. The instance of the <B>CmdQMgr</B> class created in this context will concern itself only with queue messages that have a type value equivalent to <B>cmdqmgr_type</B>.</p>
+<p>The creator's constructor version gets the application's current process ID through the Unix system call <B>getpid</B>. The constructor creates a unique key identifier for the queue by adding the process ID to the constant <B>queuebaseid</B>. This key identifier is assigned to member <B>cmdqmgr_key</B>. Using the constant as a base should provide unique values within a given range to avoid conflicts with queue IDs for other applications on a Unix system. (However, this can never be absolutely guaranteed. There are methods to make the base configurable for a system. An example would be setting an environment value in a startup shell script and capturing it with a system call to <B>getenv</B>. I use this constant in this article for the sake of simplicity.)</p>
+<p>Finally, the constructor invokes the Unix system call <B>msgget</B>. The last argument, <B>IPC_CREAT</B> ORed with the octal value 0666, requests the operating system to create a new queue using the ID provided in the first argument and to assign read and write permissions to the queue. After a successful creation, or if the queue already exists, the operating system returns a handle, which is assigned to <B>CmdQMgr</B>'s private member <B>cmdqmgr_queue_id</B>.</p>
+<p>Using the constructor prototyped to receive two parameters creates an instance of the <B>CmdQMgr</B> in the sender context. Applications establish an instance of <B>CmdQMgr</B> in the sender context to send signals and messages to processes using the <B>CmdControl</B> class. The first constructor parameter is the ID of the signal that will be sent to a process, which will also be incorporated into the <B>msgbuff</B> structure for the type of message that will be sent. The second parameter identifies the process the signal and messages will be sent to. Again, We have created an association!</p>
+
+<h4><FONT COLOR="#000080">The Signal Manager in Action</FONT></H4>
+
+<p>The source code for <B>democ.c</B> (<A HREF="list5.htm">Listing 5</A>) exercises the features of the <B>CmdControl</B> class. The source code for <B>tqsnd.c</B> (<A HREF="list6.htm">Listing 6</A>) provides an example of a separate application that sends messages to processes using the <B>CmdControl</B> class. The mechanics of implementing the <B>CmdControl</B> and <B>CmdQMgr</B> classes will be described through the use of these two listings.</p>
+<p><B>democ.c</B> provides two instances of the <B>CmdControl</B> class. One instance will manage messages for the process any time it receives the <B>SIGUSR1</B> signal. The other instance will do the same for <B>SIGUSR2</B>. The separate instances for <B>SIGUSR1</B> and <B>SIGUSR2</B> signals are dynamically allocated with pointers assigned to <B>usr1hdle</B> and <B>usr2hdle</B>, respectively.</p>
+<p>In this fictitious scenario, democ is an application that will provide run-time reporting capabilities whenever it receives the <B>SIGUSR1</B> signal. Four separate functions can be invoked depending on the user's need. Each function is associated with a string using the <B>set_action</B> method of the <B>CmdControl</B> class. This method creates the association within <B>CmdControl</B>'s embedded <B>map</B> member <B>run_string</B>.  For this example, <B>SIGUSR2</B> is used to invoke any one of four generic demonstration functions. I mention this to highlight the fact that multiple signals in an application can be managed with the <B>CmdControl</B> class, provided there is one instance of the class per signal. Any subsequent instantiations of the class for the same signal would reassign the value of the object pointer in the <B>CmdControl</B> constructor statement</p>
+
+<pre>
+cmd_sigobjref[cmd_signal] = this;
+</pre>
+
+<p>The democ application also exercises other member functions in the <B>CmdControl</B> class that manage the associations or provide information. Un-setting the previously made association between a function and the string <B>"DEMO4"</B> is done with a call to the <B>unset_action</B> member function. A test is performed with two calls to the member function <B>is_used</B> to verify that <B>unset_action</B> worked correctly, and that a remaining association for <B>"REPORT"</B> exists.</p>
+<p>The tqsnd application (<A HREF="list6.htm">Listing 6</A>) provides the user a front end to the democ application. With tqsnd, the user can request democ to invoke one of the specific services associated with a signal while it is running. tqsnd's usage is similar to the Unix "kill" utility. However, it requires three command-line arguments: the process ID, the signal that should be sent, and the message to send to the process. For example, if democ was running with a process ID of 4567 and I wanted it to produce a run-time diagnostic report, I would use tqsnd on the command line as follows. (Note: On my system, the literal value for the <B>SIGUSR1</B> signal is defined as 10.)</p>
+
+<pre>
+tqsnd  4567 10 "REPORT"
+</pre>
+
+<p>An instance of the <B>CmdQMgr</B> object is created by tqsnd. Since <B>CmdQMgr</B> will be sending a request to a process to perform a service, tqsnd creates the object with the constructor that implies the sender context. The pointer <B>Qobj</B> maintains the reference to the <B>CmdQMgr</B> object.</p>
+<p>To request the service, tqsnd invokes <B>CmdQMgr</B>'s member function <B>send_msg</B> (<A HREF="list2.htm">Listing 2</A>). <B>send_msg</B> requires a string argument, and sets up the message buffer by assigning the value of the signal to <B>msgbuff.type</B> and copying the string into <B>msgbuff.data</B>. <B>send_msg</B> calls the standard Unix system call <B>msgsnd</B> to place the message on the queue that was identified in the constructor. Immediately after that, <B>send_msg</B> calls the Unix system call <B>kill</B>, using the process ID and signal the <B>CmdQMgr</B> instance is associated with. Consequently, democ is interrupted.</p>
+<p>Within the democ application (<A HREF="list5.htm">Listing 5</A>), the <B>CmdControl</B> class static member function <B>cmd_handler</B> (<A HREF="list2.htm">Listing 2</A>) is called through democ's object <B>usr1hdle</B>. The operating system provides the signal ID for the call. To ensure that the processing for the currently received signal is not interrupted for the same signal, <B>cmd_handler</B> makes a call to the signal with the <B>SIG_IGN</B> (as in ignore the signal) parameter.</p>
+<p>Next, <B>cmd_handler</B> determines which instance of the <B>CmdControl</B> class is set up to manage this signal by first checking if the association was ever created. <B>cmd_handler</B> calls the <B>find</B> function on the <B>map</B> member <B>cmd_sigobjref</B>, using the signal ID as the search key. I could also have used the <B>map</B> subscript operation <B>[]</B> to search for the instance. Although it is not an error to use subscripting on a <B>map</B> for elements that may not exist, this can involve extra overhead if <B>find</B> is not used at first. Per Stroustrup, in the event an element does not exist for a subscripted value, a <B>map</B> container will create an element with a default value <a href="#2">[2]</a>. If several invalid subscripts were provided, the <B>map</B> container could become unnecessarily large.</p>
+<p>If the association does not exist, <B>cmd_handler</B> generates an error message. If the association does exist, <B>cmd_handler</B> subscripts the <B>map</B> with the signal ID and assigns the address of the associated instance to the pointer <B>cmd_objhandle</B>.</p>
+<p><B>cmd_handler</B> then calls the <B>run_cmd</B> member function on this associated instance. This instance of <B>CmdControl</B> contains a pointer to a <B>QmdQMgr</B> object; <B>run_cmd</B> (<A HREF="list2.htm">Listing 2</A>) calls the member function <B>receive_msg</B> (<A HREF="list4.htm">Listing 4</A>) on this <B>QmdQMgr</B> object, which in turn  invokes the Unix system call <B>msgrcv</B>. This call specifically requests the next message with a type value equivalent to the signal received. This message is passed back to <B>run_cmd</B> through the argument of <B>receive_msg</B>.</p>
+<p><B>run_cmd</B> uses this message string to search for an associated function pointer in the embedded <B>map</B> <B>run_string</B>. (Once again, I precede the subscript operation with a <B>find</B>.) If an association does exist, the address of the function to be invoked is assigned to the pointer <B>run_function</B>. The service requested is called with the following:</p>
+
+<pre>
+(*run_function)();
+</pre>
+
+<p>Upon completion of the service, control returns to <B>CmdControl::cmd_handler</B>. <B>cmd_handler</B>'s last operation is to reset itself as the signal handler for the signal just received. If this isn't done, the operating system's default behavior for the signal will be invoked the next time the application is interrupted.</p>
+<p>To exercise the applications, the shell script <B>cmddemo.sh</B> (<A HREF="list7.htm">Listing 7</A>) was created with multiple calls to tqsnd. The calls exercise both of the signals set up for management within democ. Further, some messages for which democ associates no action are sent to test the error recovery ability of the <B>CmdControl</B> class. The script is executed from the command line with the process ID for the instance of democ of interest. For example, if the process ID is 5678, the command line would appear as follows:</p>
+
+<pre>
+cmddemo.sh 5678
+</pre>
+
+<p><A HREF="fig1.htm">Figure 1</A> shows the output of democ based on the messages it received from <B>cmddemo.sh</B>. The first two messages are due to the self checks within democ. The remaining messages have a one-to-one correspondence to the lines in the <B>cmddemo.sh</B> script.</p>
+
+<h4><FONT COLOR="#000080">Concluding Remarks</FONT></H4>
+
+<p>Although the democ application demonstrates the robustness of the <B>CmdControl</B> class in supporting multiple signals, you needn't use more than one instance of it in an application. Since one signal can now have multiple actions associated with it, multiple instances of the <B>CmdControl</B> class are unnecessary.</p>
+<p>The listings in this article were designed to illustrate the basic approach to leveraging a Unix resource. This application could be expanded to include a more complex messaging system that would allow application-level parameters as well.</p>
+<p>Most of the literature I have encountered that addresses the issue of incorporating function pointers with Unix system calls usually provides sample code of wrappers that are external to a class. <B>CmdControl</B> provides a technique to encapsulate the wrapper within the class.</p>
+<p>Once again, the object-oriented approach provides a solution in which the interface can change with minimal impact on the implementation. In this case, the interface for exchanging messages can change without impacting the <B>CmdControl</B> class. Although the <B>CmdQMgr</B> class uses the standard message queue, it can be reconstructed to use sockets or any other form of IPC.</p>
+
+<h4><FONT COLOR="#000080">Bibliography</FONT></H4>
+
+<p><a name="1"></a>[1]  Caldera's OpenLinux (v 1.2) manual pages.</p>
+<p><a name="2"></a>[2]  Bjarne Stroustrup. <I>The C++ Programming Language</I> (Addison-Wesley, 1997).</p>
+
+<p><i>Patrick Bailey is a former U.S. Army officer and has spent the past 13 years in Iowa as a Senior Software Engineer with consulting companies such as Keane and CTG. He recently joined Meijer Stores of Grand Rapids, Michigan as a Senior Systems Analyst and Designer. He can be reached at <B>patbly@radiks.net</B>.</i></p>
+
+
+<h4><a href="../../../source/1999/mar99/bailey.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

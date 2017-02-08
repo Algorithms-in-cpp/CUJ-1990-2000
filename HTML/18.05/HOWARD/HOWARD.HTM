@@ -1,0 +1,166 @@
+<HTML>   
+     <HEAD>
+<TITLE>May 2000/Using Predicate Waits with Win32 Threads</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocmay.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Multithreading</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Using Predicate Waits with Win32 Threads</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">David M. Howard</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Most Win32 synchronization primitives are just that &#151; primitive. But you can use them to build queues that are safe and easy to use.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+<p>In his article, "Communicating Sequential Processes", C.A.R. Hoare introduced one of the first formalizations of thread synchronization concepts. Hoare described a design pattern for a Monitor/Condition Variable construct, which, when implemented properly, provides for thread-safe access to an object. In addition, this construct gives threads the capability to wait for changes in an arbitrary condition associated with the object and then respond to those changes. This type of waiting is called a "predicate wait," where the predicate is arbitrary. One predicate wait application is a bounded interthread queue implementation. This article discusses the mechanisms provided by Win32 to support these constructs. It turns out that the Java thread synchronization mechanisms are modeled explicitly around the monitor/condition variable scheme. It's a nice model, and Win32 also supports it, though not quite so explicitly.</p>
+<p>The simple lock/unlock mechanism, using critical sections, mutexes, or semaphores, provides protection for shared resources, but it provides no way to wait for conditions to occur. For example, consider an application that has threads operating in a producer/consumer relationship. One or more threads may be producers, generating data that is placed in a container. Other threads may be consumers and need to retrieve data from the container as it becomes available. What happens when a consumer looks at the container and finds it empty? The consumer needs to wait until something shows up. A consumer can wait by doing other work and then trying again later (polling), but this strategy is inefficient and hard to structure in a program. It would be better for the consumer to simply go to sleep and wake up when data becomes available. Producer threads present a similar problem. If the container has a bounded size, then at some point the producer may find the container full and thus need to wait for space to become available before continuing.</p>
+<p>A bounded interthread queue is an application of the monitor/condition pattern. Similar to an STL deque or queue, this sort of queue lets you add elements at the back and remove them from the front. However, the interthread queue also provides a way to wait for elements or space to become available. This makes it easy for one thread to be a producer, generating elements that are added to the queue, and another thread to be a consumer, getting elements from the queue as they become available.</p>
+<p>Why bound the queue? Although you could implement an interthread queue that is not bounded, in general a robust application should place bounds of some kind on all dynamic resource allocations. Otherwise it will be indeterminate when a particular application will die from resource starvation.</p>
+<p>The declaration for a bounded queue object might look like this:</p>
+
+<pre>
+Class Data {
+   ...
+};
+
+class BoundedInterthreadQueue {
+public:
+   void push_back(const Data&amp; x);
+   void pop_front();
+   const Data &amp;front();
+   bool empty();
+   size_type size() const;
+   size_type max_size() const;
+};
+</pre>
+
+<p>The queue's actual data-store object (not shown) would most likely be an STL container, such as a <B>vector</B> or <B>deque</B>. You couldn't use one directly, though, even if the STL implementation was thread safe. Being thread safe is not enough. An STL container does not implement the additional semantics required. It does not provide a thread the ability to detect an empty queue and then wait for an element to show up. It does not provide the ability to detect a full container and then wait for available space. With basic STL containers, an application must poll.</p>
+<p>To solve this problem, I add methods that will model the proper semantics. For simplicity, I continue to use an STL container as the underlying implementation, but I expose a different interface tailored to producer/consumer semantics. The STL container interface won't work because "getting" an object is non-atomic. You must first look at the object with <B>front</B> or <B>top</B> and then separately remove it with <B>pop_front</B>. This implies a requirement for some sort of wrapper. Note that the wrappers could (and probably should) be made generic with a template. (For simplicity that is left off here.)</p>
+<p>Also, for simplicity, assume that the producer allocates a <B>Data</B> object, passes it in to <B>BoundedInterthreadQueue</B>, which returns pointers to data objects to the consumer. The consumer deallocates the object. Other allocation policies, such as copy on put and get, could be implemented.</p>
+<p>A first cut implementation in pseudocode might look like this:</p>
+
+<pre>
+class BoundedInterthreadQueue {
+public:
+   void put(Data *x) {
+      wait for space in the container
+      store the object into the container
+      signal that an object is available
+   }
+Data *get() {
+      Wait for an object to be available
+      Remove the object from the container
+      Signal that space is available
+      Return the object } };
+</pre>
+
+<H4><FONT COLOR="#000080">Producer/Consumer Dynamics</FONT></H4>
+
+<p>Before going further with the algorithms, I present a simple test fixture to illustrate the dynamics of producer and consumer threads. This text fixture is shown in <B>main.cpp</B> (<a href="list1.htm">Listing 1</a>), which creates a number of producer and consumer threads and performs some multithreaded <B>get</B>s and <B>put</B>s on the queue.</p>
+<p>At the top of <B>main.cpp</B> there are two defines, <B>SLOW_PRODUCER</B> and <B>SLOW_CONSUMER</B>, and two constants, <B>NUMBER_OF_PRODUCERS</B> and <B>NUMBER_OF_CONSUMERS</B>. These values force the test threads to model the possible application scenarios.</p>
+<p>A real application will involve one of three situations:</p>
+<p>1.  The producer is slower than the consumer (simulated by defining <B>SLOW_PRODUCER</B>).</p>
+<p>2.  The consumer is slower than the producer (simulated by defining <B>SLOW_CONSUMER</B>).</p>
+<p>3.  The producer and consumer run at about the same rate (simulated by defining neither <B>SLOW_PRODUCER</B> nor <B>SLOW_CONSUMER</B>).</p>
+<p>In situation 1, the consumer will always be ahead of the producer. How fast the producer can run governs throughput, and the system will never overflow. The consumer will spend most of its time waiting. The order of execution will usually alternate as <B>put</B>-<B>get</B>-<B>put</B>-<B>get</B>. This situation models a steady-state input rate, and typically the queue size doesn't need to be very large.</p>
+<p>In situation 2, the consumer is the bottleneck. The bounding of the queue automatically forces the producer to throttle back when the consumer can't keep up. The order of execution will usually be a series of <B>put</B>s and then a series of <B>get</B>s. This situation models a bursty input model. The queue bound must be large enough to handle the maximum expected input burst. Of course, if the mismatch in rates is too great, data will eventually be lost somehow.</p>
+<p>In situation 3, the overall system is the bottleneck. The execution order will be random and will be influenced by the kernel scheduling algorithm.</p>
+<p>The test fixture supports any number of producers and consumers, and you can set the number created using the constants <B>NUMBER_OF_PRODUCERS</B> and <B>NUMBER_OF_CONSUMERS</B>.</p>
+
+<H4><FONT COLOR="#000080">A Thread-Safe, Polled Implementation</FONT></H4>
+
+<p>This implementation doesn't provide the required semantics, but I present it as an illustration. It is a polled scheme. This implementation also is not thread safe to start with, since it relies on non-atomic accesses to the underlying container. So first, I add thread safety using a Win32 critical section, but leave out the waiting parts for now. The complete code is in <B>win32q1.h</B> (<a href="list2.htm">Listing 2</a>). Notice that it's up to this class's clients to handle the overflow and underflow situations. However they do it, some sort of periodic polling will be required, which may be undesirable in a multithreaded case.</p>
+
+<pre>
+class BoundedInterthreadQueue {
+public:
+    void put(Data *x) {
+        Enter Critical Section
+        if there is space in the container
+            Store the object in the container
+        else
+            Handle it as an error
+            (throw an exception, return code etc)
+        endif
+        Leave Critical Section
+    }
+    
+    Data *get() {
+        Enter Critical Section
+        if the container is not empty
+            Get an object from the container
+        else
+            Handle it as an error
+            (throw an exception, return code etc)
+        endif
+        Leave Critical Section
+       Return the object            
+    }
+};
+</pre>
+
+<H4><FONT COLOR="#000080">A Thread-Safe Semaphore Implementation</FONT></H4>
+
+<p>The polled implementation has been made thread safe, but it is still missing the wait semantics. For a situation where the condition to be tested is strictly an integral count (such as "number of elements in the container"), a limited monitor/condition variable pattern can be implemented using standard Win32 counting semaphores. Using the semaphores in this manner is a special case, since it doesn't allow arbitrary predicates. On the other hand, this implementation is nice because it can be used on Windows 95/98 systems, while the full monitor/condition variable implementation is available only on Windows NT 4.0 or later, as we'll see later in this article. The full monitor/condition variable implementation allows the program to wait on an arbitrary predicate rather than just a count value.</p>
+<p>Since both <B>get</B> and <B>put</B> must be able to do a wait, I will use two counting semaphores. The get semaphore will be initialized with a count of zero and will be incremented when elements are added to the queue and decremented when elements are removed. The put semaphore will be initialized to the maximum number of elements the queue can hold and will be incremented when elements are removed and decremented when elements are added.</p>
+<p>The get method works as follows:</p>
+<p>1.  Wait on <B>ElementAvailable</B>.<br>
+2.  Lock access to the underlying STL deque.<br>
+3.  Get an item.<br>
+4.  Unlock the deque<br>
+5.  Signal <B>SpaceAvailable</B>.</p>
+<p>The put method is similar:</p>
+
+<p>1.  Wait on <B>SpaceAvailable</B>.<br>
+2.  Lock access to the underlying STL deque.<br>
+3.  Push an item.<br>
+4.  Unlock the deque.<br>
+5.  Signal <B>ElementAvailable</B>.</p>
+
+<p>The complete code for this implementation, with test threads, is shown in <B>win32q2.h</B> (<a href="list3.htm">Listing 3</a>).</p>
+
+<H4><FONT COLOR="#000080">Thread-Safe Implementation with Predicate Wait</FONT></H4>
+
+<p>So far, I haven't shown a real monitor/condition variable construct. For <B>BoundedInterthreadQueue</B>, a strict implementation isn't required because I could use counting semaphores to provide the bounding. But what if the condition I need to wait on is a more complex predicate? Perhaps the producer will produce one element at a time, but the consumer wants to get three at a time. Maybe some other system condition needs to be part of the predicate. A complete monitor/condition variable implementation allows arbitrarily complex predicates.</p>
+<p>I now reimplement the bounded queue example using a monitor/condition variable scheme. To implement the bounded queue, a Win32 system call, <B>SignalObjectAndWait</B>, is required. This call is implemented only in Windows NT 4.0 and Windows 2000. It isn't supported in Windows 95/98. If you're using Visual C++, you need to be sure the symbol <B>_WIN32_WINNT=0x0400</B> is defined. The complete implementation is shown in <B>win32q4.h</B> (<a href="list4.htm">Listing 4</a>). It still uses the <B>main.cpp</B> test harness.</p>
+<p><B>SignalObjectAndWait</B> is the basis for implementing the monitor/condition variable pattern in Win32 (under NT). A tricky call, <B>SignalObjectAndWait</B> performs two operations in an atomic manner. It signals one synchronization object and then waits on another. The signal and wait are atomic, meaning no thread preemption will occur between them. Pseudocode for <B>SignalObjectAndWait</B> would look like the following. (Ignore <B>alertable</B> for now, assume it is always set to <B>FALSE</B>.)</p>
+
+<pre>
+DWORD
+SignalObjectAndWait(MUTEX mtx, Event wt, DWORD timeout,
+   BOOL alertable)
+{
+   disable preemption
+
+   Signal the object specified by argument 'mtx'
+
+   WaitForSingleObject on argument 'wt' with 'timeout' and
+   at the same time implicitly reenable preemption,
+   allowing some other thread to run
+
+}
+</pre>
+
+<p>A "monitor" is a critical section, in this case implemented with a Win32 mutex. The previous implementations used a critical section, but <B>SignalObjectAndWait</B> doesn't support those, so I use a mutex. Each <B>BoundedInterthreadQueue</B> method that accesses the underlying container state must implement the monitor by calling <B>WaitForSingleObject(mutex)</B> at the beginning of the method and releasing it at the end with <B>ReleaseMutex</B>.</p>
+<p>In this implementation, the space-available and element-available signals use Win32 events rather than semaphores because these events are meaningful only to a thread that is actually waiting at the time the event occurs. If no one is waiting, the event is a non-event.</p>
+<p>I now add the condition variable functionality to make it a non-polled implementation. The pseudocode for the put routine is shown in <a href="fig1.htm">Figure 1</a>. The pseudocode for the get routine is shown in <a href="fig2.htm">Figure 2</a>.</p>
+<p>It is not completely obvious why the two <B>SignalObjectAndWait</B> actions need to be atomic. The reason is that this call is entered only when the predicate is not true. The thread entering this call has released the monitor and is waiting for something to happen to allow it to reevaluate the predicate. In this case, a thread doing a <B>put</B> will be waiting for another thread to do a <B>get</B>, which will cause the <B>SpaceAvailable</B> event to be pulsed, which will wake up the thread doing the <B>put</B> and let it retry the condition.</p>
+<p>If <B>SignalObjectAndWait</B> was not atomic, then the put thread might be preempted between releasing the monitor (the signal) and performing the wait (on the event). The get thread could run in that gap, pulse the event, and later the put thread would run and wait on the event. But the event has already been lost, so the put thread will never wake up, reevaluate the predicate, and succeed. Or, if a subsequent <B>get</B> is performed, then two spaces will exist in the container, but the waiting put thread will use only one of them, so in effect a space in the container will be lost.</p>
+<p>This monitor/condition pattern is modeled in Java with the calls <B>wait</B>, <B>notify</B>, and <B>notifyAll</B>. The Java <B>wait</B> is analogous to the Win32 <B>SignalObjectAndWait</B> and the notify is analogous to <B>PulseEvent</B> with autoreset. Instead of just waking up one waiting thread, the <B>notifyAll</B> call in Java wakes up all waiting threads and lets them all reevaluate the predicate. Reevaluating the predicate may be required if the predicate doesn't force a strict one-to-one correspondence between <B>get</B> and <B>put</B> type operations. In Win32, <B>notifyAll</B> is analogous to <B>PulseEvent</B> with a manual reset, which will wake up all waiting threads.</p>
+
+<H4><FONT COLOR="#000080">Generic Thread-Safe Monitor/Condition Variable Queue</FONT></H4>
+
+<p>win32q4.h</B> and <B>main4.cpp</B> (not shown) provide a template version of <B>BoundedInterthreadQueue</B>. Adding templates is very simple in this case; the container will then support any STL deque-compatible type. (All source files are available from the <I>CUJ</I> ftp site. See p. 3 for downloading instructions.)</p>
+
+<H4><FONT COLOR="#000080">Summary</FONT></H4>
+
+<p>Some STL container implementations are thread safe, but these containers are not bounded and provide no direct support for threads waiting on a condition (such as container full). However, STL containers can be used as the underlying data store for thread-safe, bounded containers that support condition wait. In this article I showed an implementation based on semaphores suitable for Windows 95/98; I then showed an implementation for Windows NT and Windows 2000 that supported waiting on an arbitrary predicate. The latter implementation depends upon the <B>SignalObjectAndWait</B> function available within Windows NT and Windows 2000. This function is not available on Windows 95/98.</p>
+
+<p><i><B>David M. Howard</B> works at Sierra Nevada Corporation, a defense electronics firm located in Sparks, Nevada. He has 15 years programming experience in multithreaded applications. He has an MS in Computer Science from the University of North Texas and has MCSD and Sun Java Programmer/Developer certification.</i></p>
+
+<h4><a href="../../../source/2000/may00/howard.zip">Get Article Source Code</a></h4>
+
+</blockquote></body></html>

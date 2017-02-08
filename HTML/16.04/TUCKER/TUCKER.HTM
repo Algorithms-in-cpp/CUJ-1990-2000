@@ -1,0 +1,257 @@
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+<TITLE>April 1998/Reading Java Class Files in C++</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<H2><A href="../tocapr.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+<FONT COLOR="#FF0000">Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Reading Java Class Files in C++</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Andrew Tucker</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Here's
+a helpful utility for dismantling the executable form of a Java program.</p></BLOCKQUOTE><hr>
+<BLOCKQUOTE>
+<p>Although Java is primarily thought of as a programming language targeted
+toward Internet applications, it is actually a much more ambitious
+architecture. By defining a virtual machine (referred to as a JVM) in which
+applications execute, Java blurs the traditional boundaries between operating
+systems, computer architecture, and programming languages. One of the
+interesting details of the JVM architecture is the compilation model used to
+transform source code into an executable binary file format.<p>
+Unlike languages such C, C++, or Pascal, a single Java source file does not
+always compile to a single object code file. Instead, the Java compiler
+transforms a single source module into multiple outputs, referred to as class
+files. These files contain all the information necessary to run a program in a
+JVM. They do not rely on any runtime or shared libraries, other than other
+class files. Class files have a strict format specification which is fairly
+well documented, but a little quirky. The remainder of this article presents an
+overview of the class file structure and a reusable pair of C++ classes. These
+classes provide a convenient interface for reading a large subset of the
+information contained in Java class files.</p>
+
+<h4><FONT COLOR="#000080">Java Class File Structure</FONT></H4>
+
+<p>The
+Java class file structure is roughly divided up into seven sections of
+information as shown in <A href="tab1.htm">Table 1</a>.
+ The first section is very simple, as it just
+provides identification information to allow recognition of a valid class file
+and version information for future extensions. The magic number field contains
+the hex number 0xCAFEBABE for valid class files. As of this writing, Java class
+files use a major version number of 45 and minor version number of 3, although
+this will inevitably change in the future. A JVM may reject a file as invalid
+if the version number does not match what it is expecting.<p>
+The second section, the constant pool, is the heart of the class file and is
+used by every other section. It will be discussed in detail a little later.<p>
+The third section gives information about the class that this file describes.
+The first field is a bitmap of information, as described in <A href="tab2.htm">Table 2</a>,
+ and the
+last field is an index into the constant pool indicating the name of this
+class.<p>
+The fourth section describes the relationship of this class to other classes.
+The first field is a constant pool index for the name of the super class. Since
+Java does not support multiple inheritance, the class file need not represent
+more than one super class. The remaining fields in this section reflect a
+class's ability to extend any number of interfaces. The first of these fields
+is a count of the number of interfaces supported by the class. The remaining
+fields provide a constant pool index for the name of each interface.<p>
+The next two sections are similar to each other in structure and content. Each
+section contains a count field followed by a variable amount of information
+representing the class fields and methods, respectively. Field and method
+entries have identical structure, shown in <A href="tab3.htm">Table 3</a>,
+ containing a bitmap of
+access and storage flags (see <A href="tab2.htm">Table 2</a>)
+, constant pool indexes for the name and
+data type, and attribute information. The last field is a count and
+variable-size segment containing attributes that relate to the class file as a
+whole. The structure of an attribute entry is shown in <A href="tab4.htm">Table 4</a>.
+<p>
+Attributes are where a class file stores data such as the byte code for a
+method, the value for a constant data field, debugging information, and
+exception specifications. Since the code presented in this article does not
+read any attributes, they will not be discussed any further. For more detailed
+information on attributes, Java class files, and the entire JVM architecture,
+see <a href="#1">[1]</a>.</p>
+
+<h4><FONT COLOR="#000080">The Constant Pool</FONT></H4>
+
+<p>As
+mentioned previously, the constant pool is the heart of the class file
+structure. Stored as an array of variable-sized entries, the constant pool
+contains all the literal constant integer, string, and floating-point data used
+by the class. The constant pool includes additional entries representing
+instances of the java.lang.String class and references to fields and methods in
+other class files. The type and structure of the constant pool entries are
+shown in <A href="tab5.htm">Table 5</a>.
+<p>
+All numeric data in class files is stored with the most-significant byte first.
+Floating-point data is stored in the IEEE 754 standard format for single- and
+double-precision values, which maps directly on to C floats and doubles.
+Character data is stored in the UTF-8 format, which provides for wide
+characters necessary for internationalization.<p>
+The constant pool also uses a compact notation for representing the data types
+of fields, method return values, and formal parameters. As shown in <A href="tab6.htm">Table 6</a>,
+
+each type is assigned a single unique character, followed by extra information
+in the case of class and array types. The void type is reserved for method
+return values. It never appears as a field or formal parameter type.<p>
+Field types are easily represented using only this format. Methods are encoded
+a little differently, using parentheses to indicate the break between formal
+parameters and the return value. For example, the type descriptor for the
+method</p>
+
+<pre>
+double Foo( java.lang.Integer Bar, boolean Baz)
+</pre>
+<p>would
+be</p>
+
+<pre>
+(Ljava/lang/Integer;Z)D
+</pre>
+<p>For
+historical reasons, the constant pool has a couple of odd quirks. The first
+valid entry is always at index 1, so referencing the zeroth entry is flagged as
+an error by the JVM. Additionally, entries of type CONSTANT_Long and
+CONSTANT_Double are each considered to take up two entries. So, for example, if
+the entry at index 2 is a long or double, the next valid index is at 4.
+Referencing entry 3 is flagged as an error by the JVM.</p>
+
+<h4><FONT COLOR="#000080">The C++ Classes</FONT></H4>
+
+<p>Now
+that I've covered the basics of the class file format, I will outline the
+design of the C++ classes JavaClassFile and JavaConstPool, which implement the
+class file reader.<p>
+JavaConstPool, whose header file appears in <A href="list1.htm">Listing 1</a>,
+ encapsulates each
+constant pool entry in the ConstPoolEntry structure. ConstPoolEntry uses an
+anonymous union to represent each possible data element without using up
+storage for any irrelevant fields. Interestingly, C++ will not allow classes
+with copy constructors inside a union, therefore the string entry cannot be
+included. I could have solved this problem by creating a small custom string
+class without a copy constructor. To keep the code simple I chose another
+solution. I included a separate string data field, wstrData, which is a
+wide-character string so that it can completely represent the UTF-8 format that
+Java uses for character data.<p>
+For consistency, the code provided in this article uses wstrings throughout,
+and character literals are wrapped with the _U macro defined in CommonTypes.h
+(<A href="list3.htm">Listing 3</a>)
+ to convert the text to wide characters. Additionally, the longData
+field is a custom typedef, also defined in CommonTypes.h. Since my development
+environment is Visual C++, I used the __int64 datatype. Shortly I discuss why I
+had to overload operator&lt;&lt; in CommonTypes.h, as well as other portability
+issues.<p>
+The association between JavaClassFile and JavaConstPool is the classic "has
+a" relationship of object-oriented design <a href="#2">[2]</a> &#151; a class file contains a
+constant pool; it is not a specialization or extension of an existing one.
+Thus, JavaClassFile (<A href="list2.htm">Listing 2</a>)
+ contains a pointer to an instance of a
+JavaConstPool class instead of deriving from it. In accordance with the tight
+coupling between a class file and a constant pool, a JavaConstPool class has
+only a single constructor and a destructor as public methods, which takes a
+pointer to a JavaConstPool. This design ensures that a JavaConstPool is always
+tied to its corresponding class file. In addition, explicitly making
+JavaConstPool and JavaClassFile mutual friends enables them to access each
+other's private implementation details, extending their closely coupled
+relationship.<p>
+With this class arrangment, the user need deal only with the public interfaces
+of JavaClassFile, leaving JavaConstPool to be managed by the private
+implementation. This encapsulation also supports future extensions of both
+JavaClassFile and the constant pool represenation without breaking existing code.</p>
+
+<h4><FONT COLOR="#000080">Reading and Validation</FONT></H4>
+
+<p>The
+guts of the reading and validation code is found in the methods
+JavaClassFile::Open and JavaClassFile::IsValidClassFile. The aggregate
+JavaConstPool object is managed by the GetConstantPoolCount and
+GetConstantPoolEntry methods. If the constant pool has not yet been loaded from
+the raw file data, GetConstantPoolEntry calls JavaConstPool::LoadConstantPool.
+LoadConstantPool simply allocates an array of ConstPoolEntry structures and
+then reads each entry based on its type tag, using the corresponding private
+method ReadXXXEntry, where XXX refers to one of the constant types listed in
+<A href="tab5.htm">Table 5</a>.
+<p>
+LoadConstantPool also updates the member m_dwSize, which is the size, in bytes,
+of the raw constant pool data. This size is used by various public
+JavaClassFile methods to calculate an index into the raw class file data to
+read from following sections.<p>
+GetConstantPoolEntry then calls JavaConstPool::GetEntry, which reads the
+corresponding entry and returns the data formatted as a wstring object.
+Formatting is easily done using the Standard C++ wstringstream class, with one
+caveat for the CONSTANT_Long data type. Since, as mentioned before, I used the
+Visual C++ built-in type __int64 to represent Java long variables,
+wstringstream tries to call an overloaded operator&lt;&lt; whenever it
+encounters a CONSTANT_Long entry. Unfortunately, Visual C++ 5.0's wstringstream
+implementation does not provide this overload, so it is implemented by hand in
+CommonTypes.h. Internally, the operator&lt;&lt; uses the C runtime function
+_i64tow, which converts an __int64 variable to a wchar_t * of the specified
+radix. Unfortunately again, Visual C++ contains a bug &#151; _i64tow works
+correctly only for positive values, giving nonsensical return values for
+anything less than zero. This is easily fixed by explictly detecting and
+handling a negative value and passing only positives to _i64tow.<p>
+The JavaClassFile methods ReadWORD and ReadDWORD are the workhorse methods used
+by both JavaClassFile and JavaConstPool to read an unsigned two- or four-byte
+integer, respectively, from the raw class file data in
+JavaClassFile::m_pbClassData. They use a straightforward "shift and OR"
+algorithm.<p>
+JavaClassFile defines four protected methods that the implementation uses to
+calculate indexes into the raw class file data for reading information from a
+given section &#151; GetFieldDataIndex, GetMethodDataIndex, GetHeaderSize, and
+GetConstPoolSize. The first two methods return the index to the data for the
+specified method or field, after validating that the request is within range of
+the available method or field list.<p>
+The last two JavaClassFile implementation methods, DecodeDataType and
+DataTypeLength, are used by the public interface methods to transform Java type
+descriptors into a human readable form.</p>
+
+<h4><FONT COLOR="#000080">A Sample Application</FONT></H4>
+
+<p>The
+example code in <A href="list4.htm">Listing 4</a>
+provides a sample application that uses the public
+JavaClassFile methods to recreate a header file for the class represented in
+the specified Java class file. This application is functionally similar to the
+JDK utility javap, as invoked on a class file with no command-line flags.<p>
+This example shows only one use of JavaClassFile. As is, it could be used as
+the basis of a class-file browser that displays inheritance relationships
+between classes, or a grep utility specifically tailored to class files. With
+some simple extensions to read attribute data, JavaClassFile could be used to
+implement a class-file disassembler or class-dependency listing utility.
+Additionally, although I've only tested the code with Visual C++ 5.0, it should
+be easily portable to any other Win32 compiler or non-Win32 platform with minor
+changes (e.g., the __int64 datatype ). To read about an alternative Java class
+file reader, which is implemented in Java, see <a href="#3">[3]</a>.</p>
+
+<h4><FONT COLOR="#000080">References</FONT></H4>
+
+<p><a name="1"></a>[1]
+Jon Meyer and Troy Downing. Java Virtual Machine (O'Reilly and Associates,
+1997).<p>
+<a name="2"></a>[2] Grady Booch. Object-Oriented Analysis and Design with Applications, Second
+Edition (Benjamin/Cummings Publishing, 1994).<p>
+<a name="3"></a>[3] Matt Yourst. "Inside Java Class Files," Dr. Dobb's Journal, January 1998.
+</p>
+<p><i>Andrew Tucker is a software engineer at bSquare Coporation in Bellevue,
+WA. He is currently working on development tools for Windows CE and pursuing a
+masters degree in computer science from the University of Washington. He can be
+reached at ast@halcyon.com or http://www.halcyon.com/ast.
+</i></p>
+
+<h4><a href="../../../source/1998/apr98/tucker.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</body></html>

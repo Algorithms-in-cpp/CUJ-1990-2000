@@ -1,0 +1,181 @@
+<HTML>   
+     <HEAD>
+<TITLE>May 2000/State Machine Design in C++</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocmay.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">State Machine Design in C++</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">David Lafreniere</FONT></H3>
+
+<BLOCKQUOTE>
+<p>It's not all that hard to implement a finite-state machine, unless it's very large, and you have to worry about multithreading, and ...</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+<p>A common design technique in the repertoire of most programmers is the venerable state machine. Designers use this programming construct to break complex problems into manageable states and state transitions. There are innumerable ways to implement a state machine. Some are simple and elegant, others are more complex but offer increased error checking and flexibility.</p>
+<p>A switch statement provides one of the easiest to implement and most common version of a state machine. Here, each case within the switch statement becomes a state, implemented something like:</p>
+
+<pre>
+switch(currentState) {
+   case ST_IDLE:
+       // do something in the idle state
+       break;
+    case ST_STOP:
+       // do something in the stop state
+       break;
+    // etc...
+}
+</pre>
+
+<p>This method is certainly appropriate for solving many different design problems. When employed on an event driven, multithreaded project, however, state machines of this form can be quite limiting.</p>
+<p>The first problem revolves around controlling what state transitions are valid and which ones are invalid. There is no way to enforce the state transition rules. Any transition is allowed at any time, which is not particularly desirable. For most designs, only a few transition patterns are valid. Ideally the software design should enforce these predefined state sequences and prevent the unwanted transitions. Another problem arises when trying to send data to a specific state. Since the entire state machine is located within a single function, sending additional data to any given state proves difficult. And lastly these designs are rarely suitable for use in a multithreaded system. The designer must ensure the state machine is called from a single thread of control.</p>
+<p>This article explores state machine design and implements a particular one using C++. The particular implementation solves the aforementioned problems by including support for both internal and external events, event data, and state transition validation. It is multithread-safe. Using this simple state machine base class, a programmer can easily employ state machines on a system-wide basis in a uniform and thread-safe manner.</p>
+
+<H4><FONT COLOR="#000080">Why Use a State Machine?</FONT></H4>
+
+<p>Implementing code using a state machines is an extremely handy design technique for solving complex engineering problems. State machines break down the design into a series of steps, or what are called states in state-machine lingo. Each state performs some narrowly defined task. Events, on the other hand, are the stimuli which cause the state machine to move, or transition, between states. To take a simple example, which I will use throughout this article, let's say we are designing motor-control software. We want to start and stop the motor, as well as change the motor's speed. Simple enough. The motor control events to be exposed to the client software will be as follows:</p>
+<p>1.  Set Speed &#151; sets the motor going at a specific speed.</p>
+<p>2.  Halt &#151; stops the motor.</p>
+<p>These events provide the ability to start the motor at whatever speed desired, which also implies changing the speed of an already moving motor. Or we can stop the motor altogether. To the motor-control class, these two events, or functions, are considered external events. To a client using our code, however, these are just plain functions within a class. That's how we want it &#151; the client blissfully unaware of the actual implementation.</p>
+<p>These events are not state machine states. The steps required to handle these two events are different. In this case the states are:</p>
+<p>1.  Idle &#151; the motor is not spinning but is at rest.</p>
+<UL><LI>   Do nothing.</LI></UL>
+<p>2.  Start &#151; starts the motor from a dead stop.</p>
+<UL><LI>   Turn on motor power.</LI>
+<LI>   Set motor speed.</LI></UL>
+<p>3.  Change Speed &#151; adjust the speed of an already moving motor.</p>
+<UL><LI>   Change motor speed.</LI></UL>
+<p>4.  Stop &#151; stop a moving motor.</p>
+<UL><LI>   Turn off motor power.</LI>
+<LI>   Go to the Idle state.</LI></UL>
+<p>Each state carries out a few specific tasks. The Start state starts the motor by first turning on the power, then adjusting the speed. When changing the speed of an already moving motor, we don't need to turn the power on (it's already on) so we just change the speed. To stop the motor we turn off the power and transition to the Idle state awaiting another command. Therefore, by breaking the motor control into discreet states, as opposed to having one monolithic function, we can more easily manage the rules of how to operate the motor.</p>
+<p>To graphically illustrate the states and events, we can use a state diagram. <a href="fig1.htm">Figure 1</a> shows the state transitions for the motor control class. A box denotes a state and a connecting arrow indicates the event transitions. Arrows with the event name listed are external events, whereas unadorned lines are considered internal events. (I cover the differences between internal and external events later in the article.)</p>
+<p>As you can see, when an event comes in the state transition that occurs depends on state machine's current state. When a SetSpeed event comes in, for instance, and the moter is in the Idle state, it transitions to the Start state. However, that same SetSpeed event generated while the current state is Start transitions the motor to the ChangeSpeed state. You can also see that not all state transitions are valid. For instance, the motor can't transition from ChangeSpeed to Idle without first going through the Stop state.</p>
+<p>In short, using a state machine captures and enforces complex interactions which might otherwise be difficult to convey and implement.</p>
+
+<H4><FONT COLOR="#000080">Nomenclature</FONT></H4>
+
+<p>Now that I've touched on some state machine design issues and nomenclature, I want to clarify some of the more important attributes of a state machine. Every state machine has the concept of a "current state." This is the state the state machine currently occupies. At any given moment in time, the state machine can be in only a single state. Every instance of a particular state machine class will have the same originating state. That origination state, however, does not execute during object creation. Only an event sent to the state machine causes a state function to execute.</p>
+<p>"State functions" implement each state &#151; one state function per state-machine state. In this implementation, all state functions must adhere to one of two state-function signatures, which are as follows:</p>
+
+<pre>
+void &lt;class&gt;::&lt;func&gt;(void)
+void &lt;class&gt;::&lt;func&gt;(EventData* pEventData)
+</pre>
+
+<p>&lt;class&gt;</B> and <B>&lt;func&gt;</B> are the particular class and function name respectively. For example, you might choose signatures such as <B>void MyClass::ST_Func(void)</B>. The important thing here is that the function return no data (has a <B>void</B> return type) and that it has at most one input argument of type <B>EventData*</B> (or a derived class thereof). The <B>EventData</B> pointer can designate an object of a class that derives from <B>EventData</B>. Deriving event data from the <B>EventData</B> class allows the state-machine engine to delete the data once it has been used.</p>
+<p>The state functions never return a value. There is no concept of returning an error code when a state function executes because the state machine is designed to handle the event at any time. Therefore, a state machine must always be ready to accept events.</p>
+
+<H4><FONT COLOR="#000080">Internal and External Events</FONT></H4>
+
+<p>As I mentioned earlier, an event is the stimulus that causes a state machine to transition between states. For instance, a button press could be an event. Events can be broken out into two categories: external and internal. The external event, at its most basic level, is a function call into a state-machine object. These functions are public and are called from the outside, or from code external to the state-machine object. Any thread or task within a system can generate an external event. If the external event function call causes a state transition to occur, the state will execute synchronously within the caller's thread of control. An internal event, on the other hand, is self-generated by the state machine itself during state execution.</p>
+<p>A typical scenario consists of an external event being generated, which, again, boils down to a function call into the class's public interface. Based upon the event being generated and the state machine's current state, a lookup is performed to determine if a transition is required. If so, the state machine transitions to the new state and the code for that state executes. At the end of the state function, a check is performed to determine whether an internal event was generated. If so, another transition is performed and the new state gets a chance to execute. This process continues until the state machine is no longer generating internal events, at which time the original external event function call returns. The external event and all internal events, if any, execute within the caller's thread of control.</p>
+<p>Once the external event starts the state machine executing, it cannot be interrupted by another external event until the external event and all internal events have completed execution. This provides a multithread-safe environment for the state transitions. Semaphores or mutexes can be used in the state machine engine to block other threads that might be trying to be simultaneously access the same object.</p>
+
+<H4><FONT COLOR="#000080">Event Data</FONT></H4>
+
+<p>When an event is generated, it can optionally attach event data to be used by the state during execution. Once the state has completed execution, the event data is considered used up and must be deleted. Therefore, any event data sent to a state machine must be created on the heap, via <B>operator new</B>, so that the state machine can delete it once used. In addition, for our particular implementation the event data must inherit from the <B>EventData</B> base class (see <a href="list1.htm">Listing 1</a>). This gives the state machine engine a common base class for which to delete all event data.</p>
+<p>Creating event data on the heap may seem like a needless step, but it allows a pointer to the event data to travel through operating system message queues until it arrives at its destination. At that point, the data will be used by the state machine and subsequently deleted. This eliminates the need to send the entire data structure through the queue when just a pointer will do. It's also another reason that event function calls do not return data, such as a status code. When the event finally arrives at its destination, the call being made may have been initiated from a different task, or even a different processor, such that a synchronous return code will have no meaning to the calling thread.</p>
+
+<H4><FONT COLOR="#000080">State Transitions</FONT></H4>
+
+<p>When an external event is generated, a lookup is performed to determine the state transition course of action. There are three possible outcomes to an event: new state, event ignored, or cannot happen. A new state causes a transition to a new state where it is allowed to execute. Transitions to the existing state are also possible, which means the current state is re-executed. For an ignored event, no state executes. However, the event data, if any, is deleted. The last possibility, cannot happen, is reserved for situations where the event is not valid given the current state of the state machine. If this occurs, the software faults.</p>
+<p>In this implementation, internal events are not required to perform a validating transition lookup. The state transition is assumed to be valid. You could check for both valid internal and external event transitions, but in practice this just takes more storage space and generates busywork for very little benefit. The real need for validating transitions lies in the asynchronous, external events where a client can cause an event to occur at an inappropriate time. Once the state machine is executing, it cannot be interrupted. It is under the control of the class's private implementation, thereby making transition checks unnecessary. This gives the designer the freedom to change states, via internal events, without the burden of updating transition tables.</p>
+
+<H4><FONT COLOR="#000080">State Machine Implementation</FONT></H4>
+
+<p>Two base classes are necessary to use a state machine object: <B>StateMachine</B> and <B>EventData</B>. A class inherits from <B>StateMachine</B> to obtain the necessary mechanisms to support state transitions and event handling. The <B>StateMachine</B> class also contains various preprocessor macros to ease implementation of the state machine. To send data structures or classes to the state functions, the structure must inherit from the <B>EventData</B> base class.</p>
+<p>I first present a look at the internals of the <B>StateMachine</B> class. Then I show how to use it correctly. <B>StateMachine</B> is the base class used for handling state transitions (see <a href="list2.htm">Listings 2</a> and <a href="list3.htm">3</a>). Any class implemented as a state machine inherits from this class. The interface is contained within three functions:</p>
+
+<pre>
+void ExternalEvent(unsigned char, EventData* = NULL)
+void InternalEvent(unsigned char, EventData* = NULL)
+virtual const StateStruct* GetStateMap() = 0
+</pre>
+
+<p>ExternalEvent</B> generates an external event to the state machine using as arguments the new state and a pointer to an <B>EventData</B> object, if any. The <B>InternalEvent</B> function generates internal events using the same set of arguments. The <B>GetStateMap</B> function returns an array of state-function pointers which will be retrieved by the state engine when appropriate. This function must be implemented by the inheriting class since it is pure virtual. However, macros are provided to implement this function for us, as I will demonstrate shortly.</p>
+
+<H4><FONT COLOR="#000080">StateMachine Usage</FONT></H4>
+
+<p>StateMachine</B> is used as an inherited base class. The <B>Motor</B> class is an example of how to use it (see <a href="list4.htm">Listings 4</a> and <a href="list5.htm">5</a>). <B>Motor</B> implements our hypothetical motor-control state machine, where clients can start the motor, at a specific speed, and stop the motor. The <B>SetSpeed</B> and <B>Halt</B> public functions are the external events into the <B>Motor</B> state machine. Note that to the caller an external event is just a function call. The state machine implementation details are hidden from the client's view of this class. <B>SetSpeed</B> takes event data, as evidenced by the pointer to the <B>MotorData</B> structure, which contains the motor speed. This data structure will be deleted upon completion of the state processing, so it is imperative that the structure inherit from <B>EventData</B> and be created using <B>operator new</B> before the function call is made.</p>
+<p>When the <B>Motor</B> class is created, its initial state is <B>ST_Idle</B>. The first call to <B>SetSpeed</B> transitions the state machine to the <B>ST_Start</B> state, where the motor is initially set into motion. Subsequent <B>SetSpeed</B> events transition to the <B>ST_ChangeSpeed</B> state, where the speed of an already moving motor is adjusted. The <B>Halt</B> event transitions to <B>ST_Stop</B>, where, during state execution, an internal event is generated to transition back to the <B>ST_Idle</B> state.</p>
+<p>The state-machine engine knows which state function to call by using the state map. The state map maps the <B>currentState</B> variable to a specific state function. For instance, if <B>currentState</B> is 2, then the third state-map function pointer entry will be called (counting from zero). The state map is created using these three macros:</p>
+
+<pre>
+BEGIN_STATE_MAP
+STATE_MAP_ENTRY
+END_STATE_MAP
+</pre>
+
+<p><B>BEGIN_STATE_MAP</B> starts the state map sequence. Each <B>STATE_MAP_ENTRY</B> that follows has as an argument a state function, which is added to the state map. <B>END_STATE_MAP</B> terminates the map. The completed state map just implements the pure virtual function <B>GetStateMap</B> defined within the <B>StateMachine</B> base class. Now the <B>StateMachine</B> base class can ask for all the state function pointers via this call.</p>
+<p>Notice that we have to use the dastardly <B>reinterpret_cast&lt;&gt;</B> operator within the <B>STATE_MAP_ENTRY</B> macro to cast the derived class member function pointer to a <B>StateMachine</B> member function pointer. It is necessary to perform this upcast since the <B>StateMachine</B> base class has no idea what the derived class is. So, it is imperative that the entries provided to <B>STATE_MAP_ENTRY</B> are really member functions of an inheriting class and that they conform to the state function signature discussed earlier. Otherwise bad things will happen.</p>
+<p>Each state function must have an enumeration associated with it. These enumerations are used to store the current state of the state machine. In <B>Motor</B>, <B>E_States</B> provides these enumerations, which are used later in the transition map. It is important that the enumeration order matches the order provided within the state map. This way, we can tie a state enumeration to a particular state function call. <B>EVENT_IGNORED</B> and <B>CANNOT_HAPPEN</B> are two other constants used in conjunction with these state enumerations. <B>EVENT_IGNORED</B> tells the state engine not to execute any state, just return and do nothing. <B>CANNOT_HAPPEN</B> tells the state engine to fault. This is an abnormal catastrophic failure condition that is never suppose to occur.</p>
+<p>The last detail to attend to are the state transition rules. How does the state machine know what transitions should occur? The answer is the transition map, which is created using these macros:</p>
+
+<pre>
+BEGIN_TRANSITION_MAP
+TRANSITION_MAP_ENTRY
+END_TRANSITION_MAP
+</pre>
+
+<p>Each external event function has a transition map. <B>BEGIN_TRANSITION_MAP</B> starts the map. Each <B>TRANSITION_MAP_ENTRY</B> that follows indicates what the state machine should do based upon the current state. The number of entries in each transition map must match the number of state functions exactly. In our example we have four state functions, so we need four entries. The location of each entry matches the order of state functions defined within the state map. Thus, the first entry within the <B>Halt</B> function indicates an <B>EVENT_IGNORED</B>. This is interpreted to mean, "If a Halt event occurs while the current state is state Idle, just ignore the event." Similarly, the third entry means, "If a Halt event occurs while current is state Start, then transition to state Stop." <B>END_TRANSITION_MAP</B> terminates the map. The argument to this end macro is the event data, if any. <B>Halt</B> has no event data so the argument is a null pointer, but <B>ChangeSpeed</B> has data so it is passed in here.</p>
+<p>The transition map is basically a lookup table indexed by the <B>currentState</B> variable to determine the course of action. This information is passed to the <B>ExternalEvent</B> function as an argument along with the event data. When the <B>StateEngine</B> function executes, it looks up the correct state function pointer by calling <B>GetStateMap</B>:</p>
+
+<pre>
+const StateStruct* 
+pStateMap = GetStateMap();
+</pre>
+
+<p>Then, based upon the <B>currentState</B> variable, it calls one of the state functions in the map:</p>
+
+<pre>
+(this-&gt;*pStateMap[currentState].pStateFunc)(pDataTemp);
+</pre>
+
+<p>After the state function has a chance to execute, it deletes the event data, if any, before checking to see if any internal events were generated.</p>
+
+<H4><FONT COLOR="#000080">Generating Events</FONT></H4>
+<p>At this point we have a working state machine class. Let's see how to generate events to it. An external event is generated by creating the event data structure on the heap using <B>new</B>, assigning the structure member variables, and calling the external event function. Obviously, if the external event doesn't take event data then a data structure is not created. The following code fragment shows how a synchronous call is made. You could, of course, send the pointer to the data structure, along with some means of identifying the event, through an operating system message queue to be handled asynchronously by the destination task:</p>
+
+<pre>
+MotorData* pData = new MotorData;
+pData-&gt;speed = 50;
+motor.setSpeed(pData);
+</pre>
+
+<p>To generate an internal event from within a state function, call <B>InternalEvent</B>. If the destination doesn't accept event data, then the function is called with only the state you want to transition to:</p>
+
+<pre>
+InternalEvent(ST_IDLE);
+</pre>
+
+<p>In the example above, once the state function completes execution the state machine will transition to the <B>ST_Idle</B> state. If, on the other hand, event data needs to be sent to the destination state, then the data structure needs to be created on the heap and passed in as an argument:</p>
+
+<pre>
+MotorData* pData = new MotorData;
+pData-&gt;speed = 100;
+InternalEvent(ST_CHANGE_SPEED, pData);
+</pre>
+
+<H4><FONT COLOR="#000080">Multithread Safety</FONT></H4>
+
+<p>To prevent preemption by another thread when the state machine is in the process of execution, the <B>StateMachine</B> class uses semaphores within the <B>StateEngine</B> function. Before the external event is allowed to execute, the semaphore is locked. When the external event and all internal events have been processed, the semaphore is unlocked, allowing another external event to enter the state machine instance.</p>
+<p>Comments indicate where the semaphore lock and unlock should be placed if the application is multithreaded. Note that each <B>StateMachine</B> object should have its own instance of a semaphore. This prevents a single instance from locking a semaphore and preventing all other <B>StateMachine</B> objects from executing.</p>
+
+<H4><FONT COLOR="#000080">Benefits</FONT></H4>
+
+<p>Implementing a state machine using this method as opposed to the old switch statement style may seem like extra effort. However, the payoff is in a more robust design that is capable of being employed uniformly over an entire multithreaded system. Having each state in its own function provides easier reading than a single huge switch statement, and allows unique event data to be sent to each state. In addition, validating state transitions prevents client misuse by eliminating the side effects caused by unwanted state transitions.</p>
+<p>This implementation offers easy use for the inheriting classes. With the macros it lets you just "turn the crank" without much thought given to the underlying mechanics of how the state engine operates. This allows you more time to concentrate on more important things, like the design of the state transitions and state function implementation.</p>
+
+<H4><FONT COLOR="#000080">Reference</FONT></H4>
+
+<p>[1]  Sally Shlaer. <I>Object Lifecycles</I> (Prentice-Hall, Englewood Cliffs, NJ), 1992.</p>
+
+<p><i><B>David Lafreniere</B> has designed hardware and software over the past ten years. He currently works at PropHead Development, Inc., a software-consulting firm, designing software for a variety of embedded and PC-based applications. He can be reached at <B>lafreni@pacbell.net</B>.</i></p>
+
+<h4><a href="../../../source/2000/may00/lafrenie.zip">Get Article Source Code</a></h4>
+
+</blockquote></body></html>

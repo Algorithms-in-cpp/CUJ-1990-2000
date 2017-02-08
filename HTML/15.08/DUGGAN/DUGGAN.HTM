@@ -1,0 +1,303 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>August 1997/Member Functions as Callbacks in Win32</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><FONT COLOR="#FF0000"><A href="../tocaug.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          Windows </FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">Member Functions as
+          Callbacks in Win32</FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">Tim Duggan</FONT></H3>
+          
+          <BLOCKQUOTE>
+               
+               <P>Calling member functions is easy, once you know how to
+                    smuggle the this pointer to the right place at the right
+                    time.</P></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <h4><FONT COLOR="#000080">Introduction</FONT></H4>
+               
+               <p>The Win32 SDK provides a rich set of
+                    functionality to applications written in either C or C++. In
+                    most cases, the fact that the SDK has its roots in C is of
+                    no consequence to the C++ programmer. The Win32 callback
+                    interface is one area that presents an exception. Here, the
+                    C++ programmer cannot ignore C's influence on the evolution
+                    of the SDK. Specifically, getting the SDK to invoke a C++ 
+                    member function as a callback requires a few special
+                    techniques. </p>
+               
+               <p> This article describes techniques for
+                    integrating C-based callback APIs into well structured C++
+                    classes. Example code illustrates a way to integrate the
+                    timeSetEvent callback API into a simple timer class as an
+                    alternative to the SetTimer API and its associated WM_TIMER
+                    messages. While the Win32 SDK forms the basis for this
+                    article, the techniques described apply to any C-based API 
+                    set that provides a callback interface with instance data
+                    passing.</p>
+               
+               <h4><FONT COLOR="#000080">Callbacks: A Primer</FONT></H4>
+               
+               <p>A callback interface is a mechanism
+                    that allows a program to specify a function for the
+                    operating system to call in response to an event. The
+                    program specifies this function by passing its address to
+                    the callback interface. This callback mechanism is used by
+                    several APIs in the Win32 SDK. The Win32 SDK contains
+                    prototypes for each callback to ensure that the caller (the 
+                    OS) and the called function (the callback routine) handle
+                    the arguments on the stack correctly. Each API that supports
+                    the callback interface has a unique prototype that matches
+                    the associated callback routine. Your job is to write a
+                    routine that matches the signature of that prototype so that
+                    the OS can safely call your routine. You pass the address of
+                    your routine as an argument to the API that supports that
+                    particular callback, and the OS then calls your routine at
+                    the appropriate time with appropriate, and presumably
+                    meaningful, arguments. </p>
+               
+               <p> In addition to the address of the
+                    callback itself, you can usually specify user-defined data,
+                    or "instance data" for the OS to pass to your
+                    callback routine each time the routine is called. The OS
+                    neither uses nor interprets instance data; the OS simply
+                    provides a shuttle service for you by passing your instance
+                    data to your callback routine. Instance data in Win32 is
+                    almost always defined as a DWORD, which typically contains
+                    the address of useful data to be passed to the callback 
+                    function.</p>
+               
+               <h4><FONT COLOR="#000080">this is the Problem</FONT></H4>
+               
+               <p>It's simple to use a callback
+                    interface in C programs, because the compiler generates the
+                    correct signature for the callback function and the linker
+                    resolves the address without error. This simplicity stems
+                    from the global nature of all functions in C &#151; it is
+                    trivial to take the address of a C function in a program
+                    because the linker can resolve the function address
+                    directly. </p>
+               
+               <p> The C++ programmer using callbacks is
+                    forced either to break the class model and use a global
+                    function as a callback, or bend the class model and use a
+                    static function. But neither global nor static functions can
+                    operate directly on a specific class instance, and operating
+                    on an instance is frequently what is desired. Without an
+                    instance pointer, a callback routine can't call bound member
+                    functions (member functions called with the hidden argument
+                    known as the this pointer). The callback interface has no
+                    concept of the this pointer for the member function you want
+                    it to call &#151; it knows only the address of the function you
+                    pass in. Although the member function is addressable, the
+                    data associated with the class instance is not addressable
+                    without the this pointer. Fortunately, the compiler
+                    generates an error instead of generating code that
+                    de-references invalid pointers. The solution to this problem
+                    invariably involves making an instance pointer available to
+                    the callback routine when it is called by the OS.</p>
+               
+               <h4><FONT COLOR="#000080">Enter Pseudo-this</FONT></H4>
+               
+               <p>Pseudo-this is a workaround used to
+                    provide a this pointer to a callback function. There are
+                    many variations of the pseudo-this technique. Probably the
+                    most common one is to store the this pointer in a static
+                    variable and use a static function as callback. The static
+                    function retrieves the this pointer from the static variable
+                    (the pseudo-this) and uses it to call a bound "helper
+                    function." </p>
+               
+               <p> This technique was quite reasonable
+                    in the single-threaded days of WIN16, but it introduces
+                    synchronization problems in multithreaded Win32. In Win32,
+                    callbacks can be running on many threads for different
+                    instances of a class. Using a single static variable for
+                    pseudo-this is unacceptable because each time a thread
+                    initializes pseudo-this it clobbers the value set by the 
+                    previous thread. </p>
+               
+               <p> The multithreaded synchronization
+                    problem can be solved by avoiding collisions on the
+                    pseudo-this variable. Instead of saving the this pointer in
+                    a static variable, you can pass it to the callback as
+                    instance data. The callback function can then use the
+                    instance data as a pointer to the object and operate
+                    directly on the object. Please note that this solution is
+                    only an option for callback interfaces that pass instance
+                    data. If the particular callback interface you are using
+                    does not provide a parameter for instance data, you'll have
+                    to provide synchronization around a pseudo-this variable.</p>
+               
+               <h4><FONT COLOR="#000080">Bundling pseudo-this</FONT></H4>
+               
+               <p>Passing the pseudo-this as instance
+                    data works fine except for one problem: it often takes the
+                    place of "real" data you need to pass to your
+                    callback function. This problem is easily solved with a data
+                    structure. Prior to calling the API, allocate a data
+                    structure that holds both the this pointer and the instance
+                    data.</p>
+
+<PRE>
+// pseudo-this bundle structure
+typedef struct tagthisInstance
+{
+    DWORD pseudoThis;
+    DWORD dwInstance;
+} thisInstance,*LPTHISINSTANCE;
+</PRE>
+               
+               <p>The callback function unbundles the
+                    thisInstance structure to get both the pseudo-this pointer
+                    and the instance data. Although this technique seems fairly
+                    straightforward, it involves some potential timing problems.
+                    You must know when and how the instance data is being
+                    referenced by the OS and by your callback function;
+                    otherwise, the structure may be deleted prematurely. In some
+                     cases you can simply allocate the structure on the stack,
+                    but remember that there's no guarantee the OS will maintain
+                    its own copy of your instance data. </p>
+               
+               <p> It is important to keep in mind that
+                    both the API and your callback routine may continue to
+                    reference the thisInstance structure even after the API
+                    returns. One safe method involves allocating the
+                    thisInstance structure as a member variable. As long as the
+                    object receiving the callback is instantiated, thisInstance
+                    is guaranteed to be valid.</p>
+               
+               <h4><FONT COLOR="#000080">Callback Wrappers</FONT></H4>
+               
+               <p>Introducing static callback routines
+                    and their associated helper functions tends to clutter your
+                    classes with unnecessary implementation details. You can
+                    avoid using static callback functions in your classes by
+                    using global C functions as thin wrappers around your member
+                    functions. Each wrapper function simply unbundles the
+                    thisInstance structure and calls the appropriate member 
+                    function for the appropriate instance. Once inside the
+                    member function, no references to pseudo-this are necessary.
+                    In fact, the member function behaves exactly as if the OS
+                    had called it directly. This technique greatly improves the
+                    readability of the code and encapsulates all of the
+                    functionality of the callback into a bound member function.
+                    </p>
+               
+               <p><A href="list1.htm"> Listing 1 </A>shows
+                    an implementation of a simple timer class, which I provide
+                    as an alternative to using Windows' SetTimer and WM_TIMER.
+                    The MySetTimer routine calls the timeSetEvent API and
+                    provides the address of the global MyTimerCallBack function
+                    to be used as a callback. MySetTimer also passes the address
+                    of the m_ti member as instance data for the callback
+                    routine. The m_ti structure member pseudoThis is set as the
+                    this pointer for the object setting the timer and dwInstance
+                    is set as the timer interval. The destructor simply kills
+                    the timer when the object is deleted <A href="#NOTE1">[1]</a>.
+
+                    </p>
+               
+               <p> The callback wrapper function
+                    unbundles the thisinstance structure passed as instance data
+                    and uses pseudo-this to call the TimerTick member function
+                    for the specific instance that set the timer.</p>
+               
+               <h4><FONT COLOR="#000080">Hiding The Details</FONT></H4>
+               
+               <p>The best way to manage callback
+                    wrappers in development is to create a single source file
+                    that contains all the callback wrapper functions and a
+                    single header file that contains all of their prototypes
+                    inside an extern "C" block. Since each wrapper
+                    typically differs from the others only by its function
+                    prototype and its bound member function call, implementing
+                    new wrappers is a trivial cut-and-paste exercise. This
+                    scheme isolates all the global function and C linkage
+                    implementation details to a single pair of files that
+                    require minimal, if any, maintenance. Meanwhile you are free
+                    to design and implement your classes without worrying about
+                    how a C-based API is going to call your C++ code.</p>
+               
+               <h4><FONT COLOR="#000080">Summary</FONT></H4>
+               
+               <p>The Windows OS does not support C++
+                    bound member functions as callbacks, but you can simulate
+                    that support with the techniques described in this article.
+                    Using a pseudo-this pointer makes an effective and clean
+                    solution when the implementation is hidden from the code
+                    that uses it. Hiding the pseudo-this implementation allows
+                    you to focus on the business of the callback function 
+                    instead of on the callback mechanism. </p>
+               
+               <p> Finally, I should mention again that
+                    not all callback APIs provide a mechanism to pass instance
+                    data. In those cases, you must rely on some other techniques
+                    to provide a this pointer to your callback function. These
+                    techniques are generally variations on storing this in a
+                    static variable accessible to both the caller and the
+                    callback. In the world of multithreaded Windows 
+                    applications, these techniques often require more code to
+                    coordinate the use of the static value than to accomplish
+                    the work of the callback. I'm hoping that, as the SDK
+                    evolves, these callback APIs will be updated with newer APIs
+                    designed to make C++ integration easier.</p>
+               
+               <h4><FONT COLOR="#000080">Information Sources</FONT></H4>
+               
+               <p>Dale Rogerson. "Calling All
+                    Members: Member Functions as Callbacks," Microsoft
+                    Developer's Network, April, 1992. </p>
+               
+               <p> Microsoft Visual C++ Run-Time Library
+                    Reference, September 1995. </p>
+               
+               <p> Microsoft Visual C/C++ Language
+                    Reference, September 1995.</p>
+               
+               <h4><FONT COLOR="#000080">Note</FONT></H4>
+               
+               <p>[<A name="NOTE1">1</a>]
+ Although the
+                    return from timeSetEvent is of type MMRESULT, it is not a
+                    return code. In this case the returned value contains the
+                    timer ID of the timer allocated by the API. This caused me
+                    more than a few minutes of head scratching before I reread
+                    the documentation. </p>
+               
+               <p><I>Tim Duggan is a Senior Software
+                    Engineer with Filenet Corporation, developing the Watermark
+                    Server and HSM. He has a BSEE from the University of Lowell,
+                    Massachusetts, and a Masters in CS from Boston University.
+                    He has 10 years programming experience in operating systems,
+                    imaging systems, and COLD systems. In his spare time he
+                    serves as a Field Artillery Officer; he is currently 
+                    assigned to the Information Management Directorate of the
+                    New Hampshire National Guard. He may be reached at
+                    tbduggan@shore.net. </I></p>
+     
+<h4><a href="../../../source/1997/aug97/duggan.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+     </BODY>
+</HTML>

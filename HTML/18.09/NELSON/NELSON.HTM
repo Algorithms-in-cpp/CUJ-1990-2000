@@ -1,0 +1,76 @@
+<HTML>   
+     <HEAD>
+<TITLE>September 2000/Network Programming with Linux</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocsep.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Internet Programming</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Network Programming with Linux</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Erik Nelson</FONT></H3>
+
+<BLOCKQUOTE>
+<p>TCP isn't the only protocol for swapping data packets, nor is it always the most effective.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<H4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>If you want to get started doing network programming on Linux, you can hardly go wrong learning about sockets. Linux provides the Berkely socket API, which has become a widely-used standard networking API. The Berkley socket API on Linux supplies a single interface for a number of common network protocols, including AppleTalk and IPX as well as TCP/IP. TCP/IP is a ubiquitous network protocol that forms the basis for many, if not most, local-area and wide-area networks, including the Internet. Windows supplies similar functionality to Berkely sockets through Winsock.</p>
+<p>Writing network-aware applications is not nearly as difficult as it appears at first glance. The socket interface is simple, elegant, and efficient. After doing a project that directly uses sockets, you may find yourself never wanting to pay for the overhead that comes with a higher-level interface.</p>
+<p>There are many tutorials on TCP/IP socket programming, but they tend to focus on the TCP protocol (explained below) because of the desirable characteristics that it exhibits. However, for an application that doesn't require the the level of reliability offered by TCP, or can manage that aspect of the communication by itself, UDP (also explained below) offers a very low-overhead method of communication. Indeed, TCP is itself built upon UDP, and many higher-level protocols such as NFS and BOOTP use UDP as their communication mechanism. In this article I present a simple chat application using UDP that can be run on a single machine or across the Internet. With a few preprocessor directives, the code can be made to run both on Linux and on Windows.</p>
+<p>I developed this chat program using the Red Hat 6.0 Linux distribution for the i386 processor. I also tested a Winsock version of the program on Microsoft Windows NT 4.0 using Microsoft Visual Studio 6.0.</p>
+
+<H4><FONT COLOR="#000080">TCP vs. UDP</FONT></H4>
+
+<p>Protocols frequently come in groups, or protocol families. The TCP/IP protocol group includes the TCP and UDP protocols. The TCP (Transmission Control) protocol is connection-oriented. A TCP connection has two endpoints, and can be compared to a telephone call. This connection, or virtual circuit, must be established prior to the exchange of data, and the data is sent as a stream of bytes. The protocol ensures that the bytes will arrive in the order they were sent and that they will be error free.</p>
+<p>The UDP (Universal Datagram) protocol is based on packets, or datagrams. This protocol is connectionless and unreliable; that is, it is much like sending mail using the postal system. Each packet is like a letter; it is a discrete unit of data, and if it is delivered at all, it will be delivered whole. Letters will not necessarily arrive in the same order they were sent, and some of them may not arrive at all. Additionally, the sender need not verify the existence of a recipient before transmitting a packet; the sender can address the packet to a particular destination and send it without establishing that the recipient is prepared to accept the message.</p>
+
+<H4><FONT COLOR="#000080">The Chat Application</FONT></H4>
+
+<p>Each instance of the chat application is both a client and a server. In the interest of brevity, I have omitted much error checking from this application. The errors that the application does check typically terminate the program with an error message.</p>
+<p>Sockets fit right into the "everything is a file" mode of operation that permeates the Unix frame of reference. When a socket is in blocking mode <a href="#note1">[1]</a>, any function reading from that socket blocks (halts) until the socket receives a complete datagram. Since a blocked function may halt indefinitely, socket programmers need some way to keep other parts of the application responsive to user requests, or other events. This is typically done in one of two ways: by calling the <B>select</B> system call to enter an efficient wait state on a number of resources; or by placing the blocking function in a separate thread. This article takes the latter approach, not so much to imply that it is a better method as to demonstrate simple threading.</p>
+<p>The essential program layout is as follows. A class called <B>CComm</B> (<a href="list1.htm">Listings 1</a> and <a href="list2.htm">2</a>) does all the heavy lifting. In the program (<a href="list3.htm">Listing 3</a>), the <B>main</B> function creates an object of type <B>CComm</B>. Function <B>main</B> then calls <B>CComm</B>'s <B>Listen</B> member function, which starts listening on the designated port in a separate thread. <B>main</B> then enters a loop, reading user input from the console and sending it as a UDP packet to the destination initially specified on the command line.</p>
+
+<H4><FONT COLOR="#000080">CComm Object Implementation</FONT></H4>
+
+<p>The implementation of class <B>CComm</B> is shown in <a href="list2.htm">Listing 2</a>. Preprocessor directives determine whether the class is built for Linux or for Windows. In the Linux build, <B>CComm</B>'s constructor does very little &#151; it just initializes the value of its data member <B>ListenSocket</B>, the socket that it will be listening on. In the Windows build, the constructor also initializes Winsock. This step is not required for the Unix sockets API. The Winsock startup function is called <B>WSAStartup</B>; it must be called before using Winsock. Calling <B>WSAStartup</B> requests Winsock 1.1 functionality, which is available on nearly all versions of Windows.</p>
+
+<H4><FONT COLOR="#000080">Receiving Messages</FONT></H4>
+
+<p>The <B>CComm::Listen</B> member function works as follows. First, it creates a socket via a call to <B>socket</B>, which returns a file descriptor for an uninitialized socket. A socket is essentially a channel that can be listened to. The new socket cannot be used for communication until some further operations have been performed on it.</p>
+<p>The <B>socket</B> function has the following prototype, defined in the <B>&lt;sys/socket&gt;</B> header file (<B>&lt;winsock.h&gt;</B> for Windows):</p>
+
+<pre>
+int socket(int domain, int type, int protocol);
+</pre>
+
+<p>The first parameter specifies the protocol family, which is <B>PF_INET</B> for TCP/IP version 4, the common Internet protocol. Other common protocol families are <B>PF_UNIX</B> for the Unix domain protocol, <B>PF_IPX</B> for the Novell IPX protocol, and <B>PF_APPLETALK</B> for the AppleTalk protocol. The second parameter is usually either <B>SOCK_STREAM</B> for streaming connections or <B>SOCK_DGRAM</B> for datagram protocols. <B>CComm</B> uses <B>SOCK_DGRAM</B>, since the example program is to be built using datagrams. The last parameter specifies which protocol is to be used, within the constraints imposed by the first two parameters. This parameter is usually zero, which lets the operating system use the default protocol of the specified type and family. UDP is the default datagram protocol for the <B>PF_INET</B> protocol family, and TCP is the default stream protocol.</p>
+<p>The main task of the <B>Listen</B> function is to create a channel, or address, for receiving incoming messages. This channel consists of an Internet address that is present on the local machine and a port number. For the TCP/IP protocol suite, these two items are combined in a single data structure of type <B>sockaddr_in</B>. The <B>CComm</B> class contains two data members of type <B>sockaddr_in</B>, one to hold the socket address (data member <B>srv</B>), and one to remember where the last message was received from (data member <B>client</B>).</p>
+<p>The <B>Listen</B> function prepares the <B>sockaddr_in</B> data structure (<B>srv</B>) by setting its data fields. <B>Listen</B> sets the <B>sin_family</B> field to <B>PF_INET</B>; it sets the <B>sin_addr.s_addr</B> field to <B>htonl(INADDR_ANY)</B>; and it sets the <B>sin_port</B> field to <B>htons(PortNum)</B>. The <B>htonl</B> and the <B>htons</B> functions convert their arguments into network byte order for long and short integer types, respectively. The function <B>htonl</B> ("host to network long") is a misnomer, since it actually returns an <B>int</B> instead of a <B>long</B>. The <B>INADDR_ANY</B> parameter signifies that it doesn't matter which Internet address is used to listen on; any address on the local machine will do. After creating both the socket and an address to Listen on, <B>Listen</B> binds them together using the <B>bind</B> socket call.</p>
+<p>After binding the socket to an address, <B>Listen</B> creates a new thread of execution for listening on the socket. Again, this is an OS-specific operation, but in the case of both Windows and Linux the thread creation function is passed a pointer to the static <B>CComm::ListenThread</B> function, the function that will be executed within the thread. Also in both cases, <B>Listen</B> passes the thread creation function a pointer to the <B>CComm</B> object, so the new thread knows which <B>CComm</B> object to deal with.</p>
+<p>The <B>ListenThread</B> function enters an infinite loop, which wraps a call to the socket function <B>recvfrom</B>. Function <B>recvfrom</B> reads from the socket; it blocks until there is a datagram available for reading. Function <B>recvfrom</B> takes as parameters the socket to receive from, a pointer to a buffer, the size of the buffer, a flags variable (normally zero), a pointer to a <B>sockaddr</B> structure (cast from a pointer to <B>sockaddr_in</B>), and the size of the address structure. When <B>recvfrom</B> executes it fills in this address structure with the address of the sender &#151; an application could save and use this information as a return address, if so required. After calling <B>recvfrom</B>, the <B>ListenThread</B> function does some simple error checking, and then prints out the received message to standard output.</p>
+
+<H4><FONT COLOR="#000080">Sending Messages</FONT></H4>
+
+<p>The <B>CComm::SendMsg</B> function (<a href="list2.htm">Listing 2</a>) shows common ways of manipulating addresses for the TCP/IP protocol suite. The <B>hostent</B> structure provides a place to capture data about the destination host <a href="#note2">[2]</a>. Before filling in this structure, <B>SendMsg</B> first checks whether the user identified the destination host using the dotted-quad IP address form (e.g., <B>"127.0.0.1"</B>). If the destination was specified in dotted-decimal form, it is converted to binary form with function <B>inet_addr</B>. The <B>gethostbyaddr</B> and <B>gethostbyname</B> functions are network functions; they may block for a period of time while the target host's information is looked up.</p>
+<p><B>CComm::SendMsg</B> ends with a call to the <B>sendto</B> socket function. This simple call takes as arguments the socket to send from, a pointer to the data to be sent, the length of the data, flags (normally zero), a pointer to the destination address, and the size of the destination address. If the <B>sendto</B> call is successful the amount of data sent is returned.</p>
+
+<H4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>Using threads to make this simple chat application is overkill, but this code demonstrates portable threading and sockets in a simple framework. Adding network functionality to your programs using TCP/IP and Berkley sockets sounds much more difficult than it is. This article demonstrated one way to construct a portable chat application that compiles and runs on both Unix and Windows platforms using UDP datagrams. The concepts presented can be incorporated into many types of network-aware programs.</p>
+
+<H4><FONT COLOR="#000080">Notes and References</FONT></H4>
+
+<p><a name="note1">[1]  Sockets can be set to either blocking or nonblocking mode. In nonblocking mode the socket read call returns immediately, whether data is available or not. This article assumes the socket operates in blocking mode.</p>
+<p><a name="note2">[2]  The most interesting part of the <B>hostent</B> structure is the <B>h_addr_list</B> member, which is defined as type <B>char **</B>. This member is a null terminated list of addresses that enumerates the network interfaces available on the destination machine. If you wanted to target a particular network interface, you could search through the list for the desired interface.</p>
+<p><a name="note3">[3]  Michael Johnson and Erik Troan. <I>Linux Application Development</I> (Addison Wesley, 1998).</p>
+<p><a name="note4">[4]  Victor Volkman. "Easy Networking With sockets," <I>Windows Developer's Journal,</I> November 1999.</p>
+
+<p><i><B>Erik Nelson</B> works as a freelance consultant and programmer. He has been programming in C/C++ for the majority of his professional career. He can be reached at <B>erik_lee_nelson@yahoo.com</B>.</i></p>
+
+<h4><a href="../../../source/2000/sep00/nelson.zip">Get Article Source Code</a></h4>
+
+</blockquote></body></html>

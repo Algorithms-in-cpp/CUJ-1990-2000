@@ -1,0 +1,179 @@
+
+
+
+
+<HTML><HEAD>
+
+<TITLE>April 1997/Dynamic Table Binding with MFC CRecordset Classes/Listing 2</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4>Listing 2:	Function CColumns::MakeColumnListFromQuery</h4>
+
+<pre>
+
+BOOL CColumns::MakeColumnListFromQuery()
+{
+   BOOL       bRtn=FALSE; // Assume we'll fail; allow reselect
+   RETCODE    rc;         // Return code from ODBC functions
+   CColumnInfo*   pColInfo;   // Data type output for each column
+   int        index;      // Index for columns
+   short      iCols;      // the number of columns in this query
+   HSTMT      hStmt;      // allocated and used in this function
+
+
+   // check if this object was constructed sans open CDatabase
+   if ( (m_hstmt == SQL_NULL_HSTMT) || (!m_pDatabase-&gt;IsOpen()) )
+        ThrowDBException(SQL_INVALID_HANDLE); 
+        //  &lt;&lt;--&lt; it was, so toss cookies...
+    
+   // safe to continue, so create a meta-data only query
+   ReplaceWhereClause();
+    
+   // Get a HSTMT for use in this function
+   rc = ::SQLAllocStmt( m_pDatabase-&gt;m_hdbc, &amp;hStmt );
+   if (SQL_NOTSUCCESSFUL(rc))
+   {
+      DecodeSQLError(rc, m_pDatabase-&gt;m_hdbc, hStmt, THIS_FILE, __LINE__);
+      goto cleanup;
+   }
+
+   // Execute the query and retrieve the results
+   rc = ::SQLExecDirect(hStmt, 
+            (unsigned char*)
+            m_QueryNoWhere.GetBuffer(m_QueryNoWhere.GetLength()), 
+            m_QueryNoWhere.GetLength());
+   if(SQL_NOTSUCCESSFUL(rc)) 
+   {
+       DecodeSQLError(rc, m_pDatabase-&gt;m_hdbc, hStmt,
+                      THIS_FILE, __LINE__);
+       m_QueryNoWhere.ReleaseBuffer();
+       goto cleanup;
+    }
+    m_QueryNoWhere.ReleaseBuffer();
+    
+   // how many columns are there in this select?
+   rc = ::SQLNumResultCols( hStmt, &amp;iCols);
+   if(SQL_NOTSUCCESSFUL(rc)) 
+   {
+       DecodeSQLError(rc, m_pDatabase-&gt;m_hdbc, hStmt, THIS_FILE, __LINE__);
+       goto cleanup;
+   }
+    
+    // make the CPtrArray large enough to hold all of the
+    // CColumnInfo *'s
+    // m_ColumnList.SetSize(iCols);
+
+   // now loop through the column set gathering facts about each one
+   // to store in a CColumnInfo class for each column. All the
+   // CColumnInfo classes will be added to the m_ColumnList 
+   for(index = 0;  index &lt; iCols;  index++) 
+   {
+       pColInfo = new CColumnInfo;
+       if (pColInfo == NULL)
+           goto cleanup;      
+       pColInfo-&gt;nColInRslt = index +1;
+
+       // get the SQL_xxx type (and related info) for the column
+       rc = ::SQLDescribeCol(hStmt,
+                            (UWORD)(index + 1), 
+                             NULL, 
+                             0, 
+                             NULL,
+                             &amp;pColInfo-&gt;fSqlType,
+                             &amp;pColInfo-&gt;cbPrecision,
+                             &amp;pColInfo-&gt;ibScale,
+                             &amp;pColInfo-&gt;fNullable);
+       if(SQL_NOTSUCCESSFUL(rc))
+       {
+          DecodeSQLError(rc, m_pDatabase-&gt;m_hdbc, hStmt, THIS_FILE, __LINE__);
+          goto cleanup;
+       }
+                
+       // Get the named type of the column for mapping
+       //
+       rc = ::SQLColAttributes(hStmt,
+                              (UWORD)(index + 1),
+                              SQL_COLUMN_TYPE_NAME,           
+                              &amp;pColInfo-&gt;szNamedType,
+                              sizeof(pColInfo-&gt;szNamedType),
+                              NULL,
+                              NULL);
+       if(SQL_NOTSUCCESSFUL(rc))
+       {
+          DecodeSQLError(rc, m_pDatabase-&gt;m_hdbc, hStmt, THIS_FILE, __LINE__);
+          goto cleanup;</u></b></p>
+
+       }
+                
+       // Get the display size in case this column gets converted to char
+       //
+       rc = ::SQLColAttributes(hStmt,
+                              (UWORD)(index + 1),
+                              SQL_COLUMN_DISPLAY_SIZE,
+                              NULL,
+                              sizeof(pColInfo-&gt;cbDspSize),
+                              NULL,
+                              &amp;pColInfo-&gt;cbDspSize);
+       if(SQL_NOTSUCCESSFUL(rc))
+       {
+          DecodeSQLError(rc, m_pDatabase-&gt;m_hdbc, hStmt, THIS_FILE, __LINE__);
+          goto cleanup;
+       }
+
+       // Get the name of this column
+       //
+       rc = ::SQLColAttributes(hStmt,
+                              (UWORD)(index + 1),
+                              SQL_COLUMN_NAME,
+                              &amp;pColInfo-&gt;szColumnName,
+                              sizeof(pColInfo-&gt;szColumnName),
+                              NULL,
+                              NULL);
+
+       if(SQL_NOTSUCCESSFUL(rc))
+       {
+          DecodeSQLError(rc, m_pDatabase-&gt;m_hdbc, hStmt, THIS_FILE, __LINE__);
+          goto cleanup;
+       }
+                
+       // Get the name of the table containing this column
+       //
+       rc = ::SQLColAttributes(hStmt,
+                              (UWORD)(index + 1),
+                              SQL_COLUMN_TABLE_NAME,
+                              &amp;pColInfo-&gt;szFromTable,
+                              sizeof(pColInfo-&gt;szFromTable),
+                              NULL,
+                              NULL);
+
+       if(SQL_NOTSUCCESSFUL(rc))
+       {
+          DecodeSQLError(rc, m_pDatabase-&gt;m_hdbc, hStmt, THIS_FILE, __LINE__);
+          goto cleanup;
+       }
+                
+       // now that we have all the info we need on this column
+       // finish up by allocating storage for this column's local
+       // member variable and adding the finished CColumnInfo to
+       // the column list
+       if ( ! AllocStorageForColumnVar(pColInfo) )
+              goto cleanup;
+       
+       if ( !(MapColumnSQLTypeToCType(pColInfo)) 
+         || !(GetCreateParamCount(pColInfo))     )
+              goto cleanup;
+
+       AddColumnInfoToList(pColInfo);                
+   }
+   // if we get here, all went well
+   if ( GenerateTableCreationString() )
+        bRtn = TRUE;
+   // Clean up the statement handle
+   //
+cleanup:
+    SQLFreeStmt(hStmt, SQL_CLOSE);
+    SQLFreeStmt(hStmt, SQL_UNBIND);    
+    return bRtn;
+}
+//End of File
+</pre>
+</body></html>

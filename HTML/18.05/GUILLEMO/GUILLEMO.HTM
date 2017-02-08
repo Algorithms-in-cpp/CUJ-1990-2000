@@ -1,0 +1,70 @@
+<HTML>   
+     <HEAD>
+<TITLE>May 2000/Catching Untested Return Codes</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocmay.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Catching Untested Return Codes</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Marc Guillemot</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Who watches the watchers, at least to make sure they're watching? This class does.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<p>Function return values are commonly used to indicate whether a function executed without error. However, it is difficult to ensure that the caller uses this information appropriately. Maybe some commercial tools can do the job, but you can't always get permission to purchase one, particularly in small projects. You have a good chance of hearing the response: "I trust you, you don't make such mistakes."</p>
+<p>The idea I present here was inspired by a bug we had in our project some weeks ago, which appeared only in a production environment. It took a few days of work to find that it came from the failure of an environment-specific initialization routine. In fact, the code that called this routine did not test its return code.</p>
+
+<H4><FONT COLOR="#000080">Adding a Responsibility Flag</FONT></H4>
+
+<p>In my (yet not so long) experience, I have often seen function return codes grouped, sometimes by type, into an enum. As shown in <a href="fig1.htm">Figure 1</a>, the caller can more or less ignore such return values. In order to control what happens to the returned values, I do not directly return these values but instances of a class <B>ErrorCode</B>, which contains two member variables: a value (<B>enValue_</B>) indicating a function error code, and a responsibility flag (<B>PboResp</B>):</p>
+
+<pre>
+class ErrorCode
+{
+private:
+   ErrorCodeValue enValue_;
+   bool * PboResp_;
+public:
+   // some code
+}
+</pre>
+
+<p>The purpose of the responsibility flag is to indicate whether an instance of <B>ErrorCode</B> is responsible for the value it contains or not. When an instance of class <B>ErrorCode</B> is copied, using either the copy constructor or copy assignment, the value <B>enValue_</B> is copied and the responsibility flag contained in <B>PboResp_</B> is "transferred." By "transferred" I mean that the copy operation transfers responsibility from the source instance to the destination instance. After the copy, the source instance is no longer responsible for its content. (Actually, the copy constructor has slightly different semantics than the copy assignment operator, but the general idea is the same. More on this below.)</p>
+<p>Since it is a common practice to use the <B>const</B> qualifier for the argument of the copy constructor and copy assignment functions, I have chosen to implement the responsibility flag as a pointer to a Boolean rather than as a Boolean. This enables the copy function to modify the responsibility flag of the source instance passed as an argument. There is another constraint which applies to <B>operator=</B>: if it is called to assign to an instance of class <B>ErrorCode</B> for which the responsibility flag is <B>true</B>, the fact that previous value <B>enValue_</B> is lost must be logged. (The responsibility transfer process described here is similar to transfer of ownership that occurs when an <B>auto_ptr</B> is copied.)</p>
+<p>Using <B>ErrorCode</B> instances also requires that the <B>==</B> and <B>!=</B> operators be defined. These operators are needed to compare an <B>ErrorCode</B> instance returned from a function against a temporary instance that has been fabricated to represent a specific error state (such as success). As you might expect, these operators work by comparing the internal <B>enValue_</B> members of the two <B>ErrorCode</B> objects being tested. However, these operators also set the responsibility flags of the participating <B>ErrorCode</B> objects to <B>false</B>, so that no logging of "untested error codes" occurs. If needed, other test operators (<B>&lt;</B>, <B>&gt;</B>, ... ) can be written for class <B>ErrorCode</B> as well.</p>
+<p>Finally, the destructor checks whether the instance is still responsible for its error code value and logs it when that is the case.</p>
+
+<H4><FONT COLOR="#000080">Integration with Existing Code</FONT></H4>
+
+<p>To my thinking, the success of this technique depends on its being very easy to integrate into existing real-world programs. <a href="fig1.htm">Figure 1</a> shows a situation which can be considered as a good starting point to show how the integration can be done.</p>
+<p>First, when I create the class definition I use the name of a previously defined enum for return values as the class name. Thus, with just a recompilation of the program, all functions that previously returned the enum <B>ErrorCode</B> now return an instance of class <B>ErrorCode</B>. I also change the name of the existing enum from <B>ErrorCode</B> to <B>ErrorCodeValue</B>. To make this technique really effective, it is also necessary to define a constructor for class <B>ErrorCode</B> that takes an enum <B>ErrorCodeValue</B> as a parameter. This constructor is implicitly called, mainly in two situations: first, when a legacy function returns an <B>ErrorCodeValue</B> instead of an instance of class <B>ErrorCode</B>; second, when an <B>ErrorCode</B> instance is tested against an <B>ErrorCodeValue</B> via <B>operator==</B> or <B>operator!=</B>. In this case, a temporary <B>ErrorCode</B> instance is constructed from the <B>ErrorCodeValue</B> to be used as an argument to the comparison operator. As stated previously, the comparison operator also "turns off" the responsibility flag for both instances involved in the comparison.</p>
+
+<H4><FONT COLOR="#000080">Implementation</FONT></H4>
+
+<p><a href="fig2.htm">Figure 2</a> shows the new implementation of error handling, this time using an <B>ErrorCode</B> class. Adding this class requires changes only to existing file <B>ErrorCodes.h</B>. In addition, it requires the creation of a file <B>ErrorCodes.cpp</B>, to implement the member functions of class <B>ErrorCode</B>.</p>
+<p>As explained above, the copy constructor and copy assignment operator must transfer responsibility for error codes to their target objects. But that is not enough. A function must always return an <B>ErrorCode</B> instance that is responsible for its contents. So both the copy constructor and the constructor that takes an <B>ErrorCodeValue</B> set the responsibility flag to <B>true</B> in the newly constructed instance &#151; and they do so unconditionally. (This is how the copy constructor differs from the copy assignment operator; the copy assignment operator <I>copies</I> the flag from source to destination instance. The copy constructor sets it unconditionally.)</p>
+<p>Finally, the default constructor differs from all the other constructors, because it initializes the responsibility flag to <B>false</B>. A default-constructed <B>ErrorCode</B> does not represent an untested error code. It it totally up to the programmer who created it to decide what to do with it.</p>
+<p>A possible enhancement to <B>ErrorCode</B> would be to add an assertion to the destructor and copy assignment operators to intercept "error leaks" during the development and test phase.</p>
+<p>Executing the program in <a href="fig1.htm">Figure 1</a> with the new <B>ErrorCode</B> class will write the following messages on the standard error output:</p>
+
+<pre>
+Destruction of untested error code: 
+value 1
+Untested error code (value 0) erased by 
+new value 2
+</pre>
+
+<H4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>I am convinced this coding trick can be very helpful in detecting a certain class of bugs. Note that this method does not eliminate any bug but just reports untested return codes after the problem has occurred. I believe it is really simple to implement even in an existing project. At the beginning, you will probably get a log file with a large number of untested return codes. In our project, we have therefore had to clean a bit our code.</p>
+
+<p><i><B>Marc Guillemot</B> lives in France and has worked as software engineer for two years. He has worked in banking and life insurance, and nows works for an Internet home grocery. He has also developed a tool for math typesetting in MSWord that is currently used by many math teachers. He can be reached at <B>mguillem@infonie.fr</B>.</i></p>
+
+<h4><a href="../../../source/2000/may00/lafrenie.zip">Get Article Source Code</a></h4>
+
+</blockquote></body></html>

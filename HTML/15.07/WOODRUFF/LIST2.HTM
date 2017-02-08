@@ -1,0 +1,189 @@
+
+
+
+
+<HTML><HEAD>
+
+<TITLE>July 1997/Serial Communication Under Win32/Listing 2</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4>Listing 2:	A dumb-terminal program that uses CSerialPort</h4>
+
+<pre>
+// File    : Terminal.cpp
+// Author  : Eric Woodruff,  CIS ID: 72134,1150
+// Updated : Mon 04/07/97 21:28:49
+// Note    : Copyright 1996-97, Eric Woodruff, All rights reserved
+// Compiler: Borland C++ 5.xx, Visual C++ 4.xx
+//
+// Compile with:
+//      bcc32 -DBUILD_SPCOMM_NODLL terminal.cpp serialport.cpp
+//   or
+//      cl -DBUILD_SPCOMM_NODLL terminal.cpp serialport.cpp
+//
+// A simple terminal program to demonstrate the stock
+//   CSerialPort class.
+//
+
+#include &lt;windows.h&gt;
+#include &lt;ctype.h&gt;
+#include &lt;stdio.h&gt;
+
+#include "SerialPort.h"
+
+BOOL InitConsole(void);
+void DumbTerminal(const char *pszPortName, const char *pszOptions);
+DWORD WINAPI CommReader(void *pvData);
+
+#define MAX_SIZE    1024
+
+HANDLE hStdIn, hStdOut;
+
+void main(int argc, char *argv[])
+{
+    if(argc &lt; 3)
+    {
+     printf(" Syntax: Terminal portname parity_data_stop_localecho\n"
+            "Example: Terminal COM1 7E1\n"
+            "Example: Terminal COM1 N81L  (Add L for local echo)");
+     exit(1);
+    }
+
+    if(!InitConsole())
+        printf("Could not initialize console handles\n");
+    else
+        DumbTerminal(argv[1], argv[2]);
+
+    exit(0);
+}
+
+BOOL InitConsole(void)
+{
+    // Get handles for standard input and output
+    hStdIn = GetStdHandle(STD_INPUT_HANDLE);
+    if(hStdIn == INVALID_HANDLE_VALUE)
+        return FALSE;
+
+    hStdOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    if(hStdOut == INVALID_HANDLE_VALUE)
+        return FALSE;
+
+    // Turn off all input mode processing
+    SetConsoleMode(hStdIn, 0);
+
+    return TRUE;
+}
+
+void DumbTerminal(const char *pszPortName, const char *pszOptions)
+{
+    INPUT_RECORD irInput;
+    BOOL bContinue = TRUE;
+    DWORD dwRecords;
+
+    char chChar;
+
+    // Assumed defaults are N81
+    BOOL bLocalEcho = FALSE;
+    int  nParity = NOPARITY, nDataBits = EIGHTDATABITS,
+         nStopBits = ONESTOPBIT;
+
+    // This is just a demo, so there is no real editing
+    chChar = toupper(pszOptions[0]);
+    if(chChar == `E')
+        nParity = EVENPARITY;
+    else
+        if(chChar == `O')
+            nParity = ODDPARITY;
+
+    if(pszOptions[1] == `7')
+        nDataBits = SEVENDATABITS;
+
+    if(pszOptions[2] == `2')
+        nDataBits = TWOSTOPBITS;
+
+    if(toupper(pszOptions[3]) == `L')
+        bLocalEcho = TRUE;
+
+    // Open the port and use the given settings
+    CSerialPort COMPort(pszPortName);
+    COMPort.SetParityDataStop(nParity, nDataBits, nStopBits);
+
+    // If valid, start the reader thread
+    if(!COMPort.IsValid() || !COMPort.StartCommThread(CommReader))
+        printf("Error %ld initializing COM port!",
+            COMPort.GetLastError());
+    else
+    {
+        printf("Connected on %s using options %s\nESC to quit\n",
+            pszPortName, pszOptions);
+
+        // Wait for keyboard input and send each character to the
+        // port until ESC is hit.
+        do
+        {
+            // This will block until input is available
+            if(ReadConsoleInput(hStdIn, &amp;irInput, 1, &amp;dwRecords))
+            {
+                if(irInput.EventType == KEY_EVENT &amp;&amp;
+                  irInput.Event.KeyEvent.bKeyDown)
+                {
+                    chChar = irInput.Event.KeyEvent.uChar.AsciiChar;
+
+                    // If ESC, stop. If not zero, write it to port
+                    if(chChar == 27)
+                        bContinue = FALSE;
+                    else
+                        if(chChar)
+                        {
+                            COMPort.WriteCommBlock(&amp;chChar, 1);
+                            // For non-modem connections
+                            if(bLocalEcho)
+                                WriteConsole(hStdOut, &amp;chChar, 1,
+                                    &amp;dwRecords, NULL);
+                        }
+                }
+            }
+
+        } while(bContinue);
+    }
+}
+
+// This is the thread function that handles incoming data.  Unless
+// otherwise specified, CSerialPort::StartCommThread() passes a
+// pointer the the port object itself.
+DWORD WINAPI CommReader(void *pvData)
+{
+    CSerialPort *COMPort = (CSerialPort *)pvData;
+    DWORD dwEventMask, dwBytesWritten;
+    int   nSize;
+    char  byBuffer[MAX_SIZE];
+    // Tell the port to notify us when a read event occurs (EV_RXCHAR
+    // is enabled by default).
+    if(!COMPort-&gt;WaitCommEvent())
+        return 1L;      // Error
+
+    // Wait for an empty Comm event that signals the COM port object
+    // is shutting down.
+    do
+    {
+        // Since this is a separate thread, we can pass TRUE so
+        // that the function doesn't return until an event occurs.
+        dwEventMask = COMPort-&gt;CheckForCommEvent(TRUE);
+        if(dwEventMask &amp; EV_RXCHAR)
+        {
+            // Read as much as possible and display it on the screen
+            nSize = COMPort-&gt;ReadCommBlock(byBuffer, MAX_SIZE);
+            if(nSize)
+                WriteConsole(hStdOut, byBuffer, nSize,
+                   &amp;dwBytesWritten, NULL);
+
+            // Set it up to wait for the next event
+            COMPort-&gt;WaitCommEvent();
+        }
+
+    } while(dwEventMask);
+
+    return 0L;
+}
+//End of File
+</pre>
+</body></html>

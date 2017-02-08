@@ -1,0 +1,452 @@
+<HTML>   
+     <HEAD>
+<TITLE>June 2000/Safe and Economical Reference-Counting in C++</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocjun.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Safe and Economical Reference-Counting in C++</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Vladimir Batov</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Smart pointers keep getting smarter.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE></p>
+
+<H4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>This article discusses the implementation of a smart pointer reference-counting pattern, via a class called <B>Handle</B>. This implementation substantially improves on the design discussed in my previous article, "Extending the Reference Counting Pattern " <a href="#1">[1]</a>. When I wrote that article, most of the widely available compilers did not implement C++ templates as well, or as completely, as they do today. Therefore, despite many advantages, the original implementation had two serious limitations promptly pointed out by Scott Meyers <a href="#2">[2]</a>. It provided a rigid data construction mechanism (worked only with the default constructor) and did not support inheritance-based polymorphism. Considering these limitations, even I became convinced to abandon the idea in favor of a "more conventional" solution, which was more expensive in terms of memory consumption and performance.</p>
+<p>Since that time, the widespread availability of powerful new language features, such as member function templates and template constructors, enabled me to revive and improve the original design. This new design overcomes the aforementioned limitations, and represents what I feel is a safe, economical, and flexible smart pointer.</p>
+<p>Although there are a great many implementations of the reference-counting pattern (see [<a href="#3">3</a>-<a href="#9">9</a>] just to name a few), the design discussed in this article offers several advantages, which are perhaps rarely found in one implementation. I list a few of the most important here; you can read about the rest of them in the section of this article entitled Summary of Advantages and Known Limitations.</p>
+
+<UL><LI>   <B>Handle&lt;Data&gt;</B> is fully automatic. It creates <B>Data</B> instances for you when and the way you want them, manages the data (using reference counting), and deletes them when you no longer need the data.</LI>
+<LI>   It is safe. <B>Handle&lt;Data&gt;</B> maintains a strong association with the <B>Data</B> it represents. The existence of a <B>Handle&lt;Data&gt;</B> instance guarantees the existence and validity of <B>Data</B> (unlike unassigned instances of <B>Data *</B> or <B>auto_ptr&lt;Data&gt;</B>).</LI>
+<LI>   <B>Handle</B> is template-based rather than inheritance-based, such as the implementations described in [<a href="#3">3</a>-<a href="#6">6</a>]. The template-based approach does not impose requirements on the <B>Data</B> class, and thus allows the introduction of reference-counting functionality later in development, or with the use of legacy code.</LI>
+<LI>   <B>Handle</B> conveniently replaces pointers by closely matching their familiar syntax and behavior, and without the dangers associated with pointers and <B>auto_ptr</B>.</LI></UL>
+
+<H4><FONT COLOR="#000080">An Illustration</FONT></H4>
+
+<p>One of <B>Handle&lt;Data&gt;</B>'s strong points is its convenience. The <B>Handle</B> wrapper takes complete care of <B>Data</B> resource management while providing a familiar interface, and without sacrificing flexibility:</p>
+
+<pre>
+class Data
+{ ...
+   // Three ways to create a Data 
+   // instance
+   Data();
+   Data(int, double);
+   Data(const char*);
+};
+
+// Use Data::Data()
+Data* p = new Data();
+auto_ptr&lt;Data&gt; ap(new Data());
+Handle&lt;Data&gt; dh = 
+   Handle&lt;Data&gt;::create();      
+Handle&lt;Data&gt; dh;
+// Use Data::Data(int, double)
+Data* p = new Data(1, 2.3);
+auto_ptr&lt;Data&gt; ap(new Data(1, 2.3));
+Handle&lt;Data&gt; dh = 
+   Handle&lt;Data&gt;::create(1, 2.3);
+Handle&lt;Data&gt; dh(1, 2.3);
+// Use Data::Data(const char*)
+Handle&lt;Data&gt; dh = 
+   Handle&lt;Data&gt;::create("text");
+Handle&lt;Data&gt; dh("test");
+</pre>
+
+<p>Unlike <B>auto_ptr</B>, <B>Handle</B> creates <B>Data</B> instances. This approach ensures consistent management of the <B>Data</B> resource &#151; the same <B>Handle</B> class creates, controls access to, and ultimately deletes <B>Data</B>. Such encapsulation of functionality eliminates the need for explicit memory management (using <B>new</B> and <B>delete)</B>, thus reducing chances for memory mismanagement:</p>
+
+<pre>
+Data*          dp;     // Unassigned.
+auto_ptr&lt;Data&gt; ap;     // Unassigned.
+auto_ptr&lt;Data&gt; ap(dp); // Trouble.
+Handle&lt;Data&gt;   dh; // Internally creates a Data instance if the
+                   // class has default constructor. Otherwise,
+	          // simply does not compile.
+dp-&gt;modify(); // Trouble
+ap-&gt;modify(); // Trouble
+dh-&gt;modify(); // OK
+</pre>
+
+<p><B>Handle&lt;Data&gt;</B> instances (and their internal <B>Data</B> resources) are created using one of the following interfaces:</p>
+
+<UL><LI>   a family of template functions <B>Handle&lt;Data&gt;::create(arguments)</B></LI>
+<LI>   a family of template constructors <B>Handle&lt;Data&gt;Handle(arguments)</B></LI></UL>
+
+<p>Both interfaces accept arguments intended for <B>Data</B> construction and readily transfer them to an appropriate <B>Data</B> constructor (if such a constructor exists). Therefore, if you want a reference-counted <B>Data</B> instance to be created with, say, the <B>Data(int, double)</B> constructor, you simply supply appropriate arguments when a <B>Handle&lt;Data&gt;</B> instance is created. The arguments you provide are passed to <B>Data(int, double)</B>. In the transfer from <B>Handle</B> to <B>Data</B>, all attributes of the arguments, including <B>const</B>, are preserved:</p>
+
+<pre>
+class Data
+{ ...
+   // Different constructors for
+   // const and non-const args.
+   Data(const Arg&amp;);
+   Data(Arg&amp;);
+   Data(const Arg*);
+   Data(Arg*);
+};
+
+Arg arg;
+const Arg const_arg;
+
+// Data::Data(Arg&amp;) called
+Handle&lt;Data&gt; dh = Handle&lt;Data&gt;::create(arg);
+Handle&lt;Data&gt; dh(arg);
+// Data::Data(const Arg&amp;) called
+Handle&lt;Data&gt; dh = Handle&lt;Data&gt;::create(const_arg);
+Handle&lt;Data&gt; dh(const_arg);
+// Data::Data(Arg*) called
+Handle&lt;Data&gt; dh = Handle&lt;Data&gt;::create(&amp;arg);
+Handle&lt;Data&gt; dh(&amp;arg);
+// Data::Data(const Arg*) called
+Handle&lt;Data&gt; dh = Handle&lt;Data&gt;::create(&amp;const_arg);
+Handle&lt;Data&gt; dh(&amp;const_arg);
+</pre>
+
+<p>Apart from the decision not to support unassigned-pointer behavior, <B>Handle</B> has syntax and behavior similar to conventional pointers. Therefore, if you are not sure what to expect from <B>Handle&lt;Data&gt;</B>, just remember how <B>Data *</B> pointers would behave in the same situation. The following code shows some of the syntax and behavior similarities using pointers and <B>Handle</B>s:</p>
+
+<pre>
+// Construction.
+Data*              dp = new Data(...);
+const Data*        cp = new Data(...);
+Handle&lt;Data&gt;       dh = Handle&lt;Data&gt;::create(...);
+Handle&lt;const Data&gt; ch = Handle&lt;Data&gt;::create(...);
+// or alternatively
+Data*              dp(new Data(...));
+const Data*        cp(new Data(...));
+Handle&lt;Data&gt;       dh(...);
+Handle&lt;const Data&gt; ch(...);
+
+// Non-const-to-const assignments.
+cp = dp; // OK.
+ch = dh; // OK.
+// Const-to-non-const assignments.
+dp = cp; // Error. Do not compile.
+dh = ch; // Error. Do not compile.
+
+// Inheritance-based polymorphism.
+// Upcast
+
+class Base {...};
+class Derived : public Base {...};
+class Other {...};
+
+// OK.
+Base*        bp = new Derived(...);
+// OK.
+Handle&lt;Base&gt; bh = Handle&lt;Derived&gt;(...);
+// Error
+Base*        bp2 = new Other(...);
+// Error
+Handle&lt;Base&gt; bh2 = Handle&lt;Other&gt;(...);
+
+// Downcast
+
+Derived*        dp = bp; // Error.
+Handle&lt;Derived&gt; dh = bh; // Error.
+Derived*        dp =
+   dynamic_cast&lt;Derived*&gt;(bp);
+Handle&lt;Derived&gt; dh = 
+   bh.dyn_cast&lt;Derived&gt;();
+
+// Functions accepting Base-based args.
+void funcA(Base*);
+void funcB(Handle&lt;Base&gt;);
+void funcC(const Handle&lt;Base&gt;&amp;);
+
+// Passing Handle&lt;Derived&gt; args.
+funcA(dp); // OK.
+funcA(dh); // OK.
+funcB(dh); // OK.
+funcC(dh); // OK.
+</pre>
+
+<H4><FONT COLOR="#000080">Implementation</FONT></H4>
+
+<p><a href="list1.htm">Listing 1</a> shows the main header for the <B>Handle</B> template. The <B>Handle</B> class implements a lightweight proxy and manages data sharing (based on reference counting). The <B>Data</B> management and reference-counting infrastructure are encapsulated in a separate <B>Counted</B> class (line 16 of <a href="list1.htm">Listing 1</a>).</p>
+<p>Lines 20-38 show the basic destructor, default constructor, copy-constructor, and assignment operator. Nothing here is new, including the well-established technique for data sharing management (functions <B>use</B> and <B>dismiss</B>).</p>
+<p>Lines 40-44 show the familiar conversion and access operators. Although I agree that providing an <B>operator Data*</B> method should not generally be recommended, real life calls for adjustments. On a few occasions I was tempted to take conversion operators out, just to put them back later to interface with third-party or legacy libraries that deal with <B>Data *</B> pointers directly.</p>
+<p>Template versions of a copy constructor and assignment operator (lines 49-68) help <B>Handle</B> manage polymorphic objects in much the same way as pointers:</p>
+
+<pre>
+class Base {...};
+class Derived : public Base {...};
+
+Derived*        derived_p;
+Handle&lt;Derived&gt; derived_h;
+// Copy-constructors called explicitly
+Base*        base_p(derived_p);
+Handle&lt;Base&gt; base_h(derived_h);
+// Copy-constructors called implicitly
+Base*        base_p = derived_p;
+Handle&lt;Base&gt; base_h = derived_h;
+// Assignments
+base_p = derived_p;
+base_h = derived_h;
+</pre>
+
+<p>These template versions work similarly to their counterparts from the basic set &#151; the only difference is that the template versions apply type conversion first. <B>cast&lt;Data&gt;</B> (lines 75-87) and <B>_cast_test</B> (lines 117-119) ensure safe static type conversion. <B>_cast_test</B> simply does not compile if the language does not support the requested type conversion.</p>
+<p>The same mechanism provides support for the <B>const</B> attribute of the <B>Data</B> type:</p>
+
+<pre>
+Handle&lt;const Data&gt; const_dh;
+Handle&lt;Data&gt; dh;
+const_dh = dh;
+</pre>
+
+<p>Since <B>Data</B> and <B>const Data</B> are different types, the line <B>const_dh = dh</B> above causes the template version of the assignment operator to be called (lines 63-68). This assignment operator calls the function <B>Handle&lt;Data&gt;::cast&lt;const Data&gt;</B>,which in turn calls function <B>Handle&lt;Data&gt;::_cast_test&lt;const Data&gt;</B>. The compiler is happy with automatic conversion of the <B>Data *</B> to the <B>const Data*</B> (line 119) and the assignment goes through. The same mechanism prevents compilation of the statement:</p>
+
+<pre>
+dh = const_dh; // Error.
+</pre>
+
+<p>There are two template copy constructors (lines 49-54 and 56-61). They are very much the same except that the second one (lines 56-61) looks more like a typo to a seasoned C++ programmer &#151; it accepts a non-constant reference. The reason for that is not immediately obvious without understanding how <B>Handle</B> objects are created. Therefore, I'll get back to the unusual copy constructor later.</p>
+<p>Two include files (<B>#include</B>d in lines 46, 47 in <a href="list1.htm">Listing 1</a>) define <B>Handle</B>'s interfaces for creation and construction. These files (<a href="list2.htm">Listings 2</a> and <a href="list3.htm">3</a>) have a lot in common. Both implement the same functionality (they create <B>Handle</B>s) and have similar layouts. Both provide template families (<B>create</B> functions and <B>Handle</B> constructors). Each file is divided into separate groups for different numbers of incoming arguments. Then, to ensure proper handling of <B>const</B> argument attribues, every group lists all possible combinations of the arguments with and without the <B>const</B> attribute.</p>
+<p>Consider the groups dealing with two arguments as an example (lines 28-45 in <a href="list2.htm">Listing 2</a> and lines 11-24 in <a href="list3.htm">Listing 3</a>). The basic functionality remains the same throughout the files &#151; create a new Handle-Counted-Data assembly using provided arguments:</p>
+
+<pre>
+// From create.h (<a href="list2.htm">Listing 2</a>)
+template&lt;class Arg1, class Arg2&gt;
+static
+Handle&lt;Data&gt;
+create(Arg&amp; arg1, Arg2&amp; arg2)
+{
+   // Implicitly creates a Handle 
+   // instance using private
+   // Handle(Counted*)
+   return new Counted(arg1, arg2);
+}
+
+// From unofficial.h (<a href="list3.htm">Listing 3</a>)
+template&lt;class Arg1, class Arg2&gt;
+explicit Handle(Arg&amp; arg1, Arg2&amp; arg2)
+: _counted(new Counted(arg1, arg2))
+{
+   _counted-&gt;use();
+}
+</pre>
+
+<p>The functionality is replicated for all possible <B>const</B> and non-<B>const</B> combinations of the two arguments (lines 39-42 in <a href="list2.htm">Listing 2</a> and lines 18-21 in <a href="list3.htm">Listing 3</a>). These sets of functions help to deliver arguments to an appropriate <B>Data</B> constructor without losing <B>const</B> attributes. For example,</p>
+
+<pre>
+class Data
+{ ...
+   // Subtly different constructors.
+   Data(const Arg1&amp;, const Arg2&amp;);
+   Data(      Arg1&amp;, const Arg2&amp;);
+};
+
+Arg1             arg;
+const Arg2 const_arg;
+
+Handle&lt;Data&gt; dh(arg, const_arg);
+</pre>
+
+<p>The object <B>dh</B> is created with <B>Handle(Arg1&amp;, const Arg2&amp;)</B> (line 19 in <a href="list3.htm">Listing 3</a>), which invokes and transfers the arguments to <B>Counted(Arg1&amp;, const Arg2&amp;)</B> (line 57 in <a href="list4.htm">Listing 4</a>), which creates an internal <B>Data</B> instance with the <B>Data</B> constructor that best matches provided argument types (line 53 <a href="list4.htm">Listing 4</a>). In the example above the constructor will be <B>Data(Arg1&amp;, const Arg&amp;)</B>.</p>
+<p>The simplified versions of the include files (<a href="list2.htm">Listings 2</a> and <a href="list3.htm">3</a>) handle up to three arguments. The source on the <I>CUJ</I> web site (<B>http://www.cuj.com</B>) handles up to four. Although the files are likely to grow (according to the maximum number of incoming arguments you need to support), they have a very regular and easy-to-follow structure. Add support for more arguments when you need it.</p>
+<p>It is the very general nature of <B>Handle</B> template constructors (<a href="list3.htm">Listing 3</a>) that makes it possible to use the following syntax:</p>
+
+<pre>
+// Creates internal Data instance
+// using Data::Data(int)
+Handle&lt;Data&gt; dh(1);
+
+// Creates internal Data instance
+// using Data::Data(int, double)
+Handle&lt;Data&gt; dh(1, 2.3);
+</pre>
+
+<p>Unfortunately, that friendly <B>Data</B> management syntax (it specifies how internal <B>Data</B> are created) overlaps with the syntax reserved for <B>Handle</B> copy-constructors. For example:</p>
+
+<pre>
+class Data
+{
+   ...
+   Data(Handle&lt;Other&gt;);
+};
+
+// Create a new Handle-Other pair (a new
+// Other instance and the first Handle
+// pointing to it).
+Handle&lt;Other&gt; oh(args);
+
+// Create a new Handle-Data pair (a new
+// Data instance and the first Handle
+// pointing to it) using
+// Data(Handle&lt;Other&gt;) constructor.
+Handle&lt;Data&gt; dh = 
+   Handle&lt;Data&gt;::create(oh);
+
+// The following four lines do not 
+// create new Handle-Data pairs (as the
+// previous lines do) but rather create
+// additional handles that point to the
+// same data of the Other type as oh
+// points to.
+
+// Uses "unusual" template 
+// copy-constructor.
+Handle&lt;Data&gt; dh1(oh);   // 1.
+// Uses basic copy-constructor.
+Handle&lt;Data&gt; dh2(dh1);  // 2.
+// Uses "unusual" template 
+// copy-constructor.
+Handle&lt;Data&gt; dh3 = oh;  // 3.
+// Uses basic copy-constructor.
+Handle&lt;Data&gt; dh4 = dh1; // 4.
+</pre>
+
+<p>Handle</B> copy constructors are partial specializations of</p>
+
+<pre>
+template&lt;class Arg1&gt; 
+Handle(const Arg1&amp;);
+template&lt;class Arg1&gt; Handle(Arg1&amp;);
+</pre>
+
+<p>declared in <B>unofficial.h</B> (lines 3-9 in <a href="list3.htm">Listing 3</a>). Therefore, the <B>dh1-dh4</B> handles shown above are merely copies of <B>oh</B>. They are created using <B>Handle</B> copy constructors and point to the data initially created together with <B>oh</B>. What's more, if <B>Other</B> is not derived from <B>Data</B>, the lines will even fail to compile.</p>
+<p>For this reason I introduced the <B>Handle::create(...)</B> functions &#151; to provide a consistent interface for construction. It is the only interface that is able to create a new <B>Handle-Data</B> pair with a <B>Data(Handle&lt;...&gt;)</B> constructor.</p>
+<p>That unfortunate inconsistency (and the only one, to my knowledge) "dethroned" the friendly <B>Handle</B> constructor-based interface and made it "unofficial." Nevertheless, I do prefer and use that syntax for its brevity and expressiveness. (Just keep in mind the special case.)</p>
+<H4><FONT COLOR="#000080">A Not-So-Conventional Pointer</FONT></H4>
+<p>Despite being similar to conventional pointers, <B>Handle&lt;Data&gt;</B> has a far stronger association with <B>Data</B> it represents. For the sake of performance and safe <B>Data</B> resource management, <B>Handle&lt;Data&gt;</B> is solely responsible for the complete life cycle of an associated <B>Data</B> instance &#151; creation, access, and deletion. Therefore, a <B>Handle&lt;Data&gt;</B> instance guarantees the existence and validity of <B>Data</B>:</p>
+
+<pre>
+Data*          dp; // Unassigned, unusable.
+auto_ptr&lt;Data&gt; ap; // Unassigned, unusable.
+Handle&lt;Data&gt;   dh; // Creates a Data instance if the
+                   // class has default constructor.
+                   // Else, simply does not compile.
+dp-&gt;modify(); // Trouble
+ap-&gt;modify(); // Trouble
+dh-&gt;modify(); // OK
+</pre>
+
+<p>The strong bond between <B>Data</B> and <B>Handle&lt;Data&gt;</B> supports the notion that objects should be declared when they are needed and, therefore, initialized. It differs from unassigned C-style declarations. This difference must be remembered when making the transition from raw pointers and <B>auto_ptr</B>s to <B>Handle</B>s.</p>
+
+<pre>
+Data*          dp1, dp2, dp3;
+auto_ptr&lt;Data&gt; ap1, ap2, ap3;
+Handle&lt;Data&gt;   dh1, dh2, dh3;
+</pre>
+
+<p>Although the three lines look quite similar, the third one is far from being a mere replacement for the first two. This line actually creates three <B>Handle&lt;Data&gt;</B> instances together with <B>Data</B> instances. Thus, it is a proper replacement for:</p>
+
+<pre>
+Data* dp1 = new Data();
+Data* dp2 = new Data();
+Data* dp3 = new Data();
+</pre>
+
+<p>I understand that under rare circumstances the initialize-when-declared rule is difficult and/or inefficient to enforce. If that is the case, the function <B>Handle::null</B> (lines 103-108 in <a href="list1.htm">Listing 1</a>) comes to the rescue:</p>
+
+<pre>
+// Create an empty Handle instance
+// No Data are associated with the 
+// handle
+Handle&lt;Data&gt; h = Handle&lt;Data&gt;::null();
+
+h-&gt;access_data(); // Trouble.
+...
+if (something)
+   h = Handle&lt;Data&gt;::create(arg1);
+else
+   h = Handle&lt;Data&gt;::create(arg2, arg3);
+
+h-&gt;access_data(); // OK.
+</pre>
+
+<p><B>Handle::null</B> returns a special <B>Handle</B> instance &#151; an analog of null pointer &#151; that is not associated with any data. The instance is potentially dangerous, as attempts to access non-existing data are obviously not valid. Therefore, the construction of the instance is explicit and highly visible. So, if you use <B>Handle::null</B> instances and face a mysterious memory corruption problem, start looking for <B>Handle::null</B> calls and then make sure that the corresponding handles are used properly. </p>
+
+<H4><FONT COLOR="#000080">Performance</FONT></H4>
+
+<p>Additional functionality carries additional performance overhead. The cost of passing a <B>Handle&lt;Data&gt;</B> to a function is roughly twice as much as simply passing a <B>Data *</B> pointer. In other words, it takes twice as long to call an empty <B>func(Handle&lt;Data&gt;)</B> as to call an empty <B>func(Data*)</B>. Most often the overhead is negligible comparing to the application's overall operational costs. For example, when sorting of an array of ten integer elements, the function <B>qsort</B> is roughly 100 times as expensive as the overhead required to pass in a pointer to the array.</p>
+<p>Also, it is often possible to pass <B>Handle</B> by reference. A <B>func(const Handle&lt;Data&gt;&amp;)</B> call does not activate the reference-counting mechanism and does not incur any additional overhead. However, <B>Handle</B> was not designed to be passed by reference as a general technique; you have to understand the implications of doing so.</p>
+
+<H4><FONT COLOR="#000080">To Be Developed</FONT></H4>
+
+<p>For various reasons I left out some functionality that I would still like to mention briefly.</p>
+
+<UL><LI>   Traditional C-style error processing (in which a function returns an error status rather than throws an exception) was one of the "features" of the original implementation <a href="#1">[1]</a>. Since then, I grew up to accept Stroustrup's arguments (<a href="#9">[9]</a> pg. 355-356) favoring the C++ exception mechanism over the traditional C-style error handling. And <B>Handle::null</B> looks sufficient to handle "exceptions that are not errors" (<a href="#9">[9]</a> pg. 374). In other words, conditions that are not "exceptional" enough to signify an error (for example, to indicate a not-found result of a find request). However, if you feel the need for Handle-based C-style error processing, take a look at the <B>counter.h</B> file posted on <I>CUJ</I> web site for a way to incorporate the functionality into Handle without performance sacrifice.</LI>
+<LI>   <B>Handle</B> in its presented form employs only the default memory allocation mechanism (global <B>new</B> and <B>delete</B>). The integration of custom allocators in the spirit of STL should be the next logical step in <B>Handle</B> development:</LI>
+<pre>
+template&lt;class Data, class Allocator =allocator&lt;Data&gt; &gt;
+class Handle {...};
+</pre></UL>
+
+<H4><FONT COLOR="#000080">Environment</FONT></H4>
+
+<p>The code for this article was developed and tested on SPARC Solaris 2.6 using gcc-2.95.2. I wouldn't be surprised if older compilers failed to support some of the newer features of the C++ Standard used by this implementation.</p>
+
+<H4><FONT COLOR="#000080">Summary of Advantages and Known Limitations</FONT></H4>
+
+<p>The <B>Handle&lt;Data&gt;</B> implementation here has several advantages over more traditional implementations. The following list is a recap of the advantages mentioned at the beginning of this article:</p>
+
+<UL><LI>   <B>Handle&lt;Data&gt;</B> is fully automatic.</LI>
+<LI>   It is safe.</LI>
+<LI>   It imposes no requirements on the <B>Data</B> class (such as modification to include a reference count).</LI>
+<LI>   It closely matches the syntax and behavior of conventional pointers.</LI></UL>
+<p>In addition, <B>Handle</B> has some advantages not yet mentioned:</p>
+<UL><LI>   <B>Handle</B> allocates no additional memory blocks to accommodate reference-counting infrastructure (unlike [<a href="#7">7</a>, <a href="#8">8</a>]). Therefore, it is quicker (allocates/deletes one memory block instead of two) and uses considerably less memory.</LI>
+<LI>   It uses one level of indirection to access both application data and reference-counting infrastructure.</LI>
+<LI>   <B>Handle</B> instances are truly lightweight objects, having a size of just one pointer (also unlike [<a href="#7">7</a>, <a href="#8">8</a>]).</LI>
+<LI>   <B>Handle</B> clears up the eternal puzzle of the <B>const Data* const</B> syntax, in which it is difficult to remember which <B>const</B> modifies what. <B>Handle&lt;const Data&gt;</B> represents a non-constant handle to constant <B>Data</B> and <B>const Handle&lt;const Data&gt;</B> is clearly a constant handle to constant <B>Data</B>. Although not terribly important, this feature helps readability.</LI>
+<LI>   Handle provides "pointer semantics" and for many applications is a safe and trouble-free replacement for conventional pointers and explicit memory management (<B>new</B> and <B>delete</B>). I often find <B>Handle</B> to be an easier and safer alternative to the standard <B>auto_ptr</B> as well.</LI></UL>
+
+<p>Following are a couple of limitations of the current design:</p>
+
+<UL><LI>   It is not capable of supporting multiple inheritance:</LI>
+
+<pre>
+class A {...};
+class B {...};
+class C : public A, public B {...};
+
+// Upcast.
+Handle&lt;A&gt; ah = Handle&lt;C&gt;(); // OK
+Handle&lt;B&gt; bh = Handle&lt;C&gt;(); // Problem
+</pre>
+</UL>
+
+<p>However, from my experience, multiple inheritance is an exceptionally rare beast. For my applications, the benefits of <B>Handle</B> generally outweigh this deficiency. However, if your situation is different, you must consider other alternatives.</p>
+
+<UL><LI>   Reference counting, as a programming concept, does not have many weak points. One of the most often mentioned is that it cannot handle cyclical references. A cyclical reference can occur when two or more objects possess reference-counted handles to each other. If the chain of references starting with any object leads back to that object, it is a cyclical reference. An example would be two instances having embedded handles pointing to each other:</LI>
+<pre>
+class A
+{ ...
+   Handle&lt;A&gt; _other;
+
+   void reference(Handle&lt;A&gt; ot) { _other = ot; }
+}
+
+Handle&lt;A&gt; a1;
+Handle&lt;A&gt; a2;
+
+a1-&gt;reference(a2);
+a2-&gt;reference(a1);
+</pre>
+</UL>
+<p>Such a system will fail to handle destruction properly. In this case, there will be a memory leak when the handles go out of scope, because neither will be able to destroy its owned instance of <B>A</B>.</p>
+<UL><LI>   In the current design I do not implement exception handling. In failing to do so, I am not being deliberately malicious. Writing exception-safe software is not a simple task. Analysis of implications caused by exceptions would likely require an article of its own. Therefore, I deliberately avoided the issue. Although I currently use the <B>Handle</B> in its presented form, I consider the implementation being a reasonably well working concept rather than an industrial-strength product. Therefore, criticism and improvements are most welcome.</LI></UL>
+
+<H4><FONT COLOR="#000080">References</FONT></H4>
+<p><a name="1"></a>[1]  Vladimir Batov. "Extending the Reference-Counting Pattern," <I>CUJ,</I> September 1998.</p>
+<p><a name="2"></a>[2]  Scott Meyers. Letter to the Editor, <I>CUJ,</I> December 1998.</p>
+<p><a name="3"></a>[3]  Scott Meyers. <I>More Effective C++</I> (Addison-Wesley, 1996).</p>
+<p><a name="4"></a>[4]  Marshall Cline. <I>C++ FAQ</I> (part 5 of 9). <B>http://www.faqs.org/faqs/C++-faq/part5</B> and <B>http://www.cerfnet.com/~mpcline/c++-faq-lite/freestore-mgmt.html#[16.22]</B>.</p>
+<p><a name="5"></a>[5]  Paul T. Miller. "Reference-Counted Smart Pointers and Inheritance," <I>C++ Report,</I> October 1999</p>
+<p><a name="6"></a>[6]  Greg Colvin. Specifications for <B>auto_ptr</B> and <B>counted_ptr</B>. comp.std.c++, posted on 25 May 1995.</p>
+<p><a name="7"></a>[7]  Kevin S. Van Horn. "Smart Pointers," <B>http://www.xmission.com/~ksvhsoft/code/smart_ptrs.html</B>.</p>
+<p><a name="8"></a>[8]  Kenneth Ngai. "A Template for Reference Counting," <I>CUJ,</I> August 1997.</p>
+<p><a name="9"></a>[9]  Bjarne Stroustrup. <I>The C++ Programming Language, Third Edition</I> (Addison-Wesley, 1997), pp. 782-785.</p>
+
+<p><i><B>Vladimir Batov</B> is a senior software engineer currently working for Raytheon Systems Company (Marlborough, MA). During his 16-year career, he has participated in various software development projects including a full-scale nuclear power station simulator, Air Traffic Control systems, and high-availability communication, monitoring, and financial systems in Unix using C/C++. Batov has written several other articles on C++ programming for </I>C/C++ Users Journal<I>. He can be reached at <B>vladimir@res.ray.com</B>.</i></p>
+
+<h4><a href="../../../source/2000/jun00/batov.zip">Get Article Source Code</a></h4>
+
+
+</blockquote></body></html>

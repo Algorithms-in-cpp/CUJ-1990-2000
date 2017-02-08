@@ -1,0 +1,293 @@
+<HTML><HEAD>
+<TITLE>June 1999/A Container for a Set of Ranges/Figure 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Figure 1:	Partial listing of range_set.h &#151; defines the range_set class</A></h4>
+<pre>
+#ifndef RANGE_SET_H
+#define RANGE_SET_H
+
+// Copyright 1998 (c) Andrew W. Phillips
+// You can freely use this software for any purpose
+// as long as you preserve this copyright notice.
+
+#include &lt;list&gt;
+#include &lt;iterator&gt;
+#include &lt;utility&gt;                  // for make_pair&lt;T1,T2&gt;()   
+#include &lt;functional&gt;               // for less&lt;T&gt;
+#include &lt;istream&gt;                  // used in &lt;&lt; and &gt;&gt;
+#include &lt;ios&gt;
+#include &lt;cassert&gt;                  // for assert()
+
+template &lt;class T, class Pred = std::less&lt;T&gt;,
+          class Alloc = std::allocator&lt;T&gt; &gt;
+class range_set
+{
+public:
+    // Define standard types for STL container
+    typedef Alloc allocator_type;
+    typedef Alloc::size_type size_type;
+    typedef Alloc::difference_type difference_type;
+    typedef Alloc::pointer pointer;
+    typedef Alloc::const_pointer const_pointer;
+    typedef Alloc::reference reference;
+    typedef Alloc::const_reference const_reference;
+    typedef Alloc::value_type value_type;
+    typedef Pred value_compare;
+    typedef value_type key_type;        // Value == key for sets
+    typedef value_compare key_compare;
+
+    // All iterators are const (mods via iterators not allowed)
+    class const_iterator;
+    typedef const_iterator iterator;
+
+private:
+    friend class const_iterator;
+
+    // Class segment: one contiguous block from the set
+    // Note: we could have just used std::pair&lt;T,T&gt; rather
+    // than creating this class, but this may have hindered
+    // future additions.
+    struct segment
+    {
+        T sfirst;           // Bottom of segment
+        T slast;            // One past the top of the segment
+
+        // Constructor
+        segment(T fst, T lst) : sfirst(fst), slast(lst) { }
+    };
+    typedef std::list&lt;segment&gt; range_t;
+    mutable range_t range_; // All segments for this range_set
+    Pred compare_;          // Object used for comparing elts
+    Alloc allocator_;       // Object used for allocating elts
+    bool increasing_;       // compare_ uses increasing order?
+
+    // not shown: functions insert_helper(), erase_helper()
+
+    T one_more(const T &amp;v) const
+    {
+        // Since we store "half-open" ranges we need a way to
+        // work out what is "one more" than a value.  If we're
+        // using less&lt;T&gt; for comparisons this is done by adding
+        // 1 but if using greater&lt;T&gt; then we must subtract.
+        return increasing_ ? v + T(1) : v - T(1);
+    }
+    T one_less(const T &amp;v) const
+    {
+        // We similarly obtain the value "before" another value.
+        return increasing_ ? v - T(1) : v + T(1);
+    }
+
+public:
+    // Iterators
+    class const_iterator :
+        public std::iterator&lt;std::bidirectional_iterator_tag,
+                             T, difference_type&gt;
+    {
+    private:
+        // Since the container does not "contain" all the actual
+        // values the iterator itself must contain the current
+        // value pointed to.  We must also store an iterator
+        // into the list of segments so we know what the
+        // valid values are.
+        T value_;                      // The value "pointed" to
+        mutable range_t::iterator pr_; // Segment with the value
+
+        // We must also access a few things in the container.
+        const range_set *pc_;          // Pointer to container
+
+        const_iterator(const range_t::iterator &amp;p,
+                       const range_set *pc, const T &amp;v)
+            : pr_(p), pc_(pc), value_(v)
+        {
+            // Check that we are creating a valid iterator
+            assert(pr_ == pc_-&gt;range_.end() || 
+                   (!pc_-&gt;compare_(v, pr_-&gt;sfirst) &amp;&amp; 
+                    pc_-&gt;compare_(v, pr_-&gt;slast)));
+        }
+
+    public:
+        friend class range_set&lt;T,Pred,Alloc&gt;;
+        const_iterator() : pc_(0)   // Default constructor
+        {
+        }
+
+        // Use compiler generated copy constructor,
+        // copy assignment operator, and destructor
+
+        const_reference operator*() const
+        {
+            // Check that the iterator is valid and
+            // that we don't dereference end()
+            assert(pc_ != 0);
+            assert(pr_ != pc_-&gt;range_.end());
+
+            return value_;
+        }
+        const_pointer operator-&gt;() const
+        {
+            assert(pc_ != 0);
+            assert(pr_ != pc_-&gt;range_.end());
+
+            return &amp;value_;
+        }
+        const_iterator &amp;operator++()
+        {
+            // Check that the iterator is valid and
+            // that we don't try to move past the end()
+            assert(pc_ != 0);
+            assert(pr_ != pc_-&gt;range_.end());
+
+            value_ = pc_-&gt;one_more(value_);
+            if (!pc_-&gt;compare_(value_,pr_-&gt;slast) &amp;&amp;
+                ++pr_ != pc_-&gt;range_.end())
+            {
+                value_ = pr_-&gt;sfirst;
+            }
+            return *this;
+        }
+        const_iterator operator++(int)
+        {
+            assert(pc_ != 0);           // Ensure iter is valid
+            const_iterator tmp(*this);
+            ++*this;
+            return tmp;
+        }
+        const_iterator &amp;operator--()
+        {
+            assert(pc_ != 0);           // Ensure iter is valid
+
+            // Check that we don't move back before start
+            assert(pc_-&gt;range_.begin() != pc_-&gt;range_.end());
+            assert(pr_ != pc_-&gt;range_.begin() ||
+                   pc_-&gt;compare_(pr_-&gt;sfirst, value_));
+
+            value_ = pc_-&gt;one_less(value_);
+            if (pr_ == pc_-&gt;range_.end() || 
+                pc_-&gt;compare_(value_, pr_-&gt;sfirst))
+            {
+                --pr_;
+                value_ = pc_-&gt;one_less(pr_-&gt;slast);
+            }
+            return *this;
+        }
+        const_iterator operator--(int)
+        {
+            assert(pc_ != 0);           // Ensure iter is valid
+            const_iterator tmp(*this);
+            --*this;
+            return tmp;
+        }
+        bool operator==(const const_iterator&amp; p) const
+        {
+            assert(pc_ != 0);           // Ensure iter is valid
+            assert(pc_ == p.pc_);       // Same container?
+
+            if (pr_ != p.pr_)
+                // Different segments so they must be different
+                return false;
+            else if (pr_ == pc_-&gt;range_.end())
+                // Both are at end so they compare the same
+                return true;
+            else
+                // The iterators are now the same if their 
+                // value_s are the same.  The following tests
+                // for equality using compare_.
+                // [Note that A == B is equivalent to
+                //  A &gt;= B &amp;&amp; A &lt;= B  or  !(A &lt; B) &amp;&amp; !(B &lt; A)]
+                return !pc_-&gt;compare_(value_, p.value_) &amp;&amp; 
+                       !pc_-&gt;compare_(p.value_, value_);
+        }
+        bool operator!=(const const_iterator&amp; p) const
+        {
+            return !operator==(p);
+        }
+    };
+
+    // Create a reverse iterator based on normal (forward) iter
+    typedef std::reverse_bidirectional_iterator&lt;const_iterator,
+                                value_type, const_reference,
+                                const_pointer, difference_type&gt;
+            const_reverse_iterator;
+    typedef const_reverse_iterator reverse_iterator;
+
+    // Constructors
+    explicit range_set(const Pred &amp;p = Pred(),
+                       const Alloc &amp;a = Alloc())
+        : compare_(p), allocator_(a)
+    {
+        increasing_ = compare_(T(0), T(1));
+    }
+
+    // not shown, range_set constructor based on member templates
+    // ...
+
+    range_set(const T *p1, const T *p2,
+              const Pred &amp;p = Pred(), const Alloc &amp;a = Alloc())
+        : compare_(p), allocator_(a)
+    {
+        increasing_ = compare_(T(0), T(1));
+
+        const_iterator last_pos = begin();
+        while (p1 != p2)
+            last_pos = insert(last_pos, *p1++);
+    }
+    range_set(const_iterator p1, const const_iterator &amp;p2,
+              const Pred &amp;p = Pred(), const Alloc &amp;a = Alloc())
+        : compare_(p), allocator_(a)
+    {
+        assert(p1.pc_ == p2.pc_);       // Same container?
+        assert(p1.pc_ != 0);            // ... and valid?
+
+        increasing_ = compare_(T(0), T(1));
+
+        const_iterator last_pos = begin();
+        while (p1 != p2)
+            last_pos = insert(last_pos, *p1++);
+    }
+
+    // Use compiler generated copy constructor,
+    // copy assignment operator, and destructor
+
+    // not shown: functions begin(), end(), rbegin(), rend(), 
+    // get_allocator(), max_size(), size(), empty(), and insert()
+ 
+    std::pair&lt;const_iterator, const_iterator&gt;
+    insert_range(const value_type &amp;ss, const value_type &amp;ee)
+    {
+        return insert_helper(range_.begin(), ss, ee);
+    }
+    std::pair&lt;const_iterator, const_iterator&gt;
+    insert_range(const const_iterator &amp;p, const value_type &amp;ss,
+                 const value_type &amp;ee)
+    {
+        assert(p.pc_ == this);          // For this container?
+        return insert_helper(p.pr_, ss, ee);
+    }
+
+    // not shown: erase() functions
+
+    const_iterator erase_range(const key_type &amp;ss,
+                               const key_type &amp;ee)
+    {
+        return erase_helper(range_.begin(), ss, ee);
+    }
+    const_iterator erase_range(const const_iterator &amp;p,
+                       const key_type &amp;ss, const key_type &amp;ee)
+    {
+        assert(p.pc_ == this);         // For this container?
+        return erase_helper(p.pr_, ss, ee);
+    }
+
+    // not shown: functions clear(), swap(), key_comp(), find(),
+    // count(), lower_bound(), upper_bound(), operator&gt;&gt;(),
+    // operator&lt;&lt;(), operator==(), operator!=(), operator&lt;(),
+    // operator&gt;(), operator&lt;=(), operator&gt;=()
+};
+#endif
+
+
+</pre>
+</BODY>
+</HTML>

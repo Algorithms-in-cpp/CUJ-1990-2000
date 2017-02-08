@@ -1,0 +1,542 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>February 1996/Building Command Lines for Child Processes</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><A href="../tocfeb.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          <FONT COLOR="#FF0000">Features</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">Building Command Lines for
+          Child Processes</FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">by Matt Weisfeld</FONT></H3>
+          
+          <HR>
+          <BLOCKQUOTE>
+               
+               <P>Most C/C++ programmers, at one time or
+                    another, have written code to perform elementary
+                    command-line parsing. This code, when dropped into a
+                    program, enables the program to interpret the command line
+                    with which it was invoked. This article is not about a
+                    command line processor, but rather, its direct opposite: a
+                    command line builder. To understand why you might need such
+                    a thing, consider the standard command-line interface
+                    provided to programs by C and C++:</P>
+
+<PRE>
+main (int argc, char **argv){};
+</PRE>
+               
+               <P><BR>
+                     If your program calls another program (say, for test
+                    purposes) or spawns a child process, it will most likely
+                    have to simulate calling that program or child process from
+                    a command line. Internal functions may also require a
+                    simulated command-line call if they use the same argv-like
+                    interface. Since building a command line is a fairly
+                    involved process, it makes sense to create a routine to
+                    automate the process. This article presents a C++ class
+                    which greatly simplifies this task.</P>
+               
+               <h4><FONT COLOR="#000080">What the OS Does</FONT></H4>
+               
+               <P>When the operating system invokes a
+                    C/C++ program it places the command line in an argument list
+                    called argv. The host system and compiler handle the
+                    construction of the argv-like structure.</P>
+               
+               <P> For example, assume that a program
+                    called test resides on a DOS machine in the directory
+                    C:\EXE. You could execute this program by typing</P>
+
+<PRE>
+test p1 p2 p3 p4
+</PRE>
+               
+               <P></P>
+               
+               <P>test's entry point looks like this:</P>
+
+<PRE>
+
+int main(int argc, char **argv, char **env) { }
+</PRE>
+               
+               <P><BR>
+                     On my machine, these parameters contain the following
+                    information:</P>
+
+<PRE>
+argc = 5
+
+argv[0] = "C:\EXE\TEST.EXE";
+argv[1] = "p1";
+argv[2] = "p2";
+argv[3] = "p3";
+argv[4] = "p4";
+argv[5] = 0;
+env[0] = "C:\COMMAND.COM";
+env[1] = "PROMPT=$p$g";
+env[2] = "PATH=C:\DOS;C:\EXE";
+env[3] = 0;
+</PRE>
+               
+               <P></P>
+               
+               <P>argv is an array of pointers to the
+                    parameters. In this case, the programmer does not become
+                    involved in filling in a value for argc or constructing argv
+                    and env. The compiler and host operating system take care of
+                    these chores.</P>
+               
+               <h4><FONT COLOR="#000080">Mimicking the OS</FONT></H4>
+               
+               <P>Let's assume that we want to call the
+                    program test from inside another program (for example, an
+                    automatic test program). The automated test program reads in
+                    the following script file:</P>
+
+<PRE>
+// an actual file read into the automatic tester
+test   p1 p2 p3 p4
+test1 a b c d
+test2  xyz
+</PRE>
+               
+               <P>The test program parses these lines,
+                    one at a time, into a string called command_buffer. (How the
+                    file is parsed is not of concern at this point.)</P>
+               
+               <P>The automated test program must
+                    convert each string into the elements necessary to build a
+                    command line, and call the specified function. To facilitate
+                    this conversion process, I've created a special command-line
+                    class.</P>
+               
+               <h4><FONT COLOR="#000080">The Command Line
+               Class</FONT></H4>
+               
+               <P>The class that converts a character
+                    string into an argv list is called command_line. This class
+                    is presented in the file cline.hpp (<A href="listing1.htm">Listing
+                         1</a>)
+. command_line has three data members:</P>
+
+<PRE>
+char *command_buffer;
+char **Cargv;
+int Cargc;
+</PRE>
+               
+               <P></P>
+               
+               <P>command_buffer has already been
+                    introduced; it holds the character string representation of
+                    the command line. In the example above, the representation
+                    originated in a script file, but it could also be hard-coded
+                    in the test program. Cargv represents the internal version
+                    of an argv list. The integer Cargc indicates the number of
+                    tokens found in the character string, analogous to the argc
+                    parameter in main. Note that command_line declares a class
+                    called child_process as a friend. I explain why later, in
+                    the discussion on using the command_line class.</P>
+               
+               <h4><FONT COLOR="#000080">Special-Purpose
+               Member Functions</FONT></H4>
+               
+               <P>Class command_line's member functions
+                    are implemented in file cline.cpp (<A href="listing2.htm">Listing
+                         2</a>)
+. Before I describe the constructors, destructor,
+                    and assignment operators, I want to prepare the way by
+                    explaining the behavior of two other member functions. The
+                    first of these is called strtokens:</P>
+
+<PRE>
+void command_line::strtokens(const char *command_string)
+</PRE>
+               
+               <P></P>
+               
+               <P>This function counts how many tokens
+                    are in the command string. Given the command string:</P>
+               
+               <P></P>
+
+<PRE>
+test p1 p2 p3 p4
+</PRE>
+               
+               <P></P>
+               
+               <P>strtokens would determine that it
+                    contained five tokens. strtokens' implementation is not
+                    shown here (full source is available on the code disk and
+                    online source &#151; see page 3 for details); in a nutshell,
+                    though, strtokens counts by finding white space boundaries
+                    between tokens. It places the token count in the data member
+                    Cargc, which is available to the other member functions in
+                    the class.</P>
+               
+               <P>The second member function I want to
+                    explain as preparation is build_command:</P>
+
+<PRE>
+void build_command(const char *command)
+</PRE>
+               
+               <P></P>
+               
+               <P>This function inputs the string
+                    command, breaks it up into an argv-like structure (char **),
+                    and then returns the result just as if it were a
+                    system-defined argv list.</P>
+               
+               <P>build_command relies upon two main
+                    data structures:</P>
+
+<PRE>
+char *command_buffer;
+char **Cargv;
+</PRE>
+               
+               <P></P>
+               
+               <P>The variable Cargv will be used later
+                    in the same manner as the standard argv. The character
+                    string command_buffer temporarily holds a single token after
+                    build_command extracts it from the input string.
+                    build_command subsequently copies this token to the
+                    appropriate place in the Cargv structure.</P>
+               
+               <P>In the token extraction process,
+                    build_command maintains two counters:</P>
+
+<PRE>
+int index;
+int pos;
+</PRE>
+               
+               <P></P>
+               
+               <P>index is the current location being
+                    filled within the Cargv structure. For example, when index
+                    is zero, build_command is extracting the first token in the
+                    input string (the actual command name) and preparing to
+                    store it in Cargv[0]. pos is just a character index into the
+                    temporary string buffer, which build_command uses as it
+                    copies tokens.</P>
+               
+               <P>Before build_command begins extracting
+                    tokens, it allocates memory for
+                    command_line::command_buffer, deleting any old memory first.
+                    build_command then calls strtokens to determine the number
+                    of tokens in the string.</P>
+               
+               <P> Note that the error handling here is
+                    very primitive, since the program exits when an error
+                    allocating memory is detected. In specific applications,
+                    this error handling technique may not be sufficient.</P>
+               
+               <P> build_command must also allocate
+                    space for the structure pointed to by command_line::Cargv.
+                    build_command uses the value in Cargc to determine how much
+                    space to get. Since Cargv points to an array of pointers,
+                    build_command must allocate enough space to hold the entire
+                    array:</P>
+
+<PRE>
+Cargv = (char **) new char * [Cargc+1];
+</PRE>
+               
+               <P><BR>
+                     It actually allocates one extra pointer space so that the
+                    array can be terminated by a null pointer. Note that at this
+                    point, only the space for the Cargv pointers is allocated;
+                    the space for the individual parameters has not yet been
+                    obtained.</P>
+               
+               <P> If all is well, build_command then
+                    begins picking off tokens and stuffing them into the Cargv
+                    structure. For each token encountered build_command
+                    allocates sufficient memory to hold the token, sets one of
+                    Cargv's pointers to the memory and copies the token over.
+                    Again, if at any point a memory allocation fails,
+                    build_command kills the program with an abrupt message.</P>
+               
+               <P> This process continues until the null
+                    character at the end of command_string is encountered. At
+                    this point, the final null pointer is placed in the final
+                    Cargv pointer:</P>
+
+<PRE>
+Cargv[Cargc] = NULL;
+</PRE>
+               
+               <P></P>
+               
+               <h4><FONT COLOR="#000080">Construction,
+               Destruction, and Assignment</FONT></H4>
+               
+               <P>The command_line class has three
+                    constructors. All three have one thing in common &#151; they
+                    acquire memory for the string command_buffer and for the
+                    command-line structure itself. This is important because
+                    when build_command is called, it assumes that memory has
+                    already been allocated to these structures. Thus,
+                    build_command deletes whatever is there before it attempts
+                    to acquire new memory to construct the new command line.
+                    This slightly convoluted logic would not be necessary if
+                    build_command was only called once; however, as I show
+                    later, it is possible to reassign a new command line to an
+                    already existing command_line object.</P>
+               
+               <P> The first of the constructors is the
+                    default constructor. This constructor puts an ASCII NUL in
+                    command_buffer and a null pointer in Cargv[0]. The
+                    initialization constructor takes a character string as input
+                    and calls build_command with this string as a parameter. The
+                    copy constructor takes a command_line object as input and
+                    uses its command_buffer as the parameter to build_command.
+                    In all cases, the value for Cargc is assigned to 0 and then
+                    subsequently set to its proper value when build_command
+                    calls strtokens. Use of these constructors is illustrated
+                    later in this article.</P>
+               
+               <P> The destructor simply deletes all the
+                    memory acquired by the command_line object. This includes
+                    the memory for command_line: Cargv and the command_buffer.</P>
+               
+               <P> The remaining two member functions
+                    are overloaded assignment operators. In the first case,
+                    operator= inputs a character string and passes it as an
+                    argument to build_command. In the second case, operator=
+                    inputs a command_line object and passes its command_buffer
+                    in the call to build_command. These two functions are
+                    analogous to the initialization and copy constructor, with
+                    the exception that they replace already existing
+                    command_line objects. This is why I use a strcpy in these
+                    functions. The following illustrates how these assignments
+                    are used:</P>
+               
+               <P></P>
+
+<PRE>
+//a character initialization
+A = "hello 1 2 3";
+// an object initialization
+B = A;
+</PRE>
+               
+               <h4><FONT COLOR="#000080">Using the
+               Command-Line Class</FONT></H4>
+               
+               <P>As an example of how to use the
+                    command-line class, I return to the child process scenario
+                    mentioned in the introduction. I won't go into detail about
+                    how to create a child process &#151; the reference at the end of
+                    this article [<A href="#REF1">1</a>]
+ provides a good source
+                    on this subject. Here I concentrate on the command_line
+                    class. Since MS-DOS provides the simplest means of creating
+                    a child process (albeit also the least functional) I use the
+                    MS-DOS spawnv command in this example. The intent here is to
+                    issue a simple line of code that will execute the child
+                    process and return its status. As illustration, consider the
+                    following example:</P>
+
+<PRE>
+int status;
+child_process A("hello 1  2 3");
+// execute the child process and return its status
+status = A;
+</PRE>
+               
+               <P><BR>
+                     The class child_process (not shown, but on the code disk)
+                    contains three constructors, a destructor, and two
+                    assignment operators that correspond to the similar
+                    constructs in the command_line class. Its private interface
+                    contains two items:</P>
+
+<PRE>
+command_line *CLINE;
+char command_extension[100];
+</PRE>
+               
+               <P></P>
+               
+               <P>The first item is a pointer, the
+                    command_line used to spawn the child process. The second is
+                    a buffer, which I explain shortly. All three child_process
+                    constructors perform the same task; they create a
+                    command_line object and initialize the buffer
+                    command_extension (see <A href="listing3.htm">Listing 3</a>)
+.
+                    A call to the default constructor looks like this:</P>
+               
+               <P></P>
+
+<PRE>
+CLINE = new command_line;
+command_extension[0] = NULL;
+</PRE>
+               
+               <P></P>
+               
+               <P>The child_process destructor deletes
+                    the memory held by the CLINE object.</P>
+               
+               <P>The child_process assignment operators
+                    simply reassign the CLINE object by calling build_command
+                    and returning the this pointer. Note that the command_line
+                    assignment operators are not used here. As illustration,
+                    consider the character assignment operator=:</P>
+
+<PRE>
+child_process&amp;
+child_process::operator=(
+    const char *ptr) {
+CLINE-&gt;build_command(ptr);
+return *this;
+}
+</PRE>
+               
+               <P><BR>
+                     child_process's three remaining functions facilitate
+                    execution of the child process. To spawn a child process, a
+                    command must include the directory path to the executable as
+                    well as the file extension; in the case of MS-DOS this
+                    extension is .exe. Function add_extension uses strcpy and
+                    strcat to take a command string such as "hello"
+                    and turn it into "c:\bin\hello.exe". I define PATH
+                    in the child_process .hpp file (on the code disk). Different
+                    applications may require this value to be read in from a
+                    file, as in the automated testing tool example. Also be
+                    aware that this path will change based on executable
+                    location and operating system.</P>
+               
+               <P> The function exec_function calls
+                    add_extension and then performs the spawn command.</P>
+               
+               <P> The final function is another
+                    overloaded operator which calls exec_function:</P>
+
+<PRE>
+child_process::operator const int
+    () {
+int status;
+    status = exec_function();
+    return(status);
+}
+</PRE>
+               
+               <P></P>
+               
+               <P>This code allows for the simple syntax
+                    described at the beginning of this section. Note that any
+                    class that utilizes the command_line class must be declared,
+                    in command_line, as a friend. In this case being a friend
+                    allows the class child_process to access the private
+                    interface of command_line.</P>
+               
+               <h4><FONT COLOR="#000080">Testing the Command
+               Line Class</FONT></H4>
+               
+               <P>I've written a test program (<A href="listing4.htm">Listing
+                         4</a>)
+ that utilizes the child_process class just
+                    described to test the command_line class. This program tests
+                    all three command_line and child_process constructors as
+                    well as the child_process assignment operators. Note that
+                    the command_line class is transparent to the programmer,
+                    being encapsulated in the child_process class. Consider the
+                    first example:</P>
+
+<PRE>
+child_process A("hello 1");
+status = A;
+</PRE>
+               
+               <P><BR>
+                     This code defines the child_process object and then
+                    executes the child process, returning the status. In this
+                    case the programmer has no knowledge that a command line is
+                    even being constructed. Considering all the overhead
+                    involved in executing a child process, this code is more
+                    intuitive and saves a lot of typing.</P>
+               
+               <P> Some may not agree that this approach
+                    is more intuitive. As always, overloading operators has
+                    drawbacks in that it creates potential for confusion.
+                    However, if the logic behind the design is understood, the
+                    overloaded operators can provide much added functionality.</P>
+               
+               <h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+               
+               <P>The uses for a command line obviously
+                    depend on the specific applications. I developed these
+                    classes in an effort to write a portable, automated test
+                    program. Although the child process presented here dealt
+                    specifically with the MS-DOS spawn command, I've used the
+                    command_line code itself on multiple UNIX platforms using
+                    the g++ compiler and openVMS on the Alpha. To use another
+                    operating system, replace the code using the spawn with the
+                    appropriate code for the host operating system.</P>
+               
+               <P>In the automated testing tool, I found
+                    it helpful to use a command-line interface with the internal
+                    functions as well. In any event, these classes make creating
+                    a command line a much simpler process.</p>
+               
+               <h4><FONT COLOR="#000080">References and
+               Further Reading</FONT></H4>
+               
+               <P>[<A name="REF1">1</a>]
+ Matt A.
+                    Weisfeld. "A Portable Library for Creating Child
+                    Processes," Dr. Dobb's Journal, vol. #200, p. 46.</P>
+               
+               <P> [<A name="REF2">2</a>]
+ Ted Faison.
+                    Borland C++ 3.1 Object-Oriented Programming, 2nd ed. (SAMS
+                    Publishing, 1992).</P>
+               
+               <P> [<A name="REF3">3</a>]
+ James O.
+                    Coplien. Advanced C++ (Addison-Wesley, 1992).</P>
+               
+               <P> [<A name="REF4">4</a>]
+ Matt A.
+                    Weisfeld. Developing C Language Portable System Call
+                    Libraries (John Wiley &amp; Sons Inc, 1994).</P>
+               
+               <P><I>Matt Weisfeld is a Programmer
+                    Engineer at the Allen-Bradley Co. in Cleveland, Ohio. He has
+                    published several programming articles over the past few
+                    years, as well as a book, Developing C Language Portable
+                    System Call Libraries, published by John Wiley &amp; Sons.
+                    Matt can be reached via the Internet at
+                    matt.weisfeld@cle.ab.com or on CompuServe [71620,2171].</I></P>
+
+<h4><a href="../../../source/1996/feb96/weisfeld.zip">Get Article Source Code</a></h4>
+
+          </BLOCKQUOTE>
+     </BODY>
+</HTML>

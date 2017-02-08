@@ -1,0 +1,95 @@
+<HTML>   
+     <HEAD>
+<TITLE>October 2000/Optimizing Substring Operations in String Classes</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tococt.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Optimizing Substring Operations in String Classes</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Todd Niec</FONT></H3>
+
+<BLOCKQUOTE>
+<p>If reference counting is good for operations on whole strings, it should be good for operations on substrings too.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+<H4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>Reference counting is a widely used technique for optimizing string classes. With reference counting, separate string objects that represent the same text can share a single copy of the string text. This may appear to be an effort to save memory by reducing the number of copies of the text stored in the program. However, reference counting is primarily a time saver, because it reduces the number of times the string text needs to be copied. The time required to copy the string text is proportional to the text length, so copy operations for long strings can be very costly. Short strings may also copy slowly because of the time needed to allocate memory for the copy. Avoiding unnecessary string copy operations can produce great improvements in performance.</p>
+<p>Reference counting eliminates the cost of copying for four types of operations <a href="#note1">[1]</a>:</p>
+
+<UL><LI>   assignment of one string object to another
+<LI>   construction of a new string object as a copy of another
+<LI>   passing a string object to a function
+<LI>   return of a string object from a function</UL>
+
+<p>These are the only operations that actually benefit from reference counting in a typical design. However, these four operations occur so frequently that string-related algorithms usually perform substantially faster with reference counting.</p>
+<p>The substring optimization presented here allows a fifth operation, the creation of a substring, to benefit from reference counting. This optimization produces a substantial increase in the performance of algorithms that perform substring operations. As with reference counting, the value of substring optimization does not come from improving many kinds of operations, but in improving a frequently used operation. A great deal of string processing work involves the formation of substrings; examples include trimming spaces from strings, parsing strings, and searching for words in strings. Furthermore, using substrings directly (instead of alternative means to avoid copying) can often simplify an algorithm. In such a case, a low cost substring operation provides freedom to write simpler code that might be unacceptable with inefficient substring operations.</p>
+
+<H4><FONT COLOR="#000080">Design</FONT></H4>
+
+<p>In a reference counted string class, a string object does not store the string text directly. Instead, the string object stores a pointer to a string buffer object, which stores a reference count and a pointer to the string text (see <a href="fig1.htm">Figure 1</a>). The string represented by a string object can be copied to another object rapidly. This is simply done by copying the pointer to the string buffer and then adjusting the string buffer object's reference count. The two string objects end up sharing a single string buffer and a single copy of the text (see <a href="fig2.htm">Figure 2</a>). Since the string text is not actually copied, this operation is fast regardless of the string length. Note that in some designs, the string buffer object and the string text are stored in a single block of dynamically allocated memory. This approach reduces the number of memory allocations by half, which results in greater speed. The string classes presented in this article do not use this design, because the code would be harder to understand. However, this approach could be applied to the substring-optimized string class to further improve its speed.</p>
+<p>When the traditional reference-counted string forms a substring, the string object containing the substring cannot share the text used by the original string. Instead, a new string buffer object is created for the substring, and the substring text is copied into it. <a href="fig3.htm">Figure 3</a> shows this occurring when the word <B>"Users"</B> is extracted from <B>"C++ Users Journal"</B>. This copy must be made because in the traditional reference-counted string design the string objects represent the complete text stored by the string buffer object. The substring-optimized design relaxes this restriction so that string objects can represent a portion of the text stored in the string buffer object.</p>
+<p>The optimized string objects have two additional data members that specify the string object's current value as a substring of the text stored by the string buffer object. For example, the string class is declared as:</p>
+
+<pre>
+class OptStr
+{
+   int Off; // Offset to string.
+   int Len; // String length.
+   StrBuf *BufPtr; // -&gt; string buffer.
+   ...
+};
+</pre>
+
+<p>The <B>Off</B> and <B>Len</B> data members indicate the offset to and length of the string object's text within the entire text stored by the string buffer object. These additional data members allow an original string and its substring to share the same string buffer (as shown in <a href="fig4.htm">Figure 4</a>). For consistency the string class always maintains these data members. If a string object stores a value that was not created as a substring, <B>Off</B> will be set to zero, and <B>Len</B> will be set to the string's length, indicating that the substring to be used is the entire string.</p>
+<p>Most of the operations in this string class are nearly identical in implementation to those of regular reference-counted string classes, except that they must also set <B>Off</B> and <B>Len</B> correctly. For example, the assignment operator increments the source string buffer's reference count, decrements the destination string buffer's reference count, and alters the destination string object to use the source string buffer. This much is the same as in a regular reference-counted string class. However, the assignment operator must also copy the source <B>Off</B> and <B>Len</B> data members to the destination string object so that the destination string object uses the same portion of the string text as the source string object:</p>
+
+<pre>
+OptStr &amp;
+OptStr::operator = (const OptStr &amp;Src)
+{
+   Src.BufPtr-&gt;Inc();
+   BufPtr-&gt;Dec();
+   BufPtr = Src.BufPtr;
+   Len = Src.Len;  // Added.
+   Off = Src.Off; // Added.
+   return *this;
+}
+</pre>
+
+<p>The majority of member functions affected by the optimization simply need to be adjusted to account for the extra offset to the start of the string text. For example, the index operator (<B>operator []</B>) has to add the offset stored in <B>Off</B> to the index value specified in the parameter in order to reference the correct character in the string:</p>
+
+<pre>
+const char &amp;
+OptStr::operator [] (int Ndx) const
+{
+   return BufPtr-&gt;StrPtr[Off+Ndx];
+}
+</pre>
+
+<p>Although the optimization affects the code in numerous string member functions, the required changes are all minor and fairly obvious. Only the substring operation is greatly affected, and it is actually made considerably simpler. The version without optimization has to do a great deal of work. It has to check if the string buffer object is currently shared with other string objects. If so, it allocates a new string buffer object that is not currently shared. Then the non-optimized version has to locate the substring text and copy that text to the new string buffer. As shown in <a href="list1.htm">Listing 1</a>, the optimized substring operation is substantially simpler. This procedure simply adjusts the length and offset data members so that they specify the substring requested.</p>
+<p>Note that the function shown in <a href="list1.htm">Listing 1</a>, <B>MakSubStr</B>, changes the specified string object to contain a substring of its current value. This is not typical substring function behavior, which is to return a new object containing the substring. However, this method is more efficient, and the more common substring function can then be implemented using this function, much like <B>operator+</B> can be implemented using <B>operator+=</B>.</p>
+
+<H4><FONT COLOR="#000080">Disadvantages to the Optimization</FONT></H4>
+
+<p>One disadvantage to the optimization is that most non-substring operations will be slowed down slightly due to the extra time needed to access <B>Len</B> and <B>Off</B>. In addition, the string objects are larger due to the extra data members. This increased size is not likely to significantly increase the memory usage of a typical program. However, the increased size does have secondary effects. Larger string objects take longer to copy when passed or returned by value and may cause more virtual memory paging and memory cache misses. I have run profiling tests <a href="#note2">[2]</a> using code that would reap no advantage from the substring optimization. The string class with substring optimization ran at worst one percent slower than the non-optimized class. Thus, I believe that the extra overhead associated with the optimized class is not very significant.</p>
+<p>Another disadvantage is that the optimization may waste dynamically allocated memory. This problem occurs because a string buffer object tracks only the number of strings that use it, not the portion of the text that is being used. Thus, you can create cases where a large portion of the stored text is not being used. For example, this will occur when a program forms a long string, then copies a short substring of this string into a second string object, and then destroys the first string. In this case only the text used by the sub-string actually needs to be stored, but the entire text of the original string ends up being stored. Note that it is not possible to construct algorithms that cause the wasted space to unexpectedly expand, provoking subsequent allocation failures. The wasted space always consists of memory that was formerly being used to store legitimate string text and simply has not been released as early as possible.</p>
+<p>A final disadvantage is that reference counting can be very inefficient in thread-safe designs. Shared string data can be shared across threads, forcing the string class to synchronize access to the shared information, including the reference count. Synchronization can add substantial overhead to operations that would otherwise be very rapid, and this overhead can often exceed the savings provided by reference counting. Herb Sutter discusses this issue thoroughly in his article <a href="../../17.06/sutter/sutter.htm">"Optimizations That Aren't (In a Multithreaded World)"</a> (<I>CUJ</I>, June 1999). Since this problem affects all forms of reference counting, it should not influence the decision between the optimization and regular reference counting. However, with a multithreaded program, you might consider alternatives that do not employ reference counting.</p>
+
+<H4><FONT COLOR="#000080">Advantages to the Optimization</FONT></H4>
+
+<p>In my profiling studies, the optimized string performed substantially faster than the regular string in algorithms that performed substring operations. For example, the optimized class completed a word extraction test in less than 25 percent of the time. In algorithms that did not use substrings, the optimized string performed at worst one percent slower than the non-optimized string. This suggests that the optimization can be considered as an alternative to the regular reference-counting design for algorithms that will be performing frequent substring operations. Since the optimized class is never substantially slower than the non-optimized class, there should be little concern that the optimized class will ever produce worse results than the non-optimized class.</p>
+<p>A secondary benefit to the optimization is that it gives the programmer freedom to write simpler and more expressive code. There are many cases where algorithms have been coded to avoid forming substrings for the sake of efficiency. These algorithms can be complex and error prone. Rewriting these algorithms to use a low-cost substring operation might not reduce execution time, but it can make the code simpler and more reliable.</p>
+
+<H4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="note1">[1]</a>  Technically, constructing a new string object from another, passing a string object, and returning a string object all invoke the same operation, namely, a call to the copy constructor. However, I differentiate between them because, as far as the programmer is concerned, they perform very different actions.</p>
+<p><a name="note2">[2]</a>  These profiling tests are available with the optimized string class at <B>www.cuj.com/code</B>.</p>
+
+<p><i><B>Todd Niec</B> has spent the last decade working for Ware Unlimited Inc. where he designs and implements the Novaware accounting system. He can be reached at <B>toddniec@wareunl.com</B>. He can also be found in the C++ topic area at <B>www.experts-exchange.com</B>, a website where he and other experts answer questions on a variety of topics for free.</i></p>
+
+<h4><a href="../../../source/2000/oct00/niec.zip">Get Article Source Code</a></h4>
+</blockquote></body></html>

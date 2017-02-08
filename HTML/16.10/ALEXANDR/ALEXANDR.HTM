@@ -1,0 +1,159 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>October 1998/Compound Iterators for STL</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tococt.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Compound Iterators for STL</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Andrei Alexandrescu</FONT></H3>
+<BLOCKQUOTE>
+<p>Iterators can hide a multitude of sins. They can even let you define arbitrary slices through containers of containers.</p></BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>The C++ STL (Standard Template Library) is a powerful library, and a classic example of scientific design. One of the things that makes the STL powerful is a property known as <I>orthogonal decomposition</I>. What that means in plain terms is that the algorithms of STL have been made independent of the containers upon which they operate. Say you want to design <I>m </I>containers (such as lists, vectors, and the like) and <I>n</I> algorithms that apply to those containers. The brute force approach would lead to <I>m * n</I> algorithm implementations, because each algorithm would have to be adapted to work with each container type. STL gets around this requirement.</p>
+<p>The STL approach is to provide an abstraction for access to contained objects &#151; and here is where iterators come in. Thanks to iterators, the algorithms have no knowledge about how the containers are implemented. The container interfaces presented to the algorithms are expressed only in terms of those iterators. This enables STL to define roughly <I>n</I> containers, <I>n</I> iterators, and <I>m</I> algorithms to achieve about <I>m * n </I>applicable combinations. And this explains why iterators are so important to STL.</p>
+<p>This approach is what makes STL so open-ended, and it encourages developers to create extensions. If you want to add a generic algorithm to STL, you have only to adhere to some straightforward mathematical rules. Your algorithm will then apply to any iterator that obeys those rules, and most likely to built-in pointers as well. If you want to add a container of your own making, just define an iterator for it. An entire class of STL algorithms will then work with your container.</p>
+<p>But despite all the benefits of orthogonal decomposition, it breaks down when it comes to solving certain kinds of problems. If, for example, you create a compound container (say, a container of containers), it will probably not work with all those great STL algorithms &#151; at least, not without a little help. The standard iterators defined for the outer container may not return the kind of object the algorithms expect. What is needed is a kind of compound iterator. In this article I will show a way to implement such an iterator. But first, I will demonstrate the need for compound iterators with an example problem. </p>
+
+<h4><FONT COLOR="#000080">A Typical Problem</FONT></H4>
+
+<p>Say you have to deal with multi-dimensional arrays and, using STL, you express them as vectors of vectors <a href="#1">[1]</a>:</p>
+
+<pre>
+typedef std::vector&lt;something&gt; row;
+typedef std::vector&lt;row&gt; matrix;
+typedef std::vector&lt;matrix&gt; cube;
+</pre>
+
+<p>So far, so good. If you want to process matrix elements, you can iterate through rows, like this:</p>
+
+<pre>
+matrix Var;
+// ...
+// Compute the sum of the elements
+// for the third row of the matrix
+
+double Sum = std::sum(Var[2].begin(), Var[2].end());
+
+// Call the do_something() function for each object
+// on the last row of the matrix 
+
+std::for_each(Var.back().begin(), Var.back().end(), do_something)
+</pre>
+
+<p>This is both elegant and powerful. But notice that if you want to process columns of data instead of rows, you have no means to do that in terms of iterators. While you can use STL algorithms (such as <B>fill</B>, <B>sum</B>, <B>accumulate</B>, <B>sort</B>, and so on) to process rows in the matrix you defined, when it comes to dealing with columns of data, you are completely left in the dust. For instance, you won't be able to express matrix multiplication in terms of iterators, and thus you won't be able to use <B>std::inner_product</B>. You cannot use even your own code that multiplies matrixes with vectors, although conceptually it amounts to the same thing. It would be helpful to put STL's algorithms to work by introducing an iterator able to move vertically instead of horizontally.</p>
+<p>This kind of problem may also appear in the business-rules layers of multi-tiered client/server architectures. Usually the database API returns recordsets as matrices of some variant type, a tagged union able to represent all the types of data in the database. The middle tiers typically perform non-trivial calculations on the data that they receive, then forward the results to clients. Again, since column-wise calculations are quite common in these middle tiers, it would be helpful to have an iterator that could move vertically.</p>
+
+<h4><FONT COLOR="#000080">Compound Iterators</FONT></H4>
+
+<p>An approach to solving this problem is to define an iterator that is able to move through containers of containers. To define terms, I'll name the compound container as the outer container and the contained one as the inner container. It must be possible to initialize the compound iterator with a row and column position in the outer container, and to iterate down that column by changing the row.</p>
+<p>To make this iterator as general as possible, it should be expressed not in terms of containers, but in terms of other iterators. This way it will work as an iterator adaptor, just like <B>reverse_iterator</B>. (An iterator adaptor is a functional adaptation to a "real" iterator. The adapter is constructed by using the real iterator as a template argument. Thus, iterator adapters are not tied to specific containers.) One way to form the compound iterator is to parameterize it by the types of both the outer container's iterator and the inner container's iterator. Another candidate for a template parameter would be the "offset type" &#151; the type of the variable used to express the column offset within the inner container.</p>
+<p><A HREF="list1.htm">Listing 1</A> shows the implementation of the template class <B>compound_iterator</B>. It is parametrized by the type referenced, the type of the outer iterator, and the type of the column offset. At first it seems odd that the adaptor is completely unaware of the inner iterator/container type. I noticed that parametrizing the adaptor by offset type is much more versatile than parametrizing it by inner iterator type. The offset type will be usually an integral type, but it can become any ordered type if you want the inner container to be a <B>map</B>, for instance. The compound iterator definition provides some default arguments that are useful in typical instantiated contexts, as discussed below.</p>
+
+<h4><FONT COLOR="#000080">Design Issues</FONT></H4>
+
+<p>Although the implementation may seem trivial, I had to address some subtle problems in the course of its development. First, the iterator needed to be integrated with STL, and that's why I derived it from <B>std::iterator&lt;std::random_access_iterator_tag, T&gt;</B>. Iterator tags (which are beyond the scope of this article) are an ingenious mechanism that allows some STL algorithms to be tailored to the specific capabilities of each iterator type. This derivation tells the client algorithms that the class just introduced is an iterator that supports random access (i.e., indexed access, like pointers) and accesses elements of type <B>T</B>.</p>
+<p>The outer iterator must be random as well. This limitation is due to the compiler I use (MSVC++ 5.0). It does not support partial template specialization and thus implicitly does not support the standard template class <B>iterator_traits</B>. If you have a compiler that does support <B>iterator_traits</B>, you may want to use <B>std::iterator_traits&lt;outer_iter&gt;::iterator_category</B> as the base class.</p>
+<p>Another issue is compatibility with native types. A well-behaved iterator adaptor should be able to accept native pointers as input arguments. To achieve this, I consistently relied on the indexed-access operator (<B>operator[]</B>) which is supported by native pointers, indexed containers, and maps.</p>
+<p>Handling the end value of these iterators is another important design problem. For simple vectors (contiguous zones of memory) both C and C++ guarantee that a one-past-the-end pointer can be defined, which can be used in pointer comparisons, but not dereferenced. This is obviously not true for user-defined iterators, and their implementor should provide a way for demarcating the end of their range. That's another reason I chose to represent the iterator state with the outer iterator and a column offset. Had I used a pair of iterators instead, I would have run into a problem: when the outer iterator reached the end value, the inner iterator would have been the undefined result of adding something to that end value. (A much more important benefit of the outer iterator/offset state representation is the ability to use maps as inner containers.)</p>
+<p>To contain the iterator state, I used STL's template class <B>pair</B>, leveraging its assignment and comparison operators. I could have used protected inheritance instead of aggregation &#151; I think in this case either way is correct, but the inheritance could have been a bit confusing.</p>
+
+<h4><FONT COLOR="#000080">Usage</FONT></H4>
+
+<p>Because it has quite a few template arguments, the compound iterator may seem awkward to use at first. But in a concrete application you will have only a few incarnations of the iterator, which can be made less cumbersome by laying down a few typedefs. If instantiated with all default arguments, the compound iterator can be used within multidimensional arrays expressed as pointers to pointers, as in the short sequence of code below:</p>
+
+<pre>
+extern size_t ROWS, COLUMNS;
+double **Matrix = 0;
+// Allocate and fill the matrix
+// having ROWS rows and COLUMNS columns
+// ...
+// Sum the elements for the 5th
+// column of the matrix
+
+double Sum =
+  std::sum(compound_iterator&lt;double&gt;
+           (Matrix, 5),
+compound_iterator&lt;double&gt;
+  (Matrix + ROWS, 5));
+</pre>
+
+<p>If instantiated with two default arguments, <B>compound_iterator</B> can be used within fixed multidimensional C arrays. The following demonstrates the convenience of typedefs:</p>
+
+<pre>
+const size_t ROWS, COLUMNS;
+typedef
+compound_iterator&lt;double,
+  double (*) [COLUMNS]&gt; matrix_iter; 
+
+double Matrix[ROWS][COLUMNS];
+
+// Fill the matrix ...
+// Sum the elements for the 5th
+// column of the matrix 
+
+double Sum =
+  sum(matrix_iter(Matrix, 5),
+matrix_iter(Matrix + ROWS, 5));
+</pre>
+
+<p>The most interesting usage is to iterate into an STL random-accessible container (<B>vector</B> or <B>deque</B>) that in turn contains other containers. The only requirement for the inner container is to define <B>operator[](offset_type)</B>. You can thus use <B>vector</B>s, <B>deque</B>s, and <B>map</B>s as the inner container. (The maps are especially appealing for some math-oriented applications that use sparse matrices). Here is a simple fragment featuring compounded vectors:</p>
+
+<pre>
+typedef std::vector&lt;double&gt; row;
+typedef std::vector&lt;row&gt; matrix;
+typedef
+compound_iterator&lt;double,
+  matrix::iterator&gt; col_iterator;
+typedef
+compound_iterator&lt;const double,
+  matrix::const_iterator&gt;
+    const_col_iterator;
+typedef
+compound_iterator&lt;double,
+  matrix::reverse_iterator&gt;
+    reverse_col_iterator;
+typedef
+compound_iterator&lt;const double,
+  const_reverse_iterator&gt;
+    const_reverse_col_iterator;
+
+// define a matrix having 10 rows and 5 columns
+matrix Matrix(10, row(5));
+
+// Fill the matrix
+// ...
+// Sum the elements for the 5th
+// column of the matrix
+double Sum =
+  std::sum(
+    col_iterator(Matrix.begin(), 5),
+    col_iterator(Matrix.end(), 5));
+</pre>
+
+<p>All these applications are not limited to the two-dimensional world; you can use compound iterators combined with regular ones for iterating on any orthogonal direction in an n-dimensional space. In contrast, the regular iterators introduced by STL containers provide only a single direction.</p>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>The template definition for <B>compound_iterator</B> would have been greatly simplified and more elegant if I could have used the template class <B>iterator_traits</B>. Using <B>iterator_traits</B> would have allowed me to reduce the number of template parameters to two while taking advantage of richer type information.</p>
+<p>Implementing this template class proved to me that generic, reusable code is a bit more difficult to write than the same amount of "simple," specialized code. Yet once the abstraction is in place, your effort is greatly rewarded in terms of ease of use and versatility. I think the compound iterators are a valuable aid in working with multidimensional arrays, no matter how you express them.</p>
+
+<h4><FONT COLOR="#000080">Note</FONT></H4>
+
+<p><a name="1"></a>[1] Of course, a real-world implementation would derive from the STL classes and add more functionality, but let's stick to typedefs for simplicity.</p>
+
+<p><i>Andrei Alexandrescu is an Associate in the Components Group of Micro Modeling Associates. He may be reached at <B>alexandrescua@micromodeling.com</B>.</I></p>
+
+<h4><a href="../../../source/1998/oct98/alexandr.zip">Get Article Source Code</a></h4>
+
+
+</BODY>
+</BLOCKQUOTE>
+</BODY>
+</HTML>

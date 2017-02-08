@@ -1,0 +1,345 @@
+<HTML>   
+     <HEAD>
+<TITLE>June 1999/Uncaught Exceptions</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocjun.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Uncaught Exceptions: Phantom MenaC++</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Bobby Schmidt</FONT></H3>
+
+<BLOCKQUOTE>
+<p>The keyword static has its notorious foibles. So too does const. Mix in some Microsoft-specific behavior and Bobby has much to explain.</p>
+</BLOCKQUOTE>
+<HR>
+<BLOCKQUOTE>
+
+<p><i>Copyright &copy; 1999 Robert H. Schmidt</i></p>
+<p>By the time you read this, <I>Star Wars Episode I</I> will be upon us. To get in the mood, I just downloaded the 25 MB trailer from Apple's web site last night. Hard to believe that when the last episode opened I was what, 21? Harder still to believe that I thought the original Star Wars looked dumb in the 1977 TV ads; the only thing that caught my attention was the Vivaldi music in the background.</p>
+<p>During my month off playing house move, I received a disturbance in the Force from a reader who shall remain quite anonymous. His letter began:</p>
+<p>"I have been trying to write the below listed program for two weeks and can't seem to get on the right track. I am new to C++ programing. I got this program out of a magazine and I need your help. If you could <I>please</I> write out this program for [me] to see where I am going wrong I would appreciate the help."</p>
+<p>I guess Usenet was busy that day, so he mailed me instead. Such a pity that I somehow never found time to write back. Had I answered him, imagine the irony &#151; not to mention the opportunity for infinite publishing recursion &#151; if the magazine he got the original program from was ours.</p>
+
+<h4><FONT COLOR="#000080">Deep Blue</FONT></H4>
+
+<h4><FONT COLOR="#000080">Q</FONT></H4>
+<p>If a computer blue-screens in a forest, but no one is around to witness it, is the behavior a bug? Thanks. &#151; J. Reno</p>
+
+<h4><FONT COLOR="#000080">A</FONT></H4>
+
+<p>While philosophers and product support people are somewhat divided on the answer, I think most would consider the behavior an undocumented feature, not a bug. Left undecided: if the computer blue-screens after being hit by a falling tree, does it make a sound?</p>
+
+<h4><FONT COLOR="#000080">Weak Link</FONT></H4>
+
+<p> I hope you can answer this for me. Using VC++ 5 and 6, I've created a <B>.cpp</B> module that contains the definition</p>
+
+<pre>
+const unsigned char DTMF_9[] =
+    {
+    // ...
+    };
+</pre>
+
+<p>In the header file for this module the prototype is</p>
+
+<pre>
+extern const unsigned char DTMF_9[];
+</pre>
+
+<p>The program compiles but the linker complains that</p>
+
+<pre>
+ModemIO.obj : error LNK2001: unresolved
+    external symbol "unsigned char const
+     * const  DTMF_9" (?DTMF_9@@3QBEB)
+</pre>
+
+<p>The linker appears to be looking for the wrong thing. If I remove <B>const</B> from both the definition and prototype the link is successful. Is this a problem in VC++ or is there something about <B>const</B> I don't understand?</p>
+<p>Obviously I can work around this, but I'd like to understand what is going on. &#151; Stan Burton</p>
+
+<h4><FONT COLOR="#000080">A</FONT></H4>
+<p> I believe you've stumbled into an ambiguity in the C++ Standard. If it's any consolation, every compiler I've tried shows similar symptoms. First I'll tell you what I think is going on, then I'll explain the ambiguity.</p>
+<p>Global C++ objects declared <B>const</B> default to internal linkage, as if they'd been declared explicitly static <a href="#1">[1]</a>. Your array is global and declared <B>const</B>. This suggests the array should have internal linkage, as if it were really declared</p>
+
+<pre>
+static const unsigned char DTMF_9[]
+</pre>
+
+<p>In that scenario, <B>DTMF_9</B> is invisible outside its defining translation unit. Other source files that include the header and its declaration</p>
+
+<pre>
+extern const unsigned char DTMF__9[]
+</pre>
+
+<p>can't see the "real" <B>DTMF_9</B>, but will instead reference some other (non-existent) <B>DTMF_9</B> with external linkage. When the linker tries to resolve these references to an external <B>DTMF_9</B>, it can't find one, leading to the error message you see.</p>
+<p>Once you remove <B>const</B> from both the source file's definition and the header's declaration, the problem changes: just as global const objects default to internal linkage, global non-const objects default to external linkage <a href="#2">[2]</a>. In your scenario, the definition</p>
+
+<pre>
+unsigned char DTMF_9[]
+</pre>
+
+<p>is equivalent to</p>
+
+<pre>
+extern unsigned char DTMF_9[]
+</pre>
+
+<p>Now the header and the defining <B>.cpp</B> file match. Other translation units can reference this version of <B>DTMF_9</B>; the linker, in turn, can resolve those references, making the error messages go away.</p>
+<p>The above explanation certainly describes your symptoms. Problem is, it relies on a conflicted interpretation of the C++ Standard. In your declaration</p>
+
+<pre>
+const unsigned char DTMF_9[]
+</pre>
+
+<p>which is really the same as</p>
+
+<pre>
+unsigned char const DTMF_9[]
+</pre>
+
+<p>the <B>const</B> applies not to the <B>DTMF_9</B> object, but to the <B>unsigned char</B> elements it contains. We learn this from two passages in the Standard, 3.9.3p2 ("CV-qualifiers"):</p>
+
+<UL><p>Any cv-qualifiers applied to an array type affect the array element type, not the array type</p></UL>
+
+<p>and 8.3.4p1 ("Arrays"):</p>
+
+<UL><p>Any type of the form "<I>cv-qualifier-seq</I> array of <B>N T</B>" is adjusted to "array of <B>N</B> <I>cv-qualifier-seq</I> <B>T</B>", and similarly for "array of unknown bound of <B>T</B>".</p></UL>
+
+<p>Because the <B>DTMF_9</B> object itself is non-const, I'm led to a tentative conclusion: <B>DTMF_9</B> should not have internal linkage.</p>
+<p>However, this conclusion conflicts with a note from that same section 8.3.4p1:</p>
+
+<UL><p>Note: an "array of <B>N</B> <I>cv-qualifier-seq</I> <B>T</B>" has cv-qualified type; such an array has internal linkage unless explicitly declared <B>extern.</B></p></UL>
+
+<p>Notes in the Standard are not "normative" or authoritative; like coding examples, they are illustrative only. But I believe this note makes more clear the Standard's intent <a href="#3">[3]</a>, which I summarize like this:</p>
+
+<UL><LI>For purposes of type analysis, <B>DTMF_9</B> is not const.</LI>
+<LI>For purposes of linkage analysis, <B>DTMF_9</B> is const.</LI></UL>
+
+<p>I don't know if this summary is technically correct, but it codifies my thinking <a href="#4">[4]</a>. In any event, the solution to your problem is simple: explicitly declare <B>DTMF_9</B> as <B>extern</B> in both the <B>.cpp</B> and header files, thereby removing any ambiguity.</p>
+<p>I end with an exercise for the student: what would have happened in Stan's original scenario had he translated his code as C?</p>
+
+<h4><FONT COLOR="#000080">Killer BSTRs</FONT></H4>
+
+<h4><FONT COLOR="#000080">Q</FONT></H4>
+
+<p>I'm trying to learn how to write Microsoft COM servers, and have found what I think is a problem with one of Microsoft's type definitions. I know you don't like Microsoft-specific questions, but I hope this one is general enough to be worth your time.</p>
+<p>My program (DLL) is implemented with VC++. But I want it to be called by a wide variety of languages, including both C++ and scripting languages like JavaScript. Microsoft has defined a set of common types supposedly available to all these different calling environments. If my DLL's COM interfaces use only these types, they can work right with all the different client languages.</p>
+<p>Now my problem: one of these "safe" types is something Microsoft calls <B>BSTR</B>, which stands for "Basic STRing." <B>BSTR</B> is the universal string format for COM. It's really an array of 16-bit characters, along with an encoded string length.</p>
+<p>Inside the VC++ headers, <B>BSTR</B> is defined as <B>wchar_t *</B>. This means I can't declare a real const <B>BSTR</B>, since <B>const BSTR x</B> just makes the pointer const &#151; it does nothing to protect the actual string elements. So I'm stuck writing interfaces that can't promise to leave the pointed-to string alone, something I don't like at all. Do you know why <B>BSTR</B> is defined this way, or what I can easily do to get around this?</p>
+<p>Sorry for the long email. Thanks in advance. &#151; Hans Zarkov</p>
+
+<h4><FONT COLOR="#000080">A</FONT></H4>
+
+<p> I looked around in the Microsoft header files, and found the typedef you mention. Once all the Microsoft-specific macros expand, the definition is as you say:</p>
+
+<pre>
+typedef wchar_t *BSTR;
+</pre>
+
+<p>But wait, it gets even better, for Microsoft's C++ compiler (or at least the last one I used) does not treat <B>wchar_t</B> as a C++ keyword. It is actually typedefed as <B>unsigned short</B>, meaning <B>BSTR</B> is really</p>
+
+<pre>
+typedef unsigned short *BSTR;
+</pre>
+
+<p>Given this definition, you have no way to declare a <B>BSTR</B> such that the pointed-to elements are const. (There's also no way to overload on <B>BSTR</B> separate from the logically unrelated <B>unsigned short *</B>, but that's another matter.)</p>
+<p>For inspiration I turn to another Microsoft string type, the lovely Hungarianized <B>LPSTR</B>. This typedef, which is aliased to <B>char *</B>, suffers the same problem as <B>BSTR</B>: you can't declare an object that protects the pointed-to elements. Microsoft apparently foresaw this, since they also define <B>LPCSTR</B>, which is actually <B>char const *</B>.</p>
+<p>Unfortunately, if Microsoft also defines an <B>LPCSTR</B>-like <B>BSTR</B>, I sure can't find it in any of their headers. The simple solution to your problem, then, is to create your own</p>
+
+<pre>
+typedef wchar_t const *const_BSTR;
+</pre>
+
+<p>or the more Microsoft-sounding</p>
+
+<pre>
+typedef wchar_t const *CBSTR;
+</pre>
+
+<p>Caveat: I freely admit that the presence of <B>const</B> in a COM interface may cause some incompatibility with the COM model, or require extra translation-time and run-time overhead when the interface is called across different processes. I welcome Diligent Readers who really know this stuff to give me some insight, into both the lack of a true const <B>BSTR</B>, and the general implications of <B>const</B> in COM interfaces.</p>
+
+<h4><FONT COLOR="#000080">Static Cling</FONT></H4>
+
+<h4><FONT COLOR="#000080">Q</FONT></H4>
+
+<p> According to the C++ Standard, what is the proper output in the following code:</p>
+
+<pre>
+class A
+    {
+public:
+    int f()
+        {
+        static int firstVisit = 1;
+        int returnVal = firstVisit;
+        firstVisit = 0;
+        return returnVal;
+        }
+    };
+
+int main()
+    {
+    A  a1, a2;
+    cout &lt;&lt; a1.f() &lt;&lt; " ";
+    cout &lt;&lt; a1.f() &lt;&lt; " ";
+    cout &lt;&lt; a2.f() &lt;&lt; endl;
+    }
+</pre>
+
+<p>I would expect the output to be</p>
+
+<pre>
+1 0 1
+</pre>
+
+<p>but my compiler (Sparcworks CC3.0.1) gives</p>
+
+<pre>
+1 0 0
+</pre>
+
+<p>I would have thought that a static local variable of a non-static method would not be shared by all instances of the class, but that each instance would have its own copy of the variable.</p>
+<p>Am I off base? Thanks, &#151; Keith Hawkins</p>
+
+<h4><FONT COLOR="#000080">A</FONT></H4>
+<p> Sad to say, you've been picked off base and sent back to the dugout.</p>
+<p>Just as static data members are shared among class object instances, static objects within function members are also shared. For the context of your question, the main difference is scope: static data members are visible to all function members, while the static local object is visible only to <B>f</B>.</p>
+<p>Here's a way to think about this: if your conjecture about local static objects were true, the compiler would have to associate a unique instance of <B>firstVisit</B> with each instance of an <B>A</B> object. Where would that unique <B>firstVisit</B> instance live? Tucked away with <B>A</B>'s data members, thereby increasing the size of an <B>A</B> object by <B>sizeof(firstVisit)</B>? Or in some external storage requiring a vtable-like lookup at run time?</p>
+<p>Regardless of its implementation, <B>firstVisit</B> would effectively be an instanced data member visible only within <B>f</B>. This would violate the model for data scope and lifetime within C++, and deviate sharply from the established meaning of <B>static</B> inherited from C.</p>
+
+<h4><FONT COLOR="#000080">Conjunction Junction</FONT></H4>
+
+<h4><FONT COLOR="#000080">Q</FONT></H4>
+<p> I have written a Win32 application that needs to make use of explicit DLL loads via functions <B>LoadLibrary</B> and <B>GetProcAddress</B> to access the Remote Access Services APIs. I need to define a "pointer to function" to receive the address returned by <B>GetProcAddress</B>. I'd like to maintain strong function prototyping, so I want to define my function pointer to match the calling characteristics of the DLL function whose address I am retrieving.</p>
+<p>Since the function in question is a standard Win32 API there is a supplied header file with the function prototype. Thus, I can easily look at the header and duplicate the calling sequence in my definition. This is dangerous, though, since the API might change without my code knowing it, and worse, subsequent compiles would not reveal the mismatch.</p>
+<p>I've been trying to figure out how to use the function prototype from the header in my pointer definition, but to no avail. The closest I have come is the code that follows:</p>
+
+<pre>
+#include &lt;windows.h&gt;
+#include &lt;ras.h&gt;
+
+DWORD (*pREE)(RasEnumEntries);
+</pre>
+
+<p>Under Borland C++ v5.02 the compile fails with the following error:</p>
+
+<pre>
+Error: Cannot convert 'unsigned long
+    (__stdcall *)(char *,char *,
+    tagRASENTRYNAMEA *,unsigned long *,
+    unsigned long *)' to 'unsigned long *'
+</pre>
+
+<p>From the looks of this message I am close to what I want but not quite there. Do you know of a way to do this? Thanks for any help. &#151; Tom Strickland</p>
+
+<h4><FONT COLOR="#000080">A</FONT></H4>
+
+<p> Get thee behind me Windows! Oh wait, this is another Standard wolf in Microsoft lamb's clothing. You're in luck.</p>
+<p>Based on the compiler diagnostics you sent, I'm guessing <B>RasEnumEntries</B> is a function with this signature:</p>
+
+<pre>
+unsigned long __stdcall RasEnumEntries
+    (char *, char *, tagRASENTRYNAMEA *,
+    unsigned long *, unsigned long *);
+</pre>
+
+<p>If I'm right, the statement</p>
+
+<pre>
+DWORD (*pREE)(RasEnumEnntries);
+</pre>
+
+<p>would then be equivalent to</p>
+
+<pre>
+DWORD *pREE = RasEnumEntries;
+</pre>
+
+<p>That is, you are attempting to convert a pointer-to-function into a <B>DWORD *</B>, which is Microsoftese for <B>unsigned long *</B>. This matches the error message you are getting.</p>
+<p>You can easily define a type to point to this function, using your original compiler diagnostic for guidance:</p>
+
+<pre>
+typedef unsigned long (__stdcall *Pudentain)
+    (char *, char *, tagRASENTRYNAMEA *,
+    unsigned long *, unsigned long *);
+</pre>
+
+<p>With <B>Pudentain</B> as the correct pointer-to-function type name, you can now declare</p>
+
+<pre>
+Pudentain my_RasEnumEntries(RasEnumEntries);
+</pre>
+
+<p>As for your fears about the API unexpectedly changing out from under you, relax. Microsoft is unlikely to change the signature of an existing API; about the worst they'd probably do is publish <B>RasEnumEntriesEx</B> or some such, with extra parameters.</p>
+<p>Even if they did change the API, the data type <B>Pudentain</B> can reference only functions that have the existing function's signature. If some other nefarious agent tries to change the signature of <B>RasEnumEntries</B>,</p>
+
+<pre>
+Pudentain my_RasEnumEntries(RasEnumEntries);
+</pre>
+
+<p>will fail at compile time &#151; you'll get a message about a type conversion error, much like the diagnostic in your original email.</p>
+
+<h4><FONT COLOR="#000080">Decl Heckled</FONT></H4>
+
+<h4><FONT COLOR="#000080">Q</FONT></H4>
+
+<p> Hi! When answering Harald Nowak <a href="#5">[5]</a> you didn't mention his misconception that in</p>
+
+<pre>
+for (int i; ...; ...)
+</pre>
+
+<p>the variable <B>i</B> is only living inside the <B>for</B> block. I believe &#151; and MSVC 6.0 agrees &#151; that <B>int i</B> is still available after the <B>for</B> block. This means that the following code would be invalid:</p>
+
+<pre>
+for(int i = 0; i &lt; 10; ++i)
+    ;
+for(int i = 0; i &lt; 10; ++i) // i redefined
+    ;
+</pre>
+
+<p>Because of this, the <B>for</B> statement can be written as</p>
+
+<pre>
+int i;
+for(i = 0; i &lt; 10; ++i)
+    ;
+</pre>
+
+<p>and there would be no change in any object lifetime.</p>
+<p>With regards, &#151; Werner Henze</p>
+
+<h4><FONT COLOR="#000080">A</FONT></H4>
+
+<p> Another one? This must be Microsoft Mania Month. Or maybe I'm auditioning for <I>Microsoft Systems Journal</I> and don't know it.</p>
+<p>Werner, tempting as it is, we cannot define Standard-conforming language behavior by what translators actually do. The truth is the other way around: the behavior comes first as expressed in the Standard, followed by language vendors writing their translators to conform to that expression.</p>
+<p>Or so the theory goes. While I feel safe saying major translator vendors get most conforming features right, no one of them gets everything right. I've found that Microsoft's compilers in particular sometimes fail to support basic language features years after their adoption into the Standard.</p>
+<p>In the case you cite, MSVC's behavior does not conform to the C++ Standard, as shown by section 6.5.3p3 ("The <B>for</B> statement"):</p>
+<p>If the <I>for-init-statement</I> is a declaration, the scope of the name(s) declared extends to the end of the <I>for-statement</I>.</p>
+
+<pre>
+int i = 42;
+int a[10];
+for (int i = 0; i &lt; 10; i++)
+    a[i] = i;
+int j = i; // j = 42
+</pre>
+
+<p>As both the text and the code example reinforce, the <B>i</B> declared within the initialization part of the <B>for</B> statement is local to that <B>for</B> statement. So what I told Harald was correct.</p>
+<p>Several readers pointed out my "error" on this one; all of them were using Microsoft's compiler as "proof." I don't know why Microsoft doesn't support statement-local scoping like this. I surmise it would break too much of their existing code base, but that's just an educated guess <a href="#6">[6]</a>.</p>
+
+<h4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1]  C++ Standard, section 3.5p3 ("Program and linkage").</p>
+<p><a name="2"></a>[2]  Same section, paragraph 4.</p>
+<p><a name="3"></a>[3]  I find this note overly broad. It implies, for example, that volatile global arrays have internal linkage, which doesn't make sense to me. Also, since the note makes no mention of scope, it implies that a local const array has internal linkage. I simply cannot believe this is the Committee's intent.</p>
+<p><a name="4"></a>[4]  Special thanks to Dan Saks for helping me work through my thinking here.</p>
+<p><a name="5"></a>[5]  "Uncaught Exceptions" item "Heckle and Decl" in the March 1999 <I>CUJ.</I></p>
+<p><a name="6"></a>[6]  While I haven't heard them use this phrase for a while, Microsoft denizens used to say that they "ate their own dog food," meaning they used their own tools and software internally. On every project I've ever done for them, I've used Microsoft's own compilers. Put another way, Microsoft itself is one of Microsoft's biggest compiler customers. If too much of their own code relies on non-conforming compiler behavior, I can well imagine their reluctance to change the compiler.</p>
+
+<p><i>Bobby Schmidt is a freelance writer, teacher, consultant, and programmer. He is also an alumnus of Microsoft, a speaker at the Software Development and Embedded Systems Conferences, and an original "associate" of (Dan) Saks &amp; Associates. In other career incarnations, Bobby has been a pool hall operator, radio DJ, private investigator, and astronomer. You may summon him on the Internet via <B>rschmidt@netcom.com</B>.</i></p>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

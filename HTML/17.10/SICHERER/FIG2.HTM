@@ -1,0 +1,411 @@
+<HTML><HEAD>
+<TITLE>October 1999/An Interactive Drawing Surface Component for C++ Builder/Figure 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Figure 2: Part of TDrawBox component source file</A></h4>
+<pre>
+//-------------------------------------------
+// DrawBox.cpp - sicherer@sichemsoft.nl
+// Complete commented code available on line
+// NOTE: only functions whose prototypes are 
+// shown in Figure 1 are shown here!
+//-------------------------------------------
+// ... #includes and constants omitted
+//-------------------------------------------
+__fastcall
+TDrawBox::TDrawBox(TComponent* Owner)
+  : inherited(Owner)
+{
+   Surface = new TDrawBoxSurface(this);
+   Canvas = Surface-&gt;Canvas;
+// ... default property assignments omitted
+}
+//-------------------------------------------
+__fastcall
+TDrawBox::~TDrawBox() // virtual
+{
+   if (PrintThread)
+      PrintThread-&gt;Terminate();
+   delete Surface;
+}
+//-------------------------------------------
+void
+TDrawBox::SetWindowExtents
+   (double x1, double y1, 
+    double x2, double y2)
+{
+   assert(x1 != x2 &amp;&amp; y1 != y2);
+   xw1 = x1; yw1 = y1; xw2 = x2; yw2 = y2;
+   SetTransformation();
+// ... code omitted
+}
+//-------------------------------------------
+bool
+TDrawBox::SaveToFileAsEMF
+   (const AnsiString &amp;file, 
+    double x1, double y1, 
+    double x2, double y2)
+{
+   return Save(file, true, x1, y1, x2, y2);
+}
+//-------------------------------------------
+void
+TDrawBox::DrawLine(double x1, double y1,
+   double x2, double y2)
+{
+   int xx1, yy1, xx2, yy2;
+   WorldtoPC(x1, y1, &amp;xx1, &amp;yy1);
+   WorldtoPC(x2, y2, &amp;xx2, &amp;yy2);
+   Canvas-&gt;MoveTo(xx1, yy1);
+   Canvas-&gt;LineTo(xx2, yy2);
+}
+//-------------------------------------------
+void __fastcall
+TDrawBox::SetCrossHairs(bool on)
+{
+   if (Surface-&gt;CrossHairs != on) {
+      Surface-&gt;CrossHairs = on;
+      if (on) {
+         oldCursor = Cursor; Cursor = crNone;
+      } else
+         Cursor = oldCursor;
+      Invalidate();
+   }
+}
+//-------------------------------------------
+bool __fastcall
+TDrawBox::GetCrossHairs() const
+{
+   return Surface-&gt;CrossHairs;
+}
+//-------------------------------------------
+void
+TDrawBox::NotifyMarked(int x1, int y1,
+   int x2, int y2, bool region)
+{
+   if (region) { // area marked
+      if (FOnMarked &amp;&amp; MarkShape != msNone) {
+         double xx1, yy1, xx2, yy2;
+         PCtoWorld(x1, y1, &amp;xx1, &amp;yy1);
+         PCtoWorld(x2, y2, &amp;xx2, &amp;yy2);
+         FOnMarked(this, xx1, yy1, xx2, yy2);
+      }
+   } else { // point clicked
+      if (Caret)
+         Surface-&gt;SetCaret(x2, y2);
+      if (FOnClick) {
+         double x, y;
+         PCtoWorld(x2, y2, &amp;x, &amp;y);
+         FOnClick(this, x, y);
+      }
+   }
+}
+//-------------------------------------------
+void
+TDrawBox::NotifyMouseUp(TMouseButton button,
+   TShiftState shift, int x, int y)
+{
+   if (!FOnMouseUp)
+      return; // no user event handler
+
+   double xx, yy;
+   PCtoWorld(x, y, &amp;xx, &amp;yy);
+   FOnMouseUp(this, button, shift, xx, yy);
+}
+//-------------------------------------------
+void
+TDrawBox::NotifyPaint()
+{
+   if (FOnPaint) // call user's event handler
+      FOnPaint(this);
+}
+//-------------------------------------------
+bool
+TDrawBox::ScrollIfNeeded()
+{
+   assert(Surface-&gt;Marking);
+
+   // retrieve current mouse position
+   // and compute window boundaries
+   POINT mousePosition;
+   ::GetCursorPos(&amp;mousePosition);
+   POINT surfacePosition = ClientOrigin;
+   int left = surfacePosition.x;
+   int top = surfacePosition.y;
+   int right = left + ClientWidth;
+   int bottom = top + ClientHeight;
+   int x = mousePosition.x;
+   int y = mousePosition.y;
+   if (x &gt;= left &amp;&amp; x &lt; right &amp;&amp;
+       y &gt;= top &amp;&amp; y &lt; bottom)
+      return false;
+
+   // determine horizontal scroll
+   int dx = 0;
+   if (x &lt; left)
+      dx = x - left;
+   else if (x &gt; right)
+      dx = x - right;
+
+   // determine vertical scroll
+   int dy = 0;
+   if (y &lt; top)
+      dy = y - top;
+   else if (y &gt; bottom)
+      dy = y - bottom;
+
+   // scroll window
+   if (dx || dy) {
+      if (dx) dx = 1 + dx / 2;
+      if (dy) dy = 1 + dy / 2;
+      int xpos = HorzScrollBar-&gt;Position;
+      HorzScrollBar-&gt;Position = xpos + dx;
+      int ypos = VertScrollBar-&gt;Position;
+      VertScrollBar-&gt;Position = ypos + dy;
+      if (xpos != HorzScrollBar-&gt;Position ||
+          ypos != VertScrollBar-&gt;Position)
+         return true;
+   }
+
+   // window not scrolled
+   return false;
+}
+//-------------------------------------------
+TMetafile *
+TDrawBox::CreateMetafile(double x1, double y1,
+   double x2, double y2)
+{
+   // do nothing if there is no 
+   // OnPaint handler!
+   if (!FOnPaint)
+      return NULL;
+
+   double xx1, yy1, xx2, yy2;
+   int vw, vh;
+   bool fullWindow;
+
+   if (x1 != x2) { // use specified window
+
+      fullWindow = false;
+      // remember original window and viewport
+      xx1 = xw1;  yy1 = yw1;
+      xx2 = xw2;  yy2 = yw2;
+      vw = ViewportWidth; vh = ViewportHeight;
+      // compute proportional viewport size
+      WorldtoPC(abs(x2 - x1), abs(y2 - y1),
+         &amp;ViewportWidth, &amp;ViewportHeight);
+
+   } else { // use full window extents
+
+      fullWindow = true;
+      ViewportWidth  = HorzScrollBar-&gt;Range;
+      ViewportHeight = VertScrollBar-&gt;Range;
+
+   }
+
+   // create metafile with size of viewport
+   TMetafile *metafile = new TMetafile;
+   metafile-&gt;Width  = ViewportWidth;
+   metafile-&gt;Height = ViewportHeight;
+
+   // create metafile canvas to draw on
+   TMetafileCanvas *metafileCanvas =
+      new TMetafileCanvas(metafile, 
+             Canvas-&gt;Handle);
+
+   // copy attributes from screen window 
+   // canvas
+   metafileCanvas-&gt;Pen-&gt;Assign(Canvas-&gt;Pen);
+   metafileCanvas-&gt;Brush-&gt;
+      Assign(Canvas-&gt;Brush);
+   metafileCanvas-&gt;Font-&gt;Assign(Canvas-&gt;Font);
+
+   // change Canvas pointer to metafile canvas
+   Canvas = metafileCanvas;
+
+   if (!fullWindow) {
+      // set new window extents
+      SetWindowExtents(x1, y1, x2, y2);
+   }
+
+   // set clipping rectangle to viewport
+   HRGN hrgn = 
+      ::CreateRectRgn(0, 0,
+         ViewportWidth, ViewportHeight);
+   ::SelectClipRgn(Canvas-&gt;Handle, hrgn);
+   ::DeleteObject(hrgn);
+
+   // call user's OnPaint
+   FOnPaint(this);
+
+   if (!fullWindow) {
+      // restore previous window and viewport
+      ViewportWidth = vw; ViewportHeight = vh;
+      SetWindowExtents(xx1, yy1, xx2, yy2);
+   }
+
+   // change Canvas pointer back to screen 
+   // window
+   Canvas = Surface-&gt;Canvas;
+
+   // close metafile canvas and return 
+   // metafile
+   delete metafileCanvas;
+   return metafile;
+}
+//-------------------------------------------
+bool
+TDrawBox::Save(const AnsiString &amp;filename,
+   bool emf, double x1, double y1,
+   double x2, double y2)
+{
+   // create metafile with copy of window
+   TMetafile *metafile =
+      CreateMetafile(x1, y1, x2, y2);
+   if (!metafile)
+      return false;
+   bool result = true;
+
+   // save/copy as enhanced metafile
+   if (emf) {
+
+      // copy metafile to clipboard
+      if (filename.IsEmpty()) {
+         Clipboard()-&gt;Open();
+         Clipboard()-&gt;Assign(metafile);
+         Clipboard()-&gt;Close();
+
+      // or save metafile on disk
+      } else {
+         try {
+            metafile-&gt;SaveToFile(filename);
+         } catch (...) {
+            result = false;
+         }
+      }
+
+   // or save/copy as bitmap
+   } else {
+
+      // create temporary bitmap
+      Graphics::TBitmap *bitmap =
+         new Graphics::TBitmap();
+
+      // set bitmap to size of metafile
+      bitmap-&gt;Width = metafile-&gt;Width;
+      bitmap-&gt;Height = metafile-&gt;Height;
+
+      // draw metafile on bitmap's canvas
+      bitmap-&gt;Canvas-&gt;Draw(0,0,metafile);
+
+      // copy bitmap to clipboard
+      if (filename.IsEmpty()) {
+         Clipboard()-&gt;Open();
+         Clipboard()-&gt;Assign(bitmap);
+         Clipboard()-&gt;Close();
+
+      // or save bitmap on disk
+      } else {
+         try {
+            bitmap-&gt;SaveToFile(filename);
+         } catch(...) {
+            result = false;
+         }
+      }
+
+      // delete temporary bitmap
+      delete bitmap;
+   }
+
+   // delete created metafile
+   delete metafile;
+   return result;
+}
+//-------------------------------------------
+namespace Drawbox
+{
+  void __fastcall PACKAGE Register()
+  {
+     TComponentClass classes[1] =
+        {__classid(TDrawBox)};
+     RegisterComponents("Sichemsoft", 
+        classes, 0);
+  }
+}
+//-------------------------------------------
+//-------------------------------------------
+__fastcall
+TDrawBoxSurface::
+   TDrawBoxSurface(TComponent* owner):
+   inherited(owner)
+{
+// ... default property assignments omitted
+}
+//-------------------------------------------
+void __fastcall
+TDrawBoxSurface::MouseUp(TMouseButton button,
+   TShiftState shift, int x, int y)
+{
+   inherited::MouseUp(button,shift,x,y);
+   DrawBox-&gt;NotifyMouseUp(button, 
+               shift, x, y);
+
+   if (!(Marking &amp;&amp; button == mbLeft))
+      return;
+
+   // undraw rectangle
+   CurrentX = x; CurrentY = y;
+   if (MarkShape != msNone)
+      DrawMarkShape();
+
+   // fit and normalize shape
+   int x1 = OriginX; int x2 = x;
+   int y1 = OriginY; int y2 = y;
+   if (MarkShape == msLine) {
+      x1 = max(0, x1); x1 = min(x1, Width);
+      y1 = max(0, y1); y1 = min(y1, Height);
+      x2 = max(0, x2); x2 = min(x2, Width);
+      y2 = max(0, y2); y2 = min(y2, Height);
+   } else {
+      if (x1 &gt; x2) Swap(x1, x2);
+      if (y1 &gt; y2) Swap(y1, y2);
+      x1 = max(0, x1); y1 = max(0, y1);
+      x2 = min(x2, Width);
+      y2 = min(y2, Height);
+   }
+
+   // is region or point marked?
+   bool region = abs(x2-x1)&gt;2 || abs(y2-y1)&gt;2;
+
+   // redraw rectangle if necessary
+   if (region &amp;&amp; MarkShape == msMark) {
+      DrawMarkShape();
+      OriginX = x1; OriginY = y1;
+      MarkedX = x2; MarkedY = y2;
+      Marked = true;
+   }
+
+   // send notification to surface object
+   if (MarkShape != msNone)
+      delete Timer;
+   DrawBox-&gt;NotifyMarked(x1, y1, x2, y2, 
+               region);
+   Marking = false;
+}
+//-------------------------------------------
+void __fastcall
+TDrawBoxSurface::TimerTick(TObject* Sender)
+{
+   assert(Marking);
+
+   if (DrawBox-&gt;ScrollIfNeeded())
+      Invalidate();
+}
+//-------------------------------------------
+
+
+
+</pre>
+</BODY>
+</HTML>

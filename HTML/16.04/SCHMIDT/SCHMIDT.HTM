@@ -1,0 +1,541 @@
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+<TITLE>April 1998/The Learning C/C++urve</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<H2><A href="../tocapr.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+<FONT COLOR="#FF0000">Columns</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">The Learning C/C++urve: Very Small Array</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Bobby Schmidt</FONT></H3>
+<BLOCKQUOTE>
+<p>It
+is possible to build an array type from materials found around the home, but
+not necessarily easy.</p></BLOCKQUOTE><hr>
+
+<BLOCKQUOTE>
+<p><b><i>Copyright &#169; 1998 Robert H. Schmidt</i></b></p>
+
+In this month's soir&eacute;e, we start translating the prose description of an
+array class into its code representation, beginning with the bare-bones
+definition</p>
+
+<pre>
+class Array
+    {
+    };
+</pre>
+<p>As
+is my wont, I'll make explicit the four "usual suspects" normally implied in
+class definitions:</p>
+
+<pre>
+class Array
+    {
+public:
+    ~Array();
+    Array();
+    Array(Array const &amp;);
+    Array &amp;operator=(Array const &amp;);
+    };
+</pre>
+<p>Consider
+these declarations tentative; we may find as we go along that we want some of
+these members declared private and left unimplemented.<p>
+I next refer you to the March column and its bulleted list of fundamental array
+properties. While developing this first-pass array class, I'll summarize each
+property in turn and map it into the class design.</p>
+
+<h4><FONT COLOR="#000080">Nascent Class</FONT></H4>
+
+<p>The
+first property is perhaps the most basic: arrays contain a fixed number of
+other objects. This property implies that our class must at minimum know</p>
+<UL><LI>what kinds of objects it contains</LI>
+    <LI>how many objects it contains</LI>
+</UL>
+<p>An obvious solution is to specify the contained object "kind" or type as a
+template parameter, and the number of those objects as a constructor
+argument:</p>
+
+<pre>
+template&lt;class T&gt;
+class Array
+    {
+public:
+    Array(size_t const n);
+    // ...
+    };
+</pre>
+<p>How
+does Array's implementation use n and T? You may hope Array can directly
+encapsulate a real array as</p>
+
+<pre>
+template&lt;class T&gt;
+class Array
+    {
+public:
+    Array(size_t const n);
+    // ...
+private:
+    T array_[n];
+    };
+ 
+Array&lt;char&gt; a(10); // error
+</pre>
+<p>Sadly,
+such a template won't instantiate &#151; you can't dimension array_ this way.
+Because the length of the array (n) is not known until Array construction, you
+must defer allocating array_ until then:</p>
+
+<pre>
+template&lt;class T&gt;
+class Array
+    {
+public:
+    Array(size_t const n)
+        : array_(new T[n])
+        {
+        }
+    // ...
+private:
+    T *array_;
+    };
+Array&lt;char&gt; a(10); // OK
+</pre>
+<p>The
+Array constructor allocates a new array of n Ts, and points array_ to that new
+allocation. Now every ith element of the encapsulated array is equally
+accessible to Array members as array_[i]. Unfortunately, while this
+implementation is quite straightforward, it has some subtle differences from
+real arrays.</p>
+
+<h4><FONT COLOR="#000080">Problem 1: new</FONT></H4>
+
+<p>Any
+time your code calls new you must ask yourself what would happen were the
+allocation to fail. In our example, because the Array constructor calls new,
+declarations like</p>
+
+<pre>
+// calls Array constructor
+Array&lt;char&gt; a(10);
+</pre>
+<p>could
+throw an exception. This is certainly a difference from C arrays, and from C++
+arrays of POD types <a href="#1">[1]</a>, which have no hidden dynamic allocation.</p>
+<p>To maintain the array-like illusion, you must prevent the exception from
+percolating to client code:</p>
+
+<pre>
+#include &lt;new&gt;
+template&lt;class T&gt;
+class Array
+    {
+public:
+    Array(size_t const n) : array_(NULL)
+        {
+        try
+            {
+            array_ = new T[n];
+            }
+        catch (std::bad_alloc)
+            {
+            // error recovery code here
+            }
+        }
+    // ...
+private:
+    T *array_;
+    };
+</pre>
+<p>While
+this code keeps the existence of new invisible to clients, it still leaves us
+with a problem: how does Array respond if new fails?<p>
+I have no single answer here. Certainly if new fails for a reasonably small
+Array object, your system is memory constrained; useful recovery is almost
+certainly impossible. In such a case, you may just want to post a diagnostic
+trace and abort the program. Alternatively, you could keep array_ set as NULL,
+and somehow indicate to clients that the Array object has zero length.<p>
+For the purposes of this discussion I'll blithely ignore the problem,
+explaining my rationale shortly.</p>
+
+<h4><FONT COLOR="#000080">Problem 2: sizeof</FONT></H4>
+
+<p>Given
+the array declared as</p>
+
+<pre>
+T a[N];
+</pre>
+<p>(where
+N &gt; 0), then sizeof(a) == sizeof(T) * N <a href="#2">[2]</a>. That is, the array object's
+size equals the combined size of all its element objects.</p>
+<p>This relationship typically fails for our Array implementation. As Array
+contains but a single pointer object, sizeof(Array) == sizeof(T *), which is
+most likely less than sizeof(T) * N <a href="#3">[3]</a>. Somehow we must make sizeof(Array) &#151;
+which is really sizeof(array_) &#151; equal to sizeof(T) * N.<p>
+Clearly one way to achieve this is to define array_ not as a pointer, but as a
+real array of N Ts <a href="#4">[4]</a>. But we showed earlier that we can't dimension such an
+array &#151; or at least, we can't with the length available only at run time. If
+we could somehow know the length at compile time, the story would change.<p>
+Fortunately, C++ templates allow us to include just such compile-time
+information. While we typically give templates type parameters, we can also
+give them non-type parameters. According to section 14.1.4 of the C++ Standard,
+possible non-type parameters are</p>
+<UL><LI>integrals</LI>
+    <LI>enumerations</LI>
+    <LI>pointers/references to objects/functions</LI>
+    <LI>pointers to members</LI>
+</UL>
+<p>For Array, we'll add an integral template parameter corresponding to the
+array length, and remove the corresponding constructor parameter, yielding</p>
+
+<pre>
+template&lt;class T, size_t N&gt;
+class Array
+   {
+public:
+    Array()
+        {
+        }
+    // ...
+private:
+    T array_[N];
+    };
+</pre>
+<p>This
+has the net effect of dimensioning the array at compile time rather than at run
+time. It also produces the desired identity sizeof(Array) == sizeof(T) * N.
+Finally, since array_ is no longer allocated dynamically, the run-time check
+for a failed new disappears.</p>
+<p>With this new implementation, the declaration of Array objects changes:</p>
+
+<pre>
+Array&lt;char, 10&gt; a; // array of 10 chars
+</pre>
+<p>In
+addition to the above-mentioned properties, Array also features value
+semantics. Furthermore, with the new implementation, element storage lies
+within the Array object. Thus, the current Array implementation &#151; threadbare
+as it is &#151; supports the first three real-array properties from last month's set.</p>
+
+<h4><FONT COLOR="#000080">Access</FONT></H4>
+
+<p>An
+array allows direct or so-called random access to its elements. Each element is
+identified by a unique whole-number index ranging from 0 to N - 1. Because the
+number of indices matches the number of elements, there are no gaps in this
+range.<p>
+You can think of arrays as primitive maps, projecting a set of whole numbers
+onto a set of T objects. This mapping is done via the [] operator, and results
+in either an lvalue or rvalue expression, depending on context:</p>
+
+<pre>
+char a[10];    // Real array of 10 chars.
+               //    Can map whole numbers [0, 9].
+a[2] = 'x';    // Map whole number 2 to array element.
+               //    a[2] is lvalue expression.
+char c = a[3]; // Map whole number 3 to array element.
+               //    a[3] is rvalue expression.
+</pre>
+<p>Because
+elements are stored contiguously in their indexed order, the relation &amp;a[i]
++ sizeof(T) == &amp;a[i + 1] is always true for i in the range [0, N - 2].<p>
+To emulate this behavior in Array, we can simply add a user-defined operator[].
+To properly design this operator, we must know the types of</p>
+<UL><LI>the index mapped into an element object</LI>
+    <LI>the resulting element</LI>
+</UL>
+<p>For occurrences of [] in rvalue expressions such as</p>
+
+<pre>
+Array&lt;char, 10&gt; a;
+char c = a[3]; // a[3] is an rvalue expression
+</pre>
+<p>operator[]
+must return something that can act like a T rvalue. Since T lvalues can convert
+to T rvalues, operator[] can be declared to return any of</p>
+
+<pre>
+T operator[](...);        // T rvalue
+T &amp;operator[](...);       // modifiable T lvalue
+T const &amp;operator[](...); // non-modifiable T lvalue
+</pre>
+<p>For
+occurrences of [] in lvalues such as</p>
+
+<pre>
+a[2] = 'x'; // a[2] is an lvalue expression
+</pre>
+<p>however,
+operator[] must return an lvalue, limiting the possibilities to</p>
+
+<pre>
+T &amp;operator[](...);       // modifiable T lvalue
+T const &amp;operator[](...); // non-modifiable T lvalue
+</pre>
+<p>Since
+the above example assigns through a[2], you might think that</p>
+
+<pre>
+T &amp;operator[](...);
+</pre>
+<p>is
+the obvious choice. In this instance you'd be right, but consider the
+variation</p>
+
+<pre>
+Array&lt;char, 10&gt; const a;
+a[2] = 'x'; // should this compile?
+</pre>
+
+<p>With our operator[] returning T &amp;, this would compile. Were a declared
+as a real array:</p>
+
+<pre>
+char const a[10];
+a[2] = 'x'; // error
+</pre>
+<p>the
+example would fail, with the compiler complaining that a[2] is not a modifiable
+lvalue. To mimic such array behavior, we need to somehow prevent const Array
+objects from being modified.</p>
+
+<h4><FONT COLOR="#000080">operator[] Defined</FONT></H4>
+
+<p>The
+trick is to overload operator[]. For non-const Arrays, operator[] allows
+modification of returned elements; for const Arrays, operator[] disallows such
+modification. The result is</p>
+
+<pre>
+template&lt;class T, size_t N&gt;
+class Array
+    {
+public:
+    T &amp;operator[](...);
+    T const &amp;operator[](...) const;
+    // ...
+    };
+</pre>
+<p>We
+also need to establish the correct type for the array index. At first blush,
+you might be tempted to use</p>
+
+<pre>
+T &amp;operator[](int);
+T const &amp;operator[](int) const;
+</pre>
+<p>Remember,
+though, that array indices are non-negative, meaning half of int's possible
+values are ineligible. This suggests unsigned might be a better index type, as
+all of unsigned's values are non-negative.</p>
+<p>A better answer still is to use size_t, which is the unsigned type resulting
+from the sizeof operator. Since the size of an array will never be larger than
+the length of that array, a size_t will always be big enough to hold any valid
+array index.<p>
+This gives us a new operator[] interface and implementation:</p>
+
+<pre>
+template&lt;class T, size_t N&gt;
+class Array
+    {
+public:
+    T &amp;operator[](size_t const i)
+        {
+        return array_[i];
+        }
+    T const &amp;operator[](size_t const i)
+       const
+        {
+        return array_[i];
+        }
+    // ...
+    };
+</pre>
+
+<h4><FONT COLOR="#000080">Array/Pointer Symbiosis</FONT></H4>
+
+<p>An
+array typically converts or "decays" to a pointer referencing the array's first
+element. This conversion &#151; from a to &amp;a[0] &#151; implies that a can appear in
+contexts requiring a T pointer. In particular, the conversion allows the
+expression a + i, which (by substitution) is tantamount to &amp;a[0] + i.<p>
+Note that a + i points not i bytes beyond the start of a, but i elements
+beyond. This leads to the relationship a + i == &amp;a[i]. As each expression
+represents a pointer to the same object, it follows that *(a + i) ==
+*(&amp;a[i]). Simplifying, we get *(a + i) == a[i].<p>
+Since a in the expression *(a + i) converts to a pointer, the expression should
+work if a is a real pointer to begin with:</p>
+
+<pre>
+char a[10];
+char *p;
+char c;
+c = a[0]; // OK
+p = a;    // OK, a converts to &amp;a[0]
+c = *a;   // OK, *a == *(&amp;a[0]) == a[0]
+c = *p;   // OK
+c = p[0]; // OK, p[0] == *(p + 0) == *p
+</pre>
+<p>Because
+the + in (a + i) and (p + i) is commutative, we must face the unpleasant truth
+that</p>
+
+<pre>
+a[3] == *(a + 3) == *(3 + a) == 3[a]
+</pre>
+<p>As
+Dave Barry would say, I am not making this up. I counsel disbelievers to read
+section 6.3.2.1 of the C9X Draft Standard.</p>
+<p>Emulating Array/Pointer Behavior</u></b></p>
+<p>To emulate real array-to-pointer decay, we must somehow let an Array object
+become a pointer to its first element. A brute-force approach would add a
+member function explicitly returning said pointer:</p>
+
+<pre>
+template&lt;class T, size_t N&gt;
+class Array
+    {
+public:
+    T *pointer()
+        {
+        return array_;
+        }
+    // ...
+    };
+ 
+Array&lt;char, 10&gt; a;
+char *p = a.pointer();
+</pre>
+<p>While
+this code builds and runs, it hardly suffices. Real arrays silently convert; to
+make the illusion complete, we must allow</p>
+
+<pre>
+Array&lt;char, 10&gt; a;
+char *p = a;
+</pre>
+<p>In
+the example</p>
+
+<pre>
+char a[10];
+char *p = a;
+</pre>
+<p>a
+implicitly converts to a char *, as if the code had been written</p>
+
+<pre>
+char a[10];
+char *p = (char *) a;
+</pre>
+<p>If
+we provide an analogous conversion for Arrays, it will be similarly named to
+turn an Array into a T *:</p>
+
+<pre>
+template&lt;class T, size_t N&gt;
+class Array
+    {
+public:
+    operator T *()
+        {
+        return array_;
+        }
+    operator T const *() const
+        {
+        return array_;
+        }
+    // ...
+    };
+ 
+Array&lt;char, 10&gt; a;
+char *p;
+p = a;                   // OK
+p = (char *) a;          // OK, equivalent
+p = a.operator char *(); // OK, equivalent
+</pre>
+<p>Like
+operator[] before it, operator T * has const and non-const overloads. All of
+these operators return access to Array elements; we must ensure that supposedly
+const (unchangeable) Arrays can't have their elements inadvertently modified.<p>
+This brings up an interesting design point: the potential difference between a
+non-const container of const elements and a const container of non-const
+elements. In your view, should</p>
+
+<pre>
+Array&lt;char, 10&gt; const a
+</pre>
+<p>and</p>
+
+<pre>
+Array&lt;char const, 10&gt; a
+</pre>
+<p>behave
+identically? If so, why? If not, how should they differ, and why?</p>
+<p>Real arrays shed no light here, since they cannot make this distinction. In
+the statement</p>
+
+<pre>
+char const a[10];
+</pre>
+<p>is
+a considered an array of ten const chars, or a const array of ten chars? My
+reading of the Standards suggests the former is correct; otherwise, a const a
+could decay to a pointer of type char *, sabotaging the array's alleged
+constness. However, this is purely an educated guess, as I've yet to find a
+simple unambiguous ruling in either Standard.</p>
+<p>This distinction is no mere sophistry, and becomes quite significant in the
+C++ Standard Template Library (STL). I will completely sidestep the issue for
+now, and constrain Array to non-const element types. Eventually, we'll revisit
+this when considering how Array can be generalized into a more STL-like
+container.</p>
+
+<h4><FONT COLOR="#000080">In The Pipeline</FONT></H4>
+
+<p>Our
+current Array definition appears as <A href="list1.htm">Listing 1</a>.
+ Next month we'll continue the
+Array development, revel in fan mail, fix bugs in last August's column, and
+ruminate on Carlo Pescio's article on parameterized integers. It's sure to be
+another action-filled adventure, so don't touch that dial.</p>
+
+<h4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>1.
+"POD" is Standardese for "plain old data," and designates C++ types
+conceptually like those in C.<p>
+<a name="2"></a>2. Arrays can have zero length. Contrary to intuition, zero-length arrays have
+non-zero size, which of course cannot equal sizeof(T)* N.<p>
+<a name="3"></a>3. Implementations may add any padding required for placing class objects in an
+array. For this discussion, I'm assuming the Array object has no such
+padding.<p>
+<a name="4"></a>4. All you @microsoft.com denizens can stop palpitating: this is not the same
+as an array of NTs. 
+</p>
+<p><i>Bobby Schmidt is a freelance writer, teacher, consultant, and programmer.
+He is also a member of the ANSI/ISO C standards committee, an alumnus of
+Microsoft, and an original "associate" of (Dan) Saks &amp; Associates. In other
+career incarnations, Bobby has been a pool hall operator, radio DJ, private
+investigator, and astronomer. You may summon him at 14518 104th Ave NE Bothell
+WA 98011; by phone at +1-425-488-7696, or via Internet e-mail as
+rschmidt@netcom.com.
+</i></p>
+
+<h4><a href="../../../source/1998/apr98/schmidt.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</body></html>

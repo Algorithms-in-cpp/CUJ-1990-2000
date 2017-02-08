@@ -1,0 +1,322 @@
+<HTML>   
+     <HEAD>
+<TITLE>April 2000/Uncaught Exceptions</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocapr.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Uncaught Exceptions: Standard Deviation</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Bobby Schmidt</FONT></H3>
+
+<BLOCKQUOTE>
+<p>The Microsoft support desk continues under Bobby's stewardship, even as he aspires to discuss Standard C++.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<p>Copyright &copy; 2000 Robert H. Schmidt</p>
+<p>I finally have Borland's C++ Builder installed. I've actually had the compiler for several months, but encountered delays before getting it to work.</p>
+<p>First of all, the compiler showed up during my recent two-month sojourn with family in Sedona. Given the purpose of that trip, I really wasn't in the mood to play with new software.</p>
+<p>Once I returned home and started getting my life somewhat back together (a slow ongoing process), I had to buy a PC emulator and Windows to host the compiler. Once installed, the compiler kept bombing &#151; until I downloaded and installed the update from Borland's web site.</p>
+<p>With that accomplished, I am now faced with the never-pleasant task of configuring the build environment to my taste. I can make the compiler work; I just can't make it work the way I want. I'm finding that Borland &#151; like Microsoft &#151; suffers from what I call McDonald's Syndrome.</p>
+<p>If you hit the drive-through at McDonald's and order something they're expecting, you can get your food and be gone in no time. But if your order deviates from their norm, life becomes complex: you are banished to a Special Order gulag in the parking lot, wait an interminable time for someone to deliver your food, then hope that the special order is correct and complete.</p>
+<p>Similarly, development environments make life quick and easy if you follow their paths of least resistance. But if you want to create something other than a Windows program loaded with widget resources and foundation classes, that same software becomes indifferent or even hostile. Having endured myriad IDE installations and project wizards, I've begun capitulating to the vendors' wills: instead of crafting lean installations and projects, I often take 100% of the default options &#151; just to get the 5% I really need.</p>
+<p>For the Borland compiler, all I want is to create Standard-conforming programs that pull source files from where I pick and produce output files where I pick. (I typically share source files among multiple translators and OSes, so that I can easily compare translator behavior.) I'll spare you the gory details, and simply say that I've yet to accomplish this desire with Borland's compiler &#151; but I'm determined to lick this problem by next month.</p>
+
+<H4><FONT COLOR="#000080">Unsolved Mysteries</FONT></H4>
+
+<H4><FONT COLOR="#000080">Q</FONT></H4>
+<p> Bobby,</p>
+<p>I am reading Scott Meyers' books and trying to learn his exception rules and hints. In <I>More Effective C++</I> (Item 14) he says not to put exception specifications on template functions. I like the idea of exception specifications, and want to better understand Scott's reasons. So I made a simple template class, and tested adding exception specifications.</p>
+<p>During these tests I hit a problem: I couldn't find a way to keep my template's constructors from throwing exceptions. Could you look at my hopefully simple code and let me know if I'm missing something? Thank you!</p>
+<p>P.S. I use VC 6, if that helps you.</p>
+<p>&#151; Mel Czezlydk</p>
+
+<H4><FONT COLOR="#000080">A</FONT></H4>
+<p> Sweet serendipity &#151; I'm researching this same problem for a different (non-<I>CUJ</I>) project. I don't yet have the full answer, but I can tell you what I know, and promise to tell the rest when I know it.</p>
+<p>I've reduced your sample to the following:</p>
+
+<pre>
+#include &lt;stdio.h&gt;
+
+class M
+    {
+public:
+    M()
+        {
+        printf("M throw\n");
+        throw 0;
+        }
+    };
+
+class X
+    {
+public:
+    X() : m()
+        {
+        }
+private:
+    M m;
+    };
+
+int main()
+    {
+    X x;
+    printf("main end\n");
+    }
+</pre>
+
+<p>While my example (unlike yours) omits templates and inheritance, the root problem is the same: preventing the construction of <B>x</B> from throwing exceptions.</p>
+<p>When run, the above program produces:</p>
+
+<pre>
+M throw
+</pre>
+
+<p>Apparently the program ends abnormally instead of returning from main. This behavior isn't surprising, since the <B>x.m</B> exception bubbles up the call stack uncaught &#151; and uncaught exceptions eventually cause a program to self-destruct <a href="#1">[1]</a></a>.</p>
+<p>At a minimum we need to catch the exception. You already tried</p>
+
+<pre>
+X() : m()
+    {
+    try
+        {
+        }
+    catch (...)
+        {
+        printf("X catch\n");
+        }
+    }
+</pre>
+
+<p>but were disappointed to find that the exception wasn't caught. Once again, the behavior isn't surprising: before your try block is entered, <B>x.m</B> is already constructed and the exception is already thrown. Your try block comes into play too late.</p>
+<p>You must be ready to catch the exception while <B>x.m</B> undergoes construction. That capability requires a feature relatively new to C++: a function try block. Unfortunately for you, Visual C++ does not support function try blocks <a href="#2">[2]</a>. As long as you stay with that compiler, you can't catch the exception before it trickles out of <B>x</B>'s constructor.</p>
+<p>If you switch to a translator that supports function try blocks, you can catch the exception:</p>
+
+<pre>
+X()
+    try : m()
+        {
+        }
+    catch (...)
+        {
+        printf("X catch\n");
+        }
+</pre>
+
+<p>Note that <B>m()</B> appears after the <B>try</B>, suggesting that the construction of <B>X::m</B> happens within the control of the try block. If you run this example on a conforming implementation, the result is:</p>
+
+<pre>
+M throw
+X catch
+</pre>
+
+<p>What you don't see is evidence of normal termination. Implication: even though the program catches the exception, it still ends abnormally! What's going on?</p>
+<p>As usual, the C++ Standard provides illumination. From subclause 15.3 ("Handling an exception"):</p>
+
+<BLOCKQUOTE>
+<p>The exception being handled is rethrown if control reaches the end of a handler of the <I>function-try-block</I> of a constructor or destructor. </p>
+</BLOCKQUOTE>
+
+<p>Apparently our constructor's handler acts as if it were written</p>
+
+<pre>
+catch (...)
+    {
+    printf("X catch\n");
+    throw;
+    }
+</pre>
+
+<p>To test this assumption, run the program version shown as <a href="list1.htm">Listing 1</a>. The result is</p>
+
+<pre>
+M throw
+X catch
+main catch
+main end
+</pre>
+
+<p>This confirms my suspicions: the exception is caught by the function try block, then implicitly rethrown.</p>
+<p>Adding an empty exception specification won't help:</p>
+
+<pre>
+X() throw()
+</pre>
+
+<p>Regardless of what the specification says, we know that <B>X::X</B> will throw anyway. Violating an exception specification results in a call to <B>std::unexpected</B>, which by default terminates execution <a href="#3">[3]</a> &#151; at least on conforming implementations.</p>
+<p>(VC++ isn't conforming here. It accepts exception specifications at compile time <a href="#4">[4]</a> but ignores them at run time. Since the resulting programs have no actual specifications to violate, they never call <B>std::unexpected</B>.)</p>
+<p>The moral of the story: constructors can catch subobject exceptions but can't contain them.</p>
+<p>I now believe that function try blocks on constructors are purposely designed to be exception filters instead of exception handlers. I also believe they implicitly throw to prevent accidental access of unconstructed or partially-constructed objects. I will research these beliefs, and let you know what I discover.</p>
+
+<H4><FONT COLOR="#000080">Good Afternoon, Microsoft Product Support</FONT></H4>
+
+<H4><FONT COLOR="#000080">Q</FONT></H4>
+<p> Hi Bobby,</p>
+<p>I have a question about template instantiation.</p>
+<p>In my short sample there are two overloads of a template function, each with its own argument list. I want to use these functions with explicit template argument types.</p>
+<p>For the function with one template argument it works. But why doesn't it work for the function with two template arguments? I always get the error</p>
+
+<pre>
+'f' : too many template arguments
+</pre>
+
+<p>I'm using VC++ 6.0 (SP3). I hope you can help me get around the error.</p>
+<p>Regards &#151; Elena G&uuml;nzler</p>
+
+<H4><FONT COLOR="#000080">A</FONT></H4>
+
+<p> I thought I stopped working for Microsoft's Developer Support in 1992, but sometimes I wonder if leaving was just a dream...</p>
+<p>Your sample reduces to</p>
+
+<pre>
+template&lt;typename T1&gt;
+void f(T1)
+    {
+    }
+
+template&lt;typename T1, typename T2&gt;
+void f(T1, T2)
+    {
+    }
+
+int main()
+    {
+    int i(0);
+    long l(0);
+    f&lt;int const &amp;&gt;(i);
+    f&lt;int const &amp;, long const &amp;&gt;
+       (i, l);
+    return 0;
+    }
+</pre>
+
+<p>Compiling this with VC++ does indeed yield the error you cite. Translating with more conforming systems like EDG or CodeWarrior gives no errors.</p>
+<p>VC++ is wrong; this code should translate fine. I believe this behavior falls under the category of "known problem," meaning that Microsoft's compiler team is aware of the bug.</p>
+<p>A simple solution: change one of the template's qualified names, either by moving it into a namespace, or by changing its base name from <B>f</B> to something else. However, based on parts of your email that I've omitted here for brevity, I'm assuming you won't want this solution.</p>
+<p>From your example, I'm also assuming that you want to instantiate the templates with reference arguments (as I've shown here). If that's always the case, you can use partial specialization:</p>
+
+<pre>
+template&lt;typename T1&gt;
+void f(T1 const &amp;)
+    {
+    }
+
+template&lt;typename T1, typename T2&gt;
+void f(T1 const &amp;, T2 const &amp;)
+    {
+    }
+
+int main()
+    {
+    int i(0);
+    long l(0);
+    f(i);
+    f(i, l);
+    return 0;
+    }
+</pre>
+
+<p>Now both <B>f</B> versions implicitly bind their arguments to reference parameters. As a result, you no longer need the explicit template arguments.</p>
+<p>If you want some instantiations to generate reference parameters, and others to generate non-reference parameters, you might be tempted to cast your function arguments:</p>
+
+<pre>
+template&lt;typename T1&gt;
+void f(T1)
+    {
+    }
+
+template&lt;typename T1, typename T2&gt;
+void f(T1, T2)
+    {
+    }
+
+int main()
+    {
+    int i(0);
+    long l(0);
+    f((int const &amp;) i);
+    f((int const &amp;) i,
+       (long const &amp;) l);
+    return 0;
+    }
+</pre>
+
+<p>under the notion that such casts will force implicit instantiations with reference parameters. Unfortunately, my interpretation of the C++ Standard suggests that reference arguments convert to non-reference expressions before type-matching occurs <a href="#5">[5]</a>. As a result, the templates are instantiated with non-reference parameters.</p>
+
+<H4><FONT COLOR="#000080">More Mousetraps</FONT></H4>
+
+</B><H4><FONT COLOR="#000080">Q</FONT></H4>
+
+<p> In the July 1999 issue of <I>CUJ,</I> under the title "Better Mousetrap," you show Carlo Pescio's version of a <B>lengthof</B> template using the size of a struct.</p>
+<p>I can't find the relevant text in the C++ Standard, but if I recall correctly, an implementation is allowed to pad a struct to a suitable alignment. That means that, given</p>
+
+<pre>
+struct three_chars
+    {
+    char x[3];
+    };
+</pre>
+
+<p>the expression</p>
+
+<pre>
+sizeof (struct three_chars)
+</pre>
+
+<p>may return <B>4</B> on an architecture that requires four-byte alignment of structs. This means that Mr. Pescio's implementation may not be portable; although I admit that I haven't yet found such a platform. &#151; Branko Cibej</p>
+
+<H4><FONT COLOR="#000080">A</FONT></H4>
+<p> Several Diligent Readers made this same observation. I've camped out on this question for a while, because I wanted time to scour the Standards for an answer. My verdict: your allegation is correct.</p>
+<p>At first I thought justification came from C++ Standard subclause 9.2 ("Class members"):</p>
+
+<BLOCKQUOTE>
+<p>A pointer to a POD-struct object, suitably converted using a <B>reinterpret_cast</B>, points to its initial member (or if that member is a bit-field, then to the unit in which it resides) and vice versa. [<I>Note</I>: There might therefore be unnamed padding within a POD-struct object, but not at its beginning, as necessary to achieve appropriate alignment.]</p>
+</BLOCKQUOTE>
+
+<p>Overlooking the fact that the Standard's notes aren't normative, I wasn't sure how to interpret "within." The word implies to me that there is something on both sides of the padding, so that the padding is "within" the gap. As <B>three_chars</B> has only one member (<B>x</B>), there is no gap to be "within." I admit that my interpretation may be wrong here <a href="#6">[6]</a>.</p>
+<p>I find more compelling evidence in subclause 5.3.3 ("Sizeof"):</p>
+
+<BLOCKQUOTE>
+<p>When applied to a class, the result is the number of bytes in an object of that class including any padding required for placing objects of that type in an array.</p>
+<p>When applied to an array, the result is the total number of bytes in the array. This implies that the size of an array of<B> </B><I>n</I> elements is <I>n</I> times the size of an element.</p>
+</BLOCKQUOTE>
+
+<p>I read this to mean that:</p>
+
+<pre>
+sizeof(three_chars::x)
+</pre>
+
+<p>is always <B>3</B> (remember, <B>sizeof(char) == 1</B>), while</p>
+
+<pre>
+sizeof(three_chars)
+</pre>
+
+<p>is at least <B>3</B>, but may be more if an array of <B>three_chars</B> requires padding between elements.</p>
+<p>(The C Standard features similar language, including that same ambiguous usage of "within" to describe intra-structure padding.)</p>
+<p>Like you, I don't know of an implementation for which <B>sizeof(three_chars) &gt; 3</B>. I tried playing with <B>#pragma</B>s and other settings on the translators I have at home, but could never get a result other than <B>3</B>. I invite Diligent Readers with who get a size &gt; <B>3</B> to let me know.</p>
+
+<H4><FONT COLOR="#000080">Erratica</FONT></H4>
+
+<p>In this month's column I discuss the lack of proper exception specification support in VC++. I touched on this issue in my January 2000 column item "Deconstruction." At that time I interpreted the behavior as a bug in <B>std::unexpected</B>. Since then I've discovered that the real flaw is in VC++ exception specifications. (VC++ may have flaws in <B>std::unexpected</B> as well, but until the exception specifications work, <B>std::unexpected</B> can't be triggered.)</p>
+<p>Diligent Readers Scott Neugroschl and Michael Taylor responded to that column, alerting me to the true nature of exception specifications in VC++. Even though I had already found the truth on my own, I want to thank them for trying to set me straight.</p>
+
+<H4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1]  Uncaught exceptions percolating outside <B>main</B> induce a call to <B>std::terminate</B>. That function, amazingly enough, terminates its host program.</p>
+<p><a name="2"></a>[2]  VC++ doesn't even accept the syntax of function try blocks.</p>
+<p><a name="3"></a>[3]  C++ Standard subclauses 15.5.2 and 18.6.2.</p>
+<p><a name="4"></a>[4]  VC++ accepts empty exception specifications without comment, but flags non-empty specifications such as <B>throw(int)</B> with a warning.</p>
+<p><a name="5"></a>[5]  This nuance came up in my September 1999 column, as part of the item titled "It Slices, It Dices!."</p>
+<p><a name="6"></a>[6]  By dissecting the subtle meanings of individual words in the Standard, I'm engaged in what Dan Saks calls the Talmudic Scholarship of C++. </p>
+
+<p><i><B>Bobby Schmidt</B> is a freelance writer, teacher, consultant, and programmer. He is also an alumnus of Microsoft, a speaker at the Software Development and Embedded Systems Conferences, and an original "associate" of (Dan) Saks &amp; Associates. In other career incarnations, Bobby has been a pool hall operator, radio DJ, private investigator, and astronomer. You may summon him on the Internet via <B>BobbySchmidt@mac.com</B>.</i></p>
+
+<h4><a href="../../../source/2000/apr00/schmidt.zip">Get Article Source Code</a></h4>
+
+
+</blockquote></body></html>

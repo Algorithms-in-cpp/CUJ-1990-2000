@@ -1,0 +1,291 @@
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+<TITLE>March 1998/A Pseudo-Terminal Class for Unix</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<H2><A href="../tocmar.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+<FONT COLOR="#FF0000">Unix</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">A Pseudo-Terminal Class for Unix</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">William L. Crowe</FONT></H3>
+
+<BLOCKQUOTE><p>One
+way to talk to old software is to type at it, preferably from another program,
+and maybe over a network.</p></BLOCKQUOTE><hr>
+<BLOCKQUOTE>
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>Suppose
+you are asked to integrate a legacy application, which you connect to using
+telnet, into your Unix graphical user environment. The simplest way to
+accomplish this is to use an xterm, with the -c command line switch, to
+automatically start a telnet session to the legacy system (xterm -c telnet
+hostname). Problem solved, right? Well almost, but what about value-added
+features such as menus, accelerator keys, macros, and all the other benefits of
+a graphical user interface (GUI)? Now that the user is in a GUI environment, it
+seems like the legacy applications also should be able to take advantage of
+these features. This article shows how at least some of these productivity
+enhancements can be added to the legacy application, without modifying the
+source, in a quick and simple fashion. The way to do it is to use
+pseudo-terminals.</p>
+
+<h4><FONT COLOR="#000080">What is a Pseudo-Terminal?</FONT></H4>
+
+<p>A
+pseudo-terminal (abbreviated pty) is a pair of devices, or files; one behaves
+as a master and the other a slave. Data written to the master appears as input
+to the slave and data written to the slave appears as input to the master. The
+slave portion of the pty can be used by a child process as its terminal device
+(stdin, stdout, and stderr); the master half can be used by a parent process to
+handle the child's input and output. You can think of ptys as a much fancier,
+or heavyweight, use of pipes &#151; pipes that are bidirectional and support
+different line disciplines. (See the Unix termio(s) or tty man pages for more
+information on line disciplines.)<p>
+To integrate the legacy application, the ptys can be used in conjunction with
+an xterm, telnet, and a mediator process to give the user accelerators and
+macros. The big picture looks something like <A href="fig1.htm">Figure 1</a>.
+ All user input into the
+xterm is routed through the mediator (where it can be examined for accelerator
+keys, macro expansion, logging, etc.) and then forwarded to the legacy
+application via telnet. Similarly, everything the legacy system writes to
+telnet passes through the mediator and on to the user's xterm.<p>
+The only misleading thing about this picture is that xterm does not actually
+use stdin and stdout for its input and output. Fortunately, the designers of
+xterm had this sort of master/slave problem in mind, so all you need do is tell
+xterm, via the -S command line switch, the name of the slave pty to use. This
+is all made possible because ptys are devices and therefore can be opened by
+name like any other file. (They usually exist in the /dev directory.)</p>
+
+<h4><FONT COLOR="#000080">The Pseudo-terminal Class</FONT></H4>
+
+<p>Creating
+a pseudo-terminal is a three step process: find the next available master pty,
+open the master, and finally open the associated slave. Which variant of Unix
+you are running determines just what has to be done to perform these
+operations. For demonstration purposes, the code presented here will work under
+both Linux and Solaris using g++; porting to another Unix variant may involve
+some minor adjustments.<p>
+I've created a PseudoTerminal class to handle all the details of creating a
+pty, setting the line disciplines, starting a child process using the slave
+half of the pty, and inserting/extracting data. Its definition appears in
+<A href="list1.htm">Listing 1</a>.
+</p>
+
+<h4><FONT COLOR="#000080">pty Construction</FONT></H4>
+
+<p>The
+pty constructor automatically opens the master half of the pty during the
+construction of a PseudoTerminal object. This is possibly the most confusing
+part about ptys: how they are opened. To understand how ptys are opened you
+first must understand how they are organized in the file system. Generally,
+ptys exist in /dev/ptyXY, where X can be p, q, r, or s; and Y can range from 0
+to F hex. To open a pty you start at the first one available, /dev/ptyq0, and
+if that fails you continue attempting to open the next one until you find an
+available one or you run out of options. Once you have opened the master pty
+the corresponding slave device will be /dev/ttyXY, where the X and Y are the
+same as the master pty's. Note that the slave device is not opened until the
+slave method is called explicitly or a child process is started by the forkvp
+method (more on this later).<p>
+The pty constructor also allocates an internal buffer for use in the read
+method, the size of which can be specified during construction. The internal
+buffer provides the convenience of not having to pass a buffer to the read
+method, and it enables the extraction operators to be used.<p>
+If the constructor cannot open a master pty device it throws an exception. For
+simplicity's sake, the integer errno is the only exception thrown by a
+PseudoTerminal object. (Obviously, you can change this behavior if you want to
+provide more robust exception handling.)</p>
+
+<h4><FONT COLOR="#000080">Understanding Line Disciplines</FONT></H4>
+
+<p>A
+terminal's line discipline determines whether or not characters are echoed,
+whether the eighth bit is stripped, what the erase character is, etc. These
+settings are used by many terminal programs, such as telnet or a shell, and if
+they are not setup properly the program will not function in a desirable
+manner. Once the master half of the pty has been opened via PseudoTerminal
+object construction, the next step is to set the slave terminal line discipline
+mode.<p>
+A terminal device typically operates either in raw mode (the default), or has
+some special settings such as echo on. (Other modes include cooked and cbreak
+&#151; see the termio man page for more information.) If the child program using
+the slave pty needs a line discipline other than raw you can either open the
+slave portion of the pty, by calling slave, and then modify its line
+discipline, or pass the information into forkvp. Most of the time you can just
+copy stdin's line discipline using the copyMode(0, getSlaveFd()) utility method
+and get the settings you want. If however, you need a more sophisticated
+configuration you can setup a termio structure by hand and call setMode. (Hint,
+the stty -a command will come in handy in determining the current line mode
+setting.) Note also that all the line discipline utility methods are static, so
+they can be used to get and set the modes of other files such as stdin, etc.</p>
+
+<h4><FONT COLOR="#000080">Slave and Child Process Management</FONT></H4>
+
+<p>The
+PseudoTerminal class uses the forkvp method to start a child process that will
+use the slave portion of the pty as its stdin, stdout, and stderr. forkvp's
+signature is:</p>
+
+<pre>
+pid_t forkvp(char* argv[], bool control_terminal =
+    false, struct termio* mode = NULL);
+</pre>
+<p>If
+a child process is already running, forkvp first terminates that process and
+then forks a new process for the child. If the new process has not already been
+opened to change the line mode, forkvp opens the slave half of the pty in the
+new process by calling PseudoTerminal::slave, and the terminal line discipline
+is set up. By default the line discipline is set to raw unless the mode
+argument is non-null, in which case forkvp calls the setMode method with the
+termio information.<p>
+If the control_terminal parameter to forkvp is true, the new process will be a
+controlling terminal. (A controlling terminal is one that can have job control
+and shells, and is a process group leader &#151; when it dies all processes started
+by it will receive a SIGHUP signal.) Next, forkvp resets the stdin, stdout, and
+stderr files to use the slave portion of the pty and calls the execvp system
+call with argv to start the child process. (On some Unix systems, if the slave
+half of the pty is opened before the fork system call is made the master half
+of the pty will never get a read error when the child dies.) Finally, forkvp
+stores the child process id (pid) in the PseudoTerminal object and returns the
+pid to its caller.<p>
+Once a child process is started you can programmatically check to see if it is
+running by calling PseudoTerminal's isAlive method. isAlive uses the kill
+system call with the child's process id and the zero signal. Sending a zero
+signal effectively pings the process (no signal is raised in the child) because
+kill will return zero if the process is running, nonzero otherwise.<p>
+To kill the child process you can either destruct the PseudoTerminal object, or
+if you want the child's exit status you can call PseudoTerminal's terminate
+method. By default, terminate kills the child process with the SIGTERM signal
+(except when the object is destructed, in which case SIGKILL is used to insure
+that the process dies). terminate sends the kill signal, waits on the child to
+terminate, and then returns the value that the child exited with. Unless the
+child process has a SIGTERM signal handler, the return value of terminate will
+always be SIGTERM. In some cases you may need to take special care when using
+the SIGTERM signal because the process may not die. If this is a concern use
+either SIGKILL or an alarm as a timeout mechanism.<p>
+After a child process has completed running, or is killed by terminate, the
+PseudoTerminal object can be reused to start another child process. This is
+possible because the slave half of the pty is a device that was opened in the
+child process, between the fork and execvp system calls. This capability can be
+useful if your program periodically starts a child process, such as a shell,
+and you want to save some time by not constructing and destructing
+PseudoTerminal objects.</p>
+
+<h4><FONT COLOR="#000080">Input and Output</FONT></H4>
+
+<p>Generally
+speaking, the slave half of the pty is used by a child process only as its
+stdin, stdout, and stderr devices (as setup by the forkvp method). The master
+half, however, looks like just another file to the parent process and can
+therefore benefit from C++'s IOstream operators. To make reading and writing to
+the master half of the pty easier, class PseudoTerminal provides both read and
+write methods as well as some insertion and extraction IOstream operators.<p>
+The read method reads data into the PseudoTerminal object's internal data
+buffer (the size of which can be set during construction) using the read system
+call. It null-terminates the string, and returns the number of bytes read. If
+an error occurs during the read, PseudoTerminal::read throws an integer
+exception, errno, but only if its throw_exception parameter is true. It might
+seem odd to specify whether or not to throw an exception, but I provide the
+option so that programs that use read directly (that is, not using the
+extraction operator) can check the return value without having to use a
+try-catch block. Such programs can then access the data read by calling
+PseudoTerminal's getBuffer method and the number of bytes by calling
+getBufferCount.<p>
+Class PseudoTerminal provides two extraction operators, one to return a
+PseudoTerminal and one to return a String (as provided by the header String.h,
+from the g++ library.) Both extraction operators use PseudoTerminal's read
+method to read data from the source PseudoTerminal and write/set the results
+respectively. Extracting data from one PseudoTerminal into another simply reads
+the data from the source and writes it to the destination. For example,
+xterm_pty &gt;&gt; telnet_pty would read the data from the xterm and write it
+to the telnet process. Similarly, extracting a String simply assigns the
+contents of the internal buffer to the String. These extractors always call
+read with the throw_exception flag set to true.<p>
+PseudoTerminal's write method is a little more involved than read. write must
+insure that the number of requested bytes to write are actually written.
+Whether this feature is ever exercised depends upon how the kernel handles
+ptys, but as a safety precaution it's a good idea to always check the results
+of a write system call. Following read's exception handling model, write's
+throw_exception paraemeter determines whether or not it throws an integer
+exception for errors.<p>
+The PseudoTerminal class defines three insertion operators: one that inserts
+from another PseudoTerminal object (e.g. xterm_pty &lt;&lt; telnet_pty), one
+that inserts from a String (xterm_pty &lt;&lt; str), and one that inserts from
+a const char* (xterm_pty &lt;&lt; "hello"). These operators call write with
+throw_exception set to true.<p>
+If you want to support more data types, you can always write additional
+insertion and extraction operators outside of the class definition as friends
+of the PseudoTerminal class.</p>
+
+<h4><FONT COLOR="#000080">PseudoTerminal Destruction</FONT></H4>
+
+<p>When
+the PseudoTerminal class goes out of scope, its destructor closes the master
+and slave portions of the pty and frees the internal buffer. If the child
+process was started by calling PseudoTerminal::forkvp, the destructor calls
+terminate to kill the process.</p>
+
+<h4><FONT COLOR="#000080">A Sample Mediator Program</FONT></H4>
+
+<p>As
+outlined earlier, the method presented for enhancing a legacy system is to
+write a mediator program that starts an xterm using a pty, start a telnet
+session to the legacy system using another pty, and monitor the input from the
+user (xterm) for accelerators and macros (to telnet). The code required to do
+this using PseudoTerminals appears in <A href="list2.htm">Listing 2</a>.
+<p>
+The PseudoTerminal class provides enough information via its accessor methods
+to start the xterm with the -S command-line option. The only thing I haven't
+covered is the use of the select system call. In this example, select blocks
+until data is available for reading from either the xterm or telnet process.
+(select uses fds to determine what files to block for.) When select returns,
+the program uses the Standard C FD_ISSET macro (in sys/time.h) to determine
+which pty has input ready for reading. In the example, the mediator only looks
+for the ^Q (quit) accelerator key &#151; but it's enough to give you the general
+idea. The full source code for the PseudoTerminal class is available on the CUJ
+ftp site (see p. 3 for downloading instructions).<p>
+And finally &#151; the bonus! The way the X Window system is designed makes it
+possible to write a mediator GUI application that contains the xterm as a child
+window. This means the mediator GUI treats the xterm as it would any other
+window; the user sees the mediator and xterm as one. In other words, the
+mediator can put a menu, status bar, busy dialogs, the works, all seemingly on
+the xterm. If this sounds complicated, or involved, it's really not. The
+mediator GUI simply starts the xterm with the overrideRedirect resource set to
+true, so the window manager will ignore it, and monitors the root window for
+the ConfigureNotify event that is generated by the xterm. (The xterm can be
+identified by its window id, which it writes to stdout when it is started with
+a slave pty &#151; see the mediator example code in <A href="list2.htm">Listing 2</a>.
+) When the
+ConfigureNotify event arrives the mediator can reparent the xterm,
+XReparentWindow, into its main window.</p>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>The
+PseudoTerminal class greatly simplifies using ptys and provides a friendly
+interface for dealing with data and child processes. In all fairness, however,
+porting ptys to older variants of Unix can be somewhat difficult. If you are
+faced with such a problem the easiest solution is to look at the pty.c source
+file used in the vim editor (www.vim.org) and see how they handle the pty for
+the OS in question. Also, as mentioned above, the exception handling in this
+implementation is for demonstration purposes only. o
+</p>
+<p><i>William L. Crowe is a consultant currently working for Northern Telecom
+in the Research Triangle Park, North Carolina. He is a software architect who
+specializes in Object-Oriented Design, GUI design, and Distributed Computing.
+Bill can be reached via email at crowe@ipass.net. 
+</i></p>
+
+<h4><a href="../../../source/1998/mar98/crowe.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</body></html>

@@ -1,0 +1,293 @@
+<HTML><HEAD>
+<TITLE>August 1998/A Wrapper Class for NT Services/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2: Implementation file for NTService class</A></h4>
+
+<pre>
+#include &lt;windows.h&gt;
+#include "ntservice.h"
+
+NTService::NTService( const char *name, 
+    LPSERVICE_MAIN_FUNCTION funp_srvmain, 
+    LPHANDLER_FUNCTION funp_ctrl)
+{
+    //== first initialize data members from the args
+    //== set function pointers for later use
+    mfpSrvMain = funp_srvmain;
+    mfpSrvControl = funp_ctrl;
+
+    //== copy the service name - if needed add UNICODE support here
+    memset( m_name, 0, sizeof(m_name) );
+    strncpy( m_name, name, sizeof(m_name)-1);
+
+    //== clear the status flags
+    m_isStarted = false;
+    m_isPaused = false;
+
+    //== clear the dispatch table
+    memset( &amp;mDispatchTable[0], 0, sizeof( mDispatchTable ) );
+
+    //== clear the SERVICE_STATUS data structure
+    memset( &amp;mStat, 0, sizeof( SERVICE_STATUS ));
+    mh_Stat = 0;
+
+    //== Now initialize SERVICE_STATUS here so we can 
+    //== call SetAcceptedControls() before Startup() or
+    //== override in constructor of child class.
+    mStat.dwServiceType         = SERVICE_WIN32; 
+    mStat.dwCurrentState        = SERVICE_START_PENDING; 
+    mStat.dwControlsAccepted    = SERVICE_ACCEPT_STOP 
+                                | SERVICE_ACCEPT_PAUSE_CONTINUE
+                                | SERVICE_ACCEPT_SHUTDOWN; 
+}
+
+NTService::~NTService( void )
+{
+}
+
+DWORD NTService::Startup( void )
+{
+    //== initialize the dispatch table
+    mDispatchTable[0].lpServiceName = m_name;     //== Note: these 
+    mDispatchTable[0].lpServiceProc = mfpSrvMain; //   are pointers
+
+    //== starts the service 
+    if( !StartServiceCtrlDispatcher( mDispatchTable )){
+        m_err = ::GetLastError();
+        return m_err;
+    }
+
+    return NO_ERROR;
+}
+
+int NTService::Service( DWORD argc, LPTSTR* argv )
+{
+    mh_Stat = RegisterServiceCtrlHandler( TEXT( m_name ), 
+                  mfpSrvControl );
+    if( (SERVICE_STATUS_HANDLE)0 == mh_Stat )
+    {
+        m_err = ::GetLastError();
+        return m_err;
+    }
+    
+    if( Init( argc, argv ) != NO_ERROR )
+    {
+        ChangeStatus( SERVICE_STOPPED );
+        return m_err;
+    }
+    
+    ChangeStatus( SERVICE_RUNNING );
+    return Run();
+}
+
+void NTService::Control( DWORD opcode )
+{
+    switch( opcode )
+    {
+    case SERVICE_CONTROL_PAUSE:
+        ChangeStatus( SERVICE_PAUSE_PENDING );
+        if( OnPause() == NO_ERROR )
+        {
+            m_isPaused = true;
+            ChangeStatus( SERVICE_PAUSED );
+        }
+        break;
+
+    case SERVICE_CONTROL_CONTINUE:
+        ChangeStatus( SERVICE_CONTINUE_PENDING );
+        if( OnContinue() == NO_ERROR )
+        {
+            m_isPaused = false;
+            ChangeStatus( SERVICE_RUNNING );
+        }
+        break;
+
+    case SERVICE_CONTROL_STOP:
+        ChangeStatus( SERVICE_STOP_PENDING );
+        OnStop();
+        ChangeStatus( SERVICE_STOPPED );
+        break;
+
+    case SERVICE_CONTROL_SHUTDOWN:
+        ChangeStatus( SERVICE_STOP_PENDING );
+        OnShutdown();
+        ChangeStatus( SERVICE_STOPPED );
+        break;
+
+    case SERVICE_CONTROL_INTERROGATE:
+        OnInquire();
+        SetServiceStatus( mh_Stat, &amp;mStat );
+        break;
+
+    default:
+        OnUserControl( opcode );
+        SetServiceStatus( mh_Stat, &amp;mStat );
+        break;
+    };
+    return;
+}
+
+
+bool NTService::Install( void )
+{
+    //== check to see if we are already installled
+    if( IsInstalled() )
+        return true;
+
+    //== get the service manager handle
+    SC_HANDLE schSCMgr = 
+        OpenSCManager( NULL, NULL, SC_MANAGER_ALL_ACCESS );
+    if( schSCMgr == NULL )
+    {
+        m_err = ::GetLastError();
+        return false;
+    }
+
+    //== get the full path of the executable
+    char szFilePath[_MAX_PATH];
+    ::GetModuleFileName(NULL, szFilePath, sizeof(szFilePath));
+
+
+    //== install the service
+    SC_HANDLE schSrv = CreateService(
+        schSCMgr,
+        m_name,
+        m_name,
+        SERVICE_ALL_ACCESS,
+        SERVICE_WIN32_OWN_PROCESS,
+        SERVICE_DEMAND_START,
+        SERVICE_ERROR_NORMAL,
+        szFilePath,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL
+    );
+
+    bool bRetval = true;
+    if( schSrv == NULL )
+    {
+        m_err = ::GetLastError();
+        bRetval = false;
+    }
+    else
+        InstallAid(); //== overload to add registry entries 
+                      //   if needed
+    
+    //== All done, so pick up our toys and go home!
+    CloseServiceHandle( schSrv );
+    CloseServiceHandle( schSCMgr );
+    return bRetval;
+}
+
+bool NTService::UnInstall( void )
+{
+    if( !IsInstalled() )
+        return true;
+
+    //== get the service manager handle
+    SC_HANDLE schSCMgr = 
+        OpenSCManager( NULL, NULL, SC_MANAGER_ALL_ACCESS );
+    if( schSCMgr == NULL )
+    {
+        m_err = ::GetLastError();
+        return false;
+    }
+
+    //== Get the service handle
+    SC_HANDLE schSrv = OpenService( schSCMgr, m_name, DELETE );
+    if( schSrv == NULL )
+    {
+        m_err = ::GetLastError();
+        CloseServiceHandle( schSCMgr );
+        return false;
+    }
+
+    //== Now delete the service
+    bool bRetval = true;
+    if( !DeleteService( schSrv ) )
+    {
+        bRetval = false;
+        m_err = ::GetLastError();
+    }
+
+    //== do any application specific cleanup
+    UnInstallAid();
+
+    //== Put away toys and go home!
+    CloseServiceHandle( schSrv );
+    CloseServiceHandle( schSCMgr );
+    return bRetval;
+}
+
+DWORD    NTService::GetLastError( void )
+{
+    return m_err;
+}
+
+/*=================================================================
+bool NTService::IsInstalled()
+
+Purpose: Returns true if the service has already been installed.
+=================================================================*/
+bool NTService::IsInstalled( void )
+{
+    bool bResult = false;
+
+    // Open the Service Control Manager
+    SC_HANDLE hSCM = 
+        ::OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
+    if (hSCM) 
+    {
+        // Try to open the service
+        SC_HANDLE hService = 
+            ::OpenService(hSCM, m_name, SERVICE_QUERY_CONFIG);
+        if (hService) 
+        {
+            bResult = true;
+            ::CloseServiceHandle(hService);
+        }
+        ::CloseServiceHandle(hSCM);
+    }
+    
+    return bResult;
+}
+
+void NTService::SetAcceptedControls( DWORD controls )
+{
+    mStat.dwControlsAccepted = controls;
+}
+
+void NTService::ChangeStatus( DWORD state, DWORD checkpoint, 
+         DWORD waithint )
+{
+    mStat.dwCurrentState  = state;
+    mStat.dwCheckPoint    = checkpoint;
+    mStat.dwWaitHint      = waithint;
+    
+    SetServiceStatus( mh_Stat, &amp;mStat );
+}
+
+/*=================================================================
+    Stubs
+=================================================================*/
+DWORD 
+NTService::Init( DWORD argc, LPTSTR* argv ) { return NO_ERROR; }
+
+void  NTService::InstallAid( void ) {}
+void  NTService::UnInstallAid( void ) {}
+
+DWORD NTService::OnPause( void ) { return NO_ERROR; }
+DWORD NTService::OnContinue( void ) { return NO_ERROR; }
+
+void  NTService::OnStop( void ) {}
+void  NTService::OnShutdown( void ) { OnStop(); }
+
+void  NTService::OnInquire( void ) {}
+void  NTService::OnUserControl( DWORD ) {}
+//End of File</pre>
+</BODY>
+</HTML>

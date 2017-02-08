@@ -1,0 +1,153 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>November 1998/Skip Lists in C++</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocnov.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Skip Lists in C++</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Bill Whitney</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>Skip lists are an interesting alternative to balanced trees, and rather easier to implement correctly.</p>
+</BLOCKQUOTE>
+<HR>
+<BLOCKQUOTE>
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>If you're like me, you're always looking for an alternative data structure that not only performs admirably, but is easy to implement and understand as well. The skip list, described by William Pugh in "Skip Lists: A Probabilistic Alternative to Balanced Trees" (<I>Communications of the ACM</I>, June 1990) fits this description.</p>
+<p>Skip lists are ordered key/object-based containers offering excellent performance with minimal processing overhead. Although skip lists resemble linked lists, they actually have more in common with balanced trees when it comes to performance. The most important difference is that skip lists require none of the periodic reorganization required with balanced trees &#151; the searching, insertion, and removal algorithms are simpler to code, understand, and extend.</p>
+
+<h4><FONT COLOR="#000080">How Skip Lists Work</FONT></H4>
+
+<p><A HREF="fig1.htm">Figure 1</A> shows a skip list containing a product inventory. All data is contained in a node and identified by a key. Probably the most outstanding feature of the nodes is the variations in their heights. By filling a list with nodes of varying heights, the search algorithm can "see" past subsequent nodes when searching for a particular value. For example, given a node list in which 50% of the nodes are twice as high as the rest, search time is cut in half. The algorithm needs to look at only half of the values.</p>
+<p>As the height of the nodes increase, the visibility between nodes has the potential to be much greater, resulting in even shorter searches. In the ideal skip list, nodes of designated heights would be distributed throughout the list at pre-determined intervals. This would guarantee the maximum benefit from the nodes' look-ahead capability. To sustain performance, however, skip lists employ a probabilistic approach to assigning node height. This approach also removes the requirement for constant reorganization to maintain pre-determined intervals. I'll show the algorithm for probabilistic node height a little later. Consult the reference at the end of this article for a detailed mathematical analysis.</p>
+<p>Looking back at <A HREF="fig1.htm">Figure 1</A>, the head and tail are actual nodes in the skip list, but they serve only as markers for the beginning and end; they contain no useful data. The head points to the first visible node at each height (only A and C in <A HREF="fig1.htm">Figure 1</A>). Any node for which there exists no subsequent node at its height (C, D, I and J) points to the "tail" node. Suppose a search is made for product code H2345 in the product inventory. Each search starts at the head of the skip list, comparing the sought-after key with the first node pointed to by the root node at the list's current height.</p>
+<p>Before I go any further, I should explain the concept of <I>maximum height</I>. The maximum height of a skip list defines the number of vertical pointers the skip list can maintain. I use the term <I>current height</I> to refer to the tallest node that has been inserted into the skip list so far. Because node height is probabilistic, current height reaches maximum height as a skip list matures. This will become clearer when I present the code.</p>
+<p>Referring to <A HREF="fig1.htm">Figure 1</A>, the product sought (H2345) is located in node E. This sample skip list has a current height of 4, a maximum height of 4, and contains ten nodes labeled A through J. All searches start at the root node, from the level indicated by current height (4). Root node level 4 points to node C at level 4. Comparing the sought key (H2345) with node C's key (B2000), shows that the search is still below the value needed. Next, the search algorithm follows node C's level 4 pointer, which brings it to the list's tail. That's obviously too far, so the search drops down to node C's level 3 pointer and looks ahead to node D. Node D's key value is G7009, which is too low. Node D's level 3 pointer leads to the list's tail again so the search drops down to level 2 and looks ahead. The next node is E, and checking its key produces a match. The search algorithm had to traverse three nodes to locate the key value H2345 in node E. If it were looking for the value P3629 in node I (9th node in the list), the algorithm would have had to look at only four nodes.</p>
+
+<h4><FONT COLOR="#000080">The C++ Implementation</FONT></H4>
+
+<p>I've implemented the skip list in two template classes, <B>SkipList</B> and <B>SkipNode</B>. I also use a helper class called <B>RandomHeight</B>, which is based on Pugh's algorithm for generating probabilistically random node heights. <B>RandomHeight</B> is called upon by the <B>SkipList insert</B> method when new nodes are generated. It appears in <A HREF="list1.htm">Listing 1</A> (<B>RandomHeight.h</B>) and <A HREF="list2.htm">Listing 2</A> (<B>RandomHeight.cpp</B>).</p>
+<p>The <B>RandomHeight</B> constructor lays the ground rules for the scope of the random numbers to be generated. These rules consist of the maximum node height (<B>level</B>), and the percentage of nodes that should appear at level 1. When new nodes are created, a random node height is obtained from <B>RandomHeight</B>'s <B>newLevel</B> method. Given a height of 4 and a percentage of 0.5, for example, 50% of the generated values would produce level 1 nodes, 25% of the nodes would be level 2, 12.5% of the nodes would be level 3 nodes, and so on. The <B>random(2)</B> call produces a number between 0 and 1 using my compiler.</p>
+
+<h4><FONT COLOR="#000080">The SkipNode Class</FONT></H4>
+
+<p>Skip nodes are implemented in <B>SkipNode.h</B> (<A HREF="list3.htm">Listing 3</A>). Each node represents a single element in a skip list, and contains pointers to the node's key, its object, and subsequent skip nodes at or below its height.</p>
+<p>A skip node can be instantiated with one of two constructors. The first takes pointers to a key and an object, and an integer indicating the height of the new node. The node's height is kept in a private attribute called <B>nodeHeight</B>, and is reflected in the number of allocated forward node pointers kept in <B>fwdNodes</B>. To make the code easier to read, I've made the <B>fwdNodes</B> attribute public. This also avoids the overhead of a method call when checking whether any of the node's forward pointers actually point to anything.</p>
+<p>The second <B>SkipNode</B> constructor takes an integer identifying the node height. When the node is constructed with only a height, the forward pointers are allocated, and the key and object pointers are set to <B>NULL</B>. This constructor is used only for the list's head node. Both constructors set all allocated forward pointers to <B>NULL</B>. These forward pointers will be used heavily by the <B>SkipList</B> class when inserting, searching for, and deleting <B>SkipNode</B> objects.</p>
+<p><B>SkipNode</B> also contains methods you can call to retrieve a key (<B>getKey</B>), an object (<B>getObj</B>), and the node's height <B>(getHgt</B>). Here's a short example in which I instantiate a product node with a key, object, and height, followed by a query for the key and height:</p>
+
+<pre>
+String* key =
+    new String("Bill Whitney");
+productData* obj  = new productData;
+SkipNode* newNode =
+    new SkipNode&lt;Key,Obj&gt;(key, obj,
+            rndGen-&gt;newLevel());
+
+    String* x = newNode-&gt;getKey();
+    int hgt = newNode-&gt;getHgt();
+</pre>
+
+<p>SkipNode's</B> destructor deletes memory allocated for the key, object, and forward pointers.</p>
+
+<h4><FONT COLOR="#000080">Creating a SkipList Object</FONT></H4>
+
+<p>While <B>SkipNode</B> objects represent the individual nodes in a skip list, the <B>SkipList</B> class manages their insertion, deletion, and retrieval (see <A HREF="list4.htm">Listing 4</A>, <B>SkipList.h</B>). <B>SkipList</B> has one constructor, which takes three values: the probability and maximum node height (which are used to instantiate <B>RandomHeight</B>), and a parameter representing the maximum key value. The maximum key value is stored in the tail of the skip list, preventing the search algorithm from attempting to look beyond that point. This sentinel operation could be implemented differently; for example, by comparing a <B>SkipNode</B>'s forward pointer to the address of the tail node.</p>
+<p>When a <B>SkipList</B> is instantiated, it creates an instance of <B>RandomHeight</B>, and then creates the skip list's head and tail nodes. The constructor sets the pointers for <B>key</B> and <B>object</B> in the head node to <B>NULL</B>, and sets all forward pointers in the head node to the address of the tail node. The tail node's forward pointers and object pointer are set to <B>NULL</B>. The key pointer will point to the maximum key value provided in the <B>SkipList</B> constructor. After construction the skip list appears as shown in <A HREF="fig2.htm">Figure 2</A>, with a maximum height of 4 and a current height of 0.</p>
+<p>The following snippet shows how to instantiate the <B>SkipList</B> object in your code. The maximum key value shown here is based on the example in <A HREF="fig1.htm">Figure 1</A>, and reflects the highest possible product identifier. In reality, this value will depend on your application.</p>
+
+<pre>
+String* maxKey = new String("Z9999");
+SkipList&lt;String, productData&gt;
+    *aSkipList =
+        new SkipList&lt;String,
+                productData&gt;
+            ((float).5, 4, maxKey);
+</pre>
+
+<h4><FONT COLOR="#000080">Searching the Skip List</FONT></H4>
+
+<p>All operations on a skip list rely on the search algorithm, so I discuss this first.</p>
+<p>Earlier I provided a high-level explanation of this process, showing how a search for product H2345 would take place. The following explains how the code itself works. Here's the search algorithm broken out of the <B>insert</B> method:</p>
+
+<pre>
+SkipNode&lt;Key,Obj&gt;* tmp = head;
+Key* cmpKey;
+
+    // Figure out where new node goes
+    for ( h = curHeight; h &gt;= 1; h- )
+    {
+        cmpKey =
+   tmp-&gt;fwdNodes[h]-&gt;getKey();
+        while ( *cmpKey &lt; *k )
+        {
+          tmp = tmp-&gt;fwdNodes[h];
+          cmpKey =
+  tmp-&gt;fwdNodes[h]-&gt;getKey();
+        }
+        updateVec[h] = tmp;
+    }
+    tmp = tmp-&gt;fwdNodes[1];
+</pre>
+
+<p>The search starts at the topmost forward pointer in the head node, which is indicated by <B>curHeight,</B> and controlled by the outermost <B>for</B> loop. The head has no key, so the code always retrieves the value of the key in the next node at this level. It does so via the <B>fwdNodes</B> attribute. If the key (<B>k</B>) in the node being compared is less than the key (<B>cmpKey</B>), then the next node becomes the current node, and the comparison key pointer is reset to the value of the key in the next forward node (handled in the <B>while</B> loop). This process continues until the code finds a key that is less than the search key. (This explains why the tail was set to a sentinel value of Z9999). At this point, the search drops down a level in the current node, and the <B>cmpKey</B> pointer is set to the key value of the next forward node.</p>
+<p>Eventually, the search ends up at level 1, in the node just prior to the node less than or equal to the key being sought (because the search code is always looking at the key value for the next node). This is the reason for the final forward shift in <B>tmp</B> following the <B>for</B> loop. It is at this point where all add, delete, and insert operations take place.</p>
+<p>Another important point about the search routine is that following the <B>while</B> loop (or more precisely, just prior to dropping down a level in the current node), the search routine sets <B>updateVec[h]</B> to the current node. This vector of <B>SkipNode</B> pointers is used as a placeholder for pointers that must be moved when splicing the skip list back together after <B>insert</B> or <B>delete</B> operations. The <B>updateVec</B> pointers always point to the most previous node prior to the insertion/deletion point at each level.</p>
+<p>To retrieve an object, <B>SkipList</B> contains a method called <B>retrieve</B>, which takes the key as an argument, and returns the object (or <B>NULL</B> if the object doesn't exist). Here's an example:</p>
+
+<pre>
+String *srch = new String("H2345");
+productData* prod =
+    sList-&gt;retrieve(srch);
+</pre>
+
+<h4><FONT COLOR="#000080">Inserting Objects into the SkipList</FONT></H4>
+
+<p>Adding a node to the skip list is as simple as calling the <B>insert</B> method with the new key and object. In my <B>SkipList</B> class, new memory for the key will be allocated in the <B>SkipNode</B> object, but <B>productData</B>'s memory will not be copied (so you should not delete that memory after calling <B>insert</B>). Here's a sample insertion:</p>
+
+<pre>
+String* aKey = new String("Y8792");
+productData* prod  = new productData;
+
+aList-&gt;insert(aKey, prod);
+</pre>
+
+<p>The first thing <B>SkipList</B>'s <B>insert</B> method does is use the search algorithm to select a location for a new node. After it locates the perfect spot, the <B>insert</B> algorithm checks if the height of the new node is greater than any previously created node. If so, then <B>insert</B> resets <B>SkipList</B>'s <B>curHeight</B> to match the new level, and sets the <B>updateVec</B> pointers for the previously unused levels to the head node. The search algorithm will use this information later to enable finding the new node from the head node. (Remember, the head points to the tail at all unused levels).</p>
+<p>Once the new node is instantiated, it gets spliced into the list by re-pointing the previous node pointers to the new node. All pointers up to and including the new node's height are retargeted. The new node then acquires from <B>updateVec</B> the forward pointers from its previous nodes for the levels it occupies.</p>
+<p>A successful insert will return <B>true</B>. If an insertion fails (most likely due to a duplicate key) then <B>insert</B> will return <B>false</B>. You can easily change the behavior of <B>insert</B> to accept duplicate keys.</p>
+
+<h4><FONT COLOR="#000080">Removing Skip List Items</FONT></H4>
+
+<p>You can remove any item from the skip list by calling the <B>remove</B> method. It takes an argument equal to the key you want to delete. As with <B>insert</B>, the first thing to take place is a search for the existing key. The search routine also builds the <B>updateVec</B> array containing pointers to the most previous nodes at each preceding level. When the node you want to remove is located, its forward pointers are copied into the forward pointers of the previous nodes. This effectively slices the node out of the list. The <B>remove</B> method then performs a <B>delete</B> on the <B>SkipNode</B> object.</p>
+<p>After the object is deleted, you should check whether the node was the tallest in the list. If it was, the head will once again have forward pointers to the tail. The code then uses this information to adjust <B>curHeight </B>to the correct value. If the key value you passed to <B>remove</B> doesn't exist, the routine returns <B>false</B>. Otherwise <B>remove</B> returns <B>true</B>.</p>
+
+<h4><FONT COLOR="#000080">Dumping the List</FONT></H4>
+
+<p>You can still perform linear operations on the list by traversing the nodes at level 1 (as all nodes are linked at that level). I demonstrate this feature in the <B>dump</B> method used to print out the entire skip list. This method accepts an <B>ofstream</B> pointer and prints the value of the key for each node.</p>
+
+<h4><FONT COLOR="#000080">Skip List Optimization</FONT></H4>
+
+<p>Pugh suggests that for any given probability (<I>p</I>), you can compute the optimal node height if you know the approximate number of nodes (<I>n</I>) you'll need. The formula is: log1/p n. If we arbitrarily chose 50 nodes and a probability of 0.5, the formula would yield an optimal height of 6. (5.64 is the actual result.)</p>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>With any data structure, the application should dictate the most appropriate choice. Skip lists are easy to code and understand, and therefore easy to implement and extend. As an added bonus, they offer average O(log n) performance, and the convenience of both binary and linear operations.</p>
+
+<h4><FONT COLOR="#000080">Reference</FONT></H4>
+
+<p>William Pugh's web site can be found at: www.cs.umd.edu/~pugh and contains a link to "Skip Lists: A Probabilistic Alternative to Balanced Trees," <I>Communications of the ACM</I>, June 1990.</p>
+
+<p><i>Bill Whitney is an Application Consultant currently working for GTE Data Services in Tampa, Florida. He specializes in Object-Oriented design, Client/Server application architecture, and Telecommunications Management Networks.</i></p>
+
+
+<h4><a href="../../../source/1998/nov98/whitney.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

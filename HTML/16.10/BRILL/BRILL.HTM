@@ -1,0 +1,374 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>October 1998/Writing COM Clients with Late and Early Binding</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tococt.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Client/Server</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Writing COM Clients with Late and Early Binding</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Gregory Brill</FONT></H3>
+<BLOCKQUOTE>
+
+<p>Here's the answer to the question &#151; which is better COM style, early or late binding? The answer is: both.</p></BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+<p>The first practical experience most developers have using COM involves writing a client application that interacts with a COM server in some way. One of the most common and useful things you might want to do along these lines is to "OLE Automate" a third-party application or C++ COM object. OLE automation is a method that enables a client application to "remote control" an entirely separate application (called an OLE Automation Server <a href="#1">[1]</a>) or a generic COM object to take advantage of its functionality. You could, for example, write a C++ application that seems to perform complex statistical or financial analysis, but in reality is "automating" Lotus 123 or Microsoft Excel behind the scenes. The client simply acts as a front-end interface for the user, secretly ferrying data to and from the automation server, which does the real work.</p>
+<p>If you're interested in using automation, most of the information you'll find is very high level, revolving around Visual Basic or Javascript. Trying to employ the same principals in C++ will suddenly plunge you into a viper's nest of terms and technologies, such as <B>Variant</B>s, <B>IDispatch</B>, <B>SafeArray</B>s, type libraries, dual interfaces, <B>DISPID</B>s, etc. Don't worry, though. Like almost every facet of COM, automation is very fathomable if taken in small pieces.</p>
+<p>In this article I'll explain the two major methods used by COM clients to hook up to COM servers &#151; late and early binding. I'll show how to build simple client applications that use these methods. Along the way, I'll introduce a few other concepts that are important in the world of COM.<.p>
+
+<h4><FONT COLOR="#000080">Defining Late and Early Binding</FONT></H4>
+
+<p><I>Late binding</I> is the contemporary term for what is traditionally known as OLE Automation. The word "OLE" is falling out of use somewhat as Microsoft replaces "OLE" terminology with COM terminology. (OLE is entirely built on COM, so this makes sense.) It stands to reason that if there is a late binding, there is also an early binding; and there is a definite rationale for using each. Late and early binding are described as follows:</p>
+
+<h4><FONT COLOR="#000080">Late Binding</FONT></H4>
+
+<p>Suppose you want to call methods on a COM object or Automation Server, but have no header files, type library (discussed later), or any programmatic information about the object. Late binding is what makes this possible. In fact, with late binding you can even instantiate and use a COM object <a href="#2">[2]</a> on a remote machine. The client takes no responsibility for making sure that the method names and their arguments are appropriate for the objects on which they're called. In late binding the client effectively asks the object, "Do you support function <B>Add(int x, int y)</B>?" If the object supports the function, the client goes ahead and calls it.</p>
+<p>At this point it is not obvious how a client can call methods on a remote object without having any kind of programmatic information. The answer is that COM has a<B> </B>built-in<B> </B><I>marshaling</I> procedure for late binding. That is, COM knows how to package remote method calls and their arguments over the network, reassemble them on the server, and return the result. Of course, there's always a cost: late binding restricts you to a limited range of data types. It can't marshal structures, linked lists, objects, or any abstract data type.</p>
+<p>That said, late binding is wonderfully useful. Late binding is the only thing supported by older COM classes and OLE applications. Almost every new commercial application and COM class supports both late and early binding. (They often have what are called "dual" interfaces, meaning they support both. For more information, see the sidebar <A HREF="sidebar1.htm">"Dual Interfaces."</A>) You can think of late binding as the lowest common denominator of COM programming, to which almost every object will respond. So if you can program a late binding client application, you can automate almost anything you like. In fact, certain modern-day scripting environments, such as Sybase's PowerBuilder or Microsoft's ASP, can use only late binding.</p>
+
+<h4><FONT COLOR="#000080">Early Binding</FONT></H4>
+
+<p>Early binding is the method of choice if you know, at compile time, how the COM class you wish to automate is defined. In simple C++ terms, this means you have header files (or a type library) for the object so that the compiler can resolve references to it at compile time. (This "header" is actually more than the traditional C++ class declaration. It contains all the RPC (Remote Procedure Call) plumbing that makes DCOM work. (It can also be generated by your client via a type library, but we'll get into that later.) Method calls invoked using early binding are orders of magnitude faster than late binding calls. To take advantage of early binding you may also need a proxy-stub DLL (also discussed later).</p>
+<p>To sum up, early binding is faster, more efficient, and far easier to program. Additionally, with early binding your compiler can type check for you, making an early-bound client application very similar to a traditional C++ application that instantiates and uses a third-party C++ class.</p>
+
+<h4><FONT COLOR="#000080">Building a Late-Binding Client</FONT></H4>
+
+<p>It's time to put these concepts into action and create a client application based on late binding. Doing that requires a better understanding of COM marshaling, and the dispatch mechanism behind late binding. So I'll focus on these items first.</p>
+
+<h4><FONT COLOR="#000080">IDispatch: The Mechanics of Late Binding</FONT></H4>
+
+<p>As I stated earlier, COM itself knows how to marshal late binding methods and arguments from a client to a remote COM object on a different machine. As a preliminary to understanding, imagine what kind of things such a mechanism would need to do. First, it would need to know what methods and arguments the remote object/application supported. Since no header file would be available, the mechanism could not instantiate any kind of proxy class in the client application. If such a proxy class existed, it could call the client's methods on the real object residing on the server. Instead, the only information available would typically be a paper manual or a help file &#151; but with late binding that's actually enough.</p>
+<p>The first hurdle to jump is that the C++ compiler will yell at us if we try to call a method for which there's no formal declaration, such as:</p>
+
+<pre>
+ISomeInterface-&gt;SomeFunctionNotDeclaredOnClient()
+</pre>
+
+<p>We need another way to call this function. Suppose there was a standard, system-wide, special interface, for which a header file did exist, that enabled a client to "dispatch" the method invocation to the remote object as a string. Something like:</p>
+
+<pre>
+ILateBinding-&gt;
+  RemoteInvokeMethodByStringName
+  ("SomeFunctionNotDeclaredOnClient")
+</pre>
+
+<p>(This may make you cringe, but it would certainly get the compiler off our back.) It's easy to imagine that the remote object could support the <B>ILateBinding</B> interface with a <B>switch/case</B> statement to interpret the call. It isn't efficient, but it does look like it will work. All that remains are the function arguments. How can we send them?</p>
+<p>Keeping in mind that late binding limits the client to a finite group of data types (called Automation Types), maybe we can use a union:</p>
+
+<pre>
+//remember, unlike a structure,
+//a union expects to be only one of
+//these types and will only be as
+//big as its biggest type.
+
+union AnyofThese
+{
+int iVal;
+float fVal;
+char cVal;
+//and every other "Automation Type"
+//that late binding supports
+}
+</pre>
+
+<p>Well, unions are close, but they're not enough. One of the interesting "features" of late binding is that it will automatically convert your arguments to the type appropriate to your method. In other words, if you call the late-bound method <B>"Add"</B> with two string arguments instead of two integers, the object will perform the string-to-integer conversion automatically if possible. Because of this, the implementer of <B>ILateBinding</B> (In reality this interface is called <B>IDispatch</B>) cannot be sure which member of the union has valid data. The solution is to add what is called a discriminator, a field which tells the remote object which member of the union is valid. To rewrite:</p>
+
+<pre>
+enum types {VT_INTEGER,
+            VT_FLOAT,
+            VT_CHAR};
+
+struct Variant
+{
+enum types discriminator;
+                          
+union AnyofThese
+{
+int iVal;
+float fVal;
+char cVal;
+...
+}
+};
+</pre>
+
+<p>The above structure is a special kind of discriminated union called a <B>Variant</B>.</p>
+<p>Now we can rewrite the server's <B>RemoteInvoke</B> function to take an arbitrary length array of <B>Variant</B>s, one variant for every argument. We could call it like this:</p>
+
+<pre>
+Variant args[2];
+Variant retval;
+
+args[0].discriminator=VT_INT;
+args[0].ival=2;
+
+args[1].discriminator=VT_INT;
+args[1].ival=3;
+
+ILateBinding-&gt;RemoteInvoke("Add", args, &amp;retval);
+</pre>
+
+<p>This is certainly not the most elegant architecture, but it is almost exactly how late binding is done. Here is the real code that performs (or "automates") the <B>"Add"</B> function on a remote object through the <B>IDispatch</B> interface:</p>
+
+<pre>
+DISPID dispid;
+DISPPARAMS dp={NULL,NULL,0,0};
+VARIANTARG vargs[2];
+VARIANT arg1,arg2,result;
+
+IDispatch * idsp;
+
+TCHAR progid[255];
+CLSID pclsid;
+
+// 'L' tells the compiler to
+// use two-byte characters
+// COM requires most strings
+// to be in this form to
+// support multiple spoken languages
+
+wcscpy(progid, L"comcalc.calc");
+CLSIDFromProgID( progid, &amp;pclsid);
+
+HRESULT hr =
+  CoCreateInstance(pclsid, NULL, CLSCTX_ALL,
+                   IID_IDispatch, (void **)&amp;idsp);
+
+arg1.vt= VT_BSTR;
+
+//the implementor of IDispatch will
+//convert this to integer
+//automatically!
+arg1.bstrVal = L"1";
+     
+arg2.vt= VT_BSTR;
+arg2.bstrVal = L"2";
+
+vargs[0]=arg1;
+vargs[1]=arg2;
+
+dp.rgvarg=vargs;
+dp.cArgs = 2; //how many args
+
+OLECHAR * name=L"add";
+
+//below:  note that if the object
+//did not support this method
+//GetIDsOfNames would have returned
+
+idsp-&gt;GetIDsOfNames(IID_NULL, &amp;name,
+        1, GetUserDefaultLCID(),
+        &amp;dispid);
+
+idsp-&gt;Invoke(dispid, IID_NULL,
+        GetUserDefaultLCID(),
+        DISPATCH_METHOD, &amp;dp,
+        &amp;result,0,0);
+
+//ABOVE: GetUserDefaultLCID() passed
+//the location identifier to invoke
+//so that it can accommodate strings
+//of different spoken languages.
+//It will be US English for us
+
+cout&lt;&lt;result.iVal&lt;&lt;ENDL;
+idsp-Release();
+</pre>
+
+<p>Some of the structures in the above code may seem a bit confusing, but they are all really pretty simple. Take <B>DISPPARAMS</B> for example. It is really nothing but a structure with four elements declared as:</p>
+
+<pre>
+typedef struct  tagDISPPARAMS
+    {
+    VARIANTARG __RPC_FAR *rgvarg;
+    DISPID __RPC_FAR *rgdispidNamedArgs;
+    UINT cArgs;
+    UINT cNamedArgs;
+    }
+</pre>
+
+<p>The first element will hold a pointer to an array of variants, as made evident by the line:</p>
+
+<pre>
+dp.rgvarg = vargs;
+</pre>
+
+<p>Remember that <B>vargs</B> is an array of variants, since this is how function arguments must be packaged to call a method using late binding. <B>rgdispidNamedArgs</B> is used primarily for compatibility with Visual Basic style function arguments. Visual Basic allows you to have optional function arguments that can be passed as parameters in any order. For example, in VB the following is possible:</p>
+
+<pre>
+VBFunc(arg1:=1, arg5:=5, arg3:=3)
+</pre>
+
+<p>rgdispidNamedArgs</B> is important for programmers taking advantage of this feature. It enables mapping of the variant argument being passed to <B>Invoke</B> to the appropriate optional argument on the server side function.</p>
+<p>Even if VB considerations offend your C++ sensibilities, VB is a strong driving architectural force in COM. Late binding and many other COM technologies are entirely based on the VB model. In fact, it's fair to say that a large degree of the complexity in COM/DCOM results from the need to support Visual Basic. Since the VB development environment does not support threading, explicit memory allocation, pointers, or networking issues, the COM architecture has to pick up the ball.</p>
+<p>If you examine the above code and ignore all but the most obvious function parameters, it should be pretty straightforward. One addition you'll notice is the <B>IDispatch</B> member function <B>GetIDsOfNames.</B> Unlike the code in the <B>ILateBinding</B> pseudo-example, <B>IDispatch</B> does not let you invoke a method by string name in a single step. The <B>Invoke</B> function takes a <B>dispid</B> as its first argument (<B>DISPID</B> is simply a <B>long,)</B> so you really invoke a remote method by number, not by name. This is all <B>GetIDsOfNames</B> does. It allows you to send an array of method names as strings, and get back their specific <B>DISPID</B> for use in the <B>Invoke</B> function.</p>
+<p>Now that you understand the basic structure of late binding and <B>IDispatch</B>, it should be easy to imagine a C++ wrapper class to grow and shrink the <B>VARIANTARG</B> structure dynamically and handle all the <B>IDispatch</B> methods in a more encapsulated way.</p>
+
+<h4><FONT COLOR="#000080">Building an Early Binding Client</FONT></H4>
+
+<p>I find it useful to think of COM as nothing more than a mapping of C++ classes to RPC calls (Remote Procedure Calls). While this is a major oversimplification, it represents the functionality at the heart of COM. When you call a method on a COM Class in a client application, that method call is really being passed to the RPC layer, which "remotes" the method invocation to the real object, which may be on another machine. If you think of it this way, you can imagine the programmatic steps necessary to create a more robust, easy to use, and higher performance means of remote method invocation.</p>
+<p>I'm now going to show how to implement this more direct means of invocation as an alternative to the late-binding <B>IDispatch</B> interface. This new method is called a "custom" interface. It will provide a one-to-one mapping of C++ class methods to RPC calls. By definition, a custom interface is incapable of performing late-binding, but the upside is that it will allow use of any C datatype, customized structure, or ADT that we like.</p>
+<p>For the purpose of this example, I will be using a more robust, out-of-process implementation of the <B>COMCalc</B> object I used in my previous article. If you want a refresher, check out "A Gentle Introduction to COM" in the January 1998 <I>CUJ</I>.</p>
+
+<h4><FONT COLOR="#000080">The IDL Step</FONT></H4>
+
+<p>I'm going to shift the focus from the client to the server end for just a moment. The reason I'm shifting focus is that IDL, which you will need some understanding of to build an early binding client, really has to do with the server. Specifically, IDL describes the interfaces supported by the server. Once I show how IDL is created for a COM server, I'll show how to construct the client, and it will make a whole lot more sense.</p>
+<p>COM is a distributed architecture, and this "distribution" is handled by RPC. Therefore, the first thing you would do to write a COM class (to create a COM server object) is the same as what you would do when writing a standalone RPC server. (You can correctly think of a COM server as being a standalone RPC server.) The first step is to specify the methods and arguments of your interface in the non-ambiguous, language-neutral grammar of something called IDL.</p>
+<p>IDL stands for Interface Definition Language, and it comes from DCE RPC. It is a non-ambiguous grammar for specifying functions and their arguments so that an IDL compiler (<B>MIDL.EXE</B> in the Microsoft case) can compile the IDL file and generate proxy/stub <B>.c</B> and <B>.h</B> files for C++, as well as a (soon-to-be-explained) type library, that RPC will use to package and marshal function calls and arguments over a network.</p>
+<p>C++ classes are not supported by RPC, but COM is all about C++ classes/interfaces, so present-day Microsoft IDL does support objects, even if the underlying RPC does not. If you were to dive deeply into the MIDL generated proxy/stub files you would notice that MIDL cleverly maps your object code to plain vanilla C-style functions for the benefit of RPC, yet maintains the illusion of object-oriented RPC, called ORPC (Object RPC) for use with C++. This process should become clear as I outline some of the preliminary steps in writing a COM server:</p>
+<p>1) Write the IDL declaration of the interface. For the <B>ICalc</B> inteface (provided by my <B>COMCalc</B> COM server), this would be:</p>
+
+<pre>
+[
+    object,  
+    uuid(638094E5-758F-11d1-8366-0000E83B6EF3), //unique GUID
+    helpstring("ICalc Interface"),
+    pointer_default(unique) // to help RPC track down pointers,
+                            // this is the default
+]
+interface ICalc : IUnknown  // all interface must be inherited
+                            // from this
+{
+    [id(1), helpstring("method Add")] HRESULT
+    Add([in] int x, [in] int y, [out,retval] int * r );
+    [id(2), helpstring("method Divide")] HRESULT
+    Divide([in] int x, [in] int y, [out,retval] int * r);
+
+};
+
+// much is left out for brevity, but see the <A HREF="sidebar2.htm">sidebar "IDL"</A> for
+// a description of the major sections of an IDL file
+</pre>
+
+<p>A full explanation of IDL and all its complexity can and does fill books! I can only scratch the surface in an article, but it really isn't very mysterious. Every interface declaration in IDL is preceded by an object block. This block consists of tags that describe the interface immediately following to the MIDL compiler. The block contains a 128-bit GUID (Globally Unique Identifier); every interface must have a unique GUID. The GUID and the other tags in this block are more-or-less always the same for interfaces, so I won't go into them here. If you look at the interface definition itself, you'll notice it reads almost exactly like a class definition (it even inherits from <B>IUnknown.)</B> This isn't surprising. After all, the interface will ultimately map one-to-one with the methods of a C++ class so as to provide it distributed method invocation.</p>
+
+<p>2) Run <B>MIDL.EXE</B> on the IDL file. You will end up with:</p>
+
+<pre>
+comcalc_p.c - RPC plumbing
+comcalc_i.c - interface GUID declarations
+comcalc.h   - class declarations for early binding
+comcalc.tlb - type library: will enable you to recreate the
+               original IDL file or any of the above     
+dlldata.c   - used to create the proxy DLL if necessary
+</pre>
+
+<p>After running <B>MIDL.EXE</B> on your IDL file you will have everything you need for early binding. Assuming you write the rest of the <B>COMCalc</B> server (provided in the online files, see p. 3 for downloading instructions) writing your client will be a snap. Simply include:</p>
+
+<pre>
+comcalc_p.c cocalc_i.c comcalc.h
+</pre>
+
+<p>in your client C++ project, mix until smooth, and you are 99% finished! Instead of using the ugly <B>IDispatch,</B> the client application looks like:</p>
+
+<pre>
+#include "comcalc.h"  // midl generated class declarations for IComCalc
+#include "iostream.h"
+
+main()
+{
+ICalc * pCalc;
+int iResult;
+
+HRESULT hr = CoCreateInstance(CLSID_ComCalc , NULL, CLSCTX_ALL,
+                              IID_ICalc, (void **)&amp;pCalc);
+
+pCalc-&gt;Add(1,2, &amp;result)
+
+cout&lt;&lt;iResult;
+
+
+pCalc-&gt;Release();
+
+}
+</pre>
+
+<p>Much nicer! This code is clean, type-safe, and less filling! Perhaps most impressive is that, as with late binding, early-bound method invocations will work even if the object and client are on different machines! IDL and MIDL take care of all the RPC plumbing. As I said, this process is 99% complete. All that remains is compiling <B>dlldata.c</B> (also generated by MIDL) to a proxy DLL (Dynamic Link Library, named <B>proxy.dll)</B> for RPC's benefit. (For more information on proxy DLLs, see the sidebar <A HREF="sidebar3.htm">"Proxy DLLs."</A>)</p>
+<p>Okay, that said, now I'd like to show you something that will blow your mind. Check out the following equivalent client code segment:</p>
+
+<pre>
+#import "comcalc.tlb" no_namespace named_guids
+#include "iostream.h"
+
+main()
+{
+ICalc * pCalc;
+int iResult;
+
+HRESULT hr = CoCreateInstance(CLSID_ComCalc , NULL, CLSCTX_ALL,
+                              IID_ICalc, (void **)&amp;pCalc);
+
+cout&lt;&lt;pCalc-&gt;Add(1,2)
+pCalc-&gt;Release();
+
+}
+</pre>
+
+<p>An <B>#import</B> in Microsoft Visual C++? From a <B>.tlb</B> file? What's going on? Recall that one of the files the MIDL compiler generated was a <B>.TLB</B> file. Here is where it comes into play. It is finally time to talk about type libraries.</p>
+
+<h4><FONT COLOR="#000080">The Type Library</FONT></H4>
+
+<p>A distributed component architecture should not be too biased toward any specific language. Rather, it should work with a variety of languages. To support this flexibility, the architecture must provide client-side developers with some kind of universal "header file" for interacting with servers written using this architecture. If I write the <B>COMCalc</B> COM server in C++ and I want other developers to be able to write early binding Visual Basic or Java client applications that use <B>COMCalc,</B> I certainly can't give them a C++ header file. Visual Basic or Java wouldn't know what to do with it. An IDL file is closer, but that won't quite work either. Visual Basic, Java, and other languages have no ability to read IDL directly; it would need to be compiled into the equivalent of a <B>.BAS</B> or <B>.Class</B> file. But that would require a separate <B>MIDL.EXE</B> utility for Visual Basic, Java, and every other language. What I'd really like is a binary file that would describe all the classes, methods, method arguments, and help strings belonging to a COM server. Any development environment for any language could read and use that binary file as a road-map for communicating with the COM server.</p>
+<p>That's all a type library is: a universal, language-neutral, binary "header file" that any COM-compliant language can read. You can even include a <B>.TLB</B> file instead of a traditional C++ header file in your Visual C++ project, as shown in the above code snippet with <B>#import.</B> All the <B>#import</B> statement really does is read the type library that you referenced, and generate header files behind the scenes. It may also help to think of a <B>.TLB</B> file is nothing more than a compiled representation of the IDL file. So if you have a <B>.TLB</B> file, you can always get the IDL file back; and if you have the IDL file can always generate C++ proxy/stub files.</p>
+<p>The headers generated from the type library end with <B>.TLH</B> and <B>.TLI</B> extensions. You are perfectly welcome to take a look at them. Don't ever explicitly include them in your project, however. One of the nice things about <B>#import</B> is that it regenerates the header files every time you recompile. This allows you replace the <B>.TLB</B> file with a newer one from your vendor without modifying any code or project settings. For more information on <B>#import,</B> see the sidebar, <A HREF="sidebar4.htm">"The Visual C++ <B>#import</B> directive."</A></p>
+<p>In addition to automatically generating header files necessary for early binding, <B>#import</B> also performs a little presentation wizardry. You may have noticed that the <B>Add</B> function in the preceding snippet is actually returning a result,</p>
+
+<pre>
+result=Add(1,2);
+</pre>
+
+<p>even though in the IDL the function was declared as:</p>
+
+<pre>
+[id(1), helpstring("method Add")]
+    HRESULT
+Add([in] int x, [in] int y, [out,retval]
+    int * r );
+</pre>
+
+<p>In COM, pretty much all methods of an interface must pass back an <B>HRESULT</B>, which indicates the success or failure of the method call. If a function is going to pass something back to the caller, it must take an argument called by reference. However, <B>#import</B> can hide this reality for you. The last argument of <B>Add</B> in the IDL snippet above has the tag <B>[out,retval].</B> The <B>out</B> field indicates that this argument is called by reference. The <B>retval</B> field indicates that MIDL should perform a little shell-game and generate the client-side proxy class so that <B>Add</B> can be called like this:</p>
+
+<pre>
+result=pCalc-&gt;Add(1,2);
+</pre>
+
+<p>Just as all C++ method calls really map to straight C-style RPC functions behind the scenes, so does this illusion unmask itself if you investigate the generated files. If you don't like illusions, you can call what are called the "raw" functions, which <B>#import</B> also generates. Thus,</p>
+
+<pre>
+int iResult;
+pCalc-&gt;raw_Add(1,2,&amp;iResult);
+</pre>
+
+<p>Behind the scenes <B>#import</B> generates somewhat ordinary header files with a <B>.tlh</B> and <B>.tli</B> extension, so you are just seeing a little illusion, not a major overhaul of C++. Feel free to investigate them, and you'll begin to understand the underpinnings of COM.</p>
+
+<h4><FONT COLOR="#000080">Object vs. Application</FONT></H4>
+
+<p>This article began by describing the process of OLE Automation, whose model consists of a client that remote controls some application. I have since talked about early and late binding to a COM Object, but it may not be clear how a COM Object relates to an application that is an Automation Server. Here's a brief definition of terms that will aid in the explanation:</p>
+
+<UL><LI>COM Server: A DLL or EXE that contains one or more COM Classes (<B>CoClass)</B>. Excel and 1-2-3 are COM Servers.</LI>
+    <LI>COM Class: The COM object as it is declared and latent in a server, but not yet instantiated. A typical COM Server may contain many COM Classes. COM Classes have one or more interfaces, each one of which declares one or more functions.</LI>
+    <LI>COM Object: An instantiation of a COM Class. A COM object, like a C++ object, occupies actual storage.</LI></UL>
+
+<p>Keeping the above definitions in mind, an Automation server, be it Excel, Lotus 1-2-3, or whatever, is nothing more than a collection of one or many COM Classes, each one of which has one or many interfaces. This is pretty much the definition of a COM server (which is all an OLE Automation Server is). When you use Automation you are not so much "automating" an application as you are using COM/DCOM to control COM Objects residing in that server. Terms like "OLE Automation" are dated, and misleading in the sense that they don't describe the real underlying architecture: COM. Fortunately, OLE-centric terms like OLE Automation are falling out of use, and we use generic COM terminology instead.</p>
+
+<h4><FONT COLOR="#000080">Wrapping Up</FONT></H4>
+
+<p>If I can borrow a line from my last article, COM is a big topic and an article can only scratch the surface. My hopes for this article are to sensitize you to some of the key technologies involved in writing C++ COM clients and clear up some misconceptions. So take some time reviewing the sample code, perhaps re-read this article and I hope you'll come the conclusion I have, but with much less work: COM is an elegant (sometimes) architecture that is very easy to understand if you approach it in small steps from the right perspective.</p>
+<p>Feel free to visit my website, <B>www.codenotes.com</B>. I'll publish many of the questions I receive from <I>CUJ</I> readers regarding this article, plus answers, sample downloads, supplemental documentation, suggested readings, and useful links.</p>
+
+<h4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1] If you're interested in using automation to leverage the functionality of third-party applications or your own C++ COM objects that reside in your own COM Server, you'll find a great many examples and a good deal of information on the process. I highly recommend MSDN (the Microsoft Developer Network) as a primary information/sample source. You can subscribe to one of three levels of membership and get CD-ROM mailings, or use <B>www.microsoft.com/msdn</B> for free.</p>
+<p><a name="2"></a>[2] You can use late binding with any Automation server that is built with COM classes. Examples of such servers are Excel, 1-2-3, Word, Watermark, etc.</p>
+
+<p><i>Gregory Brill is director of curriculum for RAC-Infusion Inc., a Manhattan based training and consulting firm specializing in IT for financial institutions. He has an M.S. in Computer Science from the Rochester Institute of Technology, and teaches professional and university courses in C, C++, COM, Windows development, and 3-tiered architectures. He can be reached at <B>gbrill@rac-infusion.com</B>.</i></p>
+
+<h4><a href="../../../source/1998/oct98/brill.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

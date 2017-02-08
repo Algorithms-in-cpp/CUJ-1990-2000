@@ -1,0 +1,229 @@
+
+
+
+
+<HTML><HEAD>
+
+<TITLE>June 1997/Macintosh-to-Windows Resource Conversion/Listing 3</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4>Listing 3:	The conversion program</h4>
+
+<pre>
+// CONVERT.CPP by Jeff Heaton(jeffheaton@aol.com)
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include "macres.h"
+
+MAC_RESOURCE_FILE res;// Resource file converting
+
+// ProcessString - Will convert all of the "'s
+// and &lt;CR&gt;'s to \"'s and \r's.
+void ProcessString(char *str)
+{
+char rtn[2000],*source;
+
+    *rtn=0;
+    source=str;
+    while(*str)
+        {
+        if(*str==13)
+            strcat(rtn,"\\r");
+        else
+        if(*str=='\"')
+            strcpy(rtn,"\\\"");
+        else 
+            sprintf(rtn+strlen(rtn),"%c",*str);
+        str++;
+        }
+    strcpy(source,rtn);
+}
+
+// ReadRect will read a macintosh rectangle structure
+// from 'buffer' at 'offset' and return the location
+// and size of that rect translated to Windows 
+// coordinates.
+void ReadRect(unsigned char *buffer,short offset,
+              short *x,short *y,short *h,short *w)
+{
+short x2,y2;
+
+    *y=MAC_WORD(buffer[offset],buffer[offset+1])+33;
+    *x=MAC_WORD(buffer[offset+2],buffer[offset+3]);
+    y2=MAC_WORD(buffer[offset+4],buffer[offset+5])+33;
+    x2=MAC_WORD(buffer[offset+6],buffer[offset+7]);
+    *y=CHANGE_Y(*y);
+    *x=CHANGE_X(*x);
+    *h=CHANGE_Y(y2)-*y;
+    *w=CHANGE_X(x2)-*x;
+}
+
+//    DumpDITL - This function is used to process a 'DITL'
+// resource, and produce a list of resource items, which
+// are written to 'fp'.
+void DumpDITL(FILE *fp,short s)
+{
+short items,ditl=1,offset,x1,y1,h,w,l,type;
+MAC_RESOURCE *r=NULL;
+unsigned char *buffer;
+char *t,name[256];
+
+    r=res.LoadResource("DITL",s);
+
+    if(r!=NULL)
+    {
+        buffer=r-&gt;GetBuffer();
+        items=MAC_WORD(buffer[0],buffer[1])+1;
+        offset=2;
+
+        while(items--)
+            {
+            if( buffer[offset] || buffer[offset+1] ||
+                buffer[offset+2] || buffer[offset+3] )
+                return;// Place holder must be zero
+            offset+=4;
+            ReadRect(buffer,offset,&amp;x1,&amp;y1,&amp;h,&amp;w);
+            offset+=8;// Skip Place Holder/rect
+
+            type=(short)(buffer[offset++]&amp;0x7f);
+            l=buffer[offset++];
+            buffer[offset+l]=0;
+            strcpy(name,(char*)&amp;buffer[offset]);
+            offset+=l;
+            if( l%2 )
+                offset++;
+
+            ProcessString(name);
+
+            if(type==editText)
+                fprintf(fp, "EDITTEXT %i, %i, %i, %i, %i,"
+                        "ES_LEFT | WS_CHILD | WS_VISIBLE |"
+                        " WS_BORDER | WS_TABSTOP\n",
+                        ditl++,x1,y1,w,h+4);
+            else
+            {
+                switch(type)
+                {
+                case ctrlItem+btnCtrl:t="PUSHBUTTON";break;
+                case ctrlItem+radCtrl:t="RADIOBUTTON";break;
+                case ctrlItem+chkCtrl:t="CHECKBOX";break;
+                default:t="LTEXT";break;
+                }
+            fprintf(fp,"%s \"%s\", %i, %i, %i, %i, %i\n",
+                    t,name,ditl++,x1,y1,w,h);
+            }
+        }
+        delete r;
+    }
+}
+
+// DumpALRT - Used to dump a MAC 'ALRT' resource
+// type into the file pointed to by 'fp'.  An altert
+// in the MAC world is a dialog box with only buttons
+// and text.
+void DumpALRT(FILE *fp,short s)
+{
+    MAC_RESOURCE *r=NULL;
+    short x1,y1,h,w,ditl;
+    unsigned char *buffer;
+
+    r=res.LoadResource("ALRT",s);
+    
+    if(r!=NULL)
+    {
+        buffer=r-&gt;GetBuffer();
+        ReadRect(buffer,0,&amp;x1,&amp;y1,&amp;h,&amp;w);
+        ditl=MAC_WORD(buffer[8],buffer[9]);
+        fprintf(fp,"A%i DIALOG DISCARDABLE  %i, %i, %i, %i\n",
+            (int)s,(int)x1,(int)y1,(int)w,(int)h);
+        fprintf(fp,"STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION |"
+                " WS_SYSMENU\n");
+        fprintf(fp,"CAPTION \"Dialog\"\n");
+        fprintf(fp,"FONT 8, \"MS Sans Serif\"\n");
+        fprintf(fp,"BEGIN\n");
+        DumpDITL(fp,ditl);
+        fprintf(fp,"END\n\n\n");
+        delete r;
+    }
+}
+
+// DumpDLOG - Used to dump a MAC 'DLOG' resource
+// type into the file pointed to by 'fp'.  
+
+void DumpDLOG(FILE *fp,short s)
+{
+    MAC_RESOURCE *r=NULL;
+    short x1,y1,h,w,ditl;
+    unsigned char *buffer;
+
+    r=res.LoadResource("DLOG",s);
+    if(r!=NULL) {
+        buffer=r-&gt;GetBuffer();
+        ReadRect(buffer,0,&amp;x1,&amp;y1,&amp;h,&amp;w);
+        ditl=MAC_WORD(buffer[18],buffer[19]);
+        buffer[21+buffer[20]]=0;// Null terminate the title
+
+        fprintf(fp,"%i DIALOG DISCARDABLE  %i, %i, %i, %i\n",
+            (int)s,(int)x1,(int)y1,(int)w,(int)h);
+        fprintf(fp,"STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION |"
+                " WS_SYSMENU\n");
+        fprintf(fp,"CAPTION \"%s\"\n",&amp;buffer[20]);
+        fprintf(fp,"FONT 8, \"MS Sans Serif\"\nBEGIN\n");
+        DumpDITL(fp,ditl);
+        fprintf(fp,"END\n\n\n");
+        delete r;
+    }
+}
+
+void main( int argc, char *argv[ ])
+{
+    FILE *output;
+    char name[80];
+    short s;
+    short x,y;
+    MAC_RESOURCE_FILE res;
+    if(argc!=3) {
+        printf("Macintosh Resource Converter\n");
+        printf("By Jeff Heaton\n\nUsage:\n\n");
+        printf("%s [INPUTFILE] [OUTPUTFILE.RC]\n\n",argv[0]);
+        exit(1);
+    }
+
+    if( (output=fopen(argv[2],"w"))==NULL) {
+        printf("Can't write: %s\n\n",argv[2]);
+        exit(1);
+    }
+
+    res.Open(argv[1]);
+
+    fprintf(output,"#include \"winres.h\"\n\n");
+
+    // Loop through every resource looking for
+    // ALRT and DLOG resources.
+
+    res.GetFirstType(name);
+    for(x=0;x&lt;=res.GetNumTypes();x++) {
+        if(!memcmp(name,"DLOG",4)) {
+            res.GetFirstResource(&amp;s);
+            for(y=0;y&lt;res.GetNumResources();y++) {
+                DumpDLOG(output,s);
+                res.GetNextResource(&amp;s);
+            }
+        }
+        if(!memcmp(name,"ALRT",4)) {
+            res.GetFirstResource(&amp;s);
+            for(y=0;y&lt;res.GetNumResources();y++) {
+                DumpALRT(output,s);
+                res.GetNextResource(&amp;s);
+            }
+        }
+        res.GetNextType(name);
+    }
+
+    fclose(output);
+    printf("\nConversion Complete.\n");
+    exit(0);
+}
+//End of File
+</pre>
+</body></html>

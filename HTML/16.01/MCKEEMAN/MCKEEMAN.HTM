@@ -1,0 +1,405 @@
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+<TITLE>January 1998/A Lexer for Java in C++</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<H2><A href="../tocjan.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+<FONT COLOR="#FF0000">Java</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">A Lexer for Java in C++</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Bill McKeeman</FONT></H3>
+
+<blockquote>
+<p>McKeeman gives us a lexer for Java that's reusable in all sorts of interesting
+ways.</p></blockquote><hr>
+
+<blockquote>
+<p>I present here a fast reusable lexer for Java. The result is two C++
+classes, JavaLex and JavaScan. The C++ code presented here comes packed with
+several standalone tests hidden inside #ifdef blocks. The content of the paper
+naturally divides into six subtopics:</p>
+<p>(1) Java lexicon,<br>
+(2) lexer design,<br>
+(3) lexer implementation,<br>
+(4) lexer reuse,<br>
+(5) lexer speed, and<br>
+(6) standalone testing.</p>
+Many of the ideas here can be used with other source and implementation
+languages.</p>
+<p>Lexing has been thoroughly discussed in many papers and textbooks. Programs
+lex, of the lex/yacc pair, and javacc from SunTest are two popular
+general-purpose programming-language scanner generators. What is new here is
+the emphasis on reuse, tuning for modern RISC processors, and Java as a source
+language. The attachment of testing code to the implementation source is also
+worth noticing. The main body of the code is both large (700 lines for class
+JavaLex) and repetitive. It is therefore not appropriate to print the entire
+source code in this article. The source code is, however, available for
+download from the CUJ web site (see page 3). Some snippets of code are included
+below.</p>
+
+<h4><FONT COLOR="#000080">Java Lexicon</FONT></H4>
+
+<p>Traditional scanners isolate tokens (that is, meaningful identifiers, constants, symbols,
+and the like) in a source text. My use of the words lexer and lexeme signify
+the extension of the scanner and token concept to include isolating whitespace
+and errors. One consequence of this extension is that any text can be lexed,
+and the concatenation of the lexemes found is identical to the original input
+source text.<p>
+The lexical structures of Java are very much like that of C and C++. Common
+tokens exist for many of the same reserved words, operators, and literals.
+There are three kinds of comments. There is whitespace. There are impossible
+sequences, also known as errors. The lexer need not &#151; indeed, cannot
+reasonably &#151; detect all errors. Malformed constants, for example, must be
+detected when they are converted to internal format, which is most appropriate
+later in a translation process.<p>
+An interesting new feature of Java is the use of Unicode for text, both
+internally and for some input and output. Java source arrives at the lexer in
+UTF-8 encoding. Thousands of non-ASCII characters are allowed in comments,
+identifiers, strings, and character literals, but not elsewhere in program
+text, including not within reserved words.<p>
+Java is a bit unusual in that the lexical structure is defined in terms of
+values provided by the Java core API. My tables were derived from the Java
+Language Specification (Gosling, Joy, &amp; Steele) and the online API
+documentation from SUN:</p>
+
+<pre>
+http://java.sun.com:80/products/jdk/1.1/docs/api/java.lang.Character.html
+</pre>
+
+<p>My technique for the biggest tables (ID characters) was to capture the SUN web
+page, extract the tables, and process the result with an awk script to create
+binary search macros. There is a separate include file (java_unicode.h) in my
+implementation containing my generated macros. The macros are tuned for my
+guess at the frequencies with which various characters will appear in source
+input. Because Unicode is changing, my Unicode macros are, or soon will be, out
+of date. Since the Unicode macros do not affect the lexing of pure ASCII
+programs, it will be some time before many users will notice.<p>
+An alternative solution to the macros would have been an 8 KB bit vector for id
+characters. It takes fewer instructions to access, but interferes with my plan
+for data localization, which could interfere with my efficient access to dcache
+as detailed in the final section of this article.</p>
+
+<h4><FONT COLOR="#000080">Lexer Design</FONT></H4>
+
+<p>The Java source text is held in memory during the entire lexing process. The
+textual content of a lexeme is represented by a length and a pointer into the
+memory image of the source text. No source characters are moved.<p>
+The delimiting of lexemes proceeds from left to right. Each found lexeme is
+reported by calling a method of the JavaLex class which reports the pointer,
+length, and a unique code indicating what kind of lexeme was found. This
+organization results in a "push" lexer in contrast to the more conventional
+"pull" lexers.<p>
+The reporting methods are pure virtual. That is, the methods are not
+implemented in the base class, but rather the user of the lexer implements
+reporting methods by extending the base class. The separation of concerns is
+this: the lexer reports what is found, the user decides what to do with the
+information. The lexer is of no use unless it is extended in some manner.<p>
+One required use of a lexer is to feed a parser. A traditional parser must pull
+tokens, as needed, from a scanner. An extension of my lexer base class into a
+scanner for use by a parser queues up the tokens, discards whitespace, and
+reacts to errors. Only after all the tokens are queued up is the parser called.
+This scanner extension of the lexer has methods next, code, text, and equals,
+which respectively step the lexer to the next token, report the unique token
+code of the current token, report the text of the current token, and
+efficiently compare the text of the current token with a given text. This is
+sufficient functionality to drive a parser.<p>
+Because there are two ways of representing any input character (multibyte UTF-8
+or \uxxxx escape) and because some Unicode characters must be ignored in
+identifiers, identical tokens may not compare equal by a call to the C function
+memcmp. JavaLex provides a flag with each lexeme indicating the presence of
+embedded \uxxxx sequences and ignored characters so that a more sophisticated
+comparison can be used, but only when necessary.<p>
+The lookup of reserved words in JavaLex uses a perfect hash generator
+implemented at Digital by Neil Faiman. A bibliography on perfect hashes is
+attached to the writeup for gperf at:</p>
+
+<pre>
+http://www.array.ca/products/online-1.2/doc/gnu/libg++/gperf/gperf_3.html
+</pre>
+
+<h4><FONT COLOR="#000080">Lexer Implementation</FONT></H4>
+
+<p>The class JavaLex contains most of the implementation. Each instance of JavaLex
+contains a pointer to the source text (as a char *). The public activation
+method lex causes the entire source to be lexed. Each discovered lexeme is
+reported by one of the three pure virtual protected methods:</p>
+
+<pre>
+token(code, text, locator)
+white(code, text, locator)
+error(code, text, locator)
+</pre>
+
+<p>You override these methods in a subclass of JavaLex.</p>
+<p>Parameter code is an enum value uniquely designating a particular lexeme.
+Parameter text is a struct containing the pointer into the source locating the
+first byte of the lexeme, the length in bytes of the lexeme, and a flag that is
+true if there are no \uxxxx escapes or ignored characters in the text of the
+lexeme. Parameter locator is a struct containing the line and byte offset
+within the line of the start of the lexeme. The definitions of types
+JavaLocator and JavaText are:</p>
+
+<pre>
+struct JavaLocator {
+    int onLine;    // line/col pair
+    int atCol;
+};
+struct JavaText {
+    char *inSrc;    // in source
+    int   len;      // bytes
+    int   isClean;  // no \uxxxx
+};
+</pre>
+<p>I could have chosen other reporting methods. For instance, the pointer to the
+start of the lexeme is redundant because the start of each lexeme is one beyond
+the end of the previous lexeme. The flag indicating clean text can be computed
+at any time by reexamining the source. The parameter locator could be dropped
+and the information recomputed with the JavLex public methods calls line(start)
+and col(start) when and only if needed.<p>
+The theory behind my choices is that the user can, at low cost, immediately
+discard any information that is not immediately needed. It is relatively
+inexpensive for the lexer to compute the information that is provided by token,
+white, and error. The choice between saving the information and recreating it
+later is one left to the user.<p>
+Given a line number, it is sometimes useful to have the text of the whole line
+for inclusion in diagnostics. The following public methods satisfy the need:</p>
+
+<pre>
+line_text(line_number)
+line_length(lineStart)
+</pre>
+
+<p>The pure virtual protected method error_msg(msg) provides a simple
+diagnostic text which can be used in conjunction with each error token. During
+smoke testing, error_msg sends the diagnostic text to standard error. The
+public and protected portions of the type JavaLex are as follows:</p>
+
+<pre>
+class JavaLex {
+public:
+    JavaLex(char *srcText, int srcLength);    // ctor
+    JavaLex(char *srcText);    // ctor for asciiz
+    void lex();                // action
+    int  line(char *inSrc);    // line number
+    int  col(char *inSrc);     // column number
+    
+    char *line_text(int lineno);      // start of line
+    int   line_length(char *line);    // length of line
+protected:
+// output functions (called here, implemented in<br>// derived class)
+    virtual void token(int code, JavaText txt,
+                       JavaLocator where)=0;
+    virtual void white(int code, JavaText txt,
+                       JavaLocator where)=0;
+    virtual void error(int code, JavaText txt,
+                       JavaLocator where)=0;
+    // error message
+    virtual void error_msg(char *msg)=0;
+};
+</pre>
+<p>The lexing part of JavaLex is straightforward and conventional. The current
+character occupies more than one byte of input if it is a non-ASCII UTF-8 code
+or a \uxxxx escape sequence. Unicode character handling is left to the private
+method getuchar, which in turn depends on an inlined private getByte method.<p>
+In the body of method lex is a large switch that selects a case based on the
+current leading unicode character in the source input. Each case processes one
+category of lexeme, leaving the leading byte position set just beyond the end
+of the current lexeme. The current lexeme is reported by the appropriate method
+(one of token, white, or error). The various cases contain a lot of detail, but
+with few exceptions, each case merely walks over a lexeme, provides the unique
+lexeme code, implicitly leaves a pointer past the lexeme end, and breaks out of
+the switch. The parameters needed to report the lexeme are assembled from the
+information held in the JavaLex object. Here is a typical case:</p>
+
+<pre>
+case '&lt;':
+    getuchar();        // pass over &lt;
+    if (uni == '=') {  //  &lt;=
+        getuchar();    // pass over =
+        code = LTEQ;
+    } else if (uni == '&lt;') {    // &lt;&lt;
+        getuchar();    // pass over &lt;
+    if (uni == '=') {  // &lt;&lt;=
+        getuchar();    // pass over =
+        code = LTLTEQ; // report &lt;&lt;=
+    } else {
+        code = LTLT;   // report &lt;&lt;
+        }
+    } else {
+        code = LT;     // report &lt;
+        }
+    break;
+</pre>
+
+<p>The exceptions to the regular structure of the cases include the case for Java
+numbers, where a shameful goto is used to avoid duplicating some code, and the
+case for identifiers where the code for detecting reserved words drops into the
+ordinary identifier case when it is discovered that the lexeme is not
+reserved.<p>
+The main switch just described is embedded in a loop which gives JavaLex its
+"push" characteristic. Within the loop, after a lexeme is isolated in the
+source, a report is issued via one of the routines token, white, or error. Then
+the next lexeme is isolated. The loop terminates when the end of input is
+reached. Note: one cannot use an ASCII null character to mark the end of input
+because ASCII null is allowed in Java source.<p>
+The actual text of each lexeme remains in the source. The report merely gives
+information about it, including where the text of the lexeme begins. At any
+later time the actual text can be fetched out of the source for comparisons,
+constant conversions, tabulation, etc.<p>
+All of this activity is caused by a call to the lex method, which can be
+repeated if more than one pass over the input is required.</p>
+
+<h4><FONT COLOR="#000080">Lexer Reuse</FONT></H4>
+
+<p>Reuse is taken to mean that this lexer can be used for a variety of tasks without the
+need to change or even examine the source code for class JavaLex. Opportunities
+for reuse of a lexer abound. A lexer can be use by a compiler, interpreter,
+debugger, cross reference generator, program text colorizer, pretty printer,
+metrics calculator, unit test generator, documentation extractor, and so on.
+Rest assured that opportunities for lexer reuse will present themselves with
+regularity.<p>
+The string form of input (JavaLex constructor) opens up reuse opportunities
+where the Java source is not in a file &#151; say a fragment of Java to be
+evaluated by a debugger. The cost of using strings is the inability to handle
+very large files. The reuser implements each output method, selecting the
+information required and ignoring the rest. For example, two of the tests (UNIT
+and SPEED) appended to the JavaLex source file extend class JavaLex in just
+such a way.<p>
+A traditional lexer is used to supply tokens to a parser. For this use, JavaLex
+needs to be converted from a "push" lexer to a "pull" scanner. This is done
+in a subclass of JavaScan that discards whitespace, queues up tokens, and doles
+them out in order upon request. Now the source has been visited three times:
+(1) to read it from a file into memory, (2) to lex it and record the token
+structure in arrays, and finally (3) to visit the arrays to provide the tokens
+needed by the parser. The parser may extract the fragments of source it needs
+or leave the extraction to a later phase of translation.<p>
+As it turns out, navigating the token sequence for lookahead or even much more
+general access is a matter of changing a single array index. The total code for
+the JavaScan interface and implementation is about 100 lines. Here is the
+public interface for JavaScan:</p>
+
+<pre>
+class JavaScan : protected JavaLex {
+public:
+    JavaScan(char *srcText, int srcLength);    // ctor
+    JavaScan(char *srcText);         // ctor for asciiz
+    ~JavaScan();    // dtor
+    
+    void step() {nextavail++;}     // move to next token
+    void step(int n) {nextavail+=n;}    // move n tokens
+    void goTo(int n) {nextavail=n;}   // move to token n
+    // last token position
+    int last() {return tokens_alloc-1;}
+    // current token position
+    int getPosit() {return nextavail;}
+    
+    // code of current token
+    int getCode() {return codes[nextavail];}
+    // text of current token
+    JavaText getText() {return texts[nextavail];}
+    // locator of current token
+    JavaLocator getLocator();
+}
+</pre>
+
+<p>The principle of reuse advocated here is to provide a producer with protected pure
+virtual methods which report information derived by some process (in this case
+lexing), and to provide a consumer with private methods implementing the
+reporting methods of the producer. The user code is kept safely separate from
+the reusable code. The private methods in the derived class utilize the
+reported information. Finally the derived class presents public methods that
+make the information conveniently available to the next level of user in the
+application.<p>
+The consumer may also be a producer for another reuse pair. My implementation
+of a parser using JavaLex provides protected pure virtual methods shift and
+reduce. The consumer of the parse must implement shift and reduce to, say,
+build an abstract syntax tree.</p>
+<h4><FONT COLOR="#000080">Speed</FONT></H4>
+<p>By a modern RISC architecture I mean large memory, sophisticated memory
+caches, lots of registers, and a good optimizing C++ compiler. The traditional
+criteria for a fast lexer are that each input character is touched only once
+and table lookups are fast. Behind these criteria is efficient use of the
+memory cache structures. The instruction cache, or icache, is the easiest to
+analyze for JavaLex. The actual lexing executable (lex in JavaLex) runs to
+completion as a pass. As it happens, all the lexing instructions can reside in
+the icache, freeing the processor from any significant instruction fetch costs.
+(If the user-supplied implementations of methods token, white, and error do
+significant computation, their code may thrash against JavaLex in the
+icache.)<p>
+It is acceptable these days to use a lot of data memory so long as it is not
+randomly accessed. When a line of data cache, or dcache, is loaded, the
+processor should get at least one use out of every datum brought from main
+memory. Sequential access through the source text behaves this way. There is
+some danger that other memory access, say for local variables in the lexer,
+would compete with the source text for dcache residence. A good C++ compiler
+for RISC manages to allocate all field and local variables of JavaLex to
+registers, removing this potential dcache conflict.<p>
+Further, if the reporting routines merely queue the token codes for later use
+(as in JavaScan), placing token codes and text description in two separate
+sequential arrays, the later "pull" access from a parser is again sequential,
+and memory activity is largely confined to the array holding the token codes.
+The actual token text (and therefore access to the second array) is needed only
+for identifiers and constants, and probably not until much later than the
+parsing step.<p>
+If the RISC hardware is not efficient for byte access, the getByte method can
+fetch data a longword at a time, shifting and masking individual characters
+directly from registers instead of somewhere in the dcache hierarchy. It is
+this combination that turns out to be optimal for most Digital Alpha
+configurations. On my Alpha Station 500/500, JavaLex attains a speed of more
+than 1,000,000 tokens/second. I do not present the longword-tuned code here
+because it is platform dependent.</p>
+
+<h4><FONT COLOR="#000080">Standalone Testing</FONT></H4>
+
+<p>Dijkstra is fond of reminding everyone within earshot that testing never proved anything
+correct. True enough. I do not claim my lexer code is correct. On the other
+hand, I know of no substantial piece of code that became useful without a lot
+of testing. Presenting the tests that gave me the courage to show this code to
+you seems like an economical and ethical decision. Packing the tests in the
+implementation file is a little pushy, since you, the reader, have a harder
+time ignoring them. In any case, about 20 per cent of the delivered source
+code, hidden within #ifdef constructs, is actually there only for standalone
+testing.<p>
+While I hacked toward code that first ran, I accumulated a set of interesting
+tests in something I call a smoke test. (An electronic gadget passes such a
+test if it does not catch fire when first plugged in.) Later I insured that all
+error diagnostics could be caused. Then I unit tested against some real world
+examples. Finally I tested it for speed. Each such test has a function main
+which drives the test. Some tests required a derived class, which serves a
+second purpose in demonstrating a use of JavaLex to the reader. The smoke test
+driver for JavaLex is given in <A href="list1.htm">Listing 1</a>.
+ Class JavaScan was constructed the
+same way, with its own appended tests.<p>
+The lexer and scanner presented here are of beta quality. That is, the
+developer is satisfied but the code has received no customer use. The code is
+copyrighted, to protect me and my employer, and to permit you to use the code.</p>
+
+<h4><FONT COLOR="#000080">References</FONT></H4>
+
+<p>[1] W.M. McKeeman and Aki Shota. "Reusable Incremental Scanning," Journal of C
+Language Translation, Volume 3, Number 2, September 1991, pp. 101-120.<p>
+[2] Al Aho, Ravi Sethi, and J.D. Ullman. Compilers: Principles, Techniques, and
+Tools (Addison-Wesley, 1986).
+</p>
+
+For more information, see <A href="sidebar.htm">"Unicode" sidebar</a>.
+
+<p><i>Bill McKeeman is a Senior Consulting Engineer with the Core Technologies
+Advanced Development Group at Digital Equipment Corporation. He may be reached
+at mckeeman@zko.dec.com.
+</i></p>
+
+<h4><a href="../../../source/1998/jan98/mckeeman.zip">Get Article Source Code</a></h4>
+
+</blockquote>
+</body></html>

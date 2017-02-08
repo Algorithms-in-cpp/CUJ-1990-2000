@@ -1,0 +1,344 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>November 1996/High Speed Parallel Port Transfers/Listing 1</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H4>Listing 1: Parallel I/O functions</H4>
+
+<PRE>
+
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;dos.h&gt;
+#include &lt;mem.h&gt;
+
+#include "local.h"
+#include "ppio.h"
+#include "irqhelpr.h"
+
+#define IN_SYNC  0x40
+#define OUT_SYNC 0x08
+
+/*not shown: nibble translation tables*/
+
+/*
+  recieve a block from the parallel port.
+  this can be called either via interrupt or directly
+*/
+LOCAL void PP_rcv(PP *info)
+{
+  int         dPort = info-&gt;basePort;   /* data port        */
+  int         sPort = dPort+1;          /* status port      */
+  int         cPort = dPort+2;          /* control port     */
+  PPMODE      mode  = info-&gt;mode;       /* mode             */
+  RCVSTATE    state = RCV_WAKEUP;       /* current state    */
+  BYTE        sync  = 0;                /* sync toggle      */
+  BOOL        ready;                    /* FALSE if timeout */
+  BYTE        byte;                     /* byte accumulator */
+  LENGTHBLOCK hdr;                      /* length header    */
+  int         ack;                      /* ack, 0 = NAK     */
+  unsigned    ii;                       /* misc. index      */
+
+  ++info-&gt;lock;           /* block re-entrancy           */
+  outportb(cPort, 0x04);  /* disable hardware interrupts */
+
+  do {
+    unsigned now    = WCLOCK;    /* setup timeout variables */
+    int      tickCt = RTICKS;
+    BYTE     dNybble;
+
+    do {
+      if (now != WCLOCK) {                 /* check timeout */
+        tickCt--;
+        now = WCLOCK;
+      }
+      dNybble = inportb(sPort);            /* get nybble */
+      ready = (dNybble &amp; IN_SYNC) ^ sync;  /* done when sync inverts */
+    } while (!ready &amp;&amp; tickCt);
+
+    if (ready) {
+      /*
+        1st  --- translate the port result into a usable nybble
+        note --- the port is re-read because occasionally all of the
+                 bits in [dNybble] are not correct.
+      */
+      dNybble = in_nybble[(inportb(sPort) &gt;&gt; 3) &amp; 0x1f];
+
+      if (mode == PP_BYTE)            /* byte mode, grab high
+                                         nybble from control port */
+        byte = dNybble | (inportb(cPort) &lt;&lt; 4);
+      else if (sync)                     /* low sync = low nybble */
+        byte = dNybble;
+      else                               /* high sync = high nybble */
+        byte |= dNybble &lt;&lt; 4;
+
+      if (state == RCV_WAKEUP) {
+        /*
+          wakeup only -- &lt;&lt;always&gt;&gt; advance state
+        */
+        state++;       /* bump to recieve header */
+        ack = mode;    /* ack with mode          */
+        ii = 0;        /* set header index (0)   */
+      } else if ((mode == PP_BYTE) || !sync) {
+        /*
+          otherwise process every other nybble, or every byte
+        */
+        switch (state) {
+          case RCV_HEADER: /* recieving length block */
+            ((char *) &amp;hdr)[ii++] = byte;
+            if (ii == sizeof(hdr)) {
+              ack = (hdr.length == ~hdr.notLen);
+              state++;
+              ii=0;
+            } else
+              ack = 1;
+            break;
+          case RCV_DATA:   /* recieving data         */
+            /*
+              note:
+                NAK on queue full
+            */
+            ack = BYTEQUEUE_enqueue(&amp;info-&gt;rcv, byte) != FALSE;
+            if (++ii == hdr.length)
+              ack = FALSE;
+            break;
+        }
+      }
+      /*
+      send ack
+      */
+      sync ^= IN_SYNC;
+      outportb(dPort, out_nybble[ack] | (sync ? OUT_SYNC : 0));
+    }
+  } while (ready &amp;&amp; ack);
+  /*
+  wait for sender to set the line low before proceeding
+  */
+  {
+    unsigned now    = WCLOCK;    /* setup timeout variables */
+    int      tickCt = WTICKS;
+    BYTE     dNybble;
+
+    do {
+      if (now != WCLOCK) {                    /* check timeout */
+        tickCt--;
+        now = WCLOCK;
+      }
+      dNybble = inportb(sPort);               /* get nybble */
+      ready = !(dNybble &amp; IN_SYNC);
+    } while (!ready &amp;&amp; tickCt);
+  }
+  /*
+    at this point, either normal completion &lt;&lt;or&gt;&gt; timeout
+    either way, it's OK to exit
+  */
+  outportb(dPort, 0x00);  /* set dataline low */
+  outportb(cPort, (info-&gt;old) ? 0x14 : 0x04);
+  --info-&gt;lock;
+}
+
+/*not shown: PPIO(), infoArray, and handler defintions*/
+
+PP *PP_Open(int lpt, int irq, int basePort, int rcvBufSize, PPMODE mode)
+{
+  BYTE    *ptr;
+
+  PP *info;
+  int      handlerNo = -1;
+
+  if (rcvBufSize &gt;= 0) {
+    for (handlerNo=0;
+         (handlerNo &lt; STRUCTCOUNT(infoArray)) &amp;&amp; infoArray[handlerNo];
+         handlerNo++)
+      {
+      }
+    if (handlerNo == STRUCTCOUNT(infoArray))
+      return 0;
+  }
+  ptr = calloc(1, sizeof(PP) + abs(rcvBufSize));
+  if (!ptr)
+    return NULL;
+  info = (void *) ptr;
+  infoArray[handlerNo] = info;
+  info-&gt;handlerNo = handlerNo;
+  info-&gt;rcv.len = abs(rcvBufSize);
+  info-&gt;rcv.buf = ptr + sizeof(*info);
+  info-&gt;mode = mode;
+
+  if (lpt &gt; 0) {
+    info-&gt;basePort = *(WORD *) MK_FP(0x40, 0x08+2*(lpt-1));
+    info-&gt;irq       = 0x07;
+  }
+
+  if (basePort &gt;= 0)
+    info-&gt;basePort = basePort;
+  if (irq &gt;= 0)
+    info-&gt;irq = irq;
+
+  basePort = info-&gt;basePort;
+
+  if (rcvBufSize &gt;= 0)
+    info-&gt;old = initIRQ(info-&gt;irq, handlerFn[handlerNo]);
+
+  outportb(basePort+2, (info-&gt;old) ? 0x14 : 0x04);
+  outportb(basePort,   0x00);   /* set data lines low */
+
+  return info;
+}
+void PP_Close(PP *info)
+{
+  if (info-&gt;old) {
+    infoArray[info-&gt;handlerNo] = 0;
+    outportb(info-&gt;basePort+2, 0x04);
+    cleanupIRQ(info-&gt;irq, info-&gt;old);
+    free(info);
+  }
+}
+
+typedef enum {
+  SND_WAKEUP = 0,
+  SND_HEADER,
+  SND_DATA,
+  SND_DATAEND,
+  SND_FINISHED
+} SNDSTATE;
+
+int PP_Write(PP *info, void *buf, int len)
+{
+  int         dPort = info-&gt;basePort;  /* data port              */
+  int         sPort = dPort+1;         /* status                 */
+  int         cPort = dPort+2;         /* control                */
+  LENGTHBLOCK hdr;                     /* length header          */
+  unsigned    ii;                      /* misc. index            */
+  BYTE        sync  = IN_SYNC;         /* sync state             */
+  PPMODE      mode  = PP_UNKNOWN;      /* output mode            */
+  BOOL        ready;                   /* FALSE = timeout or NAK */
+  SNDSTATE    state = SND_WAKEUP;      /* initial state          */
+  BYTE        byte;                    /* output byte            */
+  WORD        now;                     /* timeout var.s          */
+  int         tickCt;
+  BYTE        dNybble;
+  unsigned    sent = 0;
+
+  ++info-&gt;lock;              /* lock reads                  */
+  outportb(cPort, 0x04);     /* disable hardware interrupts */
+
+  hdr.length = len;  /* setup header */
+  hdr.notLen = ~len;
+
+  do {
+    if (state == SND_WAKEUP) {
+      byte = 0; /* send wakeup immediatly!    */
+      ii   = 0; /* start with 1st header byte */
+      state++;
+    } else if ((mode == PP_BYTE) || !sync) {
+      switch (state) {
+        case SND_HEADER:
+          byte = ((BYTE *) (&amp;hdr))[ii];
+          if (++ii == sizeof(hdr)) {
+            /*
+              header finished, move on to data
+            */
+            state++;
+            ii = 0;
+          }
+          break;
+        case SND_DATA:
+          byte = ((BYTE *) buf)[ii];
+          sent++;
+          if (++ii == len) {
+            /*
+              finished!
+            */
+            state++;
+            ii = 0;
+          }
+          break;
+        case SND_DATAEND:    /* the last byte has been acknowledged! */
+          state++;
+          /*sync = IN_SYNC;  /* force wait for data line to drop */
+          break;
+      }
+    } else
+      byte &gt;&gt;= 4; /* send high nybble */
+
+    /*
+      the finished state outputs &lt;&lt;no&gt;&gt; data
+    */
+    if (state != SND_FINISHED) {
+      /*
+        send low nybble of (byte)
+      */
+      if (mode == PP_BYTE)
+        outportb(cPort, byte &gt;&gt; 4);
+      sync ^= IN_SYNC;
+      outportb(dPort, out_nybble[(byte &amp; 0x0f)] | (sync ? 0 : OUT_SYNC));
+    }
+    /*
+      wait for ACK
+    */
+    now     = WCLOCK;
+    tickCt  = WTICKS;
+    do {
+      if (now != WCLOCK) {
+        tickCt--;
+        now = WCLOCK;
+      }
+      dNybble = inportb(sPort);
+      ready = (dNybble &amp; IN_SYNC) ^ sync;
+    } while (!ready &amp;&amp; tickCt);
+
+    if (mode == PP_UNKNOWN)
+      mode = in_nybble[(dNybble &gt;&gt; 3) &amp; 0x1f];
+  } while (ready &amp;&amp; (state != SND_FINISHED));
+  outportb(dPort, 0x00); /* clear data port      */
+  outportb(cPort, (info-&gt;old) ? 0x14 : 0x04);
+  --info-&gt;lock;
+  return sent;
+}
+
+int PP_WaitByte(PP *info, int timeout)
+{
+  WORD now = WCLOCK;
+  while (timeout &amp;&amp; !PP_RecievePending(info)) {
+    if (!info-&gt;old)
+      PP_rcv(info);
+    if (WCLOCK != now) {
+      now = WCLOCK;
+      timeout--;
+    }
+  }
+  return BYTEQUEUE_dequeue(&amp;info-&gt;rcv);
+}
+
+int PP_Read(PP *info, void *buf, int len)
+{
+  int ii;
+  char *ptr = (char *) buf;
+  int timeout = 36;
+  for (ii=0; (ii &lt; len); ii++) {
+    int ch = PP_WaitByte(info, timeout);
+    timeout=0;
+    if (ch &lt; 0)
+      return ii;
+    ptr[ii] = ch;
+  }
+  return len;
+}
+/* End of File */
+</PRE>
+     </BODY>
+</HTML>

@@ -1,0 +1,230 @@
+<HTML><HEAD>
+<TITLE>April 1995/Designing a Cross-Platform GUI/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2 gui.c<I> &#151; Implementation of platform-independent functions</A></I></h4>
+<pre>#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+
+#include "gui.h"
+
+extern int              charHeight;
+extern FILE*            fErrLog;
+extern GUI_APPLICATION* pGuiApplication;
+
+//*** logging function into a file opened by GUI_APPLICATION
+
+void Log(char* fmt, ...)
+{
+   va_list ap;
+
+   if(fErrLog) {
+     va_start(ap, fmt);
+     vfprintf(fErrLog, fmt, ap);
+     fflush(fErrLog);  // to protect against losing log if crashing
+     va_end(ap);
+   }
+}
+
+//*** Functions for GUI_APPLICATION
+
+int GUI_APPLICATION::AddWindow(GUI_WINDOW *pWindow)
+{
+   int              ret = 1;
+   GUI_WINDOW_ELEM* pTmp;
+
+   // add a GUI_WINDOW to the linked list of windows
+   if(pFree) {
+     pTmp = pFree;
+     pFree = pFree-&gt;pNext;
+     pTmp-&gt;pWindow = pWindow;
+     pTmp-&gt;pNext = pUsed;
+     pUsed = pTmp;
+     ret = 0;
+   }
+
+   if(ret) Log("Error: too many windows.\n");
+
+   return(ret);
+}
+
+int GUI_APPLICATION::DelWindow(GUI_WINDOW* pWindow)
+{
+   int             ret = 1;
+   GUI_WINDOW_ELEM *pTmp, *pPrev;
+
+   // delete a window from the linked lists of windows
+   for(pTmp = pUsed, pPrev = NULL; pTmp; pPrev = pTmp,
+      pTmp = pTmp-&gt;pNext) {
+     if(pTmp-&gt;pWindow == pWindow) {
+       // take out of used list
+       if(pPrev) pPrev-&gt;pNext = pTmp-&gt;pNext;
+       else      pUsed        = pTmp-&gt;pNext;
+       // put into free list
+       pTmp-&gt;pNext = pFree;
+       pFree = pTmp;
+       ret = 0;
+       break;
+     }
+   }
+
+   if(ret) Log("Error: can't delete window %p\n", pWindow);
+
+   return(ret);
+}
+
+GUI_WINDOW* GUI_APPLICATION::FindWindow(NativeWindow window)
+{
+   GUI_WINDOW_ELEM *pTmp;
+
+   // find a window in its list of windows
+   for(pTmp = pUsed; pTmp; pTmp = pTmp-&gt;pNext) {
+      if(pTmp-&gt;pWindow-&gt;GetNativeWindow() == window) break;
+   }
+
+   return(pTmp ? pTmp-&gt;pWindow : NULL);
+}
+
+//*** Functions for GUI_OBJECT
+
+GUI_OBJECT::GUI_OBJECT(GUI_WINDOW* pParent, int id, int x, int y,
+                   int width, int height)
+          : id(id), pParent(pParent), x(x), y(y),
+            width(width), height(height)
+{
+   // add this object to its parent children list
+   if(pParent) pParent-&gt;AddChild(this);
+}
+
+GUI_OBJECT::~GUI_OBJECT(void)
+{
+   // delete this object from its parent children list
+   if(pParent) pParent-&gt;DeleteChild(this);
+}
+
+//*** Functions for GUI_GRAPHICS_OBJECT
+
+GUI_GRAPHICS_OBJECT::GUI_GRAPHICS_OBJECT(GUI_WINDOW* pParent, int id,
+                                  int x, int y,
+                                  int width, int height,
+                                  int color, int lineWidth)
+                 :GUI_OBJECT(pParent, id, x, y, width, height),
+                  color(color), lineWidth(lineWidth)
+{
+   // nothing to do
+}
+
+GUI_GRAPHICS_OBJECT::~GUI_GRAPHICS_OBJECT(void)
+{
+   // nothing to do
+}
+
+//*** Functions for GUI_LINE
+
+GUI_LINE::GUI_LINE(GUI_WINDOW* pParent, int id, int x1, int y1, int x2,
+                int y2, int color, int lineWidth)
+        :GUI_GRAPHICS_OBJECT(pParent, id, x1, y1, x2, y2, color, lineWidth)
+{
+   // paint the first time around
+   Paint(pParent-&gt;GetGraphicsHandle());
+}
+
+//*** Functions for GUI_ELLIPSE
+
+GUI_ELLIPSE::GUI_ELLIPSE(GUI_WINDOW* pParent, int id, int x, int y,
+                int width, int height,
+                int color, int fillType, int lineWidth)
+          :GUI_GRAPHICS_OBJECT(pParent, id, x, y, width, height,
+                           color, lineWidth),
+           fillType(fillType)
+{
+   // paint the first time around
+   Paint(pParent-&gt;GetGraphicsHandle());
+}
+
+//*** Functions for GUI_WINDOW_OBJECT
+
+GUI_WINDOW_OBJECT::GUI_WINDOW_OBJECT(GUI_WINDOW* pParent, int id,
+                                     int x, int y, int width, int height)
+                                     :GUI_OBJECT(pParent, id, x, y, width, height)
+{
+   window = 0;
+}
+
+//*** Functions for GUI_WINDOW
+
+int GUI_WINDOW::AddChild(GUI_OBJECT* pChild)
+{
+   int              ret = 1;
+   GUI_OBJECT_ELEM* pTmp;
+
+   // add pChild to the linked list of children
+   if(pFree) {
+     pTmp = pFree;
+     pFree = pFree-&gt;pNext;
+     pTmp-&gt;pObject = pChild;
+     pTmp-&gt;pNext = pUsed;
+     pUsed = pTmp;
+     ret = 0;
+}
+
+   if(ret) Log("Error: too many children.\n");
+
+   return(ret);
+}
+
+int GUI_WINDOW::DeleteChild(GUI_OBJECT* pChild)
+{
+   int             ret = 1;
+   GUI_OBJECT_ELEM *pTmp, *pPrev;
+
+   // delete pChild from the linked list of children
+   for(pTmp = pUsed, pPrev = NULL; pTmp; pPrev = pTmp,
+      pTmp = pTmp-&gt;pNext) {
+     if(pTmp-&gt;pObject == pChild) {
+        // take out of used list
+        if(pPrev) pPrev-&gt;pNext = pTmp-&gt;pNext;
+        else      pUsed        = pTmp-&gt;pNext;
+        // put into free list
+        pTmp-&gt;pNext = pFree;
+        pFree = pTmp;
+        ret = 0;
+        break;
+     }
+   }
+
+   if(ret) Log("Error: can't delete child %p\n", pChild);
+
+   return(ret);
+// get child pointer from its id; it returns NULL if fails
+
+GUI_OBJECT* GUI_WINDOW::GetChildFromId(int id)
+{
+   GUI_OBJECT_ELEM *pTmp;
+
+   for(pTmp = pUsed; pTmp; pTmp = pTmp-&gt;pNext) {
+     if(pTmp-&gt;pObject-&gt;GetId() == id) break;
+   }
+
+   return(pTmp ? pTmp-&gt;pObject : NULL);
+}
+
+// get child pointer from its native window; it returns NULL if fails
+
+GUI_OBJECT* GUI_WINDOW::GetChildFromWindow(NativeWindow hwnd)
+{
+   GUI_OBJECT_ELEM *pTmp;
+
+   for(pTmp = pUsed; pTmp; pTmp = pTmp-&gt;pNext) {
+      if(pTmp-&gt;pObject-&gt;GetNativeWindow() == hwnd) break;
+   }
+
+   return(pTmp ? pTmp-&gt;pObject : NULL);
+}
+
+/* End of File */
+</pre>
+</BODY>
+</HTML>

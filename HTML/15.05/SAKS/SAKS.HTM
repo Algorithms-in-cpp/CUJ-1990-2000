@@ -1,0 +1,789 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>May 1997/C++ Theory and Practice </TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><A href="../tocmay.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          <FONT COLOR="#FF0000">Columns</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">C++ Theory and Practice
+          </FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000"> Dan Saks</FONT></H3>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">Placement delete</FONT></H3>
+          
+          <BLOCKQUOTE>
+               
+               <p>You can construct a C++ object many
+                    ways, but there's only one way to destroy it most of the
+                    time, that is.</p>
+               
+               </BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               <p><I><B>Copyright &copy; 1997 by Dan Saks</B></I></p>
+               <p>Last month, as part of my series on
+                    new and delete, I introduced placement allocation functions
+                    and the placement syntax for new-expressions. (See "C++
+                    Theory and Practice: Placement new," CUJ, April, 1997.)
+                    This month, I'll pick up where I left off and look at
+                    placement deallocation functions. </p>
+               
+               <p> Recall that a new-expression
+                    allocates storage for an object by calling an allocation
+                    function. An allocation function can be global or a class
+                    member, typically declared as either:</p>
+
+<PRE>
+void *operator new(std::size_t n)
+    throw (std::bad_alloc);
+void *operator new[](std::size_t n)
+    throw (std::bad_alloc);
+</PRE>
+               
+               <p>(As in past articles, I'll simply note
+                    that both types bad_alloc and size_t are declared in
+                    namespace std, and omit the std:: prefix from now on.)</p>
+               
+               <p>Whenever a new-expression calls an
+                    allocation function, it passes the size (in bytes) of the
+                    requested storage as the first argument. A placement
+                    allocation function is one that has additional parameters
+                    (after that first one of type size_t). A new-expression can
+                    employ a placement allocation function by supplying
+                    additional arguments in a parenthesized comma-separated list
+                     appearing immediately after the keyword new. For instance,
+                    if T is a non-array type, then</p>
+
+<PRE>
+pt = new (x, y) T;
+</PRE>
+               
+               <p>allocates storage for a T object by
+                    calling</p>
+
+<PRE>
+operator new(sizeof(T), x, y)
+</PRE>
+               
+               <p>A delete-expression deallocates
+                    storage for an object by calling a deallocation function,
+                    which can also be global or a class member. The usual
+                    declaration for a deallocation function is either:</p>
+
+<PRE>
+void operator delete(void *p) throw();
+void operator delete[](void *p) throw();
+</PRE>
+               
+               <p>Whenever a delete-expression calls a
+                    deallocation function, it passes the address of the
+                    destroyed object as the first argument. When declared as a
+                    class member, a deallocation function can have a second
+                    parameter of type size_t:</p>
+
+<PRE>
+void operator delete(void *p, size_t n)
+    throw ();
+void operator delete[](void *p, size_t n)
+    throw ();
+</PRE>
+               
+               <p>A delete-expression that invokes one
+                    of these functions passes the size of the destroyed object
+                    as the second argument. For example, if T is a class with a
+                    member operator delete declared as above and pt points to a
+                    T object, then</p>
+
+<PRE>
+delete pt;
+</PRE>
+               
+               <p>calls</p>
+
+<PRE>
+T::operator delete(pt, sizeof(T));
+</PRE>
+               
+               <p>Just as there are placement allocation
+                    functions, there are also placement deallocation functions.
+                    That is, a deallocation function can have additional
+                    parameters. However, there is no placement syntax for
+                    delete-expressions, and so there is no way to write a
+                    delete-expression that invokes a placement deallocation
+                    function directly. Rather, C++ provides placement
+                    deallocation functions as a way to prevent memory leaks that
+                    might occur as a consequence of exceptions thrown during the
+                    execution of a placement new-expression. </p>
+               
+               <p> Placement new has been part of C++
+                    since around 1988. However, placement delete is a fairly
+                    recent invention, first appearing in the May 1995 draft of
+                    the C++ Standard. Now, two years later, there are still
+                    hardly any compilers that support it. </p>
+               
+               <p> The language rules for placement
+                    delete aren't all that complicated, but they don't make that
+                    much sense without some insight into the design decisions
+                    that led to its introduction. So I'll start by backing up to
+                    look at the state of affairs that led to the invention of
+                    placement delete.</p>
+               
+               <h4><FONT COLOR="#000080">Looking Up new and
+               delete</FONT></H4>
+               
+               <p>As you well know by now, a single
+                    program can employ multiple memory management schemes by
+                    defining various allocation and deallocation functions at
+                    global or class scope. Since a program can allocate chunks
+                    of memory from different places, it must be careful to put
+                    each chunk back where it belongs, or else it might slowly
+                    bleed to death. The program should establish a clear 
+                    correspondence between allocation and deallocation
+                    functions, and then use the corresponding allocation and
+                    deallocation function for each chunk of memory. </p>
+               
+               <p> For example, if a program allocates a
+                    chunk of memory using the global allocation function</p>
+
+<PRE>
+void *operator new(size_t n)
+    throw (bad_alloc);
+</PRE>
+               
+               <p></p>
+               
+               <p>it should deallocate that memory using
+                    the corresponding global deallocation function, namely</p>
+
+<PRE>
+void operator delete(void *p) throw();
+</PRE>
+               
+               <p>Similarly, if it allocates an array of
+                    T objects using T::operator new[], it should deallocate that
+                    array using T::operator delete[].</p>
+               
+               <p>C++ has rules for looking up
+                    allocation and deallocation functions that suggest some
+                    pretty simple guidelines for declaring allocation and
+                    deallocation functions so the calls will be properly paired.
+                    I've hinted at these lookup rules in some of my earlier
+                    articles in this series, but I've never elaborated them. So
+                    here they are. </p>
+               
+               <p> Since every new-expression calls an
+                    allocation function, the compiler must look up an allocation
+                    function as it compiles each new-expression. The name of
+                    that function depends on the allocated type, that is, the
+                    type of the object being allocated. If that type is an array
+                    type, the function name is operator new[]; otherwise, the
+                    allocation function name is operator new. </p>
+               
+               <p> If a unary :: appears before the
+                    keyword new in the new-expression, the compiler simply looks
+                    for the allocation function name in the global scope. (The
+                    :: inhibits looking in class scope even if the allocated
+                    type is a class type.) </p>
+               
+               <p> Otherwise, if the allocated type is
+                    some class type T or an array of T, the compiler looks for
+                    the allocation function name as a member of T. This member
+                    name lookup occurs in base classes but not in enclosing
+                    class scopes (T might be a nested class). If it fails to
+                    find an allocation function as a member of T, then the
+                    compiler looks for the name in the global scope. </p>
+               
+               <p> Otherwise, if the allocated type is a
+                    non-class type or an array thereof, the compiler looks for
+                    the allocation function name in the global scope. </p>
+               
+               <p> For example, <A href="list1.htm">Listing
+                         1</a>
+shows a code fragment where class D is both
+                    nested inside class X and derived from class B. When the
+                    compiler parses the new-expression</p>
+
+<PRE>
+D *p = new D;
+</PRE>
+               
+               <p>in function X::f, it looks for an
+                    operator new as a member of D. Since D does not declare an
+                    operator new, the compiler looks in D's base class B, and
+                    finds one there. If B did not declare an operator new, the
+                    compiler would look for, and find, operator new at global
+                    scope. It would not look in class X because member lookup
+                    does not look in enclosing class scopes.</p>
+               
+               <p>As is the case with lookup in other
+                    contexts, this lookup stops in the first scope that contains
+                    any declaration for a function with the sought-after name.
+                    The compiler then assembles an argument list for the
+                    allocation function call using the size of the object as the
+                    first argument and the placement arguments, if any, as the
+                    second and succeeding arguments. It then applies the usual 
+                    overload resolution rules to select the function whose
+                    parameter list best matches these arguments. The result of
+                    this overload resolution must be unambiguous (it must select
+                    exactly one function) and it must be accessible. </p>
+               
+               <p><A href="list2.htm"> Listing 2</A>
+                    shows a variation on the previous example. Here, class D has
+                    two declarations for operator new, each with a different
+                    placement parameter type. For each of the new-expressions in
+                    function f, member name lookup finds the declarations for
+                    operator new in B. However, the first expression</p>
+
+<PRE>
+D *pd = new D;
+</PRE>
+               
+               <p>is erroneous because, when a compiler
+                    applies overload resolution, it won't find a match. Both
+                    allocation functions in B require a placement argument which
+                    the new-expression does not supply. Although the global
+                    operator new would work because it does not require a
+                    placement argument, the compiler's search never gets that
+                    far.</p>
+               
+               <p>Overload resolution for the second
+                    new-expression:</p>
+
+<PRE>
+pd = new (pd) D;
+</PRE>
+               
+               <p>selects B::operator new(size_t, void
+                    *). The placement argument pd has type D *, which converts
+                    to void * by a standard conversion. There is no conversion
+                    from D * to char *, so there is no ambiguity.</p>
+               
+               <p>The third new-expression in function f
+                    of <A href="list2.htm">Listing 2</a>:
+</p>
+
+<PRE>
+pd = new (0) D;
+</PRE>
+               
+               <p>is erroneous because it is ambiguous.
+                    The placement argument 0 has type signed int, which converts
+                    with equal ease to either void * or char *.</p>
+               
+               <p>The lookup rules for deallocation
+                    functions are essentially identical to the rules for
+                    allocation functions. However, overload resolution is a
+                    quite bit simpler because a delete-expression cannot supply
+                    placement arguments. As always, the compiler will protest if
+                    overload resolution chooses a function that's inaccessible.
+                    </p>
+               
+               <p> What lead me to describe these lookup
+                    rules was my earlier remark that these rules provide
+                    guidance to help you declare the corresponding allocation
+                    and deallocation function for each chunk of memory. That
+                    guidance is simply that:</p>
+               <UL><LI>Since the compiler locates
+                         allocation and deallocation functions by essentially
+                         the same lookup rules, you should declare corresponding
+                         allocation and deallocation functions together in the
+                         same scope.</FONT></LI>
+                   <LI>If you disable class-member lookup
+                    by using the unary :: in a new-expression, you should do
+                    likewise in the corresponding delete-expression. If the
+                    new-expression does not have a unary ::, neither should the
+                    corresponding delete-expression. </FONT></LI></UL>
+               
+               <h4><FONT COLOR="#000080">A Deliberate
+               Asymmetry</FONT></H4>
+               
+               <p>In a sense, there are times when a
+                    particular allocation function doesn't have a corresponding
+                    deallocation function. For instance, the standard library
+                    provides a placement operator new defined as</p>
+
+<PRE>
+void *operator new(size_t, void *p) throw()
+    {
+    return p;
+    }
+</PRE>
+               
+               <p>for constructing an object in
+                    previously allocated storage. A new-expression such as</p>
+
+<PRE>
+pt = new (&amp;x) T;
+</PRE>
+               
+               <p>uses this operator new to construct a
+                    T object in the storage occupied by x. Since this operator
+                    new doesn't allocate x, there's no need for a corresponding
+                    operator delete to deallocate it. x might be in static or
+                    automatic storage. In that case the program would be
+                    ill-advised to execute</p>
+
+<PRE>
+delete pt;
+</PRE>
+               
+               <p></p>
+               
+               <p>because that might try to return x's
+                    storage (addressed via pt) to the free store, even though
+                    that storage never came from there.</p>
+               
+               <p>At first, it might seem that C++
+                    should supply a placement syntax for delete-expressions so
+                    the program can destroy *pt (the object addressed by pt) by
+                    calling something such as</p>
+
+<PRE>
+delete (&amp;x) pt;
+</PRE>
+               
+               <p>But there's really no need for a
+                    special placement delete syntax because the program can
+                    simply destroy *pt by an explicit destructor call such as
+                    pt-&gt;~T().</p>
+               
+               <p>Not only are there times where an
+                    allocation function has no corresponding deallocation
+                    function, there are times when several allocation functions
+                    correspond to a single deallocation function. Sometimes, a
+                    placement allocation function actually does allocate memory
+                    from somewhere. In fact, a class might declare more than one
+                    such placement allocation function. In that case, it's 
+                    probably appropriate to write a deallocation function that
+                    corresponds to each of those overloaded allocation
+                    functions. However, until recently, you couldn't write the
+                    corresponding deallocation functions by overloading them
+                    with placement parameters. You still can't call a placement
+                    deallocation function using some sort of placement syntax in
+                    a delete-expression. Therefore, you must write only one
+                    deallocation function (without placement) to deallocate
+                    memory allocated by any of those overloaded allocation
+                    functions. </p>
+               
+               <p> Before the advent of placement
+                    deallocation functions, Stroustrup [<A href="#REF1">1</a>]
+
+                    rationalized this situation as follows:</p>
+               
+               <p>There is a deliberate and obvious
+                    asymmetry between operator new() and operator delete(). The
+                    former can be overloaded, the latter can't. This matches the
+                    similar asymmetry between constructors and destructors.</p>
+               
+               <p>He later added that:</p>
+               
+               <p>The reason is that in principle you
+                    know everything at the point where you create an object, but
+                    when it comes to deleting it, all you have left is a pointer
+                    that may or may not be of the exact type of the object.</p>
+               
+               <p>In other words, a class may have many
+                    constructors, but it can have only one destructor. That one
+                    destructor must disassemble each object no matter how it was
+                    assembled. Similarly, a class may provide several allocation
+                    functions each of which allocates an object differently.
+                    However, no matter how you allocate an object, there's
+                    basically only one way to delete it, and that's by using</p>
+
+<PRE>
+delete p;
+</PRE>
+               
+               <p>which, in a given context, always
+                    calls the same deallocation function.</p>
+               
+               <p>Thus, a given delete-expression must
+                    call a deallocation function that can deallocate an object
+                    that may have been allocated in one of several ways and it
+                    cannot pass any additional (placement) arguments to guide
+                    the deallocation. A common solution to this problem is for
+                    each allocation function to squirrel away some allocation
+                    information for each storage block. The deallocation 
+                    function uses this information to select an appropriate
+                    deallocation scheme for that block. </p>
+               
+
+
+               <p> The most popular spot for that
+                    allocation information is the word or two in memory just
+                    prior to the allocated storage, as shown in <a href="fig1c.htm">Figure
+                    1</a>. The allocation function grabs a block of storage that's
+                    larger than requested (large enough to hold the allocation
+                    information and still have enough left over for the actual
+                    request). The function stuffs the allocation information at
+                    the beginning (the low address) of that block, and returns a
+                    pointer to the remaining requested storage. </p>
+               
+               <p> It's easy to get lost in the details
+                    here, so let's try to summarize the big picture:</p>
+               <UL><LI>Some allocation functions actually allocate memory;
+                         others just locate previously-allocated memory. If you
+                         want to avoid memory leaks (which you presumably do)
+                         then every allocation function that actually allocates
+                         memory should have a corresponding deallocation
+                         function to deallocate that memory.</FONT></LI>
+              <LI>It's reasonable to expect you to know how you want to
+                         build something at the time you build it. However, it's
+                         probably too much to expect you to also remember all
+                         those details when you get around to tearing it down.
+                         Thus, although C++ provides the placement syntax as a
+                         way to assert finer control over memory allocation, it
+                         offers no corresponding syntax for memory deallocation.
+                         Since there are no placement delete-expressions, there
+                         will be times when one deallocation function
+                         corresponds to several allocation functions.</FONT></LI></UL>
+               
+               
+               <p>Although you aren't expected to
+                    remember all the details needed to guide a particular
+                    deallocation, you are expected to remember whether or not to
+                    deallocate at all. For example, if you write a
+                    new-expression that will create an object by actually
+                    allocating memory, you must remember to write a
+                    delete-expression that will deallocate that memory. If you
+                    write a new-expression that creates an object in
+                    statically-allocated storage, you must remember to not write
+                    a corresponding delete-expression. </p>
+               
+               <p> That's pretty much the way things
+                    were, and it seemed to handle most needs. That is, until the
+                    C++ committee realized that throwing an exception from a
+                    constructor in a placement new-expression could cause a
+                    memory leak.</p>
+               
+               <h4><FONT COLOR="#000080">Exceptions Thrown
+               During New-Expressions</FONT></H4>
+               
+               <p>A new-expression creates an object of
+                    class type in two distinct steps: (1) it calls an allocation
+                    function, and then (2) it calls a constructor. Either of
+                    these steps might terminate prematurely by throwing an
+                    exception. We certainly don't want those exceptions causing
+                    memory leaks, so C++ now has policies designed to prevent
+                    such leaks. </p>
+               
+               <p> A C++ compiler doesn't have to do
+                    anything special to deal with exceptions thrown by an
+                    allocation function call from a new-expression. An
+                    allocation function throws an exception because it failed to
+                    allocate storage for the object. Since there's nothing
+                    allocated, there's nothing that can leak. There's also
+                    nothing to construct. Thus, the new-expression skips the
+                    constructor call, and the exception propagates in the
+                    context surrounding the new-expression, looking to be caught
+                    somewhere. </p>
+               
+               <p> The following example illustrates
+                    what I just said.</p>
+
+<PRE>
+void f()
+    {
+    try
+        {
+        ...
+        pt = new T(v);
+        ...
+        }
+    catch (bad_alloc const &amp;x)
+        {
+        ...
+        }
+    }
+</PRE>
+               
+               <p>If the allocation function called from
+                    the new-expression throws a bad_alloc exception, then the
+                    new-expression bypasses the call to T's constructor. The
+                    exception propagates into the context surrounding the
+                    new-expression which, in this case, means control passes to
+                    the handler (the catch clause) of the try-block enclosing
+                    the new-expression. Since that handler has an
+                    exception-declaration that matches the throw type
+                    (bad_alloc), the exception stops propagating there. If the
+                    types did not match, the exception would propagate to f's
+                    caller, and possibly beyond.</p>
+               
+               <p>If the allocation function call
+                    succeeds (returns without throwing an exception), then the
+                    new-expression proceeds to initialize the object. That
+                    initialization includes evaluating the constructor arguments
+                    (if any) as well as calling the constructor. If any part of
+                    that initialization terminates by throwing an exception, the
+                    new-expression can't just terminate. Since it has already 
+                    allocated memory for the object it failed to initialize, the
+                    new-expression must deallocate the memory before letting go
+                    of the exception. To do otherwise would cause a memory leak.
+                    The problem is in finding the proper deallocation function.
+                    </p>
+               
+               <p> When the compiler parses a
+                    new-expression it looks up not only an allocation function,
+                    but also a deallocation function using the same lookup
+                    rules. That deallocation function is the new-expression's
+                    matching deallocation function. </p>
+               
+               <p> When the new-expression executes, it
+                    calls the allocation function. If the call succeeds, it
+                    proceeds to initialize the object (by evaluating the
+                    constructor arguments and calling the constructor). If any
+                    part of that initialization throws an exception, the
+                    new-expression calls the matching deallocation function to
+                    release the previously acquired (and still uninitialized) 
+                    storage. After the deallocation completes, the
+                    new-expression allows the exception to propagate into the
+                    surrounding context. </p>
+               
+               <p> In one of the earlier articles in
+                    this series, I explained that a new-expression such as</p>
+
+<PRE>
+pt = new T(v);
+</PRE>
+               
+               <p>translates more or less into something
+                    like</p>
+
+<PRE>
+pt = (T *)operator new(sizeof(T));
+pt-&gt;T(v);
+</PRE>
+               
+               <p></p>
+               
+               <p>where the first statement is the
+                    allocation function call, and the second is the constructor
+                    call. (That second statement &#151; an explicit constructor call
+                    &#151; is not something you can actually write in C++.) This
+                    model is now a little too simple; it does not take exception
+                    handling into account.</p>
+               
+               <p>A much more (but still not entirely)
+                    accurate translation model is that the compiler translates
+                    the new-expression into:</p>
+
+<PRE>
+pt = (T *)operator new(sizeof(T));
+try
+    {
+    pt-&gt;T(v);
+    }
+catch (...)
+    {
+    operator delete(pt);
+    throw;
+    }
+</PRE>
+               
+               <p>If the allocation function call throws
+                    an exception, the program never reaches the try-block; it
+                    goes off in search of a handler. If the allocation succeeds,
+                    the program enters the try-block, which initializes the
+                    object. If that initialization throws an exception, it's
+                    caught immediately by the try-block's one and only handler.
+                    (A catch-clause with ... as its exception-declaration 
+                    catches anything.)</p>
+               
+               <p>The handler invokes the matching
+                    deallocation function. It then rethrows the exception in the
+                    hope that it will get caught by a handler somewhere else. (A
+                    throw statement with no operand is a rethrow. It can appear
+                    only in a handler, and it throws whatever the handler
+                    caught.) </p>
+               
+               <p> Now, let's consider what happens if
+                    the new-expression uses the placement syntax, as in</p>
+
+<PRE>
+pt = new (&amp;x) T(v);
+</PRE>
+               
+               <p>There's a good chance that this
+                    new-expression calls the global</p>
+
+<PRE>
+void *operator new(size_t, void *)
+    throw ();
+</PRE>
+               
+               <p>which doesn't really allocate
+                    anything. If the constructor in this expression throws an
+                    exception, you don't want the program calling a matching
+                    deallocation function, because there isn't one.</p>
+               
+               <p>On the other hand, the new-expression
+                    might be</p>
+
+<PRE>
+pt = new (y, z) T(v);
+</PRE>
+               
+               <p>which calls some other placement
+                    allocation function that really could allocate something. If
+                    the constructor throws an exception in this instance, you do
+                    want the program to call the matching deallocation function
+                    to plug the leak.</p>
+               
+               <p>In short, the problem is that some
+                    placement allocation functions really allocate storage and
+                    others does not, and a compiler can't always tell them
+                    apart. For those, and only those, that allocate storage, the
+                    program should call a matching deallocation function in the
+                    event of an exception. So we need a way to tell the compiler
+                    what to do. This is where placement deallocation functions 
+                    come into play.</p>
+               
+               <h4><FONT COLOR="#000080">Placement
+               Deallocation Functions</FONT></H4>
+               
+               <p>The draft C++ Standard now says you
+                    can declare deallocation functions with placement
+                    parameters. A declaration of a placement operator delete
+                    matches a declaration of a placement operator new when both
+                    functions have the same number of parameters and all
+                    parameter types except the first are identical. </p>
+               
+               <p> For example, the declaration for the
+                    placement deallocation function</p>
+
+<PRE>
+void
+operator delete(void *, void *, size_t)
+    throw ();
+</PRE>
+               
+               <p>matches the declaration for the
+                    placement allocation function</p>
+
+<PRE>
+void *
+operator new(size_t, void *, size_t)
+    throw (bad_alloc);
+</PRE>
+               
+               <p>The first parameter of a deallocation
+                    function must be void *, while the first parameter of an
+                    allocation function must be size_t. Other than that, the two
+                    functions have identical parameters, so they match.</p>
+               
+               <p>If a particular placement allocation
+                    function has a matching placement deallocation function, the
+                    compiler presumes that the allocation function is one that
+                    actually allocates memory, and the deallocation function
+                    will deallocate memory. If a new-expression using that
+                    allocation function throws an exception during object
+                    initialization, the program will call that matching 
+                    deallocation function to prevent a memory leak. </p>
+               
+               <p> On the other hand, if a particular
+                    placement allocation function does not have a matching
+                    placement deallocation function, the compiler presumes that
+                    this allocation function does not allocate memory, and
+                    there's no need to call a deallocation function. If a
+                    new-expression using that allocation function throws an
+                    exception during object initialization, the program won't 
+                    call any deallocation function. It just lets the exception
+                    go searching for a handler. </p>
+               
+               <p> The draft C++ Standard refers to a
+                    non-placement deallocation function as a usual deallocation
+                    function. As I mentioned earlier, the usual global
+                    deallocation function must have exactly one parameter of
+                    type void *. In global scope, a placement deallocation
+                    function is any deallocation function with additional
+                    parameters after that first one. However, at class scope,
+                    the usual deallocation function might have a second
+                    parameter of type size_t, as in:</p>
+
+<PRE>
+void operator delete(void *p, size_t n)
+    throw ();
+void operator delete[](void *p, size_t n)
+    throw ();
+</PRE>
+               
+               <p>which, on some circumstances, could
+                    also be a placement deallocation function. Here's how the
+                    draft makes the distinction: </p>
+               
+               <p> Each deallocation function shall
+                    return void and its first parameter shall be void*. A
+                    deallocation function can have more than one parameter. If a
+                    class T has a member deallocation function named operator
+                    delete with exactly one parameter, then that function is a
+                    usual (non-placement) deallocation function. If class T does
+                    not declare such an operator delete but does declare a 
+                    member deallocation function named operator delete with
+                    exactly two parameters, the second of which has type
+                    std::size_t, then this function is a usual deallocation
+                    function.</p>
+               
+               <p>There's an identical set of words for
+                    operator delete[].</p>
+               
+               <p>Recall that the standard library's
+                    placement allocation functions:</p>
+
+<PRE>
+void *operator new(size_t, void *)
+    throw();
+void *operator new[](size_t, void *)
+    throw();
+</PRE>
+               
+               <p>don't allocate memory. As such they
+                    don't require matching placement deallocation functions:</p>
+
+<PRE>
+void operator delete(void *, void *)
+    throw();
+void operator delete[](void *, void *) throw();
+</PRE>
+               
+               <p>However, I was surprised to find that
+                    these functions are in the library, and defined to do
+                    nothing. I don't know why they're there. It's conceivable
+                    that they actually lead compilers to generate unnecessary
+                    code for placement new-expressions. I'll try to check this
+                    out at the next C++ standards meeting and let you know
+                    what's going on. </p>
+               
+               <p> I hope you enjoyed all this. Maybe
+                    you'll get to use it some day.</p>
+               
+               <h4><FONT COLOR="#000080">References</FONT></H4>
+               
+               <p>[<A name="REF1">1</a>]
+ Bjarne
+                    Stroustrup. The Design and Evolution of C++
+                    (Addison-Wesley). </p>
+               
+               </I></p></BLOCKQUOTE>
+<P><I>Dan Saks is the president of Saks & Associates, which offers training and consulting in C++ and C. He is active in C++ standards, having served nearly 7 years as secretary of the ANSI and ISO C++ standards committees. Dan is coauthor of C++ Programming Guidelines, and codeveloper of the Plum Hall Validation Suite for C++ (both with Thomas Plum). You can reach him at 393 Leander Dr., Springfield, OH 45504- 4906 USA, by phone at +1-937-324-3601, or electronically at dsaks@wittenberg.edu.</FONT></I></P> 
+     
+<h4><a href="../../../source/1997/may97/saks.zip">Get Article Source Code</a></h4>
+
+     </BODY>
+</HTML>

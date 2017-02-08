@@ -1,0 +1,557 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>March 1997/Using Templates Across UNIX Platforms</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><A href="../tocmar.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          <FONT COLOR="#FF0000">Unix</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">Using Templates Across UNIX
+          Platforms</FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">Hong Xiao</FONT></H3>
+          <BLOCKQUOTE>
+          <P>Sure, templates are powerful, but that power is still subject to
+               fluctuations across different implementations.</P></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <H4>Introduction</FONT></H4>
+               
+               <P><I>Templates are one of
+                    C++'s most powerful abstraction mechanisms. They are also
+                    one of the most problematic, largely due to inconsistencies
+                    among current implementations. It will be a while before all
+                    the quirks and outright bugs are ironed out of the current
+                    crop of compilers. In January, Chris Tarr and Anil Admal
+                    showed some of the problems you might encounter when using 
+                    templates across platforms, and they showed a few
+                    workarounds for those problems. (see "Templates and
+                    Today's Compilers," CUJ, January 1997, p. 27). That
+                    survey of template problems, as useful as it was, was by no
+                    means exhaustive. In this article Hong Xiao provides a few
+                    more items for your checklist, particularly if you are
+                    porting templates across UNIX platforms. &#151; mb </I></p><FONT COLOR="#004080">
+               </FONT>
+               
+               <p> The information in this article is
+                    based on research performed in implementing templates in the
+                    Wind/U Windows-to-UNIX and OpenVMS portability toolkit. The
+                    differences described in this article are based on the
+                    current C++ compiler versions for the different platforms;
+                    however, the implementation and support details may change
+                    as the compilers are updated. </p>
+               
+               <p> UNIX C++ compilers are usually (not
+                    always) based on the AT&amp;T CFront 3.0 implementation, and
+                    most Windows C++ compilers are CFront 3.0 compatible.
+                    Although all of the C++ compilers on UNIX or OpenVMS support
+                    C++ templates, the implementations are somewhat different
+                    than Microsoft's Visual C++ implementation. The UNIX and
+                    OpenVMS implementations of templates also vary from each
+                    other, simply because each C++ compiler is implemented based
+                     on the vendor's interpretation of the Draft ANSI C++
+                    Compiler Standard. To make your application as portable as
+                    possible, you must be aware of these different limitations
+                    and restrictions before you write your code. The following
+                    guidelines will help you take advantage of the benefits of
+                    using templates while producing portable code.</p>
+               
+               <h4><FONT COLOR="#000080">Use of General
+               Template Functions</FONT></H4>
+               
+               <p>A general, or global template function
+                    is defined here as a template function defined at global
+                    scope. A general template function is not a member of any
+                    class, but may be called by a template class's member
+                    function. A template's definition serves only as a
+                    prescription for a potentially infinite set of instances.
+                    The compiler does not generate an instance of the template 
+                    (instantiate it) until it encounters a usage of the template
+                    in the source code. For the compiler to instantiate the
+                    template function, it must see the actual definition and not
+                    simply its prototype declared within the header file.
+                    </p>
+               
+               <p> A compiler with the habit of
+                    instantiating a template when it encounters its use can
+                    cause problems. For example, consider the following
+                    CGenericArray class, which dynamically creates and deletes
+                    an array. This class uses two general template functions,
+                    CreateArray and DeleteArray:</p>
+
+<PRE>
+template&lt;class T&gt;
+inline void CreateArray(T* pElements, int nCount)
+{
+for (; nCount--; pElements++)
+    ::new((void*)pElements) T;
+}
+
+template&lt;class T&gt;
+inline
+void AFXAPI DeleteArray(T* pElements, int nCount)
+{
+        for (; nCount--; pElements++)
+                pElements-&gt;~T();
+}
+
+template&lt;class T&gt;
+class CGenericArray
+{
+public:
+    CGenericArray(int len) :
+        m_size(len)
+{ CreateArray(m_array, len); }
+    ~CGenericArray()
+{ DeleteArray(m_array, len); }
+    int GetSize() const { return
+        m_size; }
+    T &amp;operator[](int index)
+    {
+    if (index &lt; m_size)
+        return m_array[index];
+else return 0;
+    }
+private:
+    enum { Size = 20 };
+    int m_size;
+    T* m_array;
+};
+</PRE>
+               
+               <p>For small applications, you can create
+                    a single file in which all instantiations are generated. The
+                    above code, for example, could all be placed in a single
+                    file. Larger applications, however, require a more
+                    sophisticated instantiation mechanism, because multiple
+                    definitions of a certain type instance may be generated from
+                    multiple files in the application. Not all C++ compilers can
+                     handle these multiple definitions properly. On UNIX
+                    platforms, the C++ preprocessor typically generates a
+                    repository directory that contains instantiations of
+                    template functions. If the application uses shared libraries
+                    or DLLs, they may also instantiate template functions,
+                    causing problems on some UNIX platforms, such as Sun 4 and
+                    HP-UX. </p>
+               
+               <p> To port a template class to all UNIX
+                    platforms without error, you must eliminate general template
+                    functions and move their equivalent code into the class
+                    member functions. For example, using the above snippet, I
+                    change the constructor CGenericArray and destructor
+                    ~CGenericArray from inline member functions to normal
+                    non-inline member functions, and replace CreateArray and 
+                    DeleteArray with code that resides in the constructor and
+                    destructor:</p>
+
+<PRE>
+template&lt;class T&gt;
+class CGenericArray
+{
+public:
+    CGenericArray(int len);
+    ~CGenericArray();
+    int GetSize() const;
+    T &amp;operator[](int index);
+private:
+    enum { Size = 20 };
+    int m_size;
+    T* m_array;
+};
+
+template&lt;class T&gt;
+CGenericArray::CGenericArray(int len) : m_size(len)
+{
+    int i = len;
+    T *pT = m_array;
+    for (; i--; pT++)
+::new((void*)pT) T;
+}
+
+template&lt;class T&gt;
+~CGenericArray::CGenericArray()
+{
+    int i = len;
+    T *pT = m_array;
+    for (; i--; pT++)
+pT-&gt;~T();
+        
+}
+
+template&lt;class T&gt;
+inline
+int CGenericArray::GetSize() const
+{
+    return m_size;
+}
+
+template&lt;class T&gt;
+inline
+T &amp;CGenericArray::operator[](int index)
+{
+    if (index &lt; m_size) return m_array[index];
+    else return 0;
+}
+</PRE>
+               
+               <p>This is certainly a workaround.
+                    Actually, most C++ compilers on UNIX handle general template
+                    functions properly. Only a few C++ compilers (HP9 C++
+                    3.75/10.11 and SGI's older OCC C++ compiler, v5.3) require
+                    special attention. SGI's newer C++ compiler seems to have
+                    resolved this problem. You must be particularly careful in
+                    your use of template functions if your application consists 
+                    of DLLs, shared libraries, or static libraries.</p>
+               
+               <h4><FONT COLOR="#000080">Making All Template
+               Functions Inline</FONT></H4>
+               
+               <p>Sometimes, of course, you cannot avoid
+                    using general template functions. As Chris Tarr and Anil
+                    Admal also mentioned in their January article (p. 32), a
+                    couple of UNIX C++ compilers (HP9 C++ 3.75/10.11 and DEC C++
+                    5.3) will generate "undefined" error messages if
+                    you implement non-inline general template functions. </p>
+               
+               <p> Many classic C++ text books teach you
+                    to use inline functions judiciously. The rule of thumb is
+                    that when the body is small, use inline functions;
+                    otherwise, do not. However, to avoid the aforementioned
+                    error messages, you may want to make all template functions
+                    inline:</p>
+
+<PRE>
+template&lt;class T&gt;
+inline
+inline void CreateArray(T* pElements, int nCount)
+{
+for (; nCount--; pElements++)
+    ::new((void*)pElements) T;
+}
+
+template&lt;class T&gt;
+inline
+inline void AFXAPI DeleteArray(T* pElements, int nCount)
+{
+        for (; nCount--; pElements++)
+                pElements-&gt;~T();
+}
+</PRE>
+               
+               <p>Moreover, there is one UNIX C++
+                    compiler (HP-UX HP9 3.75/10.11) that requires you to declare
+                    all member functions inline before general template
+                    functions will work. The newer version of this compiler
+                    fixes this problem. </p>
+               
+               <p> Unfortunately, as was mentioned in
+                    the previous article, some code cannot be inlined on some
+                    compilers when it uses loop constructs such as while. This
+                    is a real catch-22 for users whose compilers won't
+                    instantiate global template functions unless they are
+                    inlined. Tarr and Admal present a workaround that replaces
+                    the non-inline function with an inline template function 
+                    which calls a static member function of a struct ("Templates
+                    and Today's Compilers," p. 32).</p>
+               
+               <h4><FONT COLOR="#000080">Declaring and
+               Implementing Templates</FONT></H4>
+               
+               <p>In Microsoft Visual C++, it makes no
+                    difference whether you implement templates in a header file
+                    or in a C++ file. But on UNIX or OpenVMS, it makes a huge
+                    difference. As I mentioned before, most UNIX C++ compilers
+                    are CFront based, and for any templates used in the
+                    application or a DLL, the compiler generates a repository
+                    directory. Since the application and DLL could be located in
+                     separate directories, these repository directories could
+                    also be located in separate directories. </p>
+               
+               <p> As a rule of thumb, consolidating all
+                    declarations and implementations of C++ templates in one
+                    single header file makes life a lot easier. The following
+                    example demonstrates a potential problem and how to solve
+                    it. Suppose you create a header file for class FOO and BAR
+                    in foo.h:</p>
+
+<PRE>
+class FOO;
+class BAR
+{
+public:
+   BAR();
+   ~BAR();
+private:
+   FOO * m_data;
+}
+</PRE>
+               
+               <p>In foo.cxx, define the implementation
+                    of class FOO and BAR:</p>
+
+<PRE>
+class CMyStruct
+{
+};
+
+typedef CTypedPtrList&lt;CPtrList, CMyStruct *&gt; CMyStructList;
+class FOO
+{
+   public:
+      CMyStructList m_array;
+};
+
+BAR :: BAR() : m_data( new FOO )
+{
+}
+
+BAR :: ~BAR()
+{
+   delete m_data;
+}
+</PRE>
+               
+               <p>Now build a DLL with the above code,
+                    and then try linking it to an application that uses class
+                    BAR. The DLL won't link correctly because there is no
+                    template definition in class BAR but a template is used in
+                    the DLL.</p>
+               
+               <p>This problem usually occurs when the
+                    application and DLLs are separate modules. The link fails
+                    because the template instantiation files are object files
+                    created in the temporary template repository by c++ptlink.
+                    Because the DLLs and the application directories are created
+                    separately, the linker doesn't know which object files for a
+                    DLL should be linked with the application that uses the same
+                    template, and vice versa. </p>
+               
+               <p> If you anticipate this problem during
+                    your initial application design, you can put the
+                    declarations and implementations of template-based classes
+                    together in one header file. If you have already implemented
+                    your template-based classes in separate header files and C++
+                    files, then use the C++ compiler option -ptr to specify a
+                    fixed location so that the temporary template repository 
+                    will be created in the same location for your DLLs and
+                    application executable. Most CFront-based C++ compilers,
+                    such as HP-UX C++ or Sun 4 C++, provide this option.</p>
+               
+               <h4><FONT COLOR="#000080">Using Nested Classes</FONT></H4>
+               
+               <p>C++ allows classes to be nested. The
+                    inner class is not inside the scope of the outer class. The
+                    inner class has the same scope as the outer class. Consider
+                    the following:</p>
+
+<PRE>
+template&lt;class T&gt;
+class X
+{
+protected:
+    struct Y
+    {
+        Y* a;
+        T b;
+    }
+public:
+    Y&amp; goo();
+protected:
+    Y* c;
+};
+</PRE>
+               
+               <p>Using nested class declarations in
+                    template classes such as the above can make your code less
+                    portable. We know of at least one platform (SGI) whose
+                    compiler (OCC C++) would not support nested classes or
+                    structs in template classes. </p>
+               
+               <p> The workaround for problem is to
+                    change the above code to the following:</p>
+
+<PRE>
+template&lt;class T&gt;
+struct Y
+{
+    Y* a;
+    T b;
+};
+template&lt;class T&gt;
+class X
+{
+public:
+    Y&amp; goo();
+protected:
+    Y* c;
+};
+</PRE>
+               
+               <p>This change works fine, but it would
+                    have been better to know the compiler's limitations in
+                    advance. Then you wouldn't have to bother with converting a
+                    nested class to an unnested form. As a side note, recently,
+                    we tested the newest version of the C++ compiler on the
+                    offending platform, and the nested class/struct now works
+                    fine.</p>
+               
+               <h4><FONT COLOR="#000080">Use of Inline
+               Specifier</FONT></H4>
+               
+               <p>Some UNIX C++ compilers do not
+                    correctly handle the implementation of an inline member
+                    function that was not declared inline in its template class.
+                    (Microsoft Visual C++ and some UNIX C++ compilers do not
+                    complain.) </p>
+               
+               <p> According to the Draft ANSI C++
+                    compiler standard, the inline hint could be ignored, but not
+                    all C++ compilers handle it correctly when it is placed in
+                    front of the function implementation but not in front of the
+                    declaration. </p>
+               
+               <p> As a rule of thumb for portable
+                    applications, always add the inline specifier to the
+                    function's declaration within its template class if you
+                    intend to use the function as an inline function. For
+                    example:</p>
+
+<PRE>
+template&lt;class T&gt;
+class CGenericArray
+{
+public:
+    //no inline spec.
+    CGenericArray(int len);
+    ~CGenericArray();
+inline
+    //inline spec here
+    int GetSize() const;
+// ...
+private:
+    enum { Size = 20 };
+    int m_size;
+    T* m_array;
+};
+
+template&lt;class T&gt; //no inline spec
+CGenericArray::CGenericArray(
+    int len) : m_size(len)
+{
+    int i = len;
+    T *pT = m_array;
+    for (; i--; pT++)
+::new((void*)pT) T;
+}
+
+//...
+
+template&lt;class T&gt;
+inline    //and here
+int CGenericArray::GetSize() const
+{
+    return m_size;
+}
+
+</PRE>
+               
+               <p>Being consistent when declaring and
+                    implementing inline member functions of a template can make
+                    your code more portable across multiple platforms. </p>
+               
+               <h4><FONT COLOR="#000080">Calling Destructors
+               In Template Functions</FONT></H4>
+               
+               <p>As Tarr and Admal mentioned, there is
+                    at least one compiler (GNU g++ 2.7.2) that does not support
+                    calling destructors explicitly in template functions, as in
+                    the following:</p>
+
+<PRE>
+template&lt;class T&gt;
+inline
+void AFXAPI DeleteArray(T* pElements, int nCount)
+{
+        for (; nCount--; pElements++)
+                pElements-&gt;~T();
+}
+</PRE>
+               
+               <p>For maximum portability, avoid using
+                    code like this in a template whenever possible.</p>
+               
+               <h4><FONT COLOR="#000080">Using Template
+               Parameters As a Base Class</FONT></H4>
+               
+               <p>On most UNIX platforms, you can derive
+                    a template class from another class that is specified in the
+                    template parameter declaration, as in the following example:</p>
+
+<PRE>
+template&lt;class B, class T&gt;
+class Derived : public B
+{
+public:
+Derived(int n = 10) : B(n) { }
+T &amp;f1() { return (T &amp;)B::f1(); }
+void f2(Derived&lt;B, T&gt; *pNew)
+    { B::f2(pNew); }
+};
+</PRE>
+               
+               <p>However, a couple of UNIX platforms
+                    (HP-UX and SGI's OCC C++) do not implement or support this
+                    form of template declaration and implementation. Thus, for
+                    maximum portability, you should avoid use of template
+                    parameters as the base class.</p>
+               
+               <h4><FONT COLOR="#000080">Conclusions</FONT></H4>
+               
+               <p>C++ templates are a relatively new
+                    feature added to a language that is still in the process of
+                    evolving and improving. Most of the problems you'll
+                    encounter using them stem from vendors' differing
+                    interpretations of the Draft ANSI C++ standard. The
+                    guidelines presented in this article (see
+                    <A href="tab1c.htm">Table 1</a>
+for a summary) are not
+                    formally documented in any C++ text book, but following them
+                    will enable you to use C++ templates across UNIX and OpenVMS
+                    platforms in addition to Microsoft Windows. In the future,
+                    perhaps, C++ compilers on all platforms will comply more
+                    closely to the Standard.</p>
+               
+               <h4><FONT COLOR="#000080">Bibliography</FONT></H4>
+               
+               <p>Ellis, M. A. and B. Stroustrup. The
+                    Annotated C++ Reference Manual. Reading, MA: Addison-Wesley,
+                    1990. ISBN 0-201-51459-1. </p>
+               
+               <p> ANSI C++ Draft Standard,
+                    X3J16/95-0087 </p>
+               
+               <p> Coplien, J. O. Advanced C++
+                    Programming Styles And Idioms. Addison-Wesley, 1992. ISBN
+                    0-201-54855-0. </p>
+               
+               <p> Lippman S. B. C++ Primer.
+                    Addison-Wesley, 1991. ISBN 0-201-16487-6. </p></BLOCKQUOTE>
+<P><I>Hong Xiao is Bristol Technology's principle software engineer. Hong has ten years experience in programming and software development. He is involved with porting the Microsoft Foundation Classes from MS-Windows to UNIX and OpenVMS, and is a key contributor to OLE development on UNIX. He may be reached at hong@bristol.com.</FONT></I></P>
+     </BODY>
+</HTML>

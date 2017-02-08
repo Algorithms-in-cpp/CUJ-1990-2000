@@ -1,0 +1,267 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>June 1997/A Reusable Apply Function via the Command Pattern</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><A href="../tocjun.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          <FONT COLOR="#FF0000">Features</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">A Reusable Apply Function
+          via the Command Pattern</FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">Sean Batten</FONT></H3>
+          
+          <BLOCKQUOTE>
+               
+               <P>Even an object-oriented program needs an occasional function
+                    pointer. The trick is to encapsulate the pointer properly.</P></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <h4><FONT COLOR="#000080"> Introduction</FONT></H4>
+               
+               <p>A relatively novel feature Windows 95
+                    made part of its user interface is the "Apply"
+                    button. An Apply button enables you to apply changes made to
+                    a dialog box before closing it, which allows you to
+                    configure settings easily in an application. While this
+                    functionality is relatively easy to add to an application it
+                    is not so easy to add it in a reusable, object-oriented
+                    manner. Many people place the code that applies the changes
+                    in the dialog class. This is the approach encouraged by the
+                    Microsoft Foundation Classes in the
+                    CPropertySheet/CPropertyPage tab dialogs. (If you are not
+                    using tabbed dialogs then you get no support at all.)
+                    </p>
+               
+               <p> However, to promote reusability the
+                    dialog box must know nothing about the object (such as a
+                    window or dialog box) that created it. Likewise, the object
+                    that created the dialog should be responsible for applying
+                    to itself the settings requested in the dialog. After all,
+                    it is the object that the settings apply to, so the object
+                    knows the best way to apply those changes. This presents an 
+                    interesting problem: if the dialog knows nothing about its
+                    parent, how can it communicate with that parent and ask it
+                    to apply the requested settings? </p>
+               
+               <p> One obvious approach is to have the
+                    dialog send its parent a Windows message. This solution has
+                    a couple of problems. First, the dialog and parent object
+                    must agree on a message to be used for communication. Since
+                    our dialog is being designed for reuse such agreement could
+                    doom communication from the start &#151; the message may already
+                    be in use. Second, there is no guarantee that the parent
+                    object is a window. In this case, sending a message is
+                    pointless. </p>
+               
+               <p> The approach I discuss here uses a
+                    concept called command classes. Command classes act as
+                    intermediaries between two objects. They allow one object
+                    (say, a dialog box) to carry out an action on another object
+                    (the dialog's parent) without knowing anything about the
+                    object, or the action to be carried out. Command classes
+                    make it easy to implement reusable dialogs. They also have 
+                    application in other areas, where reusability is not an
+                    issue. </p>
+               
+               <p> Command classes work by defining an
+                    abstract base class from which other command classes are
+                    derived. The Command base class is shown below:</p>
+
+<PRE>
+class Command
+{
+protected:
+    Command() {}
+public:
+    virtual void Execute(void)=0;
+    virtual ~Command() {};
+};
+</PRE>
+               
+               <p>As an abstract base class, Command
+                    provides no functionality; it simply defines an interface
+                    which derived classes must implement. From this class I have
+                    derived the ApplyCommand class. ApplyCommand's purpose is to
+                    tie the parent object and the dialog together. ApplyCommand
+                    also holds a pointer to a member function in the parent
+                    object; the parent's member function is able to apply the 
+                    changes requested in the dialog. This member function takes
+                    a reference to a dialog through which it can retrieve the
+                    information it needs. The ApplyCommand class looks like
+                    this:</p>
+
+<PRE>
+template&lt;class Handler, class Dialog&gt;
+class ApplyCommand : public Command
+{
+private:
+    typedef void(Handler::*Apply) (Dialog&amp;);
+    Handler *m_HandlerObject;
+    Apply m_Function;
+    Dialog &amp;m_Dialog;
+    public:
+    ApplyCommand(Handler *Object, Apply Function, Dialog  &amp;Dlg) :
+ m_Dialog(Dlg)
+    {m_HandlerObject=Object; m_Function=Function;}
+    void Execute(void)
+    {(m_HandlerObject-&gt;*m_Function) (m_Dialog);}
+};
+</PRE>
+
+
+
+               <p>ApplyCommand is represented
+                    schematically in <A href="fig1c.htm">Figure 1</a>.
+ The
+                    boxes in dashed lines represent a dialog and its parent, to
+                    which the ApplyCommand object will be connected. (Actually,
+                    the dialog and parent will both exist before the
+                    ApplyCommand object is created.) The use of templates may
+                    seem like overkill here, but they are necessary to enable
+                    the ApplyCommand object to call back into the parent object.
+                    Notice how the Execute function now has an implementation.
+                    ApplyCommand's Execute will call a function in the parent
+                    object (the handler) and pass it a reference to the dialog
+                    to which the ApplyCommand object is attached. </p>
+               
+               <p> The parent carries out the process of
+                    tying itself to the dialog, through the ApplyCommand object.
+                    The code below shows how this works. In this case the parent
+                    is an object of the class CApplyAppView. This parent object
+                    controls the application's main window and includes an MFC
+                    message handler that creates and displays a dialog. This
+                    dialog will allow the user to change a piece of text 
+                    displayed in the main window. The user will be able to type
+                    in some text and click on Apply to see the new text
+                    immediately displayed.</p>
+               
+               <p></p>
+
+<PRE>
+void CApplyAppView::OnChangeText()
+{
+    CTextDlg dlg(this);
+    dlg.OutText(m_OutText);
+
+// Create the apply callback
+Command *Cmd= new ApplyCommand&lt;CApplyAppView, CTextDlg&gt;
+    (this,ApplyTextChanges,dlg);
+
+    // and give it to the dialog
+    dlg.SetCommand(Cmd);
+    if(dlg.DoModal()==IDOK)
+    ApplyTextChanges(dlg);
+}
+
+void CApplyAppView::ApplyTextChanges( CTextDlg &amp;Dlg)
+{
+    // Get the text from the dilog and repaint  
+    m_OutText=Dlg.OutText();
+    InvalidateRect(NULL);
+}
+</PRE>
+               
+
+               <p>In
+                    the above code OnChangeText is the function that ties the
+                    parent and the dialog together. This function creates an
+                    ApplyCommand object and passes its address to the dialog
+                    object. Note that this pointer is of type Command *, not
+                    ApplyCommand *. Using the base-class pointer allows the
+                    dialog to access specific information in ApplyCommand
+                    through the generic interface of the Command class. Thus,
+                    when the ApplyCommand object is passed to the dialog via
+                    SetCommand, the dialog will know nothing about the specifics
+                    of the parent object it receives access to. After execution
+                    of OnChangeText the three objects involved (parent, dialog,
+                    and callback object) will be connected as shown in
+                   <a href="fig2c.htm">Figure 2</a>. </p>
+               
+               <p> The ApplyTextChanges function does
+                    exactly as its name suggests. It first calls member
+                    functions defined in the dialog to get the information it
+                    needs; then it forces its window to be repainted so as to
+                    apply the changes made. </p>
+               
+               <p> As for the dialog, it must allow the
+                    parent to set one of its members to point to the Apply
+                    callback object and it must provide a means for the parent
+                    to access the dialog data pertaining to the requested
+                    changes. Thus, the dialog class must include the following
+                    members and member functions:</p>
+
+<PRE>
+Command *m_Command;
+CString m_Text;
+
+void SetCommand(Command *Cmd) {m_Command=Cmd;}
+CString &amp;OutText(void) {return m_Text;}
+void OutText(const char *Text) {m_Text=Text;}
+</PRE>
+               
+               <p>In the above code SetCommand enables
+                    the parent to set the Apply callback object. The OutText
+                    functions provide a means for setting and retrieving the
+                    information required. All that's left to implement is a
+                    handler object for the Apply button:</p>
+               
+               <p></p>
+
+<PRE>
+void CTextDlg::OnApplyNow()
+{
+    if(m_Command)
+    {
+    // Get the text the user has entered
+
+    m_TextCtrl.GetWindowText(m_Text);
+    // and let the parent apply them
+    m_Command-&gt;Execute();
+    }
+}
+</PRE>
+               
+               <h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+               
+               <p>Command classes provide an easy way to
+                    implement Apply functionality in an object-oriented manner.
+                    Isolating all the functionality that applies changes within
+                    in the parent object removes the specifics from the dialog
+                    and allows the dialog to be easily reused. Even if
+                    reusability is not your goal, command classes provide a more
+                    object-oriented way to implement Apply functionality in your
+                     dialogs by placing the code that implements the settings in
+                    the object to which settings relate.</p>
+               
+               <h4><FONT COLOR="#000080">Further Reading</FONT></H4>
+               
+               <p>Gamma, Helm, Johnson, and Vlissides.
+                    Design Patterns: Elements of Reusable Object-Oriented
+                    Software (Addison-Wesley, 1995). Command classes are one of
+                    a number of design patterns discussed in this excellent
+                    book. </p>
+               
+               <p><I>Sean Batten works for Braid
+                    Systems Ltd, a company specializing in messaging software.
+                    He has a BSc(Hons) in Computer Science from Kingston
+                    University. He may be reached at sean@scoobie.demon.co.uk or
+                    at http://www.scoobie.demon.co.uk. </I></p></BLOCKQUOTE>
+     </BODY>
+</HTML>

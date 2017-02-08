@@ -1,0 +1,319 @@
+<HTML>
+     <HEAD>
+<TITLE>August 1998/The Learning C/C++urve</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocaug.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">The Learning C/C++urve: Yo Quiero VLAs</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Bobby Schmidt</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>VLAs bring a little bit of C++ to C, along with a host of uncertainties.</p></BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+<p><B><I>Copyright &copy; 1998 Robert H. Schmidt</I></B></p>
+
+<p>A short column this month. I'm putting together plans to move my home, possibly back to where I grew up (and perilously close to where Dan Saks lives now). The logistics of a house sale and cross-country move are overwhelming my time. Watch for a longer column next time around.</p>
+
+<h4><FONT COLOR="#000080">Last Month's Quiz</FONT></H4>
+
+<p>Last month I surveyed several aspects of variable-length arrays or VLAs, a feature of C9X (the emerging new C language standard). Along the way I left you with this thought problem:</p>
+
+<pre>
+int main()    {
+    size_t n = 10;
+    int a[++n];
+    /* What is n?  And what is
+       sizeof(a)? */
+    return 0;
+    }
+</pre>
+
+<p>For insight, you may be tempted to consider the apparently related variation</p>
+
+<pre>
+int main()
+    {
+    size_t n = 10;
+    int *a = new int[++n];
+    return 0;
+    }
+</pre>
+
+<p>Here <B>++n</B> is evaluated before the (implicit) call to <B>operator new</B>. Once the dust settles, <B>n</B> is 11, and <B>a</B> points to an array of 11 integers. Does this second example imply that, in the original example, both <B>n</B> and <B>sizeof(a)</B> end up as 11?</p>
+
+<p>Before you say "yes," consider a third example (courtesy of the ISO C committee email reflector):</p>
+
+<pre>
+int n = 5;
+int a[n++];
+printf("%d\n", n);
+for (int i = 0; i &lt; 10; ++i)
+    printf("%d\n", (int) sizeof(a));
+</pre>
+
+<p>Should this code increment <B>n</B> 0, 1, 10, or 11 times? The answer depends on how the expression <B>n++</B> "binds" to the type of <B>a</B>, and whether side effects even take place for sizing expressions such as <B>n++</B>. In particular, does <B>n++</B> get implicitly evaluated each time <B>sizeof(a)</B> is evaluated?</p>
+
+<p>But wait, it gets better:</p>
+
+<pre>
+size_t n = 5;
+typedef int Array[n++];
+Array a1;
+Array a2;
+Array a3;
+</pre>
+
+<p>What are the sizes of the three arrays and the ending value of <B>n</B>? The answer really depends on a broader question: does the typedef hold a numerical value (the result of <B>n++</B> evaluated at the point of the <B>Array</B> typedef) or an expression (the result of <B>n++</B> each time an <B>Array</B> is defined)?</p>
+
+<p>And finally, consider</p>
+
+<pre>
+(int (*)[n++]) NULL
+</pre>
+
+<p>Presumably the size argument <B>n++</B> need not be evaluated to make this cast work, suggesting it should be ignored. Yet in other well-established C constructs like</p>
+
+<pre>
+i = (n++, 1)
+</pre>
+
+<p><B>n++</B> is evaluated and <B>n</B> incremented, even though the value of <B>n</B> is not needed to determine the value of <B>i</B>.</p>
+
+<p>
+
+<h4><FONT COLOR="#000080">What to Do</FONT></H4>
+
+<p>As you can see, the apparently simple addition of run-time array sizing creates a host of conflicting extrapolations from prior C art. In the end, the committee members settled on this (from section 6.5.5.2 paragraph 3 of the current public C9X draft):</p>
+
+<BLOCKQUOTE><p>If the size expression is not a constant expression, and it is evaluated at program execution time, it shall evaluate to a value greater than zero. It is unspecified whether side effects are produced when the size expression is evaluated.</p></BLOCKQUOTE>
+
+<p>So for constructs like</p>
+
+<pre>
+size_t n = 5;
+int a[n++];
+</pre>
+
+<p>the value of <B>n</B> may be either 5 or 6, depending on the whims of your implementation.</p>
+
+<p>I'm not sure if this gives a definite answer for</p>
+
+<pre>
+size_t n = 5;
+typedef int Array[n++];
+Array a1;
+Array a2;
+Array a3;
+</pre>
+
+<p>If you think of typedefs as quasi-macros that "capture" the expression <B>n++</B>, you could interpret the above as</p>
+
+<pre>
+size_t n = 5;
+int a1[n++];
+int a2[n++];
+int a3[n++];
+</pre>
+
+<p>If this interpretation is correct, then based on the Standard passage cited above, we'd have several possible values of <B>n</B> and lengths of arrays.</p>
+
+<p>I can't find language in the Standard speaking to this directly. However, the following example (section 6.5.7, paragraph 4, example 6) hints at the answer <a href="#1">[1]</a>:</p>
+
+<p>The size expression that is part of the variable length array type named by typedef name <B>B</B> is evaluated each time function <B>copyt</B> is entered. However, the size of the variable length array type does not change if the value of <B>n</B> is subsequently changed.</p>
+
+<pre>
+void copyt(int n)
+    {
+    typedef int B[n]; // B is n ints,
+                      // n evaluated now.
+    n += 1;
+    // new block
+        {
+        B a;       // a is n ints,
+                   // n without += 1.
+        int b[n];  // a and b are different sizes
+        for (i = 1; i &lt; n; i++)
+            a[i-1] = b[i];
+        }
+    }
+</pre>
+
+<p>This example implies that the size expression in a VLA typedef is evaluated exactly once, where the flow of execution encounters the typedef. If I'm reading the tea leaves correctly, this rule applies for typedefs like</p>
+
+<pre>
+typedef int B[n++];
+</pre>
+
+<p>as well.</p>
+
+<h4><FONT COLOR="#000080">Wools and Linens</FONT></H4>
+
+<p>In that last paragraph I mentioned the "flow of execution" and its relation to VLA interpretation. In the examples I've shown so far, all that flow has been forward with no jumps. But what about flow that contains jumps, such as the (possibly surprising) example</p>
+
+<pre>
+    size_t n = 1;
+    goto label;
+    int a[n];
+label:
+</pre>
+
+<p>Is <B>a</B> ever created here?</p>
+
+<p>You might be thinking "of course <B>a</B> is never created, since such mixed C code and declarations can never compile." Were this Standard C, you'd be right. But like C++, C9X allows mixing of code and declarations.</p>
+
+<p>Normally this mixing is straightforward &#151; C9X has no constructor calls or other hidden declaration side effects. The complication comes with VLAs, since the meanings of declarations can depend on the flow of code leading to them.</p>
+
+<p>Removing the code/declaration mix by</p>
+
+<pre>
+    size_t n = 1;
+    // goto label;
+    int a[n];
+label:
+</pre>
+
+<p>or</p>
+
+<pre>
+    size_t n = 1;
+    goto label;
+    // int a[n];
+label:
+</pre>
+
+<p>makes the ambiguity go away. However, this approach is not a cure-all. Consider</p>
+
+<pre>
+    size_t n = 1;
+label:
+    int a[n];
+    // ...
+    if (n++ &lt; 10)
+        goto label;
+</pre>
+
+<p>Here we have no mixing of code and declarations, yet an ambiguity remains: by the time this code exits, what is the size of <B>a</B>? And how many times is <B>a</B> created and destroyed?</p>
+
+<p>In all these examples, the real culprit is a jump relative to a VLA declaration. The relevant C9X rules, summarized from section 6.6.6.1 and section 6.1.2.4 paragraph 3:</p>
+
+<UL><LI>If you jump forward or backward into the scope of a VLA, the result is undefined behavior (as in our first example).</LI>
+    <LI>You can jump forward within the scope of a VLA with impunity.</LI>
+    <LI>You can jump backward within the scope of a VLA, but the VLA's storage may not be preserved. In our last example, the storage  for <B>a</B> may be created and destroyed with each pass through (up to 10 times).</LI></UL>
+
+<h4><FONT COLOR="#000080">Segue</FONT></H4>
+
+<p>I invite you to compare the C9X declaration vs. jump rules to those for C++ constructors and destructors in the face of similar jumps. I think you'll find that VLAs act disturbingly like C++ objects, further supporting last month's allegation that C programmers now get to see how the other half lives.</p>
+
+<p>Next time, I'll compare VLA traits to those of C++ container classes, including our evolving <B>Array</B> class. This should slide me back into the groove of making <B>Array</B> more like Standard Template Library (STL) containers.</p>
+
+<h4><FONT COLOR="#000080">Marvin, Wendy, and Wonder Dog</FONT></H4>
+
+<p>For two months I've been promising evidence of Scott Meyers' terminal boredom. I was so sure I had email from him proving he had too much time on his hands. I lied. I can't find the mail to save my life, and now I'm thinking I dreamt it up.</p>
+
+<p>I plan to drop in on Scott, Nancy, and Persephone "The Best Dog In The World" <a href="#2">[2]</a> this summer; maybe then I'll catch some juicy goss (like how he secretly longs for COBOL's return). Until then, you'll have to accept my lame apology.</p>
+
+<h4><FONT COLOR="#000080">Threads</FONT></H4>
+
+<p>But I didn't dream up all my email. Several months ago, Diligent Reader Simeon Simeonov sent this missive (edited for clarity and brevity):</p>
+
+<p><I>In the February '98 issue of</I> CUJ <I>I read your comments to Bill Palladino regarding his problems with the initialization order of non-local static variables. You suggested that he use a function and thus convert a non-local to a local static variable. This is the standard solution that works in most, but not all cases. In particular, the behavior in multithreaded applications is undefined.</p>
+
+<p>A simple function does solve the problem if (a) the application is not multithreaded, or (b) the function gets called at least once in a single-threaded environment before it is called from a multithreaded environment. (Satisfying this latter case forces developers to think about the order of calls and can lead to subtle bugs if/when the code is changed.)</p>
+
+<p>For all other cases, I suggest the following singleton template:</I></p>
+
+<pre>
+template&lt;class T&gt;
+class Singleton
+    {
+public:
+    static T &amp;get()
+        {
+        static T t;
+        return t;
+        }
+private:
+    struct Initializer
+        {
+        Initializer()
+            {
+            Singleton&lt;T&gt;::get();
+            }
+        };
+    static Initializer dummy_;
+    Singleton()
+        {
+        }
+    //
+    //    purposely left
+    //    unimplemented
+    Singleton(Singleton const &amp;);
+    Singleton &amp;
+    operator=(Singleton const &amp;);
+    };
+</pre>
+
+<p><I>Thank you for providing both knowledge and laughs in your column!</p>
+
+<p>Regards,</p>
+
+<p>Simeon Simeonov<br>
+Manager, Language Technology, Allaire</I></p>
+
+<h4><FONT COLOR="#000080">How It All Works</FONT></H4>
+
+<p><B>Singleton</B> has a single private static member, which I've called <B>dummy_</B> here to reinforce its role as a placeholder. Because <B>dummy_</B> is a static class member, and because such members have external linkage, <B>dummy_</B> initializes before <B>main</B> is entered. <B>dummy_</B>'s constructor calls <B>Singleton&lt;T&gt;::get</B>, which in turns forces the initialization of <B>get</B>'s private static object <B>t</B>.  The net result: <B>t</B> is properly constructed before any thread can reference it.</p>
+
+<p>Simeon knows of two ways this solution could fail:</p>
+
+<UL><LI>The compiler may optimize away the call to <B>get</B> in <B>dummy_</B>'s constructor.</LI>
+    <LI>The linker may not complain if you never define <B>dummy_</B> in any translation unit.</LI></UL>
+
+<p>To get around the first problem, you may have to try different hacks to defeat your compiler's aggressive optimization. Simeon suggests changing <B>dummy_</B>'s constructor to cache away <B>get</B>'s address:</p>
+
+<pre>
+Initializer()
+    {
+    T &amp;(*another_dummy)() =
+        Singleton&lt;T&gt;::get;
+    Singleton&lt;T&gt;::get();
+    }
+</pre>
+
+<p>For the second problem, Simeon recommends "waking the linker up" with a similar trick</p>
+
+<pre>
+static T &amp;get()
+    {
+    &amp;dummy_; // new
+    static T t;
+    return t;
+    }
+</pre>
+
+<h4><FONT COLOR="#000080">Reflections</FONT></H4>
+
+<p>As I told Simeon in my email reply, I've purposely avoided multithreading in my columns, especially since the C and C++ Standards don't address it. Indeed, from what I can see, the languages were really designed for synchronous single-thread design. About the only concession the Standards make to asynchronous events is the <B>volatile</B> keyword, and even that's more for low-level hardware support. Certainly the notion of static entities collides with threading.</p>
+
+<p>On a more abstracted level, what it means to be a unique object becomes more murky with threads. The normal ideas of object scope, lifetime, visibility, and so on, as enforced in the compile-time domain, don't necessarily work in a multithreaded run-time domain. It's like being a script writer for <I>Star Trek Voyager</I> &#151; one must be comfortable trafficking in parallel universes, able to keep the plot elements self-consistent, and not allowing the same characters from different realities to intermix.</p>
+
+<p>Perhaps with threads we are pushing C++ beyond the boundaries of what it should be. My experience with threading suggests it can't be grafted on as an afterthought, but must be intrinsic to the design from its conception. Languages like Ada and Java, which have innate genetic awareness of concurrency, seem better hosts, at least from a distance.</p>
+
+<p>I'll have have to ponder this more. Meanwhile, feel free to let me know your thoughts about and experiences with C or C++ as a multithreading platform.</p>
+
+<h4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1]  C++ <B>//</B> comments are now availalbe in C9X. From now on, I'll use them in my C9X examples where they make sense.</p>
+
+<p><a name="2"></a>[2]  Lest you think I exaggerate, take a Dramamine, then point your browser to <B>http://www.aristeia.com/Persephone/index.html</B>.</p>
+
+<p><i>Bobby Schmidt is a freelance writer, teacher, consultant, and programmer. He is also a member of the ANSI/ISO C standards committee, an alumnus of Microsoft, and an original "associate" of (Dan) Saks &amp; Associates. In other career incarnations, Bobby has been a pool hall operator, radio DJ, private investigator, and astronomer. You may summon him at 14518 104th Ave NE, Bothell, WA 98011; by phone at +1-425-488-7696, or via Internet e-mail as <B>rschmidt@netcom.com</B>.</i></p>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

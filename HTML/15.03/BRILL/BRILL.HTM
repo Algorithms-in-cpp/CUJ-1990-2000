@@ -1,0 +1,388 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>March 1997/Sharing Variables Between Win32 Executables</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><FONT COLOR="#FF0000"><A href="../tocmar.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          Features</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">Sharing Variables Between
+          Win32 Executables</FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">Gregory Brill</FONT></H3>
+          <BLOCKQUOTE>
+          <P>Global variables are properly denigrated as being unstructured,
+               but that can be a virtue when structure interfaces with
+               communication.</P></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <h4><FONT COLOR="#000080">For The Love of a
+               Global</FONT></H4>
+               
+               <p>Since the early days of my first
+                    computer science classes, I've often heard the admonition, "No
+                    global variables." At first, I didn't really understand
+                    why. Globals were easy to understand, and even easier to
+                    implement. As I followed the advice to avoid globals, I
+                    eventually figured out why it was so important: data
+                    specific to one part of a program or object should be
+                    encapsulated within that program or object, and not subject
+                    to the coercion of any other part of the application. From 
+                    there I went on to adopt the principles of OOP, though some
+                    part of me still held a torch for the global. </p>
+               
+               <p> I found an old, familiar friend when
+                    I learned C++. It is called the static member variable, and
+                    it works like this:</p>
+
+<PRE>
+class share
+{
+private:
+     
+static int share_count;
+     
+public:
+     
+share(){ share_count++; }
+~share() { share_count_ _;}
+     
+};
+     
+int share::share_count=0;
+</PRE>
+               
+               <p>All instances of the above class will
+                    share the variable share_count. What's more, share_count
+                    will be incremented with every new instantiation of the
+                    class share and decremented with every class instance
+                    destroyed. In this way any one instance of the class can
+                    determine how many other instances currently exist. This is
+                    old hat to many, but what I want to point out is that this 
+                    static member variable is a global of the best sort: a
+                    region of shared memory which can be accessed and modified
+                    only by those objects to whom it is relevant. </p>
+               
+               <p> I've often thought it would be nice
+                    if operating systems had a similar feature. It turns out
+                    that some of them do. In this article I show a special way
+                    to compile a Win32 executable or DLL such that all
+                    instantiations share a common group of global variables. If
+                    one executable makes a change to its global variable, all
+                    other running instances of that executable will reflect the 
+                    change. You can think of it as a static member variable of a
+                    process, much like that of a class.</p>
+               
+               <h4><FONT COLOR="#000080">Using Pragmas with
+               VC++</FONT></H4>
+               
+               <p>With Visual C++ 4.2, you can share
+                    variables among multiple instantiations of an executable by
+                    using a #pragma preprocessor directive. Pragmas are like
+                    instructions to the compiler to turn on machine or operating
+                    system extensions not specified by C or C++ language
+                    standards. The first step in sharing global variables is to
+                    use the data_seg pragma:</p>
+
+<PRE>
+//A console style Win32 executable
+//using shared global variables     
+     
+#include "iostream.h"
+     
+#pragma data_seg("my_shared_section")
+     
+long shared_long=0;
+char shared_array[]="XXXXXXXXXXXXXXXXXX";
+     
+#pragma data_seg()
+</PRE>
+               
+               <p>The above snippet creates a customized
+                    section called "my_shared_section". An executable
+                    or DLL is composed of multiple sections &#151; to name a few:
+                    .bss for uninitialized data, .data for initialized data,
+                    .text for code, and in this case a "my_shared_section"
+                    section. Convention dictates that you prepend a "."
+                    to any section name, but it's up to you. The code above is
+                    90% there, but I must make one important point before I move
+                    on to the last 10%. Note that the variables in "my_shared_section"
+                    are initialized when declared. Initializing these variables
+                    is critical, because uninitialized data gets automatically
+                    ushered into the .bss section &#151; not where you want it.
+                    </p>
+               
+               <p> Theoretically, all that remains in
+                    implementing shared variables is to use another pragma:</p>
+
+<PRE>
+#pragma comment(lib, \
+    "msvcrt " \
+    "-section:my_shared_section, \
+    rws")
+</PRE>
+               
+               <p>This is the solution offered by the Microsoft Press book
+                    Advanced Windows, by Jeffrey Richter [1] &#151; a very good
+                    book, in spite of its being wrong on this point, at least
+                    for VC++ 4.2. The above statement is supposed to give "my_shared_section"
+                    read(r), write(w), and shared(s) attributes, ensuring a
+                    single mapping of this section across multiple
+                    instantiations. The comment pragma will place a literal
+                    string, such as version number or compilation date, in your
+                    object file or executable. You can also use this pragma to
+                    give the linker special directives at link time, as is done
+                    in the above snippet. However, try using this particular
+                    example in Visual C++ 4.2 and the linker will tell you:</p>
+
+<PRE>
+LINK : fatal error LNK1104: cannot
+    open file "msvcrt
+    -section:my_shared_section,
+    rws.lib"
+</PRE>
+               
+               <p>Jeffrey Richter recommended I try the following substitute:</p>
+
+<PRE>
+#pragma comment(linker, "-SECTION:my_shared_section, RWS")
+</PRE>
+               
+               <p>While this substitution allows the
+                    program to compile and link, it does not result in a shared
+                    globals section. I confess I've been unable to determine the
+                    cause and cure for these two failed pragma directives. I
+                    haven't found any Microsoft documentation on pragmas being
+                    used this way. I invite any solutions, but in the meantime,
+                    you can create a .DEF file for your executable. (I realize 
+                    that you usually use .DEF files for DLLs, but what can I
+                    say, it works!) Your .DEF file should contain the following:</p>
+
+<PRE>
+SECTIONS
+ my_shared_section READ WRITE SHARED
+</PRE>
+               
+               <p>And there you are. Add a main(),
+                    compile, and you have an executable whose global variables
+                    are shared among all other instantiations of its kind.
+                    Here's a trivial console application that demonstrates this
+                    technique:</p>
+
+<PRE>
+//A console style Win32 executable
+//using shared global variables
+//Run two or more instances and youP2ll see
+//that all variables are shared.
+ 
+//sharevar.cpp
+ 
+#include "iostream.h"
+ 
+#pragma data_seg("my_shared_section")
+//all vars must be initialized
+ 
+long shared_long=0;
+char shared_array[]="XXXXXXXXXXXXXXXXXX";
+ 
+#pragma data_seg()
+ 
+main()
+{
+int choose=1;
+ 
+while(choose)
+    {
+    cout&lt;&lt;"(1) Change long (2) Print long "
+    cout&lt;&lt;"(3) Change array (4) Print array "
+    cout&lt;&lt;"(0) Quit: ";
+ 
+    cin&gt;&gt;choose;
+ 
+    switch (choose)
+        {
+ 
+        case 1: cout&lt;&lt;"enter number:";
+                cin&gt;&gt;shared_long;
+                break;
+ 
+        case 2: cout&lt;&lt;shared_long&lt;&lt;endl;
+                break;
+     
+        case 3: cout&lt;&lt;endl&lt;&lt;"enter string:";
+                //get newline out of buffer first
+                cin.getline(shared_array,2);
+                cin.getline(shared_array,10);
+                break;
+     
+        case 4: cout&lt;&lt;shared_array&lt;&lt;endl;
+                break;
+     
+        default:
+        ;
+        break;
+        }
+    }
+}
+//sharevar.def
+ 
+SECTIONS
+my_shared_section READ WRITE SHARED
+</PRE>
+               
+               <p>You can use the same procedure and
+                    compile a DLL with shared globals. What's more, if you want
+                    all static global data shared within a DLL, you can dispense
+                    with pragmas altogether and simply declare the .bss and
+                    .data sections read, write, and shared in a .DEF file, as
+                    in:</p>
+
+<PRE>
+SECTIONS
+         .bss  READ WRITE SHARED
+         .data READ WRITE SHARED
+Some Possible Applications
+</PRE>
+               
+               <p>Sharing globals is extremely handy.
+                    Your application can use them to determine whether another
+                    instance of itself is running and act accordingly. You might
+                    even implement your own simple interprocess-communication
+                    protocol, though be certain you have good reason to do so
+                    before you reinvent the wheel. I've encountered only one
+                    situation where I felt justified in implementing my own IPC 
+                    using this technique. It involved one process outputting
+                    text and formatting information to the window of another
+                    process. </p>
+               
+               <p> Given that I wrote both the
+                    applications involved, it would seem simple to accomplish:
+                    simply obtain the handle of the window in the receiving
+                    process and ship it off to the sending process, perhaps
+                    using DDE or OLE. The sending process could then use the
+                    Win32 SendMessage function with the newly received handle to
+                    "remote control" the window in the remote process.
+                    Unfortunately, this works only partially. To see why, refer
+                    to the sidebar, "<A href="sidebar.htm">Win32 Handles
+                         and the SendMessage API.</A>"</p>
+               
+               <p> In my case, I had just written one of
+                    those programs that did it all. It sported a rich edit
+                    control (an enhanced version of the Windows edit control
+                    capable of color and formatting) as its primary interface,
+                    and did some pretty sophisticated stuff: changed fonts,
+                    colors, and formatting on the fly, even did a little OLE
+                    embedding. While this program worked great on its own, we 
+                    soon wanted to incorporate its functionality into another,
+                    older application. This older application also used a rich
+                    edit control as its primary interface. In both applications
+                    the code was pretty involved, and I didn't relish cutting,
+                    pasting, and meshing code from the new application to the
+                    old. It seemed like the new application did everything we
+                    needed, if only we could redirect output from its window to
+                    the window of the older program. Shared globals were a good
+                    part of the solution, which we implemented as follows:</p>
+               
+               <p> </p>
+               <DL><DD>1. We wrote a DLL with a shared global region. </DD>
+                    <DD><BR>
+                          </DD>
+                    <DD> 2. We added all the structures SendMessage would need
+                         to this section. (See the sidebar for more information
+                         about SendMessage.) By placing these structures in the
+                         shared region, their address space and values would be
+                         valid in both processes. Now SendMessage could send
+                         pointers to structures across process boundaries. </DD>
+                    <DD><BR>
+                          </DD>
+                    <DD> 3. We added a global handle variable to hold the
+                         handle of the older application's rich edit control.
+                    </DD>
+                    <DD><BR>
+                          </DD>
+                    <DD> 4. We modified both the old and new applications to
+                         load the shared-global DLL. </DD>
+                    <DD><BR>
+                          </DD>
+                    <DD> 5. We modified the newer application to run in the
+                         background, and redirect its output to the handle of
+                         the older by dispatching SendMessages using pointers to
+                         structures in the shared section of the DLL. </DD>
+                    <DD><BR>
+                          </DD>
+                    <DD> 6. We danced around the office when this worked.</DD>
+               </DL>
+               
+               <p>I admit I'd be hard pressed to find
+                    any architectural merits in this design, but it was quick,
+                    dirty, and it worked. Realistically, you should restrict
+                    your use of shared globals for many of the same reasons you
+                    should restrict your use of any type of global variable.
+                    However, there are times when shared globals will offer the
+                    simplest solution.</p>
+               
+               <h4><FONT COLOR="#000080">Concerns About
+               Multithreading</FONT></H4>
+               
+               <p>In Win32 there is always a possibility
+                    of thread synchronization problems. Keep in mind that every
+                    Win32 process has a primary thread, which may be preempted
+                    by the operating system for another process's primary thread
+                    at any time. You may therefore have the same problems with
+                    multiple processes sharing variables as you do with multiple
+                    threads: one thread/process might not be done updating the
+                    data in a shared global before another attempts to read it.
+                    A few functions you might find useful when implementing
+                    shared globals are:</p>
+
+<PRE>
+InterlockedIncrement
+InterlockedCompareExchange
+InterlockedDecrement
+InterlockedExchange
+InterlockedExchangeAdd
+</PRE>
+               
+               <p>I leave it to the reader to explore
+                    these functions. Basically, they are thread-safe, atomic
+                    ways to change the value of simple, shared data types.</p>
+               
+               <h4><FONT COLOR="#000080">Globals Forever</FONT></H4>
+               
+               <p>If I could somehow return to the early
+                    classrooms of my computer education, I'm sure I could now
+                    make a compelling argument for the global. At least, globals
+                    between processes seem to have enough utility to justify
+                    their use, even if globals within a single process are still
+                    looked at askance. Given that my development has been in the
+                    Microsoft Windows arena for the past few years, I'll admit
+                    I've lost touch with parallel techniques in the UNIX world.
+                    However, I don't remember any compiler, linker, or pragma
+                    wizardry that allows for shared global variables. The
+                    closest cousin to this type of sharing is the UNIX shared
+                    memory APIs. Functions such as shget, shmat, and other APIs
+                    with names reminiscent of my grandmother's Yiddish allowed
+                    one process to share memory with another. Very useful, but
+                    not quite as simple. I hope that I've shown how simple and
+                    useful shared globals can be in a Win32 environment. o
+                    </p></BLOCKQUOTE>
+
+<P><I>Gregory Brill is Director of Development for Keyware Technologies, where he works in the field of software/Internet security. He has an M.S. in Computer Science from the Rochester Institute of Technology, and he teaches professional and university courses in C, C++, Microsoft Windows development, and general computing. He may be reached at gbrill@imageview.com.</FONT></I></P>
+     </BODY>
+</HTML>

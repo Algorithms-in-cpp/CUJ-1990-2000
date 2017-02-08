@@ -1,0 +1,267 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>October 1997/Integrating COM Enumerators and STL Iterators</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><FONT COLOR="#FF0000"><A href="../tococt.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          Features</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">Integrating COM Enumerators
+          and STL Iterators</FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">Greg Colvin</FONT></H3>
+          
+          <BLOCKQUOTE>
+               
+               <P>Maybe you've noticed the similarity of functionality between
+                    COM enumerators and the iterators of STL. Greg shows how to
+                    implement one in terms of the other.</P>
+               
+          </BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               <P><b><i>Copyright 1997 by Gregory Colvin</i></b></P>               
+               <p>COM is Microsoft's Component Object
+                    Model, a distributed object specification for Windows and
+                    ActiveX programming. STL is the Standard Template Library,
+                    Alex Stepanov's generic programming specification, coming
+                    soon to a C++ standard near you. COM and STL have little in
+                    common, but I explore here one interesting and useful
+                    exception: the COM concept of enumerators and the STL
+                    concept of iterators. I will show how to implement COM
+                    enumerators from STL iterators, so that the contents of
+                    local STL containers, like vector and list, can be made
+                    available to remote COM clients. I will also show how to
+                    implement STL iterators from COM enumerators, so that remote
+                    COM servers can provide data for STL algorithms.</p>
+               
+               <h4><FONT COLOR="#000080">COM and Enumerators</FONT></H4>
+               
+               <p>A COM interface, as implemented in
+                    C++, is an abstract class. The most basic COM interface is
+                    the IUnknown interface:</p>
+
+<PRE>
+struct IUnknown {
+  virtual HRESULT QueryInterface(IID*,void**)=0;
+  virtual ULONG AddRef()=0;
+  virtual ULONG Release()=0;
+  };
+</PRE>
+               
+               <p>IUnknown specifies the interface
+                    conversion and reference counting services that all COM
+                    objects must provide. The rest of the COM specification
+                    consists mostly of abstract classes derived from IUnknown.
+                    </p>
+               
+               <p> Enumerators are not one interface,
+                    but a family of similar interfaces. Each enumerator
+                    interface provides functions for enumerating, or iterating
+                    over, sequences of data elements of a given type. All
+                    enumerators share the same member functions, but the data
+                    element type is different for each enumerator. Microsoft
+                    specifies the family of enumerator interfaces as a template:</p>
+
+<PRE>
+template &lt;class T&gt;
+struct IEnum : IUnknown {
+  virtual HRESULT Next(ULONG n,
+    T dest[],ULONG* pn)=0;
+  virtual HRESULT Skip(ULONG n)=0;
+  virtual HRESULT Reset()=0;
+  virtual HRESULT
+    Clone(IEnum&lt;T&gt;** ppClone)=0;
+   };
+</PRE>
+               
+               <p>You can declare enumerator interfaces
+                    that conform to this template, and implement an enumerator
+                    class by implementing the pure virtual functions of its
+                    interface. </p>
+               
+               <p> For a simple example, let's say we
+                    have an array of float that we want to enumerate, that pCurr
+                    points at the current position in the array, and pEnd points
+                    to the end of the array, just past the last element. An
+                    IEnum&lt;float&gt;::Next function is required to output up
+                    to n elements in the dest array, report the number of output
+                    elements in the variable *pn, and return S_FALSE if fewer
+                    than n elements were available for output. We can implement
+                    the Next function as:</p>
+
+<PRE>
+HRESULT Next(ULONG N, float dest[],
+  ULONG* pn) {
+      *pn = 0;
+      while (n--) {
+         if (pCurr == pEnd)
+            return S_FALSE;
+         dest[(*pn)++] = *pCurr;
+         ++pCurr;
+      }
+      return 0;
+   }
+</PRE>
+               
+               <p>The other enumerator functions are
+                    equally simple. Of course arrays of float are just one kind
+                    of sequence that we might want to enumerate. It would be
+                    much better to write an enumerator just once that could
+                    handle any kind of sequence. With STL iterators we can do
+                    just that.</p>
+               
+               <h4><FONT COLOR="#000080">STL and Iterators</FONT></H4>
+               
+               <p>Enumerators are but a small corner of
+                    the vast COM specification, but for STL the concept of
+                    iteration is central. STL consists of algorithms, iterators,
+                    and containers. Algorithms operate on iterators, and
+                    iterators provide access to containers. Algorithms operate
+                    on different kinds of iterators, and containers support
+                    different kinds of iterator, so STL provides several
+                    categories of iterator &#151; input, output, forward,
+                    bidirectional, and random. </p>
+               
+               <p> The concept of iterator category in
+                    STL is even more abstract than the concept of enumerator in
+                    COM. An iterator category is not a class, or even a family
+                    of classes. An iterator need not have any particular class
+                    members, or even be a class, but need only support certain
+                    expressions with certain semantics, expressions like
+                    ++iterator and *iterator. By design, a pointer into a C++
+                    array will satisfy all iterator requirements, but iterators
+                    are not necessarily pointers, they just support some of the
+                    operations that pointers support. Which operations an
+                    iterator supports depends on its category &#151; random-access
+                    iterators support the most operations, bidirectional
+                    iterators fewer, forward iterators even fewer, and input and
+                    output iterators the least. </p>
+               
+               <p> Iterators are also categorized as
+                    mutable and non-mutable . For a mutating iterator p, *p is
+                    an lvalue &#151; that is, you can assign to it. Output iterators
+                    are always mutable, input iterators are always non- mutable,
+                    and the rest can be either.</p>
+               
+               <h4><FONT COLOR="#000080">Generic Enumerators
+               and Iterators</FONT></H4>
+               
+               <p>Given the concept of an iterator, we
+                    can generalize the example enumerator function above well
+                    beyond arrays of float. <A href="list1.htm">Listing 1</A>
+                    shows the file iterenum.h, which shows a complete template.
+                    You instantiate the template by giving the type of iterator
+                    (e.g., float *), the type of data iterated (e.g., float),
+                    the type of IEnum interface to implement, and the COM
+                    interface identifier. The template generates a complete COM
+                    class, with all the functions required for IUnknown and
+                    IEnum interfaces. Note the catch clauses, which we need
+                    because a COM object may not throw exceptions. Note also the
+                    operations that we use on the iterator: copy constructor,
+                    assignment, equality compare, dereference, and
+                    pre-increment. The most basic STL iterator category that
+                    provides all of these operations is the non-mutable forward
+                    iterator. Any  forward, bidirectional, or random interator
+                    can be used to instantiate this template. </p>
+               
+               <p> Since COM enumerators can be
+                    implemented with forward iterators, it is no surprise that
+                    forward iterators can be implemented with COM enumerators.
+                     <A href="tab1c.htm">Table 1</a>, taken straight from the draft C++ Standard, gives
+                    requirements for a forward iterator. These include the
+                    operations described above, plus a few more. So we need a
+                    class that implements each of the required forward iterator
+                    operations in terms of the corresponding  enumerator
+                    operations. </p>
+               
+               <p> Our iterator implementations will
+                    vary on the type of data iterated over, and on the type of
+                    enumerator providing the data, so we will again need a
+                    family of implementations, which we can provide with a
+                    template. <A href="list2.htm">Listing 2</a>
+shows the file
+                    enumiter.h, which provides a complete implementation. The
+                    code is surprisingly tricky, mainly because of the need to
+                    support copying and comparing forward iterators. Each
+                    EnumAsIterator object will need its own IEnum object, which
+                    it obtains as a Clone of its constructor argument. </p>
+               
+               <p> Iterators are considered the same if
+                    they point to the same data, which in this case means that
+                    they are clones of the same enumerator, and are at the same
+                    position in the sequence, so we need members for these as
+                    well. When the enumerator's Next signals no more data, we
+                    advance the iterator past the end of the sequence by
+                    releasing the enumerators and zeroing out the members. This
+                    is also the default constructed state, so we can use a
+                    default constructed iterator as an end-of-sequence marker.
+                    </p>
+               
+               <p> Note that the post-increment
+                    operation is not efficient, since it makes a copy of the
+                    iterator before incrementing, as specified in
+                    <A href="tab1c.htm">Table 1</a>.
+ I attempted a more
+                    efficient implementation of this operation, but decided it
+                    was too complex to trust, and sacrificed efficiency in all
+                    the other operations. Quality STL implementations take the
+                    inherent inefficiency of post-increment into account by
+                    avoiding its use.</p>
+               
+               <h4><FONT COLOR="#000080">Putting It All
+               Together</FONT></H4>
+               
+               <p>To test my templates, I wrote a simple
+                    test program. <A href="list3.htm">Listing 3</a>
+shows the
+                    file enumtest.cpp. The main function first creates an array
+                    of wide-character strings, whose address can serve as an
+                    iterator, then uses IteratorAsEnum to make an IEnumString
+                    enumerator for those strings. A simple loop to print the
+                    strings serves to test the Next function. EnumAsIterator
+                    then serves to make an iterator from the enumerator, and
+                    another little printing loop tests the comparison,
+                    dereference, and increment operations. If both loops produce
+                    the same output the test is a success. Building the test
+                    program with Version 11 of Microsoft's 80x86 C++ compiler
+                    gave a succesful run on my Window's 95 system, but your
+                    mileage may vary.</p>
+               
+               <h4><FONT COLOR="#000080">References</FONT></H4>
+               
+               <p>Object Linking &amp; Embedding, OLE
+                    2.01 Design Specification, Microsoft Corporation, 1993.
+                    </p>
+               
+               <p> Working Paper for Draft Proposed
+                    International Standard for Information Systems- Programming
+                    Language C++, American National Standards Institute, 1996.
+                    </p>
+               
+               <p><I>Dr. Greg Colvin is Senior
+                    Scientist at Information Management Research of Englewood,
+                    Colorado, and a member of the ANSI/ISO C++ standardization
+                    committee. You can find Greg on the Internet at
+                    colving@acm.org. </I></p></BLOCKQUOTE>
+     
+<h4><a href="../../../source/1997/oct97/colvin.zip">Get Article Source Code</a></h4>
+
+
+     </BODY>
+</HTML>

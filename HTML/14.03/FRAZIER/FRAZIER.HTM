@@ -1,0 +1,234 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+          <TITLE>March 1996/Estimating Time-To-Transfer</TITLE>
+     </HEAD>
+     
+     <BODY BGCOLOR="#FFFFFF">
+          
+          <H2><A href="../tocmar.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          <FONT COLOR="#FF0000">Algorithms</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="CENTER"><FONT COLOR="#800000">Estimating Time-To-Transfer</FONT></H2>
+          
+          <H3 ALIGN="CENTER"><FONT COLOR="#800000">George F. Frazier</FONT></H3>
+          
+          <BLOCKQUOTE>
+               
+               <p>Those "time left"
+                    thermometers provide reassuring feedback to users waiting
+                    for a long operation to complete. They're even more
+                    reassuring if they report some semblance of the truth.</p></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <H4><FONT COLOR="#000080" FACE="Garamond">Introduction</FONT></H4>
+               
+               <p>If youve ever used a slow modem to
+                    download a file, you know how important it is that the
+                    communications software report the completion status of data
+                    transfers. A thermometer that shows the percentage of bytes
+                    transferred works fairly well; better yet is an initial
+                    estimate of the total time the operation will take. But as
+                    life would have it, the most useful presentation device &#151; a 
+                    dynamically updated clock that counts down the amount of
+                    time remaining for the transfer &#151; is the hardest to implement.
+                    This sort of clock is especially hard to implement if the
+                    algorithm has to work for a variety of transports, both
+                    network and serial. A program that optimizes for a mannerly
+                    serial cable connection will display a clock that hardly
+                    counts "down" at all if you started your file
+                    transfer over Netware just as people started getting to
+                    work. (If network traffic increases suddenly your clock
+                    might well predict 59 seconds remaining after it just said
+                    five seconds!) In this article I show a clock algorithm that
+                    works well without knowing any details about the transport,
+                    data transfer protocol, or communications hardware.</p>
+               
+               <H4><FONT COLOR="#000080">Avoiding Dependencies</FONT></H4>
+               
+               <p>When implementing a countdown clock,
+                    using system-specific information will not only yield a less
+                    portable solution, but will likely result in a clock that
+                    doesnt work most of the time. For example, calculating
+                    serial file transfer times over a modem will involve at
+                    least six variables: the baud rate of the modem, the baud
+                    rates of the sending and recieving machines serial ports, 
+                    the hard disk access rates, the file transfer protocol in
+                    use, and the occasional need to retransmit data packets. You
+                    can use these variables to form a rough estimate of total
+                    transfer time, but relying on ideal metrics rather than live
+                    transfer data will usually result in a clock that is way
+                    off. (Note: in any case, no "honest" clock
+                    algorithm can guarantee a strictly decreasing series of time
+                    estimates. See more on this below.)</p>
+               
+               <p>Fortunately, you can create a useful
+                    and accurate clock merely by taking periodic samples during
+                    the data transfer and recalculating the estimated time to
+                    completion. This estimation technique does not use
+                    system-dependent information, which is especially important
+                    as more and more applications must transfer data over both
+                    network and serial connections.</p>
+               
+               <p>The naive approach that simply
+                    computes an overall average transfer rate usually doesnt
+                    work very well due to noise from traffic fluctuations. This
+                    is especially true early in the transfer. In fact, very
+                    early in the transfer the average is so inaccurate that it
+                    is best not to report any estimate at all until a certain
+                    time is reached, say, 30 seconds or so. But for such short 
+                    data transfers, a countdown clock isnt very useful anyway.
+                    For longer transfers, the average becomes more and more
+                    accurate as time progresses.</p>
+               
+               <p>The solution Ive adopted (after
+                    several tries) computes a weighted average of transfer rates
+                    each time a recalculation is required. The program waits an
+                    appropriate interval before reporting any estimate. The
+                    algorithm remembers the last few transfer rates calculated,
+                    and early in the transfer, assigns more weight to this
+                    recent data than to the overall average transfer rate. As 
+                    the transfer proceeds the weight shifts to favor the
+                    average.</p>
+               
+               <h4><FONT COLOR="#000080">Implementation</FONT></H4>
+               
+               <p>Ive implemented the countdown clock as
+                    a class, TCountDownClock (<A href="listing1.htm">Listing 1</a>)
+.
+                    This class interface contains no platform-specific details.
+                    The constructor sets up the initial values of member
+                    variables and stores the total number of bytes to transfer.
+                    At the beginning of the transfer a program will call the
+                    member function Start. Start gets an initial time stamp in
+                    MILLISECONDs from the system, through a function Ive named
+                    SystemTime. (This function, of course, is
+                    platform-specific.)</p>
+
+<PRE>TCountDownClock::Start() 
+  {
+    m_msStartTime = (MILLISECOND)SystemTime(); 
+    m_msLastTime = m_msStartTime; 
+  }</PRE>
+               
+               <p>The method TimeRemaining
+                    <A href="listing2.htm">(Listing 2</a>)
+ is called whenever
+                    the clocks display is to be updated. This routine calculates
+                    the current transfer rate based on the number of bytes
+                    transferred since the last call to TimeRemaining (or since
+                    the call to Start, if its the first call to TimeRemaining)
+                    and stores it in a history list. If the time elapsed is less
+                    than kInitialWait, TimeRemaining returns a -1, which signals
+                     the use interface code to wait until a meaningful result is
+                    available. I set kInitialWait to 30 seconds. Finally,
+                    TimeRemaining calculates the rate for the entire transfer
+                    and passes it to member function CalculateTransferRate to
+                    determine the weighted average of transfer rates. Dividing
+                    the number of bytes left to transfer by this value yields
+                    the result: the estimated number of seconds left in the
+                    transfer.</p>
+               
+               <p>CalculateTransferRate (<A href="listing3.htm">Listing
+                         3</a>)
+ takes the overall average transfer rate and uses
+                    the history of recent rates to calculate the weighted
+                    average transfer rate. Remember that the goal is to give
+                    more weight to current rates early in the transfer and give
+                    the overall average more significance as time progresses.
+                    The average of the recent transfer rates stored in
+                    m_fTransRateHistory is computed by the member function 
+                    WeighRecentRates. The last transfer rate always occupies
+                    position kHistoryEntries - 1 within m_fTransRateHistory; the
+                    second-to-last occupies kHistoryEntries - 2, and so on.
+                    WeighRecentRates returns a weighted average of the recent
+                    transfer rates with each element in m_fTransRateHistory
+                    assigned a weight factor equal to its position in the array:</p>
+
+<PRE>float TCountDownClock::WeighRecentRates(void) 
+{
+  float fSum = fWeightSum = 0.0; int i; 
+  for (i = 0; i &lt; kHistoryEntries; i++) 
+  {
+    f_Sum += i * m_fTransRateHistory[i]; 
+    fWeightSum += i; 
+  }
+  return fSum / fWeightSum; 
+}</PRE>
+               
+               <p>Thus, the most recent transfer rate
+                    has a much higher significance than earlier values.</p>
+               
+               <p>To compute the final weighted transfer
+                    rate, CalculateTransferRate assigns the value returned by
+                    WeighRecentRates a weight of 3. Then the number of intervals
+                    sampled so far is divided (integer division) by
+                    kHistoryEntries to determine a weight factor for the overall
+                    average. Thus, CalculateTransferRate returns</p>
+
+<pre>fTransferRate=(3*(A[0]*0+...+A[k-1]*k-1)/
+               E+fOverall*lAvgWeight) /
+               3+lAvgWeight</pre>
+               
+               <p>where A is the array
+                    m_fTransRateHistory, k is kHistoryEntries, and E is k(k -
+                    1)/2. At the beginning of the transmission,</p>
+               
+               <P></P>
+<pre>fTransferRate~~(A[0]*0+...+A[k-1]*k-1)/E</pre>
+               
+               <p>and towards the end of the
+                    transmission,</p>
+               
+               <P></P>
+<pre>fTransferRate~~fOverall.</pre>
+               
+               <h4><FONT COLOR="#000080">How Often to Sample?</FONT></H4>
+               
+               <p>The orderliness of the countdown clock
+                    is directly affected by the frequency of calls to
+                    TimeRemaining. On average, sampling less frequently produces
+                    a more stable history of transfer rates, at the cost of
+                    timeliness. Conversely, shorter sampling intervals yield a
+                    less orderly history, especially on a network, where even
+                    one big graphics transfer can grind down a network for a 
+                    few seconds, casting a spike into your transfer rate
+                    history. Since my countdown clock needs to work for both
+                    serial and network transports I try to optimize for neither
+                    and get good results sampling every five seconds.</p>
+               
+               <p>Any algorithm that uses real transfer
+                    rate data will occasionally produce an estimated time
+                    remaining larger than the previous estimate. This happens
+                    when the network really gets jammed with traffic. Ive
+                    noticed that some shipping software products with countdown
+                    clocks force their times to strictly decrease. They
+                    typically accomplish this by not updating the displayed time
+                     remaining until it decreases below the previous level. If
+                    you think about this, this sort of display isnt very helpful
+                    to anyone who is trying to get any work done. By resisting
+                    this orderly but contrived hack your clock will be more
+                    useful and just might teach your user something new about
+                    time.</p>
+               
+               <p><I>As a Senior Software Engineer for
+                    Farallon Computing, Inc., George Frazier works on network
+                    and serial applications for Windows. He has a Ph.D. in
+                    Computer Science from the University of Kansas. You can
+                    reach him at georgef@farallon.com..</I></p>
+
+<h4><a href="../../../source/1996/mar96/frazier.zip">Get Article Source Code</a></h4>
+
+          </BLOCKQUOTE>
+     </BODY>
+</HTML>

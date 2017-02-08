@@ -1,0 +1,431 @@
+<HTML><HEAD>
+<TITLE>October 1995/Image Processing in C, Part 14: Warping and Morphing/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1 <I>Control point warp routines</I></A></h4>
+<pre>#include "cips.h"
+
+#define FILL 150
+
+/********************************************
+    *
+    *  warp(..
+    *
+    *  This routine warps a ROWSxCOLS section
+    *  of an image. The il, ie parameters
+    *  specify which ROWSxCOLS section of
+    *  the image to warp. The x_control and
+    *  y_control parameters are the control
+    *  points inside that section. Therefore,
+    *  x_control and y_control will always be
+    *  less the COLS and ROWS.
+    *
+    *  The point coordinates are for the four
+    *  corners of a four side figure.
+    *     x1,y1     x2,y2
+    *
+    *     x4,y4     x3,y3
+    *
+
+*********************************************/
+
+warp(in_name, out_name, the_image, out_image,
+     il, ie, ll, le, x_control, y_control,
+     bilinear)
+   char   in_name[], out_name[];
+   int    bilinear, il, ie, ll, le,
+         x_control, y_control;
+   short  the_image[ROWS][COLS],
+         out_image[ROWS][COLS];
+{
+   int    cols_div_2, extra_x, extra_y, i, j,
+         rows_div_2, x1, x2, x3, x4, y1,
+            y2, y3, y4;
+
+   struct tiff_header_struct image_header;
+
+   create_file_if_needed(in_name, out_name,
+                      out_image);
+
+   read_tiff_image(in_name, the_image, il,
+                ie, ll, le);
+
+   cols_div_2 = COLS/2;
+   rows_div_2 = ROWS/2;
+
+      /***********************************
+      *
+      *  1 - upper left quarter
+      *
+      ***********************************/
+
+   x1 = 0;
+   x2 = cols_div_2;
+   x3 = x_control;
+   x4 = 0;
+
+   y1 = 0;
+   y2 = 0;
+   y3 = y_control;
+   y4 = rows_div_2;
+
+   extra_x = 0;
+   extra_y = 0;
+
+   if(bilinear)
+      bi_warp_loop(the_image, out_image,
+                 x1, x2, x3, x4,
+                 y1, y2, y3, y4,
+                 extra_x, extra_y);
+   else
+      warp_loop(the_image, out_image,
+              x1, x2, x3, x4,
+              y1, y2, y3, y4,
+              extra_x, extra_y);
+
+      /************************************
+      *
+      *  2 - upper right quarter
+      *
+      ************************************/
+
+   x1 = cols_div_2;
+   x2 = COLS-1;
+   x3 = COLS-1;
+   x4 = x_control;
+
+   y1 = 0;
+   y2 = 0;
+   y3 = rows_div_2;
+   y4 = y_control;
+
+   extra_x = cols_div_2;
+   extra_y = 0;
+
+   if(bilinear)
+      bi_warp_loop(the_image, out_image,
+                 x1, x2, x3, x4,
+                 y1, y2, y3, y4,
+                 extra_x, extra_y);
+   else
+      warp_loop(the_image, out_image,
+              x1, x2, x3, x4,
+              y1, y2, y3, y4,
+              extra_x, extra_y);
+
+      /***********************************
+      *
+      *  3 - lower right quarter
+      *
+      ***********************************/
+
+   x1 = x_control;
+   x2 = COLS-1;
+   x3 = COLS-1;
+   x4 = cols_div_2;
+
+   y1 = y_control;
+   y2 = rows_div_2;
+   y3 = ROWS-1;
+   y4 = ROWS-1;
+
+   extra_x = cols_div_2;
+   extra_y = rows_div_2;
+
+   if(bilinear)
+      bi_warp_loop(the_image, out_image,
+                 x1, x2, x3, x4,
+                 y1, y2, y3, y4,
+                 extra_x, extra_y);
+
+   else
+      warp_loop(the_image, out_image,
+              x1, x2, x3, x4,
+              y1, y2, y3, y4,
+              extra_x, extra_y);
+
+      /***********************************
+      *
+      *  4 - lower left quarter
+      *
+      ***********************************/
+
+   x1 = 0;
+   x2 = x_control;
+   x3 = cols_div_2;
+   x4 = 0;
+
+   y1 = rows_div_2;
+   y2 = y_control;
+   y3 = ROWS-1;
+   y4 = ROWS-1;
+
+   extra_x = 0;
+   extra_y = rows_div_2;
+
+   if(bilinear)
+      bi_warp_loop(the_image, out_image,
+                 x1, x2, x3, x4,
+                 y1, y2, y3, y4,
+                 extra_x, extra_y);
+   else
+      warp_loop(the_image, out_image,
+              x1, x2, x3, x4,
+              y1, y2, y3, y4,
+              extra_x, extra_y);
+
+   write_array_into_tiff_image(out_name,
+                          out_image, il,
+                          ie, ll, le);
+}  /* ends warp */
+
+/*******************************************
+    *
+    *  warp_loop(..
+    *
+    *  This routine sets up the coefficients
+    *  and loops through a quarter of the
+    *  ROWSxCOLS section of the image that
+    *  is being warped.
+    *
+
+*******************************************/
+
+warp_loop(the_image, out_image,
+        x1, x2, x3, x4,
+        y1, y2, y3, y4,
+        extra_x, extra_y)
+   int   extra_x, extra_y,
+        x1, x2, x3, x4,
+        y1, y2, y3, y4;
+   short the_image[ROWS][COLS],
+        out_image[ROWS][COLS];
+{
+   int   cols_div_2, denom, i, j, rows_div_2,
+        xa, xb, xab, x_out,
+        ya, yb, yab, y_out;
+
+   cols_div_2 = COLS/2;
+   rows_div_2 = ROWS/2;
+   denom      = cols_div_2 * rows_div_2;
+
+       /**********************************
+      *
+      *  Set up the terms for the
+      *  spatial transformation.
+      *
+      ***********************************/
+
+   xa  = x2 - x1;
+   xb  = x4 - x1;
+   xab = x1 - x2 + x3 - x4;
+
+   ya  = y2 - y1;
+   yb  = y4 - y1;
+   yab = y1 - y2 + y3 - y4;
+
+       /**********************************
+      *
+      *  Loop through a quadrant and
+      *  perform the spatial
+      *  transformation.
+      *
+      ***********************************/
+
+      /* NOTE a=j b=i */
+
+   printf("\n");
+   for(i = 0; i&lt;rows_div_2; i++){
+      if( (i%10) == 0) printf("%d ", i);
+      for(j=0; j&lt;cols_div_2; j++){
+         x_out = x1 + (xa*j)/cols_div_2 +
+              (xb*i)/rows_div_2 +
+              (xab*i*j)/(denom);
+         y_out = y1 + (ya*j)/cols_div_2 +
+              (yb*i)/rows_div_2 +
+              (yab*i*j)/(denom);
+
+         if(x_out &lt; 0        ||
+            x_out &gt;= COLS   ||
+            y_out &lt; 0       ||
+            y_out &gt;= ROWS)
+            out_image[i+extra_y][j+extra_x] = FILL;
+         else
+            out_image[i+extra_y][j+extra_x] = the_image[y_out][x_out];
+      } /* ends loop over j */
+   } /* ends loop over i */
+
+} /* ends warp_loop */
+
+/*******************************************
+    *
+    *  bi_warp_loop(..
+    *
+    *  This routine sets up the coefficients
+    *  and loops through a quarter of the
+    *  ROWSxCOLS section of the image that
+    *  is being warped.
+    *
+    *  This version of the routine uses
+    *  bilinear interpolation to find the
+    *  gray shades. It is more accurate
+    *  than warp_loop, but takes longer
+    *  because of the floating point
+    *  calculations.
+    *
+
+*******************************************/
+
+bi_warp_loop(the_image, out_image,
+           x1, x2, x3, x4,
+           y1, y2, y3, y4,
+           extra_x, extra_y)
+   int    extra_x, extra_y,
+         x1, x2, x3, x4,
+         y1, y2, y3, y4;
+   short  the_image[ROWS][COLS],
+         out_image[ROWS][COLS];
+{
+   double cols_div_2, denom, di, dj, rows_div_2,
+         xa, xb, xab, x_out, ya, yb, yab, y_out;
+   int    i, j;
+
+   cols_div_2 = (double)(COLS)/2.0;
+   rows_div_2 = (double)(ROWS)/2.0;
+   denom      = cols_div_2 * rows_div_2;
+
+     /***********************************
+     *
+     *  Set up the terms for the
+     *  spatial transformation.
+     *
+     ***********************************/
+
+   xa  = x2 - x1;
+   xb  = x4 - x1;
+   xab = x1 - x2 + x3 - x4;
+
+   ya  = y2 - y1;
+   yb  = y4 - yl;
+   yab = y1 - y2 + y3 - y4;
+
+   /***********************************
+   *
+   *  Loop through a quadrant and
+   *  perform the spatial
+   *  transformation.
+   *
+   **********************************/
+
+    /* NOTE a=j b=i */
+
+   printf("\n");
+   for(i=0; i&lt;rows_div_2; i++){
+      if((i%10) == 0) printf("%d ", i);
+      for(j=0; j&lt;cols_div_2; j++){
+
+         di = (double)(i);
+         dj = (double)(j);
+
+       x_out = x1 +
+              (xa*dj)/cols_div_2 +
+              (xb*di)/rows_div_2 +
+              (xab*di*dj)/(denom);
+       y_out = y1 +
+              (ya*dj)/cols_div_2 +
+              (yb*di)/rows_div_2 +
+              (yab*di*dj)/(denom);
+
+         out_image[i+extra_y][j+extra_x] =
+         bilinear_interpolate(the_image,
+                           x_out,
+                           y_out);
+
+   } /* ends loop over j */
+} /* ends loop over i */
+
+} /* ends bi_warp_loop */
+
+/*********************************************
+    *
+    *  bilinear_interpolate(..
+    *
+    *  This routine performs bi-linear
+    *  interpolation.
+    *
+    *  If x or y is out of range, i.e. less
+    *  than zero or greater than ROWS or COLS,
+    *  this routine returns a zero.
+    *
+    *  If x and y are both in range, this
+    *  routine interpolates in the horizontal
+    *  and vertical directions and returns
+    *  the proper gray level.
+    *
+
+*********************************************/
+
+bilinear_interpolate(the_image, x, y)
+   double x, y;
+   short the_image[ROWS][COLS];
+{
+   double fraction_x, fraction_y,
+         one_minus_x, one_minus_y,
+         tmp_double;
+   int ceil_x, ceil_y, floor_x, floor_y;
+   short p1, p2, p3, result = FILL;
+
+      /****************************
+      *
+      *  If x or y is out of range,
+      *  return a FILL.
+      *
+      ****************************/
+
+   if(x &lt; 0.0                  ||
+      x &gt;= (double)(COLS)      ||
+      y &lt; 0.0                  ||
+      y &gt;= (double)(ROWS))
+      return(result);
+
+   tmp_double = floor(x);
+   floor_x    = tmp_double;
+   tmp_double = floor(y);
+   floor_y    = tmp_double;
+   tmp_double = ceil(x);
+   ceil_x     = tmp_double;
+   tmp_double = ceil(y);
+   ceil_y     = tmp_double;
+
+   fraction_x = x - floor(x);
+   fraction_y = y - floor(y);
+
+   one_minus_x = 1.0 - fraction_x;
+   one_minus_y = 1.0 - fraction_y;
+
+   tmp_double =
+      one_minus_x *
+      (double)(the_image[floor_y][floor_x]) +
+      fraction_x *
+      (double)(the_image[floor_y][ceil_x]);
+   p1          = tmp_double;
+
+   tmp_double =
+      one_minus_x *
+      (double)(the_image[ceil_y][floor_x]) +
+      fraction_x *
+      (double)(the_image[ceil_y][ceil_x]);
+   p2         = tmp_double;
+
+   tmp_double = one_minus_y * (double)(p1) +
+              fraction_y * (double)(p2);
+   p3         = tmp_double;
+
+   return(p3);
+
+} /* ends bilinear_interpolate */
+/* End of File */
+</pre>
+</BODY>
+</HTML>

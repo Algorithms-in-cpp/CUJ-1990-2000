@@ -1,0 +1,190 @@
+<HTML>   
+     <HEAD>
+<TITLE>September 1999/Improving Performance with Thread-Private Heaps</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocsep.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Improving Performance with Thread-Private Heaps</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Kevin Manley</FONT></H3>
+
+<blockquote>
+<p>Threads interact in the darndest ways, but conflicts with a common heap are particularly pernicious. Luckily they can be avoided.</p>
+</blockquote>
+
+<hr>
+<blockquote>
+
+<h4><FONT COLOR="#000080">Introduction</FONT></h4>
+<p>This article explains how heap contention can affect the performance of multithreaded Win32 applications. It proposes a solution for allocating a private heap per thread and introduces a C++ base class that allows any derived class to have its dynamic instances created on the calling thread's heap.</p>
+
+<h4><FONT COLOR="#000080">Background</FONT></H4>
+<p>I recently consulted for an Internet e-commerce company that implements part of its system with an ISAPI (Internet Server Application Programming Interface) extension DLL. In looking over the main entry point for the DLL, I was surprised to see something similar to the following:</p>
+
+<pre>
+DWORD WINAPI
+HttpExtensionProc
+   (LPEXTENSION_CONTROL_BLOCK lpECB)
+{
+   Obj* pObj = new Obj;
+   pObj-&gt;Handler( lpECB );
+   delete pObj;
+}
+</pre>
+
+<p>The surprising thing was not that the developer had encapsulated the extension handler in a C++ object. Instead, it was the fact that the object was being created on the heap rather than on the stack, which would have happened if the developer had written the following:</p>
+
+<pre>
+DWORD WINAPI
+HttpExtensionProc
+   (LPEXTENSION_CONTROL_BLOCK lpECB)
+{
+   Obj obj;
+   obj.Handler( lpECB );
+}
+</pre>
+
+<p>The function as originally written is troubling for a couple of reasons. First, if the <B>Handler</B> function throws an exception, <B>HttpExtensionProc</B> will leak memory, since <B>pObj</B> will never be deleted. More importantly, however, creating this object on the heap introduces unnecessary heap contention that can severely impact a busy server's performance.</p>
+<p>When I asked the developer why he had chosen to create the object on the heap, he said the company's style guide explicitly states that "all C++ objects will be created on the heap." This got me to thinking &#151; what were the implications of this seemingly innocuous policy? Some investigation confirmed that this small detail could have a dramatic effect on application performance. This article demonstrates the significance of heap contention in a multithreaded server application. I also suggest one approach under Win32 that can avoid the problem by using a private heap per thread.</p>
+
+<h4><FONT COLOR="#000080">Heap Contention in Server Applications</FONT></H4>
+<p>For a multithreaded application to scale well, the application's threads must be able to work independently of each other. When threads have interdependencies (for example, global file handles or memory buffers), the developer must write special code to synchronize access to the shared resources. Under Win32, developers have a rich set of synchronization primitives to choose from, including Critical Sections and Mutexes. These primitives are used to bracket sections of code that cannot be safely accessed by concurrent threads. Using synchronization introduces serialization; if too many interdependencies exist, it diminishes the benefit of using multiple threads in the first place.</p>
+<p>As a shared resource, the heap usually doesn't get adequate consideration in multithreaded programs, probably because it is an implicit resource created automatically by the operating system. In a multithreaded environment, however, heap access is just as expensive as accessing any other shared resource. Each time a thread attempts to allocate or free dynamic memory from the heap, it must wait for exclusive access to the heap. Any other thread attempting to do so at the same time must wait. Heap contention is easy to overlook because you don't have to write the code that synchronizes access to the heap &#151; it's built into the operating system.</p>
+
+<h4><FONT COLOR="#000080">Heaps in Win32</FONT></H4>
+<p>When a new Win32 process starts up, the operating system creates a default heap called the "Process heap." The <B>GetProcessHeap</B> function returns the handle to this heap, which is available to any thread in the process. To allocate memory from the process heap, you can call the <B>HeapAlloc</B> function:</p>
+
+<pre>
+LPVOID HeapAlloc(  
+   HANDLE hHeap,  // handle to the
+                  // private heap
+                  // block
+   DWORD dwFlags, // heap allocation
+                  // control flags
+   DWORD dwBytes  // number of bytes
+                  // to allocate
+);
+</pre>
+
+<p>To free the allocated memory, use <B>HeapFree</B>:</p>
+
+<pre>
+BOOL HeapFree(  
+   HANDLE hHeap,  // handle to
+                  // the heap
+   DWORD dwFlags, // heap freeing
+                  // flags
+   LPVOID lpMem   // pointer to the memory to free
+);
+</pre>
+
+<p>The <B>dwFlags</B> parameter in the functions above specifies, among other things, whether access to the heap is serialized. Serialization is turned on by default, but can be disabled by using a flag value of <B>HEAP_NO_SERIALIZE</B>. Access to the process heap in a multithreaded application must be serialized &#151; otherwise two or more threads might attempt to allocate or free memory simultaneously, resulting in heap corruption.</p>
+<p>Creating additional heaps (called "private heaps") using the <B>HeapCreate</B> function can eliminate heap contention:</p>
+
+<pre>
+HANDLE HeapCreate(
+   DWORD flOptions,     // heap alloc flag
+   DWORD dwInitialSize, // initial heap size
+   DWORD dwMaximumSize  // maximum heap size
+);
+</pre>
+
+<p>Private heaps are used just like the process heap, except that when you access a private heap through the functions <B>HeapAlloc</B> and <B>HeapFree</B>, you pass the private heap's handle to these functions instead of a handle to the process heap (such as returned by <B>GetProcessHeap</B>). </p>
+<p>The default process heap is automatically destroyed when the process exits. Calling <B>HeapDestroy</B> explicitly destroys a private heap:</p>
+
+<pre>
+BOOL HeapDestroy(
+   HANDLE hHeap // handle to the heap
+);
+</pre>
+
+<p>The <B>HeapXXX</B> functions are flexible because they allow you to provide a specific heap handle and because they provide serialization control at the point of each allocation/deallocation. Unfortunately, these options don't exist for users of the C functions <B>malloc</B>/<B>free</B> and C++'s operator <B>new</B> and operator <B>delete</B>, although they are implemented in terms of the <B>HeapXXX</B> functions. When the C runtime library starts up, it creates its own private heap using the <B>HeapCreate</B> function. The C runtime provides its own small-block heap allocator (for requests less than 1 KB) and passes requests for larger blocks directly to <B>HeapAlloc</B>. As shown in the snippet below for <B>malloc</B> (modified slightly for clarity), the small block allocator is bounded by a critical section, and the large block allocator uses the serialized version of <B>HeapAlloc</B>. Since operator <B>new</B> is implemented using <B>malloc</B>, in a multithreaded program all accesses to the heap through <B>malloc</B> or operator <B>new</B> are serialized. This is also true for <B>free</B> and operator <B>delete</B>.</p>
+
+<pre>
+void * __cdecl malloc (size_t size)
+{
+   void * pvReturn;
+   if (size &lt;= __sbh_threshold)
+   {
+      // Note: _mlock is a critical
+      // section wrapper
+      _mlock(_HEAP_LOCK);
+      pvReturn =
+         __sbh_alloc_block(size);
+      _munlock(_HEAP_LOCK);
+      if (pvReturn)
+         return pvReturn;
+   }
+
+   if (size == 0)
+      size = 1;
+   size = (size+BYTES_PER_PARA-1) &amp;
+      ~(BYTES_PER_PARA - 1);
+   // Note: zero for second parameter
+   // forces serialization on heap
+   return
+      HeapAlloc(_crtheap, 0, size);
+}
+</pre>
+
+<h4><FONT COLOR="#000080">Demonstrating Heap Contention</FONT></H4>
+
+<p>To demonstrate the real cost of heap contention, I developed a simple program called <B>HeapDemo</B> (see <B>HeapDemo.cpp</B>, <a href="list1.htm">Listing 1</a>). This program creates a number of threads that do nothing but allocate and free memory in a tight loop. You can control the program's operation through four parameters. The first parameter specifies whether all threads should use the single-process heap or whether a private heap should be created for each thread. The second parameter specifies the number of threads to create. The third parameter specifies the number of allocations each thread should perform. The last parameter specifies the size of each memory allocation.</p>
+<p>Most of the parameters are straightforward, however the "number of allocations" parameter usually requires some experimentation to find a value that works well. The main purpose of this parameter is to force the program to run long enough to get meaningful timing results, since the resolution of the timer used (<B>GetTickCount</B>) is only 10ms on NT and about 50ms on Win98. Most importantly, if the number of allocations is too small, the threads will not run long enough to conflict with one another. (That is, the thread functions will run sequentially instead of concurrently.)</p>
+<p><a href="fig1.htm">Figure 1</a> shows the results of the first experiment on NT 4. The results for Win98 are not shown here, but follow the same trend. (All test data is supplied with the code that accompanies this article. See p.3 for downloading instructions.) In this experiment, I used 200K allocations per thread on NT (20K on Win98), a 1 KB allocation size, and varied the number of threads. The results show a dramatic increase in performance using a private heap per thread with small memory allocations. Notice that the performance when using a single-process heap grows exponentially worse as the number of threads increases. Keep in mind that the threads are doing the same amount of work in both cases. Therefore, the difference in performance is solely attributable to heap-contention delay.</p>
+<p>The results of the second experiment, in <a href="fig2.htm">Figure 2</a>, show that private heaps don't necessarily improve performance for all memory allocation sizes. Under NT, the operating-system overhead of returning allocations greater than 61,432 bytes exceeds the heap-contention delay, so there is not much benefit to using a private heap per thread in this case. (Under Win98, this crossover point occurs at an allocation size of 4,080 bytes.)</p>
+<p><a href="fig3.htm">Figure 3</a> shows the results of the last experiment run on NT, in which the number of threads remains constant at four and allocation size varies from 1 KB to 64 KB. For allocations of less than 1 KB, there is no appreciable difference in performance between single versus private heaps. However, for allocations from 1 KB to just less than 64 KB, using private heaps is 9 to 43 times faster. Under Win98, private heaps outperformed the single-heap case by a factor of 7 to 13 for allocations from 16 bytes to 4 KB, but performed only marginally better for larger allocations. Note that in all of the experiments, while the exact values differ between NT and Win98, the overall shapes of the plots are very similar.</p>
+<p>While the test application is extreme in its use of the heap &#151; all it does is allocate and free memory &#151; minimizing contention for the heap can yield some performance improvements, especially as the number of threads increases.</p>
+
+<h4><FONT COLOR="#000080">Implementing Thread-Private Heaps</FONT></H4>
+
+<p>Minimizing heap contention clearly involves using multiple heaps rather than the single, default-process heap. The question then is how to partition access to these heaps. One approach might be to dedicate each heap to objects of a specific fixed size. This wouldn't minimize heap contention among threads per se, but might reduce the amount of time the heap manager spends in its critical section, since fixed-size blocks are faster to allocate and free. This approach might be successful in programs where heap objects have to be shared by multiple threads.</p>
+<p>Another approach, alluded to by <B>HeapDemo</B>, involves dedicating a private heap for each application thread. Using the <B>HeapDemo</B> architecture, heap objects cannot be shared by multiple threads, but heap contention is completely eliminated. This approach is particularly useful when implementing ISAPI components or in-process COM objects that will be accessed from ASP (Active Server Pages). These components live in the process space of the IIS (Internet Information Server) and therefore use the IIS process heap. Since IIS is multithreaded, multiple components being executed by multiple IIS threads compete for a single heap. This means that a single component that makes heavy use of the heap can adversely affect overall web-server performance.</p>
+<p>With the heap-per-thread design, using the <B>HeapAlloc</B> and <B>HeapFree</B> functions make allocation and deallocation of raw memory simple. However, C++ developers prefer to use <B>new</B> and <B>delete</B> to allocate and free objects. We need a way to provide a heap-per-thread <B>new</B> and <B>delete</B>. Luckily, C++ provides a means to do this by creating a class-specific operator <B>new</B> and <B>delete</B>. <a href="list2a.htm">Listings 2a</a> and <a href="list2b.htm">2b</a> (<B>CThreadPrivateHeapAllocated.h</B> and <B>CThreadPrivateHeapAllocated.cpp</B>) show a simple abstract base class called <B>CThreadPrivateHeapAllocated</B>, which provides a class-specific <B>new</B> and <B>delete</B>. This base class defines the interface for operator <B>new</B>, operator <B>new[]</B> (array <B>new</B>), and corresponding versions of <B>delete</B>, which allocate and deallocate memory from the thread-private heap.</p>
+<p>This class relies on a static-member variable to indicate which TLS (Thread-local Storage) slot stores the thread's handle to its private heap. Therefore, any program that uses this class must allocate a TLS slot using <B>TlsAlloc</B> and set the resulting slot number in a call to <B>CThreadPrivateHeapAllocated::SetTlsIndex</B>. In addition, some code must be written to create a heap for each thread and store its handle in the allocated slot. Once these things are done, dynamic instances of any class that inherits from <B>CThreadPrivateHeapAllocated</B> will automatically use the thread-private heap.</p>
+<p>Note that primitive types allocated with <B>new</B> will still use the C-runtime heap and may cause contention with other threads. The only clean way to solve this problem is to rewrite the global operator <B>new</B>. Unfortunately, as Scott Meyers says in <I>More Effective C++</I> <a href="#1">[1]</a>, "this is not a task to be undertaken lightly." Furthermore, rewriting the global operator <B>new</B> can cause conflicts when linking with libraries that also rewrite global operator <B>new</B>. </p>
+<p>Another approach is to wrap primitive types in C++ classes that inherit from <B>CThreadPrivateHeapAllocated</B>. For example:</p>
+
+<pre>
+template &lt;class T&gt; class Primitive :
+   public CThreadPrivateHeapAllocated {
+public:
+   operator T&amp;()
+      { return t; }
+   T t;
+};
+
+typedef Primitive&lt;int&gt; myint;
+// allocate array of ints in thread-private heap
+myint* aInt = new myint[100];
+aInt[0] = 500;
+delete [] aInt;
+</pre>
+
+<p><a href="list3.htm">Listing 3</a> (<B>HeapDemo2.cpp</B>) shows a sample program that again demonstrates improved performance using private heaps. In order to neatly contain the logic of creating a heap for each thread, the threads themselves are encapsulated in C++ objects. The very basic <B>CThread</B> class simply wraps the Win32 <B>_beginthreadex</B> function, transforming it into a call to the virtual member function <B>ThreadMain</B>. The derived class <B>CThreadUsingProcessHeap</B> provides an implementation of this function, which, in similar fashion to the <B>HeapDemo</B> program, simply allocates and deallocates an object in a tight loop. The object it creates consists of just a 1,024-byte buffer. Another thread class, <B>CThreadUsingPrivateHeap</B>, also derives from <B>CThread</B>. This class adds the logic of creating and destroying the thread's heap. Its <B>ThreadMain</B> also merely allocates and deallocates object instances. However, the objects created within this thread class are derived from <B>CThreadPrivateHeapAllocated</B>, so they are created using the thread's private heap.</p>
+<p>The <B>main</B> function in this listing creates a number of threads (defined by the constant <B>NUM_THREADS</B>). Each thread creates and destroys <B>NUM_ALLOCS</B> objects. The program times the results for both the single-process heap case and the thread-private heap case.</p>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>Multithreaded applications that use dynamic memory extensively may be subject to performance problems due to heap contention. The best way to determine if heap contention is a problem in your programs is to carefully profile your code under realistic load levels. If heap contention turns out to be a significant problem, one potential solution is to create a private heap for each thread. While this approach does not allow threads to share objects among themselves, it completely eliminates heap contention among threads. This approach is especially suitable for ISAPI components or server-side, in-process COM objects. In C++, the logic to create objects on a private heap can be neatly encapsulated by overloading a class's <B>new</B> and <B>delete</B> operators.</p>
+
+<h4><FONT COLOR="#000080">References</FONT></H4>
+
+<p><a name="1"></a>[1]  Scott Meyers. <I>More Effective C++</I> (Addison-Wesley, 1995).</p>
+<p><a name="2"></a>[2]  Murali R. Krishnan. "Heap: Pleasures and Pains," <I>MSDN Online Library</I> (Microsoft Corporation, February 1999), <B>http://msdn.microsoft.com/library/techart/heap3.htm</B>.</p>
+<p><a name="3"></a>[3]  Randy Kath. "Managing Heap Memory in Win32," <I>MSDN Online Library</I> (Microsoft Developer Network Technology Group, April 1993), <B>http://msdn.microsoft.com/library/techart/msdn_heapmm.htm</B>.</p>
+<p><a name="4"></a>[4]  John Vert. "Writing Scalable Applications for Windows NT," <I>MSDN Online Library</I> (Windows NT Base Group, June 1995), <B>http://msdn.microsoft.com/library/techart/msdn_scalabil.htm</B>.</p>
+<p><a name="5"></a>[5]  George V. Reilly. "Server Performance and Scalability Killers," <I>MSDN Online Library</I> (Microsoft Corporation, February 22, 1999), <B>http://msdn.microsoft.com/workshop/server/iis/tencom.asp</B>.</p>
+<p><a name="6"></a>[6]  "Designing High-Performance ISAPI Applications," <I>MSDN Online Library</I> (Microsoft Corporation, 1999), <B>http://msdn.microsoft.com/library/sdkdoc/iisref/perf4vsj.htm</B>.</p>
+<p><a name="7"></a>[7]  "Developer Notes for ISAPI Filters," <I>MSDN Online Library</I> (Microsoft Corporation, 1999), <B>http://msdn.microsoft.com/library/sdkdoc/iisref/isgu6y2b.htm</B>.</p>
+
+<p><i><B>Kevin T. Manley</B> is a software development contractor working in Seattle, WA. He holds a B.S. in Electrical Engineering from Worcester Polytechnic Institute.</i></p>
+
+<h4><a href="../../../source/1999/sep99/manley.zip">Get Article Source Code</a></h4>
+
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

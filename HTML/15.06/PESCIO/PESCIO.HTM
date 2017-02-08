@@ -1,0 +1,421 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>June 1997/Stack Trace Assertions Using COFF</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><A href="../tocjun.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          <FONT COLOR="#FF0000">Debugging/Testing</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">Stack Trace Assertions
+          Using COFF</FONT></H2>
+          
+          <H3 ALIGN="Center"><FONT COLOR="#800000">Carlo Pescio</FONT></H3>
+          
+          <BLOCKQUOTE>
+               
+               <P>Common object format files can have lots of useful debugging
+                    information, if you know how to use it at the right place
+                    and time.</P></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <p>Assertions are one of our most
+                    powerful tools for writing correct programs, and most
+                    likely, a large part of their power derives from their
+                    relative simplicity. So we should probably think twice
+                    before we go about "enhancing" assertions.
+                    Nevertheless, I've developed what I consider a worthwhile
+                    enhancement to the assertion support available in Win32. In
+                    this article I present an improved assertion in C++ that
+                    shows, among other things, the call stack &#151; which is
+                    sometimes the only place that has the debugging information
+                    you need.</p>
+               
+               <h4><FONT COLOR="#000080">Motivation</FONT></H4>
+               
+               <p>Consider a function that takes a
+                    pointer as a parameter, and uses an assertion to verify that
+                    the pointer is not null. Suppose further that this function
+                    is a low-level utility, called from hundreds of points. If
+                    the assertion is triggered at run time, all you know is that
+                    some caller has violated the precondition, and you are left
+                    with the possibly difficult task of figuring out which 
+                    callers did. In a language such as Eiffel, where the
+                    precondition is checked at the caller's site, your job is
+                    simplified by knowledge of the calling line. Sometimes,
+                    however, even this is not enough. For example, if the caller
+                    is just a forwarding method, the information you really need
+                    is buried deeper in the call stack. </p>
+               
+               <p> In fact, compiler vendors have
+                    realized that assertions are most useful in conjunction with
+                    a debugger, which lets you easily walk the stack. Thus
+                    modern implementations of assertions exploit the
+                    just-in-time debugging support in Win32, so you can jump
+                    into the debugger from the assertion dialog box. However,
+                    there are cases when this is not a viable solution.
+                    Consider, for instance, beta testing, for which you may want
+                    to leave assertions enabled to catch errors, but not want to
+                    distribute the source code. Or perhaps the assertion
+                    triggers only on your colleague's portable, which does not
+                    have room for the debugging environment. Once again, you'll
+                    not be able to access the most important information: the
+                    call stack. </p>
+               
+               <p> The assertion presented here shows
+                    not only the offending line, but the whole call stack,
+                    complete with module name, function name, source file name,
+                    and line number. If Common Object File Format (COFF)
+                    debugging information is not available for some module, the
+                    assertion shows only the module name and the address (which
+                    can later be used to recover the line number from a MAP 
+                    file). The usual features, such the ability to jump into the
+                    debugger, are still there. You can use the improved
+                    assertion presented here as a complete replacement for the
+                    one provided with your compiler.</p>
+               
+               <h4><FONT COLOR="#000080">Walking the Stack</FONT></H4>
+               
+               <p>When an assertion fails, some handling
+                    function is called. Normally, this function displays a
+                    dialog box that lets you ignore the failure, stop the
+                    program, or jump into the debugger. Showing the call stack
+                    in the dialog box requires walking through the stack and
+                    retrieving some information for each return address
+                    encountered. Unfortunately, walking the stack in Win32 is 
+                    not as easy as it was in Windows 3.x, where you could use
+                    the ToolHelp functions StackTraceFirst/StackTraceNext;
+                    however, it is not an insurmountable task. </p>
+
+
+                    <p><a href="fig1c.htm">Figure 1</a> shows the structure of a typical call stack. The
+                    Extended Base Pointer (EBP) register (an Intel CPU register)
+                    points to the top of the stack. The top element contains the
+                    EBP for the previous stack frame. The element immediately
+                    below the top element contains the return address for the
+                    current stack frame. Therefore, given the initial value of
+                    EBP a program can walk the stack by following the chain of
+                    top values. </p>
+               
+               <p> The current value of EBP is easily
+                    accessed via inline assembly code, as in the pseudocode
+                    presented in <A href="list1.htm">Listing 1</a>.
+ Note that
+                    the pseudocode does not show how the loop is terminated. In
+                    theory, the loop must break as soon as the caller points to
+                    somewhere into the Windows innards, but let's neglect this
+                    detail for the moment. Consider instead the "dump info
+                    about caller" statement: as stated earlier, I'll use
+                    the COFF debugging information (if available) here to
+                    retrieve the function name, line number, and so on. But to
+                    access COFF information, I must have a module name, while
+                    all I've got is a pointer to some portion of code. This
+                    portion of the code may belong to the running EXE or to any
+                    DLL. </p>
+               
+               <p> Again, life was easier in Windows
+                    3.x. The stack walking functions in Windows 3.x provide the
+                    module handle as part of their result; in Win32 we are on
+                    our own. This problem had me stuck for a while, as there
+                    seems to be no function in the Win32 API that gives back a
+                    module handle from an arbitrary memory address. Finally, I
+                    realized I had to think at a lower level of abstraction: in 
+                    Win32, the module handle is actually the starting linear
+                    address where the loader has mapped the Portable Executable
+                    (PE) file corresponding to the module. This reduces the
+                    problem to finding the base address of the memory region
+                    that includes the caller address. </p>
+               
+               <p> The base address information is
+                    available through the API function VirtualQuery. As shown in
+                    <A href="list2.htm">Listing 2</a>,
+ I can use this same
+                    information to terminate the loop as well. The inner
+                    portions of Windows do not have a module handle associated
+                    with them, so when the allocation base finally reaches zero
+                    it's time to terminate the loop.</p>
+               
+               <h4><FONT COLOR="#000080">Retrieving Debugging
+               Information</FONT></H4>
+               
+               <p>The code in <A href="list2.htm">Listing
+                         2</a>
+calls a yet-to-be-specified function
+                    DumpDebugInfo. This function takes two parameters: the
+                    address for which we want debugging information to be
+                    dumped, and the instance handle of the module that owns that
+                    code. Given the module instance handle, the module filename
+                    is available through the API function GetModuleFilename. If
+                    the module contains no debugging information, the filename 
+                    is all the information that can be displayed for each call
+                    in the stack. </p>
+               
+               <p> Armed with the module name and the
+                    address, the programmer can manually retrieve the source
+                    file name and line number, using for instance a MAP file;
+                    however, with debugging information available, it becomes
+                    possible to dump more useful data. The kind of debugging
+                    information that can be available varies widely: from the
+                    COFF format to CodeView, from the BSC database to the Turbo 
+                    Debugger format. Of these, I've selected COFF since it is a
+                    relatively standardized format. Several Win32 compilers have
+                    an option to include COFF debugging information in the PE
+                    files they generate. COFF is also fairly stable and well
+                    documented, so you can parse COFF debugging information
+                    without major effort. By contrast, formats such as
+                    Microsoft's BSC are accessible only through libraries, which
+                    change between one release of the compiler and another.
+                    </p>
+               
+               <p> Going through all the details of the
+                    PE and COFF formats (even under the debugging perspective)
+                    would take several pages, so I'll concentrate on the main
+                    points here. If you want to know more about PE and COFF, the
+                    best reference I've found is Pietrek's (see Bibliography),
+                    which goes over the listing of the various fields, and
+                    explains some of the rationale behind the format; also, 
+                    studying the implementation of the PE_Debug class (discussed
+                    below) should prove interesting. </p>
+
+
+               <p><a href="fig2c.htm">Figure
+                    2</a> shows a simplified layout of a PE file. A PE file is
+                    divided into several sections; some are at a fixed offset,
+                    others are pointed by values in a Section Table. The values
+                    in the Section Table, as well as most other pointers in the
+                    PE format, are actually Relative Virtual Addresses (RVA).
+                    RVA is a complex name for a simple thing: the pointers are
+                    actually offsets from the location where the PE file has
+                    been mapped in memory. Therefore, if the PE file is mapped
+                    at address 0x400000 in memory, and the RVA for some field is
+                    0x2800, the field's address in memory is 0x402800. This
+                    mechanism also works backwards: you can obtain the RVA of
+                    the caller address by subtracting the instance handle
+                    (converted to BYTE *) from the caller address itself. 
+                    (Remember that the instance handle is the starting linear
+                    address where the PE file has been mapped.) </p>
+               
+               <p><A href="list3.htm"> Listing 3</A>
+                    provides pseudocode for the lookup logic. First the module
+                    name is retrieved, as explained above, and the file is
+                    mapped into memory; then the NT header of the PE file is
+                    retrieved, as it contains important pointers to other
+                    sections. The sections of interest for debugging purposes
+                    are the IMAGE_COFF_SYMBOLS_HEADER structure (defined in
+                    WinNT.H), the Line Numbers table, and the Symbol table.
+                    Obtaining each of these data structures involves some
+                    gimmick with the pointers, and some knowledge of
+                    compiler-specific quirks. (For instance, Borland decided to
+                    name the code sections "CODE" instead of ".text".)
+                    </p>
+               
+               <p> Once the important sections have been
+                    found, the lookup code locates the symbol info and line
+                    number pertaining to the caller. To find this information,
+                    the lookup routine searches for the highest entry in each
+                    table with an RVA smaller than (or equal to) the RVA of the
+                    caller. For example, if the caller is the 5th bytecode of
+                    the 6th line of function foo, foo will be the function with 
+                    the highest RVA smaller than the caller, and line 6 of foo
+                    will be the line with the highest RVA smaller than the
+                    caller.</p>
+               
+               <h4><FONT COLOR="#000080">The Verbose Assert
+               DLL</FONT></H4>
+               
+               <p>The complete implementation is
+                    organized around three classes (see <a href="fig3c.htm">Figure 3</a>) and a few
+                    extern functions grouped into the VerboseAssert utility
+                    class. </p>
+
+               
+               <p> DumpBuffer implements a character
+                    buffer with a printf-like method that appends text to the
+                    end. The buffer stores the text of a message while the
+                    message itself is created. </p>
+               
+               <p> AssertDialog is a dialog box with
+                    three buttons (see <A href="fig4c.htm">Figure 4</a>)
+<A href="fig4c.htm"></A>
+                    to ignore, stop, or jump into the debugger. The dialog does
+                    not actually invoke any action, but only stores the result
+                    of user interaction. This arrangement completely decouples
+                    the user interface from the rest of the code. Since
+                    AssertDialog is implemented directly at the SDK level, and
+                    does not involve a framework such as MFC or OWL, you can use
+                    it without needing to include a specific class library.
+                    </p>
+               
+               <p> PE_Debug is responsible for parsing a
+                    PE file, and uses a DumpBuffer to hold the result. The
+                    buffer itself is owned by VerboseAssert (a function in the
+                    utility class VerboseAssert), which is called from the
+                    VASSERT macro. Note that I've intentionally given a distinct
+                    name to the macro, to avoid any clash with existing ones. If
+                    you rename VASSERT to ASSERT, remember to #undefine any 
+                    previous definition. </p>
+               
+               <p> Since the code could conceivably
+                    execute in an "inconsistent" state (otherwise,
+                    there would be no need for an assertion), I've considered it
+                    an important design criterion to avoid any use of dynamic
+                    memory. Thus, my approach is to jump through the COFF field
+                    for each address on the stack. Although it could be more
+                    efficient to build a parse tree for the debugging
+                    information once per module, I've preferred the slower
+                    approach which is nonetheless safer in this context. </p>
+               
+               <p> The only luxury I've afforded has
+                    been caching the memory mapped file. Since in practice most
+                    addresses in the stack belong to the same executable module,
+                    caching the memory mapped file avoids the overhead of
+                    mapping the module in memory for each call. This technique
+                    suggests that I can also avoid the replication of the module
+                    name for each call in the dump. I've further extended the 
+                    concept to the source file name, obtaining a tree-like dump
+                    as shown in <A href="fig4c.htm">Figure 4</a>.
+ </p>
+               
+               <p> Naturally, PE_Debug must be robust
+                    enough to survive being applied to a corrupted PE file, so
+                    in the implementation I've caught any exception generated
+                    from an incorrect field (which almost always causes a wrong
+                    pointer to be dereferenced). </p>
+               
+               <p> Finally, when the user clicks on "debug"
+                    the program must invoke the debugger. There are basically
+                    two techniques available, namely a call to DebugBreak or a
+                    single assembly instruction (INT 3). The former is portable
+                    to non-Intel processors, but has the disadvantage of leaving
+                    the debugger inside a Kernel function instead of inside the
+                    application. In the current implementation, I've preferred
+                    the INT 3 approach. </p>
+               
+               <p> To use the Verbose Assert DLL, you
+                    first turn on COFF debugging information. In Visual C++,
+                    this is done under Project Settings/Link/Debug. Then you
+                    link your project with verbassert.lib, and use the VASSERT
+                    macro instead of the usual ASSERT inside your code. If you
+                    want the enhanced support to be extended to existing
+                    libraries, they must be recompiled, in which case you may 
+                    want to rename VASSERT to ASSERT so as to avoid tampering
+                    with the library source.</p>
+               
+               <h4><FONT COLOR="#000080">Dealing with Mangled
+               Names</FONT></H4>
+               
+               <p>Most C++ compilers use a technique
+                    known as name mangling to embed type information inside the
+                    names of functions written to an object file. You may have
+                    seen the term "name decoration" in more recent
+                    papers, apparently because some Internet search engines
+                    refuse to index articles containing certain words. As shown
+                    in <A href="fig4c.htm">Figure 4</a>,
+ the COFF tables
+                    stores functions by their mangled (pardon, decorated) name.
+                    Although the original function name is often a part of the
+                    decorated name, it would be a significant improvement if the
+                    debugging tool showed a more readable function prototype
+                    instead of the decorated name. Unfortunately, there is no
+                    standardization on the decoration algorithm, and in most
+                    cases the algorithm itself is not documented and not
+                    guaranteed to be preserved between different releases of the
+                    same compiler. However, in some cases, the vendor makes a
+                    library available to perform conversions from the decorated
+                    name to the function prototype. For instance, Microsoft
+                    provides the Microsoft Browser Toolkit DLL free of charge
+                    (available on their Internet site), and I've been told that
+                    a similar library exists for the Borland products, although
+                    I wasn't able to obtain it. </p>
+               
+               <p> The Microsoft library is named
+                    BSCKITxx, where xx stands for the version number of the
+                    Visual C++ compiler you want to use. For example, version
+                    4.0 requires BSCKIT40. <A href="list4.htm">Listing 4</A>
+                    shows how to implement a demangle function in C++ using the
+                    Browser Toolkit. After inclusion of the kit's header files,
+                    the function is trivial to write. Obviously, you must link
+                    with the library .LIB file, and turn on the generation of
+                    browsing information (Project Settings/Browse Info).
+                    However, I've found it inconvenient to have to download a
+                    new version of the kit and create a different version of the
+                    verbose assert DLL for every updated version of Visual C++.
+                    So I do not include a call to demangle in the verbose assert
+                    code. After all, the decorated name is quite readable and
+                    the line number is always there to help. If you want to
+                    print demangled names, just add a call to demangle at the
+                    end of PE_Debug::DumpSymbolInfo, where the function name is 
+                    finally printed.</p>
+               
+               <h4><FONT COLOR="#000080">Conclusions</FONT></H4>
+               
+               <p>The code presented here is a complete
+                    replacement for the assert macro that comes with your
+                    compiler, but requires a Win32 system running on the Intel
+                    platform. The stack walking code is Intel-specific. However,
+                    it should be possible to port that short piece of code to
+                    other platforms without too much effort. Since the COFF
+                    format is used outside the Win32 world as well (for 
+                    instance in many UNIX-based compilers), some of the code
+                    presented here can be ported to other operating systems as
+                    well. Naturally, if the target system does not support
+                    memory mapped files, some significant changes to the actual
+                    code will be necessary, although most of the logic may
+                    remain the same. If you port the code to any platform,
+                    operating system, or compiler, I'd be glad to hear from you.
+                    o</p>
+               
+               <h4><FONT COLOR="#000080">Bibliography</FONT></H4>
+               
+               <p>Readers interested in the theory and
+                    practice of using assertions will find an excellent
+                    introduction in McConnel or Maguire below, while Meyer and
+                    Rosenblum both present a more comprehensive view of the
+                    topic. Cline and Lea introduce a C++ extension that enters
+                    into the programming-by-contract realm.</p>
+               
+               <p>Steve McConnel. Code Complete (Microsoft Press, 1993).
+                    </p>
+               
+               <p> Steve Maguire. Writing Solid Code
+                    (Microsoft Press, 1993). </p>
+               
+               <p> Bertrand Meyer. "Applying Design
+                    by Contract," IEEE Computer, October 1992. </p>
+               
+               <p> David S. Rosenblum. "A Practical
+                    Approach to Programming With Assertions," IEEE
+                    Transactions on Software Engineering, January 1995. </p>
+               
+               <p> Marshall P. Cline and Doug Lea. "The
+                    Behaviour of C++ Classes," Proceedings of the Symposium
+                    on Object Oriented Programming Emphasizing Practical
+                    Applications (Marist College, 1990). </p>
+               
+               <p> Matt Pietrek. Windows 95 System
+                    Programming Secrets. (IDG Books, 1995). </p>
+               <p><i>Carlo Pescio holds a doctoral degree in Computer Science and is a freelance
+                    consultant in Savona, Italy. He specializes in object-oriented technologies and
+                    is a member of the IEEE Computer Society, the ACM, and the New York Academy of
+                    Sciences. You can contact him at pescio@acm.org.</i></p>
+     
+<h4><a href="../../../source/1997/jun97/pescio.zip">Get Article Source Code</a></h4>
+
+     </BLOCKQUOTE>
+     </BODY>
+</HTML>

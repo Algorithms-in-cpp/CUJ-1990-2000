@@ -1,0 +1,147 @@
+<HTML>   
+     <HEAD>
+<TITLE>September 2000/A TCP/IP Socket Location Server</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocsep.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Internet Programming</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">A TCP/IP Socket Location Server</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Richard Smereka</FONT></H3>
+
+<BLOCKQUOTE>
+<p>You can write remarkably portable network-aware code, if you are careful how you isolate the dependencies.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<H4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>The TCP/IP protocol is one of the most common ways to create network-aware applications. Given the current popularity of TCP/IP as a network protocol and the fact that TCP/IP is used exclusively with Internet applications, this protocol is well worth examining.</p>
+<p>The socket resides on top of the TCP/IP protocol. A socket is an IPC (Interprocess Communication) method that allows network applications to communicate with each other. On Unix systems, sockets are implemented using Berkeley sockets. On Windows machines, sockets are constructed using WinSock. This article deals with both types of sockets by presenting a solution for dynamically configuring socket-based client/server applications.</p>
+<p>A TCP/IP socket client application that needs to connect to a socket server requires the host name of the socket server, as well as the TCP/IP port number the socket server is listening to. A configuration file or command-line with parameters typically supplies this host name and port number information to clients. This method is manageable only when there are a small number of client and server socket applications within the environment. As the number of socket applications rises, the management of this configuration information becomes more difficult. In addition, changes to the configuration information become more difficult because the host names and TCP/IP port numbers are hard coded. A more dynamic solution is required.</p>
+<p>Socloc stands for "socket locate." This facility stores TCP/IP configuration information consisting of host names, TCP/IP port numbers, and, optionally, TCP/IP addresses, in a globally accessible network location. Once this information is stored, socket client applications are not required to know these details. Socloc consists of two major components: a TCP/IP connection-oriented iterative server and an API. All components are written using ANSI C with emphasis on making the code as portable as possible.</p>
+<p>When socloc is used effectively by socket servers and socket client applications within an environment, socket servers can easily be moved from one machine to another without any coding or configuration changes to the socket client application. The socloc server also allows multiple instances of the same socket server to run on different computers by using the concept of a service name. Multiple socloc servers may also be used. All socloc servers within an environment synchronize their TCP/IP configuration information. The ability to have multiple socloc and socket servers (of the same type) running provides a good measure of redundancy.</p>
+<p>The socloc API also provides for automatic failover of socloc servers. If a socloc server fails or the machine running the socloc server fails, the client application using the socloc API automatically selects and connects to the next available socloc server. It is also very easy to build socket client applications that provide failover protection of a specific socket service as long as more than one available socket server is supplying the required service.</p>
+
+<H4><FONT COLOR="#000080">The Socloc Project</FONT></H4>
+
+<p>Socloc is a large project with many components. Only code fragments are listed here. The complete source code for all socloc components is available via ftp (at <B>www.cuj.com/code</B>).</p>
+<p>All components can be compiled and executed on any platform where an ANSI C compiler exists along with the Berkeley socket (under Unix) or WinSock (Windows) interface. At run time, the components require an operational TC/IP network interface. To date, I have compiled and executed the socloc components on many flavors of Unix, as well as 32-bit Windows.</p>
+<p>The socloc server and API also make use of a file input/output API, a string parsing API, a file logging API, and a generic socket API. The socket API consists of two modules, a high-level module and a low-level module. The high-level module, <B>ipcsrv.c</B>, contains the server socket structures (shown in <a href="list1.htm">Listing 1</a>). Notice that the appropriate socket data structure is selected using OS definitions. These OS definitions are contained in the header file <B>stdhead.h</B>, a portion of which is shown in <a href="list2.htm">Listing 2</a>. The specific OS selection specified in <B>stdhead.h</B> automatically determines the path separator, switch character, and platform string.</p>
+
+<H4><FONT COLOR="#000080">The Socloc Server</FONT></H4>
+
+<p>The socloc server (not to be confused with a <I>socket</I> server) is a TCP/IP connection-oriented iterative server. By connection oriented, I mean that the server forms a TCP/IP connection before attempting to receive and send data. I chose this method (TCP, or Terminal Control Protocol) instead of the connectionless-oriented server (UDP, or Universal Datagram Protocol) because the delivery of data is guaranteed with TCP. By iterative, I mean that the socloc server blocks while waiting to receive a connection and processes one request at a time. I chose this method for its simplicity and because of the minimal time required to satisfy a socloc request.</p>
+
+<H4><FONT COLOR="#000080">Initializing the Server</FONT></H4>
+
+<p><a href="list3.htm">Listing 3</a> shows a portion of the server module <B>socloc.c</B>. This module contains the module global variable <B>WSAData</B>, which is used only in Windows implementations. Any Windows application that uses the socket API must call the WinSock-specific functions <B>WSAStartup</B> and <B>WSACleanup</B>. <a href="list3.htm">Listing 3</a> also contains a two other module global variables: <B>server_port</B>, which contains the current TCP/IP port number serviced by the socloc server, and <B>s_log_file</B>, which is the current log file in use.</p>
+<p>The socloc server uses two singly linked lists to manage TCP/IP information. The linked list data structure <B>sloc_entry</B> (shown in <a href="list3.htm">Listing 3</a>) holds all socket server TCP/IP information including the service name, machine host name, the port number being serviced, and an optional TCP/IP address. Note that all linked list nodes and string member data are dynamically allocated. The module global <B>sloc_base</B> is a pointer to the base or root node of the <B>sloc_entry</B> linked list. The second linked list, referred to as the configuration list, stores TCP/IP information pertaining to all currently running socloc servers. This configuration list is actually part of the socloc API, which is discussed later. The socloc server uses the socloc API to manage the configuration list and to communicate with other socloc servers.</p>
+<p>When the socloc server starts up, the function <B>srv_initialize</B> is called first (shown in <a href="list3.htm">Listing 3</a>). This function reads the socloc startup file (described below) and loads the configuration list with this information. <B>srv_initialize</B> then obtains the current host name by calling the TCP/IP function <B>gethostname</B>. This host name is then compared to each entry in the configuration list, looking for a host name match. If <B>srv_initialize</B> finds a match, it uses the associated port number given in the socloc startup file as the TCP/IP port for this server. <B>srv_initialize</B> then marks the matched configuration entry as the local server by calling the socloc API function <B>sl_config_set_ils</B>.</p>
+<p>The initialize function then attempts to locate any other currently running socloc servers by calling the socloc API function <B>sloc_find_first_active</B>. Since it is not mandatory that other socloc servers are present, it is acceptable if this attempt to find other socloc servers fails. If other socloc servers are present, the initialization function calls the socloc API function <B>sloc_bcast_config_add</B>, which will register or add the current socloc server to the configuration list of all other known socloc servers. Calling the socloc API function <B>sloc_config_get_list</B> obtains the configuration list of the first responding socloc server. This configuration list is then used to update the current socloc server configuration list.</p>
+
+<H4><FONT COLOR="#000080">Processing Requests</FONT></H4>
+
+<p>Once the socloc server has been registered with other socloc servers and the configuration list is current, <B>main</B> calls the socket API function <B>ipc_init</B> (<a href="list3.htm">Listing 3</a>). <B>ipc_init</B> initializes the TCP/IP server socket. After socket initialization is complete, <B>main</B> calls the socket API function <B>ipc_server_wait</B>, which will cause the server to be blocked until a connection is established. Once a client connection is detected, <B>main</B> calls the function <B>process_request</B> to dispatch the client request/command.</p>
+<p>The socloc server sends and receives data by using a command-string format called command words. The format consists of a send command code followed by zero or more space-delimited parameters. <B>socloc.h</B> (<a href="list4.htm">Listing 4</a>) shows all the socloc send and receive codes. For example, here is a request to the socloc server to add/register a socket server:</p>
+
+<pre>
+60 foo_service thehostname 10000 192.200.45.10
+</pre>
+
+<p>This message sends an add/register request (send code 60) for a socket server with the service name <B>foo_service</B> and host name <B>thehostname</B> on TCP/IP port 10000. The optional TCP/IP address is also included. Once the socloc server has processed this request, it sends a reply to the client application in the same command-word format.</p>
+<p>Any send or reply parameter that contains spaces is quoted using single quotes. Technically, any linked list string member can have data that contains spaces including the service name and host name. Practically, it is not a good idea to have spaces in the linked list string data.</p>
+<p>The socloc server communicates with all socket servers on a limited basis. When a client application sends a find request, the socloc server first locates the socket server in the linked list and then checks to make sure that the socket server is responding. If the socket server is does not respond, the entry is deleted from the socket server linked list, and the deletion is then communicated to all other known socloc servers. Since the socloc server needs to communicate with all other socket servers, there are a small number of common send and reply codes. These common codes are located in the header file <B>comcode.h</B> (not shown), which is included at the top of <a href="list4.htm">Listing 4</a>. Notice that the reply code <B>SL_OK</B> is defined as <B>SOCKET_RC_OK</B> and the send code <B>SL_SEND_STATUS</B> is defined as <B>SOCKET_SEND_STATUS</B>.</p>
+<p>There are many features built into the socloc server. The socloc server can add or delete socket server entries, find a socket or socloc server by any criteria, get a copy of the current socket or socloc list, turn the server log on or off, and get the service name and version of the socket or socloc server.</p>
+
+<H4><FONT COLOR="#000080">More on Message Formats</FONT></H4>
+
+<p>When a socloc server responds to a request to return a list of socket or socloc servers, the list will be delimited by the <B>SL_LIST_DELIM</B> character defined in <a href="list4.htm">Listing 4</a>. For example:</p>
+
+<pre>
+0 's1 host1 20000^s1 host2 20001^s2 host3 20002'
+</pre>
+
+<p>This reply string starts with the return code followed by the server list, with each list entry having the service name followed by the host name, TCP/IP port number, and an optional TCP/IP address. Since the above reply string contains the service name for each entry, this list is a socket server list. A socloc server list does not contain any service name.</p>
+<p>When any find request is sent to the socloc server, the command string has the following syntax:</p>
+
+<pre>
+[service sname] [host hname] [port pnum] [ip ipad]
+</pre>
+
+<p>This command string is called a connect string. Each parameter is actually a parameter pair that starts with a keyword that describes the following parameter value. The <B>service</B> keyword is not allowed when finding socloc servers. The connect string format allows any number of lookup criteria to be used. The only requirement is that there must be at least one parameter pair present. For example:</p>
+
+<pre>
+64 service foobar
+</pre>
+
+<p>When received, this command string requests that the socloc server find (send code 64) a socket server with the service name <B>foobar</B>. Since this command code returns a single socket server entry, the socloc server locates the first entry in the linked list with the same service name. The socloc server then sends a status send code to the socket server. If the socket server responds as expected, the socloc server replies to the client that sent the find request with the matching socket server's TCP/IP information. If, on the other hand, the send command string is:</p>
+
+<pre>
+66 service foobar
+</pre>
+
+<p>The socloc server would return a list of <I>all</I> socket servers providing the service <B>foobar</B>. Unlike the case when it searches for a single server, the socloc server does not perform a status check of all matching servers when it returns a list of servers.</p>
+<p>You may have as many socloc servers running within an environment as you like. There are, however, two requirements: no more than one socloc server per machine can be running, and every TCP/IP port number used by each socloc server must be unique <a href="#note1">[1]</a>.</p>
+
+<H4><FONT COLOR="#000080">The Socloc API</FONT></H4>
+
+<p>The socloc API is implemented by four modules. These modules implement the main API, a configuration API, an error message translation API, and an API for assembling and disassembling connect strings. Any application that uses socloc must link with these four modules.</p>
+<p>The main API module contains all required client socket structure variables (shown in <a href="list5.htm">Listing 5</a>). Before an application calls any socloc API function, it should call the <B>sloc_initialize</B> function (shown in <a href="list5.htm">Listing 5</a>). This initialization function first reads the socloc startup file (described below) and loads the configuration linked list by calling the configuration API function <B>sl_config_read</B>. The first socloc server entry is then obtained by calling the configuration API function <B>sl_config_get_first</B>. The initialization function then calls the main API function <B>sloc_status</B> to verify the socloc server entry. The first responding socloc server listed in the socloc startup file is used as the chosen socloc server. The host name and TCP/IP port used by the socloc server are loaded into the module global variables contained in the main API module (shown in <a href="list5.htm">Listing 5</a>).</p>
+<p>If a chosen socloc server does not respond, the main API then deletes the configuration entry from the linked list and chooses another socloc server. The socloc API has the capability of detecting up to 25 dead socloc servers per request. Once another socloc server has been located, the deleted configuration entries are communicated to all other known socloc servers. This is how the socloc API implements failover of socloc servers. As long as there is another socloc server available, the application using the API continues to run normally.</p>
+
+<H4><FONT COLOR="#000080">Building a Socloc-Aware Socket Server</FONT></H4>
+
+<p>In order to build a socket server that uses socloc, you must link the socket server with the four socloc API modules mentioned above. In addition, you must provide a socloc startup file (discussed below). The socket server service name, host name, TCP/IP port number, and (optionally) the TCP/IP address must be registered with the socloc server. The socket server must also properly respond to all common socket send codes. The socket server must also unregister itself with the socloc server upon normal termination.</p>
+<p>No limit exists on the number of socket servers that can be running the same service. You may even have more than one socket server providing the same service on the same machine. The only requirement is that all TCP/IP port numbers must be unique <a href="#note1">[1]</a>.</p>
+<p>As an example of a socket server that interfaces with socloc, the <I>CUJ</I> online source code includes a socket server called dumsocks (shown, in part, in <a href="list6.htm">Listing 6</a>). The dumsocks server expects a command-line parameter consisting of the TCP/IP port number to be used. All command-line parameters are parsed using the function <B>parse_comline</B>. Once the command-line parameters have been verified, the socket server calls the initialization function <B>srv_initialize</B>. This function initializes the WinSock data structure if the platform is Windows. The socket API function <B>ipc_init</B> then initializes the TCP/IP layer. The socloc API function <B>sloc_initialize</B> then starts the socloc interface. The final step consists of registering the dumsocks server with socloc using the socloc API function <B>sloc_add</B>. After the server has been completely initialized, the server's <B>main</B> function enters an infinite loop that consists of waiting for a connection though the socket API function <B>ipc_server_wait</B>. Once a connection has been established, the <B>process_request</B> function reads the request data, processes the request, and responds accordingly. When the request has been satisfied, the function <B>ipc_close_client</B> closes the client socket.</p>
+
+<H4><FONT COLOR="#000080">Building a Socloc-Aware Client</FONT></H4>
+
+<p>In order for a client application to use socloc, all the socket servers that the client will connect to must be registered with the socloc server. The client application must initialize the socloc API, provide a socloc startup file (discussed below), and locate the required socket server by its service name. In addition, the client application should obtain a current copy of the configuration list from the socloc server and update its own configuration list with this copy. The client should also detect socket communication errors and, if necessary, failover to another socket server with the same service name (if one is available).</p>
+<p>An example socket client application, dumsockc, is also given with the online source code. dumsockc interfaces with socloc and the dumsocks server (discussed above). <a href="list7.htm">Listing 7</a> contains part of the application source. The client is initialized in the function <B>d_initialize</B>, which starts the socloc interface and attempts to locate the first responding dumsocks server using the socloc API function <B>sloc_find</B>. The function <B>sloc_config_get_list</B> obtains the current socloc configuration list from the socloc server. The obtained list is then used with the function <B>sl_config_put_list</B> to update the current client socloc configuration list. The dumsockc client then enters a loop that presents a prompt to the user and waits for a command to be typed. The dumsockc client recognizes the user commands shown in <a href="fig1.htm">Figure 1</a>.</p>
+<p>Command keywords may be in upper, lower, or mixed case.</p>
+
+<H4><FONT COLOR="#000080">The Socloc Startup File</FONT></H4>
+
+<p>Every application that uses socloc, including socloc servers, socket servers, and socket clients, requires the presence of a socloc startup file. The startup file is a simple ASCII file that contains a list of suggested socloc servers. Here is a sample startup file:</p>
+
+<pre>
+* comments start with an asterisk as the first non-blank char
+* file format is:
+*
+* hostname port [ip]
+*
+node1.domain.com 7928
+node2.domain.com 7929
+node3.domain.com 7930
+</pre>
+
+<p>The startup file is used differently depending on the type of application. The socloc server uses the startup file to locate a line in the startup file where the host name matches the local host name. Once this line is found, the socloc server uses the TCP/IP port number listed on this line. A fatal error occurs if this line is not found. A socket server and socket client application use the startup file as a suggested list of socloc servers. The list does not have to be completely accurate. The only requirement is that at least one of the socloc servers contained in the startup file must respond.</p>
+<p>The startup file is read sequentially, and the configuration linked list nodes are added in the same order. One socloc server should be designated as the primary server and another as the secondary server. The primary server should be listed in the socloc startup file first, followed by the secondary server.</p>
+<p>As currently defined, the socloc startup file, socloc.ipc, must reside in the current directory when the application is executed.</p>
+
+<H4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>A socket client application typically needs to know the host name and TCP/IP port number of the socket server. The socket server information is normally hard-coded using configuration files or command-line parameters. This method couples the client application to a specific host and TCP/IP port number.</p>
+<p>Socloc presents a method that decouples the socket client application from detailed information about the socket server, which creates a tremendous amount of freedom. Socloc also adds failover protection providing there are redundant servers within the environment.</p>
+<p>Socloc can be used with any connection-oriented socket server that will accept a command string. The socloc server assumes that each socket server is connection oriented. There is no provision, at the moment, for connectionless-oriented (UDP) socket servers.</p>
+<p>All socloc code is licensed using the GNU GPL (General Program License), which allows anyone to acquire a copy of executable programs and source code free of charge. A full copy of the GPL license is included with the socloc code via ftp.</p>
+
+<H4><FONT COLOR="#000080">Note</FONT></H4>
+
+<p><a name="note1">[1]  In fact, all port numbers that are registered with socloc (both socloc servers and socket servers) must be unique.</p>
+
+<H4><FONT COLOR="#000080">Further Reading</FONT></H4>
+
+<p>For more information on Unix socket programming, refer to W. Richard Stevens, <I>Unix Network Programming Volume 1</I>, Second Edition (Prentice Hall, 1998).</p>
+<p>For more information on WinSock programming, see Bob Quinn and Dave Shute, <I>Windows Sockets Network Programming</I> (Addison Wesley, 1996).</p>
+<p>For further information on socloc, see the complete HTML documentation available via ftp or view the documentation online at the Future Lab website, <B>www.future-lab.com</B>.</p>
+
+<p><i><B>Richard Smereka</B> helps run Future Lab Inc., providing system development and programming services specializing in human resource and payroll software and the Open Source movement. You can reach him at <B>rsmereka@future-lab.com</B>.</i></p>
+
+<h4><a href="../../../source/2000/sep00/smereka.zip">Get Article Source Code</a></h4>
+
+</blockquote></body></html>

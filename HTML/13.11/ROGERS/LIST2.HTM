@@ -1,0 +1,251 @@
+<HTML><HEAD>
+<TITLE>November 1995/Locking Without Deadlocks/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2 <I>Readers/writers lock routines</I></A></h4>
+<pre>/* @(#) RWLock.c 1995-07-18 - read/write locks.
+ * Copyright (c) 1995 by JR (John Rogers).
+ *
+ * AUTHOR - JR (John Rogers, 72634.2402@CompuServe.com)
+ */
+
+/*lint -e506 */ /* Allow "Constant value Boolean". */
+#include &lt;assert.h&gt;     /* assert(). */
+#include &lt;errno.h&gt;      /* errno, EINVAL, etc. */
+#include &lt;fcntl.h&gt;      /* O_CREAT, O_EXCL, etc. */
+#include &lt;limits.h&gt;     /* PAGESIZE, PATH_MAX. */
+#include "rwlock.h"     /* RWLock_T, etc. */
+#include &lt;semaphore.h&gt;  /* sem_t, etc. */
+#include &lt;stdlib.h&gt;     /* free(), malloc(), NULL. */
+#include &lt;string.h&gt;     /* strcat(), strcpy(). */
+#include &lt;sys/mman.h&gt;   /* MAP_*, mmap(), etc. */
+#include &lt;sys/stat.h&gt;   /* S_IRWXU et al. */
+#include &lt;sys/types.h&gt;  /* mode_t?. */
+#include &lt;unistd.h&gt;     /* close(), ftruncate(). */
+
+                           /*123456789012345678*/
+static char *  Count_Suffix     = "_RWLock_Count_Shm";
+static char *  Database_Suffix  = "_Database_Sem";
+static char *  MUTEX_Suffix     = "_MUTEX_Sem";
+
+#define MAX_SUFFIX_LEN      18
+#define MAX_RWLOCK_NAME     (PATH_MAX - MAX_SUFFIX_LEN)
+#define RWLOCK_SIG          Ox95137682UL
+#define MY_CREATION_MODE    ((mode_t) S_IRWXU)
+#define MY_SHARED_MEM_SIZE  PAGESIZE
+
+/* LOCK HIERARCHY: MUTEX_Sem, Database_Sem. */
+typedef struct {
+   unsigned long            Signature;
+   sem_t *                  MUTEX_Sem;
+   sem_t *                  Database_Sem;
+   volatile unsigned int *  Reader_Count_Ptr;
+} RWLOCK_DESC_T;
+
+/***** FUNCTIONS (ALPHABETICAL ORDER) *****/
+
+int  /* Returns 0 if OK; -1 (&amp; sets errno) on error. */
+CloseRWLock(
+   RWLock_T * The_Lock)
+{
+   RWLOCK_DESC_T * My_Handle = The_Lock;
+
+   if ( (My_Handle==NULL)
+        || (My_Handle-&gt;Signature != RWLOCK_SIG) ) {
+      errno = EINVAL;
+      return (-1); /* indicate error */
+   }
+
+   if (My_Handle-&gt;MUTEX_Sem != NULL)
+      (void) sem_close( My_Handle-&gt;MUTEX_Sem );
+   if (My_Handle-&gt;Database_Sem != NULL)
+      (void) sem_close( My_Handle-&gt;Database_Sem );
+   if (My_Handle-&gt;Reader_Count_Ptr != NULL) {
+      (void) shm_munmap(
+           (void *) (My_Handle-&gt;Reader_Count_Ptr),
+           (size_t) MY_SHARED_MEM_SIZE );
+   }
+   free( My_Handle );
+
+   return (0);  /* indicate success */
+}
+
+/* MakeRWLock returns lock pointer, or returns NULL and
+ * sets errno on error.  */
+RWLock_T *
+MakeRWLock(
+   const char * Lock_Name)
+{
+   RWLOCK_DESC_T * My_Handle = NULL;
+   int             Shared_FD = -1; /* shared mem fd */
+   char            Temp_Name[PATH_MAX + 1];
+   sem_t *         Temp_Sem_Handle;
+
+   if ( (Lock_Name==NULL) || ( (*Lock_Name)=='\0') ) {
+      errno = EINVAL;
+      goto Error_Cleanup;
+   }
+   if (strlen(Lock_Name) &gt; MAX_RWLOCK_NAME) {
+      errno = ENAMETOOLONG;
+      goto Error_Cleanup;
+   }
+   (void) strcpy( Temp_Name, Lock_Name );
+   (void) strcat( Temp_Name, Count_Suffix );
+   Shared_FD = shm_open(
+        Temp_Name, O_CREAT, MY_CREATION_MODE);
+   if (Shared_FD == -1)
+      goto Error_Cleanup;
+   if (ftruncate(Shared_FD, MY_SHARED_MEM_SIZE) == -1)
+      goto Error_Cleanup;
+
+   My_Handle = malloc( sizeof( RWLOCK_DESC_T) );
+   if (My_Handle == NULL)
+      goto Error_Cleanup;
+
+   /* Clear-out stuff so error handler knows
+    * what it can undo safely. */
+   My_Handle-&gt;MUTEX_Sem        = NULL;
+   My_Handle-&gt;Signature        = RWLOCK_SIG;
+   My_Handle-&gt;Database_Sem     = NULL;
+   My_Handle-&gt;Reader_Count_Ptr = NULL;
+
+   My_Handle-&gt;Reader_Count_Ptr = mmap(
+        NULL,        /* Optional desired address. */
+        (size_t) MY_SHARED_MEM_SIZE,
+        PROT_READ | PROT_WRITE, /* Protection. */
+        MAP_SHARED, /* Mapping flags: MAP_ bits. */
+        Shared_FD,  /* File desc from shm_open(). */
+        (off_t) 0); /* Offset. */
+   if (My_Handle-&gt;Reader_Count_Ptr == NULL)
+      goto Error_Cleanup;
+
+   (void) close( Shared_FD );
+
+   (void) strcpy( Temp_Name, Lock_Name );
+   (void) strcat( Temp_Name, MUTEX_Suffix );
+   Temp_Sem_Handle = sem_open(
+        Temp_Name,
+        O_CREAT,   /* open flags */
+        MY_CREATION_MODE,
+        (unsigned int) 1);   /* initial value */
+   if (Temp_Sem_Handle == (sem_t *) -1)
+      goto Error_Cleanup;
+   My_Handle-&gt;MUTEX_Sem = Temp_Sem_Handle;
+
+   (void) strcpy( Temp_Name, Lock_Name );
+   (void) strcat( Temp_Name, Database_Suffix );
+   Temp_Sem_Handle = sem_open(
+        Temp_Name,
+        O_CREAT,   /* open flags */
+        (mode_t) MY_CREATION_MODE,
+        (unsigned int) 1); /* initial value */
+   if (Temp_Sem_Handle == (sem_t *) -1)
+      goto Error_Cleanup;
+
+   My_Handle-&gt;Database_Sem = Temp_Sem_Handle;
+
+   assert( My_Handle != NULL );
+   return ((RWLock_T *) My_Handle);
+
+Error_Cleanup: /* Assumes errno already set. */
+   if (My_Handle != NULL)
+      (void) CloseRWLock( (RWLock_T *) My_Handle );
+   if (Shared_FD != -1)
+      (void) close( Shared_FD );
+   return ((RWLock_T *) NULL);  /* Indicate error. */
+}
+
+int  /* Returns 0 if OK; -1 (&amp; sets errno) on error. */
+RdLock(
+   RWLock_ T * The_Lock)
+{
+   RWLOCK_DESC_T * My_Handle = The_Lock;
+
+   if ( (My_Handle==NULL)
+        || (My_Handle-&gt;Signature != RWLOCK_SIG) ) {
+      errno = EINVAL;
+      return (-1);  /* indicate error */
+   }
+
+   if (sem_wait(My_Handle-&gt;MUTEX_Sem) != 0)
+      return (-1); /* indicate error */
+   *(My_Handle-&gt;Reader_Count_Ptr)
+        = *(My_Handle-&gt;Reader_Count_Ptr) + 1;
+
+   if ( *(My_Handle-&gt;Reader_Count_Ptr) == 1) {
+      if (sem_wait(My_Handle-&gt;Database_Sem) != 0)
+        return (-1); /* indicate error */
+   }
+
+   if (sem_post(My_Handle-&gt;MUTEX_Sem) != 0)
+      return (-1);  /* indicate error */
+
+   return (0);  /* indicate OK. */
+}
+
+int  /* Returns 0 if OK; -1 (&amp; sets errno) on error. */
+RdUnlock(
+   RWLock_T * The_Lock)
+{
+   RWLOCK_DESC_T * My_Handle = The_Lock;
+
+   if ( (My_Handle==NULL)
+        || (My_Handle-&gt;Signature != RWLOCK_SIG) ) {
+      errno = EINVAL;
+      return (-1); /* indicate error */
+   }
+
+   if (sem_wait(My_Handle-&gt;MUTEX_Sem) != 0)
+      return (-1);  /* indicate error */
+
+   *(My_Handle-&gt;Reader_Count_Ptr)
+        = *(My_Handle-&gt;Reader_Count_Ptr) - 1;
+   if *(My_Handle-&gt;Reader_Count_Ptr) == 0) {
+      if (sem_post(My_Handle-&gt;Database_Sem) != 0)
+        return (-1);  /* indicate error */
+   }
+
+   if (sem_post(My_Handle-&gt;MUTEX_Sem) != 0)
+      return (-1);  /* indicate error */
+
+   return (0);  /* indicate OK. */
+}
+
+int /* Returns 0 if OK; -1 (&amp; sets errno) on error. */
+WrtLock(
+   RWLock_T * The_Lock)
+{
+   RWLOCK_DESC_T * My_Handle = The_Lock;
+
+   if ( (My_Handle==NULL)
+        || (My_Handle-&gt;Signature != RWLOCK_SIG) ) {
+      errno - EINVAL;
+      return (-1);  /* indicate error */
+   }
+   if (sem_wait(My_Handle-&gt;Database_Sem) != 0)
+      return (-1);  /* indicate error */
+
+   return (0);  /* indicate OK. */
+}
+
+int /* Returns 0 if OK; -1 (&amp; sets errno) on error. */
+WrtUnlock(
+   RWLock_T * The_Lock)
+{
+   RWLOCK_DESC_T * My_Handle = The_Lock;
+
+   if ( (My_Handle==NULL)
+        || (My_Handle-&gt;Signature != RWLOCK_SIG) ) {
+      errno = EINVAL;
+      return (-1);  /* indicate error */
+   }
+   if (sem_post(My_Handle-&gt;Database_Sem) != 0)
+      return (-1);  /* indicate error */
+
+   return (0);  /* indicate OK. */
+}
+/* End of File */</pre>
+
+</BODY>
+</HTML>

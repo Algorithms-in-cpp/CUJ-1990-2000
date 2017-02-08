@@ -1,0 +1,254 @@
+
+
+
+<HTML><HEAD>
+
+<TITLE>March 1998/Contrast Enhancement with Piecewise Lookup Tables/Listing 4</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4>
+<A name="HEADING1">Listing 4: ImagePointLut member functions</A></h4>
+
+
+<pre>
+///////////////////////////////////////////////////////////////////////////
+//    File: iplut.cpp
+//    Description: ImagePointLut - point lookup table routines 
+//
+//    Author: C Dare-Edwards
+//      Copyright Conrad Dare-Edwards 1997
+
+#include "stdafx.h"
+#include "isystem.hpp"
+#include "iplut.hpp"
+
+// histogram equalisation 
+void
+ImagePointLut::Equalise( const ImageHist&amp; hist )
+{
+    double divider = hist.getSum() / 255.0;
+    double total=0;
+    
+    // equalise and produce a table 
+        for(int i=0; i &lt; 256; i++ )
+        {
+        total += (double)hist.getFrequency(i) * (double)i;
+        (*this)[i] = (int)(total /divider) ;
+            }
+
+    // build points from the table produced
+    BuildPointList();
+}
+
+// optimise a min max stretch by adding a mean 
+// value and clipping the top and bottom 5 percent 
+void 
+ImagePointLut::Optimise( const ImageHist&amp; hist,colour type )
+{
+    // defualt min to max    
+    SetMinToMax( hist, type );    
+       
+    // if a green pseudo colour lookup table
+    // mean value is at the top of the range 
+    if( type == GREEN )
+    {
+        // find central point or the first to 
+        // equal 255 on the y axis  and move x to mean 
+        ILISTPOS pos = NULL;
+        while(  ( pos = m_PointList.getNext( pos )) != NULL )
+        {
+            if( (m_PointList.getData(pos)).y == 255 )
+            {
+               (m_PointList.getData(pos)).x =(int)hist.getMean();
+                break;
+            }
+        }
+    }        
+    else // red or blue lookup table
+    {
+            // add a new central mean
+        m_PointList.Append( 
+              ImagePoint( (int)hist.getMean(),getRange() / 2 ) );                                 
+    }
+    
+    Update();    // and resort list
+}
+
+// Update - sort tidy and recompute lookup table
+void
+ImagePointLut::Update( BOOL tidy )
+{
+    // make sure that the m_PointList is ok
+    SortPointList();
+    
+    // remove un needed points if requestedi
+    if( tidy)  TidyPointList();    
+
+    // catch problems 
+    if( !m_PointList.isEmpty() )
+    {
+        // compute lookup table 
+        // scan through list and hand across to ScaleTo
+        ILISTPOS pos  = m_PointList.getHead(); 
+        ILISTPOS last = pos;    
+        while(  ( pos = m_PointList.getNext( pos )) != NULL)
+        {
+            ImageLut::ScaleTo( m_PointList.getData( last ), 
+                    m_PointList.getData( pos ));
+            last = pos; // save pos for next round        
+        }
+    }
+}
+
+// SortPointList
+void
+ImagePointLut::SortPointList( void )
+{
+    // set to 0 if we dont need a 0,0 point
+    int zeropoint =1;  
+
+    // set to 0 if we dont need a 255,255 point
+    int maxpoint  =1;  
+
+    // scan through all points and invert them on each y axis
+    if( !m_PointList.isEmpty() )
+    {
+        ILISTPOS pos = NULL;
+        while(  ( pos = m_PointList.getNext( pos )) != NULL )
+        {
+                // test for end points
+            if( m_PointList.getData( pos ).x ==  0 )
+            {
+                zeropoint = 0;       
+            }
+            else if( m_PointList.getData( pos ).x ==255) 
+            {    
+                maxpoint = 0;
+            }
+        }    
+    }
+    // insert top and bottom as needed
+    if( maxpoint )
+    {
+        m_PointList.Append( ImagePoint( 255,255 ) ); 
+    }
+    
+    if( zeropoint )
+    {
+        m_PointList.InsertBefore( 
+            ImagePoint(0,0), m_PointList.getHead() );
+    }
+    
+
+    // and a very simple sort routine    
+    int changes;  // do untill list hasn't changed 
+    do
+    {
+        // no changes yet
+        changes = FALSE;
+        
+        // skip the first node
+        ILISTPOS pos = m_PointList.getHead();  
+
+        while(  ( pos = m_PointList.getNext( pos )) != NULL )
+        {
+            ILISTPOS last = m_PointList.getPrev( pos ); 
+
+            // if this point is greater swap them
+            if(  m_PointList.getData(  last  ).x  &gt; 
+                    m_PointList.getData(  pos ).x )
+            {
+                ImagePoint hold( m_PointList.getData(last));
+                m_PointList.getData(  last  ) = 
+                            m_PointList.getData(  pos );
+                m_PointList.getData(  pos ) = hold;
+                changes = TRUE;
+            }// end if greater
+        } // end while in list
+    
+    }while( changes );
+}
+
+// TidyPointList - delete any unnessary points from the list
+void 
+ImagePointLut::TidyPointList( )
+{
+     // can't run unless there are 3 or more points
+    if( m_PointList.getLength() &lt; 3 ) return;  
+
+    // second point in list
+    ILISTPOS pos  =m_PointList.getNext( m_PointList.getHead()); 
+    ILISTPOS next;
+    while(  ( next = m_PointList.getNext( pos )) != NULL )
+    {
+        ILISTPOS last = m_PointList.getPrev( pos );
+    
+        // work out wheather pos is on the 
+        // line between last and next
+        // (pos.x-last.x)*(next.y-last.y) - 
+        // (pos.y-last.y)*(next.x-last.x)      
+        int offLine =
+            ((m_PointList.getData(pos).x - 
+                    m_PointList.getData(last).x)*
+             (m_PointList.getData(next).y - 
+                    m_PointList.getData(last).y))
+          - ((m_PointList.getData(pos).y - 
+                    m_PointList.getData(last).y)*
+             (m_PointList.getData(next).x - 
+                    m_PointList.getData(last).x));
+
+        // if  on line between last and next its not needed 
+        if(  abs(offLine) &lt;= 1  ) m_PointList.Remove( pos );
+        else 
+        {
+            if( m_PointList.getData(pos).x &gt; 255 || 
+                m_PointList.getData(pos).x &lt; 0   ||
+                m_PointList.getData(pos).y &gt; 255 ||
+                m_PointList.getData(pos).y &lt; 0 )
+                m_PointList.Remove( pos );
+        }
+        pos = next; // and go around again 
+    }
+}
+
+// create a point list from ImageLut 
+void 
+ImagePointLut::BuildPointList( )
+{
+    m_PointList.RemoveAll();    // start fresh
+    ImageLut* lut = (ImageLut*)this;    
+
+    // always have the first point
+    m_PointList.Append( ImagePoint( 0, (*lut)[0]) );
+
+    int last = 0;
+    for ( int pos = 1; pos&lt; 255; pos++ )
+    { 
+        int next = pos + 1;
+    
+        // work out wheather pos is on 
+        // the line between last and next
+        int offLine =(( pos - last)*
+                     ((*lut)[next] - (*lut)[last]))-
+                     (((*lut)[pos] -(*lut)[last])*
+                       (next - last));
+
+        int ydist = abs(((*lut)[pos]) - ((*lut)[last]));
+        int xdist = pos - last;
+        int distance = (ydist * ydist) + (xdist * xdist);
+        
+        // if distinct from other points add it to the list 
+        if(  !(abs(offLine) &lt;= 1) &amp;&amp; distance &gt;= 16)
+        {
+            // add this new point to the list
+            m_PointList.Append( ImagePoint( pos,(*lut)[pos]));
+            last = pos;    // shift last across to x 
+        } 
+    }
+
+    // always have the end point
+    m_PointList.Append( ImagePoint( 255, (*lut)[255]) );
+}
+//End of File
+</pre>
+</body></html>

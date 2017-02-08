@@ -1,0 +1,361 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>October 1997/Segmenting Large Database Transactions in C</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><A href="../tococt.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          <FONT COLOR="#FF0000">Features</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">Segmenting Large Database
+          Transactions in C</FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">Stan Milam</FONT></H3>
+          
+          <BLOCKQUOTE>
+               
+               <P>Restarting a program from a checkpoint is a tedious but
+                    important operation, one worth encapsulating in a standard
+                    package.</P></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <p>To protect database integrity, modern
+                    relational databases have become transaction oriented. A
+                    database transaction is a logical set of queries, inserts,
+                    deletions, and updates that are treated as a single unit.
+                    The changes contained in the set are not made permanent
+                    until the program issues a COMMIT transaction. If at some
+                    point in a transaction the program determines that something
+                     is wrong, it can issue a ROLLBACK to undo any changes made
+                    in the course of that transaction. On the surface this
+                    sounds desirable. However, with database requirements
+                    growing exponentially, transactions that once updated a few
+                    hundred rows of data in seconds or minutes are now expected
+                    to update millions, over a span of several hours. Further,
+                    the ability to rollback database changes requires that the
+                    original values be stored somewhere until the changes are
+                    committed, and this requirement directly translates into
+                    disk and memory resources. Another resource which can
+                    quickly become scarce is time. Normally, the amount of time
+                    to rollback a transaction is double that of the transaction
+                    itself. Thus, if a transaction begins to rollback after 4 
+                    hours, you have just lost a minimum of 16 hours of
+                    processing time (4 hours + 8 hours rollback + 4 hours
+                    reprocessing). </p>
+               
+               <p> In this article I discuss a strategy
+                    for use with C programs that employs embedded SQL to break
+                    large transactions into smaller, more manageable units. The
+                    code allows a program to restart itself as near a point of
+                    failure as possible. It is written in C, is not tied
+                    directly to any database engine, and is very portable to
+                    other platforms for which it was written (OS/2, DOS, and 
+                    UNIX). </p>
+               
+               <p> The most expedient way of dealing
+                    with the problems of large transactions is to COMMIT
+                    database changes more frequently, thus breaking up the large
+                    transaction into several smaller ones. However, this
+                    approach presents a whole list of new problems. For example,
+                    when a program is restarted after abnormal termination, it
+                    must know, somehow, which transactions have been processed 
+                    and which remain to be processed. Other problems arise when
+                    a program reads from or writes to an ordinary file while
+                    processing database transactions (it is not uncommon to load
+                    database tables from data in an ordinary file). If
+                    transactions are to be segmented, the program must be able
+                    to know which data in ordinary files has been processed and
+                    which remains to be processed. </p>
+               
+               <p> Fortunately, large transactions can
+                    be segmented and the associated problems overcome via a
+                    technique I call checkpoint/restart. The idea is that after
+                    each successful COMMIT the program creates a checkpoint that
+                    saves vital program state information in a checkpoint
+                    logfile. The information about each open file stored in the
+                    checkpoint logfile would be sufficient to allow the file to 
+                    be reopened and repositioned should the program need to be
+                    restarted. Also saved in the checkpoint logfile is an area
+                    of memory, designated by the programmer, which contains any
+                    additional information needed to restart the program. If a
+                    program completes normally, the checkpoint logfile gets
+                    deleted. However, should a program fail and restart, the
+                    presence of the checkpoint logfile signals the fact. The
+                    state of the program can then be restored to the point of
+                    the last checkpoint and corresponding database COMMIT. To
+                    allow this functionality, I have written a package of four
+                    functions: checkpoint, restart, ckp_open, and ckp_close.</p>
+               
+               <h4><FONT COLOR="#000080">The Functions</FONT></H4>
+               
+               
+               <p>To maintain information about each
+                    open file while processing database transactions, I wrote
+                    wrapper functions around the standard fopen and fclose
+                    functions. Thus, when a program calls ckp_open, the standard
+                    fopen is ultimately used. ckp_open itself saves the
+                    filename, open mode, and open file pointer in an internal
+                    linked list. Later, when the checkpoint function is called, 
+                    the information in this linked list is written to the
+                    checkpoint logfile. Also, each time an open request is made
+                    of ckp_open, the linked list is searched to determine if the
+                    file is already open. If the file is found in the list, it
+                    is not opened again, but rather the existing file pointer is
+                    returned. While this may seem limiting, the behavior is
+                    absolutely necessary when restarting a program. The
+                    ckp_close function uses the file pointer argument to search
+                    the internal linked list of open files. When a match is
+                    made, the file is removed from the linked list and closed
+                    with the standard fclose function. </p>
+               
+               <p> The cornerstone of the package is the
+                    checkpoint function. checkpoint is used to save information
+                    from the internal linked list of files opened with ckp_open,
+                    along with any area of memory supplied by the programmer,
+                    into a checkpoint logfile. The prototype for checkpoint is:</p>
+
+<PRE>
+int checkpoint( void *save_area, unsigned sa_size,
+                int last_time_flag );
+</PRE>
+               
+               <p>The first two arguments to checkpoint
+                    refer to the area of memory to be saved in the checkpoint
+                    logfile. This area of memory should contain anything
+                    required to restart the program, which could be something as
+                    simple as a single integer value for a small program, or,
+                    for a more complex program, a structure. The first argument
+                    is a pointer to the area of memory, while the second 
+                    designates the size of the memory area. The third argument
+                    is a flag used to indicate whether or not checkpoint should
+                    perform housekeeping. When the flag is set, checkpoint
+                    closes all files opened with ckp_open and removes its own
+                    checkpoint logfile. If the flag is not set, the function
+                    proceeds to save program state information, in the following
+                    sequence. First, a header record is written to the
+                    checkpoint logfile. This record contains the number of files
+                    opened with ckp_open, and the size of any save area. Next,
+                    the information about each file opened with ckp_open is
+                    written to the checkpoint logfile. This information includes
+                    the filename (with path), its open mode, and the current
+                    file position obtained with the standard fgetpos function.
+                    Last, any area of memory specified with the save_area
+                    argument is written to the logfile. With all of this
+                    information saved, a program has everything it needs to
+                    restart itself. </p>
+               
+               <p> There is one caveat about using
+                    checkpoint with SQL. A database commit can fail, and so can
+                    checkpoint if it cannot create the logfile. Because these
+                    two operations are separate, and not atomic, the problem
+                    then becomes which to do first. Do you COMMIT database
+                    transactions, then, if successful, call checkpoint, which
+                    can fail; or do you call checkpoint and, if successful, call
+                     COMMIT, which can also fail? I prefer the former because
+                    the restart function takes pains to determine ahead of time
+                    whether a logfile can be created. However, it would be most
+                    helpful to be sure there is plenty of space on the file
+                    system used for checkpoint logfiles. </p>
+               
+               <p> The last function to be discussed,
+                    restart, should actually be the first of the functions
+                    called by a program. The prototype for restart is:</p>
+
+<PRE>
+int restart( char *ckp_id, void *save_area );
+</PRE>
+               
+               <p>restart does not by itself restart a
+                    program, but rather uses the ckp_id argument to look for the
+                    presence of a checkpoint logfile. If there is no logfile
+                    present, restart attempts to create a dummy checkpoint
+                    logfile and quickly remove it in order to determine whether
+                    there are any permission problems before checkpoint is
+                    called. If restart cannot create the dummy logfile, it 
+                    returns an error value (-1), at which point the program
+                    should communicate the problem and cease execution, so that
+                    any permission or space problems can be resolved. If there
+                    are no discernible problems, restart returns a value of 0,
+                    to indicate that the program is starting normally. If a
+                    checkpoint logfile is present, restart uses the concomitant
+                    information to open, reposition, and rebuild the internal
+                    linked list of any files open at the time of the last call
+                    to checkpoint. A call to ckp_open is still required to
+                    restore a program's file pointers from the internal linked
+                    list. Also, any area of memory saved with the last call to
+                    checkpoint is restored to the area pointed to by the
+                    save_area argument. restart then returns a value of 1 to
+                    indicate the program is restarting. </p>
+               
+               <p> At this point, the question of how to
+                    deal with a restart becomes a function of the design of the
+                    program. With simple programs, such as loading a table from
+                    an ordinary file, not much is required, as everything is
+                    restored to the state it was in when the last call to
+                    checkpoint was made. A more complex program, however, knows
+                    that it is restarting and uses values stored in the save 
+                    area. For example, a program that fetches rows from a CURSOR
+                    (current set of rows) must save enough information to be
+                    able to dynamically rebuild the CURSOR, so that it can begin
+                    fetching rows corresponding to the last checkpoint should
+                    the program fail.</p>
+               
+               <h4><FONT COLOR="#000080">Using
+               Checkpoint/Restart</FONT></H4>
+               
+               <p>To use the checkpoint/restart
+                    technique, you'll need to take the following steps:</p>
+               
+               <p> </p>
+               <DL><DD>1. Determine what values in memory must be restored in
+                         the event of a program restart. As a general rule I use
+                         a structure, even when the requirements are small.
+                         Should you need to save additional values, you can add
+                         new members to the structure template.</DD>
+                    <DD> 2. Call the restart function early in the program,
+                         preferably in the program initialization code. By
+                         initializing the checkpoint package, you ensure that
+                         you will receive notice if the program is restarting.
+                         In a well-designed program, this should be the only
+                         point at which restarts are of interest. The remainder
+                         of the program should be oblivious to the fact that it
+                         may have been restarted. Note that a program should
+                         never ignore a failed call to restart; rather, the
+                         program should display or log an error message and
+                         immediately cease execution. Failed calls to restart
+                         usually signify permission problems that could
+                         undermine the effectiveness of the package.</DD>
+                    <DD> 3. Use the ckp_open function to open all files that
+                         will need to be repositioned should the program have to
+                         restart. When the program is restarting, this call is a
+                         formality since restart has already opened and
+                         repositioned files, but you must use it to obtain the
+                         pointers from the internal linked list.</DD>
+                    <DD> 4. Determine the logical unit of work where
+                         transactions should be committed and a checkpoint
+                         taken. In simple programs that update a single table
+                         from an ordinary file, this usually involves counting
+                         the number of inserts/updates/deletes and committing at
+                         a prescribed threshold. For more complex models, such
+                         as programs that update two or more related tables, a
+                         logical unit of work would occur when all rows in all
+                         tables depending on a row in a master table are
+                         consistent and referential integrity has been
+                         established. For example, when adding an order to a
+                         database, the minimum unit of work would be inserting
+                         the order header row (date of order, who ordered,
+                         delivery instructions) and one or more rows of detail
+                         order line information.</DD>
+                    <DD> 5. When all processing is completed successfully,
+                         perform a final COMMIT and call checkpoint with the
+                         third argument (last_time_flag) set to a non-zero
+                         value. This will close and flush all files opened with
+                         chk_open, and remove the checkpoint logfile. Should
+                         your program encounter a fatal condition, make sure
+                         that you do not allow the final checkpoint. This will
+                         leave the checkpoint logfile in place, so that restart
+                         can find it when the program is started again.</DD>
+               </DL>
+               
+               <h4><FONT COLOR="#000080">Code Examples</FONT></H4>
+               
+               <p>The code in<A href="fig1.htm">
+                         Figure 1</a>
+shows how to establish a structure that
+                    can be used to create an area of memory to be saved at the
+                    time of a checkpoint. The structure consists of several
+                    unsigned longs used to keep count of various important
+                    events. Also contained in the save area is the name of the
+                    input file initially provided from the command line. That
+                    file must be accessible should the program be restarted 
+                    after failure. </p>
+               
+               <p> The code in<A href="fig2.htm">
+                         Figure 2</a>
+shows a typical program initialization,
+                    normally called from main. The program information structure
+                    is first initialized to binary zeros, then connected to the
+                    database via sql_connect (sql_connect and sql_log are used
+                    to communicate database activity while avoiding specifics of
+                    a particular database engine). Once the structure is
+                    successfully connected to the database, the restart function
+                    is called and the return value is used to determine a course
+                    of action. If -1 is returned, the program logs an error
+                    message and stops. If 0 is returned, the command line is
+                    processed for a filename. The filename is copied into the
+                    program information area, where it will be saved by future
+                    calls to checkpoint and the file is opened. If 1 is
+                    returned, the program is restarting, and the program
+                    information structure is restored to its state as of the
+                    last checkpoint. The input file is already opened and
+                    repositioned, but a call to chk_open is still required to
+                    obtain the current file pointer. </p>
+               
+               <p><A href="fig3.htm"> Figure 3</A>
+                    gives you an idea of how to use checkpoint in the main
+                    processing to segment a large transaction. For simplicity's
+                    sake, I've abstracted away the actual database logic by
+                    invoking functions to do the database work. A record is read
+                    from the ordinary file, and the first character of the input
+                    buffer should be an I, U, or D to signify an insert, update,
+                    or delete. What is important is the logic appearing at the
+                    end of the loop. After 200 input records have been
+                    successfully processed, the program commits the current
+                    transaction and begins a new one. When the commit is
+                    successful, a call to checkpoint is made. Now, should the
+                    program fail between checkpoints, it can be automatically
+                    restarted at the last checkpoint. The space required to 
+                    store rollback information is reduced, as is the amount of
+                    time needed to perform a rollback. Further, at most, the
+                    number of records to be reprocessed is 200. All these
+                    factors combined can save a great deal of time in the event
+                    of program failure. There is one last detail to take care
+                    of: the final checkpoint. Once the program has successfully
+                    processed all input records, the program performs a final
+                    commit/checkpoint. This final call to checkpoint sets the
+                    last_time_flag argument to 1 to tell checkpoint to close all
+                    files opened with ckp_open and remove the checkpoint
+                    logfile.</p>
+               
+               <h4><FONT COLOR="#000080">Summary</FONT></H4>
+               
+               <p>Large database transactions are
+                    commonplace in today's massive relational databases and data
+                    warehouses. Maintaining the ability to rollback such
+                    transactions requires huge amounts of disk and memory
+                    resources. However, it is the time resource that becomes
+                    critical when a catastrophic error occurs due to bad or
+                    inconsistent data, or when the other resources become
+                    scarce. One way to manage large transactions without
+                    incurring severe resource penalties is to segment the
+                    transactions by committing often while maintaining enough
+                    program state information to enable a restart very near the
+                    point of failure. It's worth noting that the
+                    checkpoint/restart paradigm need not be confined to database
+                    programs; the package can be used with any long-running 
+                    program that needs to be restartable. o </p>
+               
+               <p><I>Stan Milam is a UNIX Systems
+                    Programmer doing Oracle development in the Dallas, Texas.
+                    area. He can be reached at milam@metronet.com. </I></p>
+     
+<h4><a href="../../../source/1997/oct97/milam.zip">Get Article Source Code</a></h4>
+
+          </BLOCKQUOTE>
+     </BODY>
+</HTML>

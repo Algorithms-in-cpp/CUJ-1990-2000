@@ -1,0 +1,304 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>November 1996/Encapsulating Windows Controls/Listing 3</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <h4>Listing 3 LBWE member functions</h4>
+          
+     
+
+<PRE>
+// ListBoxWithExtras.cpp : implementation file
+//
+//This is the "meat and potatoes file.  The functionality of the
+//enhanced listbox is right here.
+
+#include "stdafx.h"
+#include "ListBoxWithExtras.h"
+
+
+#include &lt;new.h&gt;
+#include &lt;fstream.h&gt;
+namespace std {
+#include &lt;vector.h&gt;
+#include &lt;algo.h&gt;    //for sort() template
+}
+
+#ifdef _DEBUG
+#define new DEBUG_NEW
+#undef THIS_FILE
+static char THIS_FILE[] = __FILE__;
+#endif
+
+////////////////////////////////////////////////////////////////
+// ListBoxWithExtras implementation
+
+//Construction and Destruction
+ListBoxWithExtras::ListBoxWithExtras()
+: lbweInitialized(FALSE)
+{}
+
+ListBoxWithExtras::~ListBoxWithExtras() {}
+
+//App Wizard sets this next stuff up.  This will trap the keydown
+//and double click list box selection messages so we get a crack
+//at them.  If you construct your list box with the 'Notify'
+//option unchecked (that's NOT the default), you won't get
+//ListBoxWithExtras::EditEntry() functionality when an string is
+//double clicked.
+
+BEGIN_MESSAGE_MAP(ListBoxWithExtras, CListBox)
+    //{{AFX_MSG_MAP(ListBoxWithExtras)
+    ON_CONTROL_REFLECT(LBN_DBLCLK, OnDblclk)
+    ON_WM_KEYDOWN()
+    ON_WM_PARENTNOTIFY()
+    ON_WM_CHAR()
+    //}}AFX_MSG_MAP
+END_MESSAGE_MAP()
+
+////////////////////////////////////////////////////////////////
+
+void ListBoxWithExtras::AppendEntry()
+//Adds a string to the box.  An empty string is shoved into the
+//last slot and then we edit that blank box.  
+
+{
+    SetCurSel(InsertString(GetCount(), ""));
+    CrankUpTheEdit(GetCount() - 1, INSERT_STRING);
+}
+
+
+void ListBoxWithExtras::InsertEntry()
+//Inserts an entry before the highlighted entry.  If no entry
+//is highlighted, the user gets a chance to add an entry to the
+//end of the list.
+
+{
+
+    int position = GetCurSel();
+
+//If there are no highlighted entries, or no entries at all, 
+//InsertEntry() becomes an AppendEntry()
+
+    if (position == LB_ERR)
+        AppendEntry();
+    else
+    {
+        SetCurSel(InsertString (position, ""));
+        CrankUpTheEdit(position, INSERT_STRING);
+    }
+}
+
+void ListBoxWithExtras::EditEntry()
+//Double clicking a listbox entry allows edit or it can be called
+//from a program to operate on a highlighted selection
+
+{
+    int position = GetCurSel();
+    if (position == LB_ERR)
+        MessageBeep(MB_OK);
+    else
+        CrankUpTheEdit(position, EDIT_STRING);
+}
+
+void ListBoxWithExtras::DeleteEntry()
+//Deletes the highlighted entry
+{
+    int position = GetCurSel();
+    if (position == LB_ERR)  //entry highlighted?
+        MessageBeep(MB_OK);
+    else
+    {
+        ListBoxState undoBuff;
+                //save the to be deleted string
+        GetText(position, undoBuff.valueLBS);  
+        SetCurSel(std::min(DeleteString(position) - 1, position));
+        lbweBuffer.erase(lbweBuffer.begin() + position);
+    //finish saving the previous state for Undo()
+        undoBuff.positionLBS = position;
+        undoBuff.actionLBS = DELETE_STRING;
+        undoStack.push(undoBuff);
+    }
+}
+
+void ListBoxWithExtras::Undo()
+//Undo() "turns back the clock" and undoes the last
+//change to the listbox
+
+{
+    if (undoStack.empty()) //anything to undo?
+        MessageBeep(MB_OK);
+    else
+    {
+        ListBoxState undo = undoStack.top();
+        undoStack.pop();  //STL stack pop() returns no value
+
+        //Now we have all the info need to restore the previous state
+
+        switch (undo.actionLBS)
+        {
+        case DELETE_STRING:
+            SetCurSel(InsertString (undo.positionLBS, undo.valueLBS));
+            lbweBuffer.insert(
+                lbweBuffer.begin() + undo.positionLBS,
+                undo.valueLBS);
+            break;
+
+        case INSERT_STRING:
+            SetCurSel(std::min(DeleteString(undo.positionLBS) - 1,
+                                            undo.positionLBS));
+            lbweBuffer.erase(
+                lbweBuffer.begin() + undo.positionLBS);
+            break;
+
+        case EDIT_STRING:
+            DeleteString(undo.positionLBS);
+            lbweBuffer.erase(
+                lbweBuffer.begin() + undo.positionLBS);
+
+            //When putting an entry into the box, the box style
+            //must be taken into account.  If it's a sorted box,
+            //CListBox::AddString() does a fine job.
+
+            int position;
+            if (IsSortedBox())
+                position = AddString(undo.valueLBS);
+            else
+                position = InsertString(undo.positionLBS,
+                                        undo.valueLBS);
+            SetCurSel(position);
+            lbweBuffer.insert(
+                lbweBuffer.begin() + position, undo.valueLBS);
+            break;
+
+        default:
+            abort();  //we shouldn't ever get here
+        }
+    }
+}
+
+void ListBoxWithExtras::ResetUndo()
+
+{
+    CString temp;
+
+    while (undoStack.size())
+        undoStack.pop();
+    lbweBuffer.erase(lbweBuffer.begin(), lbweBuffer.end());
+    for (int i = 0; i &lt; GetCount(); i++)
+    {
+        GetText(i, temp);
+        lbweBuffer.push_back(temp);
+    }
+}
+// ...
+// not shown: SortList and CrankUpTheEdit
+// available electronically --mb
+// ...
+
+/////////////////////////////////////////////////////////////////
+// ListBoxWithExtras message handlers
+
+
+void ListBoxWithExtras::OnKeyDown(UINT nChar, UINT nRepCnt, UINT nFlags)
+
+//Trap key presses in order to integrate &lt;Delete&gt; and &lt;Insert&gt;
+//into the control.  We're also changing &lt;End&gt; to mean
+//AppendEntry()
+
+{
+    switch (nChar)
+    {
+    case VK_END:    //&lt;End&gt;
+        AppendEntry();
+        return;
+    case VK_DELETE:    //&lt;Delete&gt;
+        DeleteEntry();
+        return;
+    case VK_INSERT:    //&lt;Insert&gt;
+        InsertEntry();
+        return;
+    }
+
+    //Just pass along keys you don't care about.
+    CListBox::OnKeyDown(nChar, nRepCnt, nFlags);
+}
+
+void ListBoxWithExtras::OnDblclk() 
+//Double clicking a listbox entry gets us here
+{
+    ASSERT(LB_ERR != GetCurSel());
+    EditEntry();
+}
+
+// ...
+// not shown: OnParentNotify
+// available electronically -- mb
+// ...
+
+void ListBoxWithExtras::OnChar(UINT nChar, UINT nRepCnt, UINT nFlags)
+
+//Here's the handler needed for calling member functions from
+//"regular keys".  &lt;Ctrl&gt;-Y will delete an entry and &lt;Ctrl&gt;-U will
+//invoke ListBoxWithExtras::Undo()
+
+{
+    const UINT CtrlY = 25;    //delete command
+    const UINT CtrlU = 21;    //undo command
+
+    switch (nChar)
+    {
+    case CtrlU:
+        Undo();
+        return;
+    
+    case CtrlY:
+        DeleteEntry();
+        return;
+    }
+    
+    //all other chars handles by base class
+    CListBox::OnChar(nChar, nRepCnt, nFlags);
+}
+
+LRESULT ListBoxWithExtras::DefWindowProc(UINT message,
+                                         WPARAM wParam,
+                                         LPARAM lParam) 
+{
+    if (!lbweInitialized)
+    {
+        CString temp;
+
+        lbweInitialized = TRUE;
+        std::vector&lt;CString&gt;::iterator i;
+        for (i = lbweBuffer.begin(); i != lbweBuffer.end(); i++)
+            AddString(*i);
+        lbweBuffer.erase(lbweBuffer.begin(), lbweBuffer.end());
+        for (int j = 0; j &lt; GetCount(); j++)
+        {
+            GetText(j, temp);
+            lbweBuffer.push_back(temp);
+        }
+        SetCurSel(0);
+    }
+
+    return CListBox::DefWindowProc(message, wParam, lParam);
+
+}
+//End of File
+</PRE>
+     </BODY>
+</HTML>

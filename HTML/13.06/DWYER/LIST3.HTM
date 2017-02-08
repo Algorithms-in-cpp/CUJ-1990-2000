@@ -1,0 +1,216 @@
+<HTML><HEAD>
+<TITLE>June 1995/Quick and Portable Random Number Generators/Listing 3</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 3 <I>Combination multiplicative random number generator</A></I></h4>
+<pre>/*  rand_com[b].c
+       subtract two random numbers modulo moduli1-1 and shuffle
+    see
+       L'Ecuyer, Comm. of the ACM 1988 vol. 31
+       Numerical Recipes in C, 2nd edition, pp. 278-86
+       shuffling -- Knuth, vol. II
+    Copyright (c) 1994, 1995 by Gerald P. Dwyer, Jr.
+*/
+
+#include        &lt;time.h&gt;
+#include        &lt;stdlib.h&gt;
+#include        &lt;float.h&gt;
+#include        &lt;assert.h&gt;
+
+#define TESTING
+
+#define TRUE (-1)
+#define FALSE 0
+
+void init_rand_comb(long *seed1, long *seed2) ;
+long get_init_rand(int) ;
+long rand_comb(void);
+long genr_rand_diff(void);
+long    genr_rand(long a, long x, long modulus, long q, long r) ;
+
+            /* first generator */
+#define MOD1         2147483563L  /* modulus */
+#define MULT1        40014L       /* multiplier */
+            /* modulus=multiplier*quotient+remainder */
+#define Q1           53668L       /* quotient =[modulus/multiplier] */
+#define R1           12211L       /* remainder */
+
+            /* second generator */
+#define MOD2          2147483399L
+#define MULT2         40692L
+#define Q2            52774L
+#define R2            3791L
+
+#define MOD_COMB      (MOD1-1)
+
+#define MIN_VALUE1    1
+#define MAX_VALUE1    (MOD1-1)
+#define MIN_VALUE2    1
+#define MAX_VALUE2    (MOD2-1)
+#define MAX_VALUE     ( (MOD1&lt;MOD2) ? MAX_VALUE1 : MAX_VALUE2)
+#define EXP_VAL       804307721L
+
+#define GENR1(init_rand)       genr_rand(MULT1, init_rand, MOD1, Q1, R1)
+#define GENR2(init_rand)       genr_rand(MULT2, init_rand, MOD2, Q2, R2)
+
+#define IMPOSSIBLE_RAND (-1)
+#define STARTUP_RANDS   16   /* throw away initial draws */
+#define DIM_RAND        150  /* size of array shuffled */
+
+static long rand1, rand2 ;
+static long rand_num = IMPOSSIBLE_RAND ;
+static long rands[DIM_RAND];
+
+
+/* initialize generators with seeds
+   fill rands[] with initial values */
+void init_rand_comb(long *seed1, long *seed2)
+{
+   extern long rand1, rand2 ;
+   extern long rand_num;
+   extern long rands[] ;
+   int i ;
+
+   if (*seed1 &lt;= 0 || *seed1 &gt; MAX_VALUE1)
+      *seed1 = get_init_rand(MAX_VALUE1);
+   if (*seed2 &lt;= 0 || *seed2 &gt; MAX_VALUE2)
+      *seed2 = get_init_rand(MAX_VALUE2);
+
+                   /* seed the routine */
+   rand1 = *seed1;
+   rand2 = *seed2;
+   genr_rand_diff() ;
+
+   for (i = 1; i &lt; STARTUP_RANDS; i++)    /* throw some away */
+      genr_rand_diff() ;
+                /* fill the array of randum number values */
+   for (i = 0; i &lt; DIM_RAND; i++)
+      rands[i] = genr_rand_diff() ;
+                /* initialize rand_num for shuffling */
+   rand_num = rands[DIM_RAND-1] ;
+}
+
+
+/* get a long initial seed for generator
+   assumes that rand returns a short integer */
+long get_init_rand(int max_value)
+{
+   long seed;
+
+   srand((unsigned int)time(NULL)) ;  /* initialize system generator */
+   do {
+      seed = ((long)rand())*rand() ;
+      seed += ((long)rand())*rand() ;
+   } while (seed &gt; max_value);
+
+   assert(seed &gt; 0) ;
+   return seed ;
+}
+
+
+/* generate the difference between random numbers
+   assumes  0 &lt; rand1     &lt; MOD1
+          0 &lt; rand2     &lt; MOD2
+   output   1 &lt;= rand_num &lt;= MOD_COMB */
+long genr_rand_diff(void)
+{
+   extern long rand1, rand2;
+   long rand_new ;
+
+   rand1 = GENR1(rand1) ;
+   rand2 = GENR2(rand2) ;
+   rand_new = rand1 - rand2 ;
+   if (rand_new &lt;= 0)
+      rand_new += MOD_COMB ;
+
+   assert(rand_new &gt;= 1 &amp;&amp; rand_new &lt;= MOD_COMB) ;
+
+   return rand_new ;
+}
+
+
+/* generate the next value in sequence from generator
+   uses approximate factoring
+   residue = (a * x) mod modulus
+          = a*x - [(a*x)/modulus]*modulus
+
+   where
+      [(a*x)/modulus] = integer less than or equal to (a*x)/modulus
+   approximate factoring avoids overflow associated with a*x and
+      uses equivalence of above with
+   residue = a * (x - q * k) - r * k + (k-k1) * modulus
+   where
+      modulus = a * q + r
+      q  = [modulus/a]
+      k  = [x/q]               (=[ax/aq])
+      k1 = [a*x/m]
+   assumes
+      a, m &gt; 0
+      0 &lt; init_rand &lt; modulus
+      a * a &lt;= modulus
+      [a*x/a*q]-[a*x/modulus] &lt;= 1
+         (for only one addition of modulus below) */
+long   genr_rand(long a, long x, long modulus, long q, long r)
+{
+   long k, residue ;
+
+   k = x / q ;
+   residue = a * (x - q * k) - r * k ;
+   if (residue &lt; 0)
+      residue += modulus ;
+
+   assert(residue &gt;= 1 &amp;&amp; residue &lt;= modulus-1);
+
+   return residue ;
+}
+
+
+/* get a random number from rands[] and replace it*/
+long rand_comb(void)
+{
+   extern long rand_num ;
+   extern long rands[] ;
+   int i ;
+             /* if not initialized, do it now */
+   if (rand_num == IMPOSSIBLE_RAND) {
+      rand_num = 1 ;
+      init_rand_comb(&amp;rand_num, &amp;rand_num) ;
+   }
+
+   /* rand_num from previous call determines next rand_num from
+      rands[] */
+   i = (int) (((double)DIM_RAND*rand_num)/(double)(MAX_VALUE)) ;
+   rand_num = rands[i] ;
+
+      /* replace random number used */
+   rands[i] = genr_rand_diff();
+
+   return rand_num ;
+}
+
+#if  defined(TESTING)
+/* Test the generator */
+#include  &lt;stdio.h&gt;
+void main(void)
+{
+   long seed1=1, seed2=1 ;
+   int i ;
+
+   init_rand_comb(&amp;seed1, &amp;seed2);
+   printf("Seeds for random number generator are %ld   %ld\n",
+          seed1, seed2) ;
+   i = STARTUP_RANDS + DIM_RAND ;
+   do {
+      rand_comb();
+      i++ ;
+   } while (i &lt; 9999) ;
+
+   printf("On draw 10000, random number should be %ld\n", EXP_VAL) ;
+   printf("On draw %d, random number is    %ld\n", i+1, rand_comb()) ;
+}
+#endif TESTING
+/* End of File */</pre>
+
+</BODY>
+</HTML>

@@ -1,0 +1,302 @@
+<HTML>   
+     <HEAD>
+<TITLE>April 1999/Adapting Automation Arrays to the Standard vector Interface</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocapr.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   COM &amp; CORBA</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Adapting Automation Arrays to the Standard vector Interface</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Andrei Alexandrescu</FONT></H3>
+
+<BLOCKQUOTE>
+
+<P>STL can be extended in remarkable ways. Sometimes you can even lie about what's inside a container, and to good advantage.</P>
+</BLOCKQUOTE>
+<HR>
+<BLOCKQUOTE>
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>One of the great benefits of distributed object systems like COM and CORBA derives from their use of standard binary protocols and formats. It is these binary standards that enable us to use multiple languages in large applications. We can use the most suitable language for each part of the system. A project I was recently involved in, for instance, sported a three-tiered architecture using VB (Visual Basic) for the GUI, MS SQL Server for database access, and C++ for number crunching, all using the COM standard for communication (a quite common scenario).</p>
+<p>Efficient data transfer is often very important in such applications. In our case, we needed to pass large two-dimensional matrices between various parts of the system. We chose Microsoft's Automation array format (known as <B>SAFEARRAY</B>) because it is a standard data type that's automatically marshaled between COM objects (in addition to being easy to manipulate from within VB). This article describes a complete, type-safe C++ wrapper for the Automation array API. This wrapper implements the <B>std::vector</B> interface as described in the Standard C++ Library, yet fully preserves the binary format of the Automation structure.</p>
+<p>By preserving Automation's binary format, the implementation avoids costly format conversions while hiding the intricate <B>SAFEARRAY</B> API under elegant <B>std::vector</B> semantics. This wrapper helped us boost our productivity significantly. We could typically implement a business rule with only half the lines of code we would have needed using the raw <B>SAFEARRAY</B> API. Moreover, the code became much easier to follow, and all without a loss in efficiency &#151; in fact, a slight gain was observed.</p>
+
+<h4><FONT COLOR="#000080">About VARIANTs and SAFEARRAYs</FONT></H4>
+
+<p>SAFEARRAY</B>s are based on an important COM data structure known as a <B>VARIANT.</B> The <B>VARIANT</B> structure and its associated API implement the semantics of a dynamically-typed object. In a dynamically typed object like <B>VARIANT</B>, type is not an intrinsic attribute (as it is in C++). Rather, type has an explicit representation, and can thus be changed at run time. The following snippet of Visual Basic demonstrates such a type change to a dynamically typed object:</p>
+
+<pre>
+Dim MyVar as Variant
+MyVar = 3
+MyVar = "Hello" ' change the type
+                ' and the value
+                ' of MyVar
+</pre>
+
+<p>A <B>VARIANT</B> is able to hold an object of a given type at a given time. (There is a finite set of types). It is implemented as a structure known as a "tagged union," which is a union of all the types that can be held and an integer (the tag) that indicates which field of the union is valid.</p>
+<p>An excerpt of <B>VARIANT</B>'s implementation is given below:</p>
+
+<pre>
+enum VARENUM
+{
+   VT_EMPTY = 0, // empty VARIANT
+   VT_NULL = 1,  // null
+   VT_I2 = 2,    // two-byte integer
+   VT_I4 = 3,    // four-byte integer
+   VT_R4 = 4,    // four-byte floating-point type
+   VT_R8 = 5,    // eight-byte floating point type
+
+   ... other VARIANT type tags ...
+
+   VT_ARRAY = 0x2000,
+
+   ...
+
+};
+
+typedef struct  tagVARIANT
+{
+   unsigned short vt;
+   WORD wReserved1;
+   WORD wReserved2;
+   WORD wReserved3;
+   union
+   {
+      short iVal;
+      long lVal;
+      float fltVal;
+      double dblVal;
+
+      ... other VARIANT types ...
+
+      SAFEARRAY *parray;
+
+      ...
+
+   };
+} VARIANT;
+</pre>
+
+<p>Using such a structure is simple. Given a <B>VARIANT,</B> you look at its <B>vt</B> field (the tag). If the tag is <B>VT_I4</B>, for example, then the <B>lVal</B> field of the union is valid, and so forth. (In VB, all this is hidden in the runtime support. C++ programmers have to do this explicitly.)</p>
+<p>There are also some flags defined in <B>VARENUM.</B> The one of interest here is <B>VT_ARRAY</B>, which enables a <B>VARIANT</B> to contain not only a single value, but also an array. It works like this: by convention, the tag (<B>vt</B> field) of a <B>VARIANT</B> containing an array is obtained by bitwise ORing <B>VT_ARRAY (0x2000)</B> with the tag of the type contained in the array. For instance, if the <B>vt</B> field of a <B>VARIANT</B> is <B>VT_ARRAY | VT_I4 (0x2003)</B>, then the <B>VARIANT</B> contains an array of four-byte integers. Arrays of <B>VARIANT</B>s are also allowed (the corresponding tag is <B>VT_ARRAY | VT_VARIANT</B>). This last feature gives arrays the closure property: you can build structures of arbitrary complexity by using only arrays (e.g., arrays of <B>VARIANT</B>s which in turn are arrays, etc.).</p>
+<p>The array itself is stored in the <B>parray</B> member of the union, which is of type pointer to <B>SAFEARRAY</B>. The SAFEARRAY structure is shown in <A HREF="fig1.htm">Figure 1</A>.</p>
+<p><B>SAFEARRAY</B> is a variable-sized structure. <B>rgsabound</B> has a length equal to <B>cDims</B> and stores the number of elements and lower bound for each dimension. (I deal just with one-dimensional <B>SAFEARRAY</B>s in this article. Multi-dimensional matrices can be implemented as arrays of arrays.) The <B>SAFEARRAY</B> structure is considerably flexible &#151; it can hold any number of dimensions and any element type &#151; but at the cost that everything about the type is decided at run time. There are functions in the <B>SAFEARRAY</B> API that manipulate this structure (e.g., <B>SafeArrayCreate</B>, <B>SafeArrayGetElement</B>, <B>SafeArraySetElement</B>, and so on), but they are clumsy and they don't add anything in terms of type safety.</p>
+<p>Another issue is locking. The <B>SAFEARRAY</B> API is a palimpsest from the Win16 days, when memory paging was not available. If you wanted to access a chunk of memory, you had to lock a handle to it, get a pointer, use it, and eventually to release the lock. This requirement, although now obsolete for Win32 memory handles, remains valid for Automation arrays. The <B>pvData</B> member in the <B>SAFEARRAY</B> structure is valid only after you call <B>SafeArrayLock</B> &#151; and you have to call it in pairs with <B>SafeArrayUnlock</B>.</p>
+
+<h4><FONT COLOR="#000080">The automation_vector Template Class</FONT></H4>
+
+<p>A partial listing of the <B>automation_vector</B> class, and its base class, <B>automation_vector_base</B>, appears in <A HREF="fig2.htm">Figure 2</A>. (For brevity, member functions such as <B>begin</B>, <B>operator[]</B>, and <B>insert</B>, which enable <B>automation_vector</B> to implement the interface of <B>std::vector</B>, are not shown here. But they are all implemented for class <B>automation_vector</B>.) This wrapper class is based on a fundamental assumption: although data is passed around in the very flexible form of <B>VARIANT</B>s containing <B>SAFEARRAY</B>s, we have knowledge at compile time about the type that should be contained in those arrays. This assumption stems from the typical way a COM method is implemented in C++. The method takes a <B>VARIANT</B> parameter and coerces <a href="#1">[1]</a> it to the expected type before performing any operations on it (if the data is not already in the desired format). If conversion succeeds, processing continues with the known format, otherwise an error is returned.</p>
+<p>The problem is that although the programmer knows what the data type will be after coercion, the compiler doesn't know what type it is beforehand, and therefore cannot help with simpler semantics, static checking, and so on. For simple <B>VARIANT</B> types, this is not much of an annoyance. You can directly access the fields in the union contained within the <B>VARIANT</B>. But to manipulate arrays in this way is overkill, even if you use the functions in the API. The goal in building the wrapper class was to enable syntax and semantics like the following in the implementation of a COM method:</p>
+
+<pre>
+HRESULT ComObject::Method
+   (/* in, out */ VARIANT * pVar)
+{
+ automation_vector&lt;int&gt; Data;
+   // Move Var into the vector.
+   // Coercion may occur.
+   // No data copying is performed
+   Data.attach(*pVar);
+
+   ... use Data as you would use
+       std::vector&lt;int&gt; ...
+
+   // Move the vector back into the
+   // result. No coercion or copying is performed.
+   Data.detach(*pVar);
+   return S_OK;
+}
+</pre>
+
+<p>The <B>attach</B> and <B>detach</B> operations facilitate the bidirectional transformation between the plain <B>VARIANT</B> needed by the COM interface and the <B>automation_vector</B> needed to perform the actual calculations. Note that no actual data is copied. Rather, during attachment a pointer to the data is copied between a dynamically typed variable (the <B>VARIANT</B> passed to <B>attach</B>) and a member variable within a statically typed <B>automation_vector</B>. Also, if conversion between C++ and Automation types is necessary, the conversion is done in-place, if at all possible. (This requires that the sizes of the C++ type and Automation type match &#151; which is not always the case.) The foregoing methods are essential for avoiding unnecessary copying of large arrays. Of course, in some cases a copy is needed, so such a constructor is also provided.</p>
+
+<h4><FONT COLOR="#000080">Implementing an automation_vector</FONT></H4>
+
+<p>I can now identify the main problems to be solved in constructing an <B>automation_vector</B> wrapper:</p>
+
+<UL><LI>Relating C++ types to Automation types. A method must be developed for safely converting between C++ types and the <B>VT_XX</B> numeric constants (the <B>VARENUM</B> enumeration) described above.</LI>
+    <LI>Construction and attachment. Methods must be developed to contruct/destroy and attach/detach <B>automation_vector</B>s and their elements.</LI>
+    <LI>Managing Automation's locking mechanism. It will be necessary to lock and unlock the contents of <B>automation_vector</B>s. Automation's locking requirement makes the mechanics of accessing data much different from those for <B>std::vector</B>. All the locking details should be hidden in the wrapper.</LI></UL>
+
+<p>Considering the above, the task of bridging one interface to another is anything but trivial. In the following discussion I address these issues one by one.</p>
+
+<h4><FONT COLOR="#000080">Relating C++ and Automation Types</FONT></H4>
+
+<p>A mapping between C++ types and the integral constants in the <B>VARENUM</B> enumeration must be defined. The problem is not trivial because, while the number of types supported by Automation is finite, the C++ types that can be represented by them are unbounded. This is because of the possibility of inheritance. Consider a <B>VARIANT</B>. It is common for frameworks to derive structures from <B>VARIANT</B> for enriched functionality. (It is fascinating to watch library writers scramble to discover the Holy Grail, the ultimate <B>VARIANT</B> wrapper.) For example, Microsoft provides <B>COleVariant</B> as part of MFC, <B>CComVariant</B> with ATL, and <B>_variant_t</B>, a member of the compiler COM support classes. Borland C++ Builder also defines two wrappers, <B>OleVariant</B> and <B>Variant</B>. You can build your own wrappers, and because all these derive from <B>VARIANT</B> (and don't change its binary format), you may legitimately want to store them in Automation arrays. In conclusion, the template class should accept not only <B>VARIANT</B>s, but also derivatives of <B>VARIANT</B> that don't add any data/virtuals to it. The same reasoning applies to the <B>CURRENCY</B> structure defined by Automation, or simple wrappers you might want to build around types like <B>DATE</B> (which is only a typedef for <B>double</B>). The constraining mechanism for types should be flexible enough to accept these cases. And as always, it would be best to enforce type safety at compile time.</p>
+<p>To facilitate conversion from Automation to C++ types, I've put in place a template class that holds static information about Automation types. Its (non-type) template parameter is a <B>VARENUM</B> enumerated value. This template defines an enumeration <a href="#2">[2]</a>, and a fixed-size array, as shown below:</p>
+
+<pre>
+template &lt;VARENUM varenum&gt;
+struct static_variant_info
+{       
+   enum { vt = varenum };
+   static char size_checker[
+   varenum == VT_I1 ? 1
+   : varenum == VT_I2 ? 2
+   : varenum == VT_I4 ? 4
+   : varenum == VT_R4 ? 4
+   : varenum == VT_R8 ? 8
+   : varenum == VT_CY ? 8
+   : varenum == VT_BSTR ? 4
+   : varenum == VT_DISPATCH ? 4
+   : varenum == VT_UNKNOWN ? 4
+   : varenum == VT_VARIANT ? 16
+   : 0 ];
+};
+</pre>
+
+<p>This template collects together the Automation type tag (the enumerated <B>VARENUM</B> value) and the size of that type, calculated at compile time with a bunch of invocations of the <B>?:</B> operator. For instance, <B>static_variant_info&lt;VT_I4&gt;::vt</B> evaluates to <B>VT_I4</B>, or <B>3</B> (see the <B>VARENUM</B> definition above), and <B>sizeof(static_variant_info&lt;VT_I4&gt;()</B>. <B>size_checker</B> evaluates to <B>4</B>.</p>
+<p>The above template addresses half the problem. I also need a way to go from C++ types to <B>VT_XX</B>s. The binding is done through function signatures, as shown below. (Attention: non-intuitive code ahead!)<P>
+
+<pre>
+namespace Configure
+{
+   static_variant_info&lt;VT_I1&gt;
+      deduceVARENUM(char);
+   static_variant_info&lt;VT_I1&gt;
+      deduceVARENUM(signed char);
+   static_variant_info&lt;VT_I1&gt;
+      deduceVARENUM(unsigned char);
+   static_variant_info&lt;VT_I2&gt;
+      deduceVARENUM(short);
+   static_variant_info&lt;VT_I2&gt;
+      deduceVARENUM(unsigned short);
+   static_variant_info&lt;VT_I4&gt;
+      deduceVARENUM(int);
+   static_variant_info&lt;VT_I4&gt;
+      deduceVARENUM(unsigned int);
+   static_variant_info&lt;VT_I4&gt;
+      deduceVARENUM(long);
+   static_variant_info&lt;VT_I4&gt;
+      deduceVARENUM(unsigned long);
+   static_variant_info&lt;VT_R4&gt;
+      deduceVARENUM(float);
+   static_variant_info&lt;VT_R8&gt;
+      deduceVARENUM(double);
+   static_variant_info&lt;VT_CY&gt;
+      deduceVARENUM(CURRENCY);
+   static_variant_info&lt;VT_BSTR&gt;
+      deduceVARENUM(BSTR);
+   static_variant_info&lt;VT_DISPATCH&gt;
+      deduceVARENUM(IDispatch *);
+   static_variant_info&lt;VT_UNKNOWN&gt;
+      deduceVARENUM(IUnknown *);
+   static_variant_info&lt;VT_VARIANT&gt;
+      deduceVARENUM(VARIANT);
+   static_variant_info&lt;VT_VARIANT&gt;
+      deduceVARENUM
+         (automation_vector_base);
+}
+</pre>
+
+<p>For each C++ type, there is a function that returns a <B>static_variant_info</B> parameterized with the corresponding Automation tag. Now, if from inside a template having <B>T</B> as a template parameter, the expression</p>
+
+<pre>
+Configure::deduceVARENUM(T()).vt
+</pre>
+
+<p>is evaluated, the compiler will:</p>
+
+<UL><LI>lookup the correct function based on overloading rules;</LI>
+    <LI>figure out the return type of the function and lookup the correct <B>static_variant_info</B> for its <B>vt</B> member;</LI>
+    <LI>replace the entire expression with the actual enumerated value.</LI></UL>
+
+<p>The <B>static_variant_info</B> struct provides a means to translate C++ types to <B>VT_</B> values. For classes derived from <B>VARIANT</B>, <B>deduceVARENUM(T())</B> will resolve to <B>deduceVARENUM(VARIANT)</B>. This is a result of the overloading rules that come into play during this process. Now say you define a new wrapper class <B>COMDate</B> that wraps the <B>DATE</B> type. To enable storage of <B>COMDate</B> values in an <B>automation_vector</B>, all you have to do is reopen namespace <B>Configure</B> and insert the appropriate function signature, like this:</p>
+
+<pre>
+namespace Configure
+{
+   static_variant_info&lt;VT_DATE&gt;
+      deduceVARENUM(COMDate);
+}
+</pre>
+
+<p>It is possible to check at compile time whether the <B>automation_vector</B> you've created is parameterized for an Automation-compatible type. It involves use of the static member variable <B>static_variant_info::size_checker</B> and a small template called <B>static_checker</B>. The latter is a template that evaluates to nothing if its template parameter is <B>true</B>, but produces a compile or link error otherwise. (For more information on <B>static_checker</B>, see the <A HREF="sidebar.htm">sidebar</A>.)</p>
+<p>The following line from the class definition of <B>automation_vector</B> checks whether the type represented by <B>T</B> is the correct size:</p>
+
+<pre>
+// If you have an error on the line
+// below, you've instantiated
+// automation_vector with the wrong type
+static_checker&lt;sizeof(T) ==
+    sizeof(Configure::deduceVARENUM(T()).size_checker)&gt;();
+</pre>
+
+<p>This compile-time assertion enforces the size requirement. For instance, although <B>COleVariant</B> and <B>COleSafeArray</B> are both derived from <B>VARIANT</B>, the latter will fail the test above, causing a compile-time error. I find it interesting that it's not the bodies of the <B>deduceVARENUM</B> functions that matter, only their signatures and return values. Like empty structures, they serve only as a means to leverage C++'s type system.</p>
+
+<h4><FONT COLOR="#000080">Attachment and Detachment</FONT></H4>
+
+<p>You can initialize an <B>automation_vector</B> the same way as a <B>std::vector</B>, using the constructor that takes a size and a fill element:</P>
+
+<pre>
+// Create a 10-element vector,
+// each containing a real number
+automation_vector&lt;CComVariant&gt; Array(10, CComVariant(0.0));
+</pre>
+
+<p>However, a major difference between <B>automation_vector</B> and <B>std::vector</B> is that the contents of the <B>automation_vector</B> are not always created from within C++ code. The data can be created outside the COM method and passed to it as a <B>VARIANT</B>. (Don't forget: a <B>SAFEARRAY</B> always lives in a <B>VARIANT</B>.) Thus, in some cases the elements of the vector must be thought of as already constructed, by another entity that transcends the C++ method (like Visual Basic). What's more, there are cases when you don't want to destroy the contents of the <B>automation_vector</B>, because the data will be passed outside the method through an output parameter.</p>
+<p>For these reasons, <B>automation_vector</B>s are peculiar objects whose lifetimes must be carefully controlled. This issue can be seen as another facet of relating C++ types to those defined by a binary standard. When the <B>automation_vector</B> is constructed, the objects that will make up its elements already exist in a binary form, which may or may not fit the requirements imposed by the C++ type. A blind conversion copy would solve the problem because it would rely on constructor invocations, but this solution would be inefficient for large arrays. A more flexible scheme is necessary.</p>
+<p>The scheme developed for <B>automation_vector</B> involves a process known as <I>attachment</I>. The following example illustrates this process.</p>
+<p>Suppose you define a class <B>MyClass</B> that is binary compatible with <B>VARIANT</B>. The <B>automation_vector</B> constructor invoked within the method below makes the contents of the <B>VARIANT</B> available to the <B>automation_vector</B>:</p>
+
+<pre>
+HRESULT ComObject::Method(/* in, out */ VARIANT * pVar)
+{
+ typedef automation_vector&lt;MyClass&gt; TMyArray;
+ TMyArray Array(*pVar, TMyArray::MOVE);
+ ...
+}
+</pre>
+
+<p>The <B>automation_vector</B> constructor is shown in <A HREF="fig3.htm">Figure 3</A>. <B>MOVE</B> is an enumeration that tells the constructor that the data in <B>*pVar</B> is not to be brought into the <B>automation_vector</B> by a copying process, but by a "move" process, which does not really move any data &#151; only a pointer to the data. Moving is done through a call to function <B>automation_vector::attach</B>, which also appears in <A HREF="fig3.htm">Figure 3</A>.</p>
+<p>If the <B>automation_vector</B>'s element type has a binary layout compatible with the Automation type, the <B>if ((vt == myVARENUM())</B> conditional within <B>attach</B> will evaluate to <B>true</B>. Within the <B>if</B> clause, a call is made to the <B>automation_vector_base</B> class's <B>attach</B> function, which also appears in <A HREF="fig3.htm">Figure 3</A>. Attachment is, at the core, a process of swapping data pointers between an <B>automation_vector</B> and a <B>VARIANT</B>. This happens in the base class's <B>attach</B> function.</p>
+<p>Even though types may match enough to meet the <B>vt == myVARENUM()</B> conditional, they may still be be semantically incompatible. Suppose you had a <B>PositiveInteger</B> class with a single <B>int</B> as a member, and some accessors. It guarantees that its value is positive. Although it is binary compatible with Automation's four-byte integer type (denoted by <B>VARENUM</B> value <B>VT_I4</B>) it has to watch out that Automation doesn't hand it a negative integer &#151; if it does receive a negative integer, it will have to take some special action, like throw an exception.</p>
+<p>For this reason I've defined two coercion functions that give the <B>automation_vector</B> client a chance to coerce the Automation values to C++ values during the attachment process. For the type <B>MyClass</B>, the functions should have the following prototypes:</p>
+
+<pre>
+void from_automation(SAFEARRAY &amp; Array, MyClass * pDummy);
+void to_automation(SAFEARRAY &amp; Array, MyClass * pDummy);
+</pre>
+
+<p>The first parameter is an array, and the second is a null pointer that is not actually used for any other purpose than type selection. The bottom line is, if you have a type that is binary compatible in terms of size, but not compatible in terms of semantics or bit layout, you have to write the two functions above.</p>
+<p>In the common case no special action is necessary, so I've defined the default functions below:</p>
+
+<pre>
+inline void from_automation(SAFEARRAY &amp;, void *)
+{
+}
+inline void to_automation(SAFEARRAY &amp;, void *)
+{
+}
+</pre>
+
+<p>If no other <B>from_automation</B> or <B>to_automation</B> functions are defined, the standard conversions come into action and these two functions are considered by the compiler. (A pointer to an object can be automatically converted to a pointer to void.) This arrangement provides both good defaults and flexibility.</p>
+<p>What if the C++ and Automation types aren't compatible at all? Then execution follows the <B>else</B> clause in function <B>automation_vector::attach</B>. An example would be transforming a vector of strings (<B>VT_BSTR</B>) to a vector of <B>PositiveInteger</B>s (<B>VT_I4</B>). This situation requires much more corrective action than simply a call to <B>from_automation</B>. Now conversion becomes a two-step process. First, each string is converted to a COM integer using standard Automation conversions; the result is stored in a temporary Automation vector. Then the process starts all over again by attaching to that temporary vector. This time <B>from_automation</B> will be called to "transform" the raw COM integers into <B>PositiveInteger</B>s. Of course, this "totally incompatible" case does involve copying, not just a pointer swap &#151; it can't be avoided.</p>
+<p>There's not much to say about detachment. You call <B>detach</B>, passing it a <B>VARIANT</B> reference. The pointer to the <B>automation_vector</B> data is moved into the <B>VARIANT</B> and then the vector's copy of the <B>VARIANT</B> (which just holds a tag and a pointer) is cleared. The function <B>to_automation</B> is called during this process.</p>
+
+<h4><FONT COLOR="#000080">Locking and Unlocking</FONT></H4>
+
+<p>As I said before, the locking issue dramatically changes the semantics of <B>SAFEARRAY</B> when compared to <B>std::vector</B>. The procedure for accessing an element is: lock the array, get or set the element, and unlock the array. This is quite a bit different than <B>operator[]</B> in <B>std::vector</B>, which returns a reference that can be modified later. Fortunately, as hairy as the issue is, the solution is as simple: I keep the array always locked. While locked, the <B>pvData</B> member of the <B>SAFEARRAY</B> structure holds a pointer to the actual data. I rely on casts for accessing the elements. This is not as simple as it sounds. Remember that vectors can be constructed outside of C++ and can be part of other vectors. To get a crack on locking and unlocking, I took advantage of the <B>from_automation</B> and <B>to_automation</B> functions described above &#151; I defined them for <B>automation_vector&lt;T&gt;</B> to lock and unlock the <B>SAFEARRAY</B>, respectively. So to say, <B>automation_vector</B> is the first client of the coercion mechanism defined by itself. By using this mechanism, you can have <B>automation_vector</B>s containing <B>automation_vector</B>s and so on. This was essential in our first application using <B>automation_vector</B>s, because we needed matrices.</p>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>The introduction of <B>automation_vector</B> as the workhorse of our project has had a positive impact on productivity. Matrix-intensive code was reduced in size by a factor of two, while becoming much easier to read. For this reason, although the implementation has been a tough endeavor (I remember I was about to scrap it twice), it was well worth the effort. I've tried to share this implementation with you so you won't have to pass through the Scylla and Carybda of wrapping a <B>SAFEARRAY</B> again. (Bug reports and suggestions are welcome.) I recommend use of <B>automation_vector</B> whenever you have to deal with single-dimensional Automation arrays. Besides, even if you work with other binary standards such as CORBA, I hope the techniques I've presented will inspire you. They apply whenever you have to communicate between C++ and a world that has a slightly different notion of what a type means.</p>
+
+<h4><FONT COLOR="#000080">Acknowledgements</FONT></H4>
+
+<p>Thanks to Peter Marino for initiating me in <B>SAFEARRAY</B>'s intricacies. Thanks to Marc Briand and Scott Meyers, who provided an amount of feedback that convinced me to scrap the first version of this article and to rewrite it from scratch.</p>
+
+<h4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1]  In the context of this article, coercion means "in-place conversion." An element of a certain Automation type is altered into a C++ compatible type. The layout of the data may change, or certain semantic constraints may be applied to the data, but the location and amount of storage it occupies will not change.</p>
+<p><a name="2"></a>[2]  Technically, there should be a static constant in there, not an <B>enum</B>, but MSVC doesn't like the constants. I had to stick with "the <B>enum</B> hack."</p>
+
+<p><i>Andrei Alexandrescu is a developer with Micro Modeling Associates, Inc's New York Component Solutions Group. He is responsible for application development using Visual C++, ActiveX technology, Visual SourceSafe, ODBC, and SQL Server. He may be reached at <B>andrei@metalanguage.com</B>.</i></p>
+
+<h4><a href="../../../source/1999/apr99/alexandr.zip">Get Article Source Code</a></h4>
+
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

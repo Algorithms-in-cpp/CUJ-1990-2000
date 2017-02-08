@@ -1,0 +1,164 @@
+<HTML>   
+     <HEAD>
+<TITLE>December 1999/Extending &lt;limits&gt; for Type Safety</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocdec.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Extending &lt;limits&gt; for Type Safety</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Gary Powell</FONT></H3>
+
+<BLOCKQUOTE>
+<p>The new header &lt;limits&gt; can do a lot for you &#151; if you use it, and if you supplement it a bit.</p>
+</BLOCKQUOTE>
+
+<hr>
+<BLOCKQUOTE>
+
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>In numerical applications a program sometimes needs access to some extra information about a numerical variable, such as its maximum size, or whether or not it is a signed type. As an example, suppose I wish to use the native types for manipulating data in my code, but want to store the data in the smallest possible variable on disk. In my "C" days I would have written a bit of code like this:</p>
+
+<pre>
+#include &lt;limits.h&gt;
+     
+FooFunction(int value)
+{
+   short index;
+     
+   assert(SHRT_MIN &lt;= value &amp;&amp;
+          value &lt;= SHORT_MAX);
+   index = value;
+   ...
+}
+</pre>
+
+<p>The assertion ensures that the integer stored in <B>value</B> (an <B>int</B>) fits in a <B>short</B> variable. This code accesses the native size type definition found in the C header <B>&lt;limits.h&gt;</B>. The C++ Standard header <B>&lt;limits&gt;</B> <a href="#1">[1]</a> expands and extends the information available to programers from the C header <B>&lt;limits.h&gt;</B>.</p>
+<p>Using <B>&lt;limits&gt;</B> and the standard class <B>numeric_limits</B> defined within, my code now looks like this:</p>
+
+<pre>
+#include &lt;limits&gt;
+     
+FooFunction(int ivalue)
+{
+   short index;
+     
+   assert(numeric_limits&lt;short&gt;::min() 
+      &lt;= ivalue &amp;&amp;
+      ivalue &lt;=
+      numeric_limits&lt;short&gt;::max());
+   index = ivalue;
+   ...
+}
+</pre>
+
+<p>Again, this code ensures that the value contained in an <B>int</B> (in this case, <B>ivalue</B>) will fit inside a <B>short</B>.</p>
+<p>What I really want is to know that whatever the types of <B>ivalue</B> and <B>index</B>, <B>index</B> will hold the contents of <B>ivalue</B> without overflow. I'd like to be able to verify this without having to explicitly specify the type of <B>index</B>. With some simple templates we can ask the variables themselves for this information.</p>
+
+<h4><FONT COLOR="#000080">Template Argument Deduction</FONT></H4>
+
+<p>Using a bit of template magic, I wrote a bunch of forwarding functions for the <B>numeric_limits</B> class. They are all very simple, one-line functions like this one for <B>max</B>:</p>
+
+<pre>
+template &lt;class T&gt;
+inline T max(T const &amp;) throw()
+{
+    return 
+       std::numeric_limits&lt;T&gt;::max();
+}
+</pre>
+
+<p>The compiler can look at this template function's argument and deduce the argument or type at compile time. Now I can write:</p>
+
+<pre>
+FooFunction(int value)
+{
+   short index;
+     
+   assert(min(valve) &lt;= valve &amp;&amp;
+          valve &lt;= max(valve));
+   index = value;
+}
+</pre>
+
+<p>The compiler sees the function call to <B>max</B>, and knows that a template function <B>max</B> has already been defined, so it uses the type of <B>index</B> to instantiate the function <B>short max&lt;short&gt;(short const &amp;)</B>. (The same process applies to <B>min</B>.) The instantiated function is equivalent to:</p>
+
+<pre>
+short max(short &amp;)
+{
+   return 
+      std::numeric_limits&lt;short&gt;::max();
+}
+</pre>
+
+<p>Examination of the <B>&lt;limits&gt;</B> header reveals that the specialization for <B>numeric_limits&lt;short&gt;::max</B> returns <B>SHRT_MAX</B>! It's the same test as performed in the old C code, after all the inlining goes away. (By the way, this technique of using templates to deduce types is known as the pattern "Automatically Detect Types," by Paul Jakubik <a href="#2">[2]</a>. It's quite handy.)</p>
+
+<h4><FONT COLOR="#000080">Avoiding Pollution</FONT></H4>
+
+<p>To avoid polluting the global namespace, and to avoid conflicts with other library code, I've put these functions in the namespace <B>xlimits</B>, the "x" denoting "extended limits." (The full source code is available on the <I>CUJ</I> ftp site. See p. 3 for downloading instructions.)</p>
+<p>Now I either hoist the <B>xlimits</B> names to the global namespace:</p>
+
+<pre>
+using namespace xlimits;
+</pre>
+
+<p>and make my calls to <B>max</B> the same as above; or I fully specify the function like this:</p>
+
+<pre>
+FooFunction(int value)
+{
+   short index;
+     
+   assert(value &lt;=  xlimits::max(index) &amp;&amp;
+          xlimits::min(index) &lt;= value);
+}
+</pre>
+
+<p>I tend to favor writing it out in full because "max" has been in my lexicon as shorthand for the "maximum" of two values so long it's almost engraved in my head. When I see a call to <B>max</B> with just one argument I start wondering what the compiler has done to me now. With the namespace qualifier I instantly remember why I'm calling this version of <B>max</B> and what it does.</p>
+
+<h4><FONT COLOR="#000080">Not Just Syntactic Sugar</FONT></H4>
+
+<p>This may seem like a lot of sugar coating on some very simple code that should be hard to get wrong. I agree. Its benefit becomes apparent when it's time to do maintainence. Thanks to <B>numeric_limits</B>, the test for the variable's maximum size depends only on its type. But without the use of <B>xlimits::max</B>, that type must be explicitly specified in two places within the code, in the definition of the variable and in the test. Now it is specified in just one place, the definition. If some future programmer changes its type, the test will change automatically to use the correct new limit value.</p>
+<p>Now before you just toss this whole business of using <B>numeric_limits</B> as being excess baggage, I would like to point out why <B>numeric_limits</B> is a template, instead of a series of <B>#define</B>s, and how that benefits C++ programmers.</p>
+<p>When I create my own data types (and I have several) I set up <B>numeric_limits</B> to know about it. For example, I use fixed-point math <a href="#3">[3]</a> occasionally so I have some fixed-point classes that do the math for me. Like the built-in numeric types, fixed-point types have maximum values. To make these classes easy for other team members to use, I have created explicit specializations of the <B>numeric_limits</B> class. Given a fixed-point type <B>Fixed10Dot6</B>, a call to <B>numeric_limits&lt;Fixed10Dot6&gt;::max()</B> returns the correct maximum value. Now look back at my call to the <B>xlimits::max</B> function &#151; it works with this new data type just as well as before:</p>
+
+<pre>
+Fixed10Dot6
+FooFunction(Fixed10Dot6 value)
+{
+   double x; // use native register type.
+     
+   // do some calculations with x that I'm "sure"
+   // will fit in a Fixed10Dot6
+     
+   // Lets test just because.
+   assert(xlimits::min(valve) &lt;= x &amp;&amp;
+          x &lt;= xlimits::max(valve));
+     
+   Fixed10Dot6 result(x);
+   return x;
+}
+</pre>
+
+<p>This all works because <B>numeric_limits</B> is a template. And a template function can have different implementations for a given specialization. The header <B>&lt;limits&gt;</B> defines specializations of <B>numeric_limits</B> for all the native types, including <B>int</B>, <B>float</B>, etc. Designers of new data types can hook into this mechanism by providing their own specializations. This is a very powerful tool.</p>
+<p>I also have a constructor for a <B>Fixed10Dot6(double)</B> and a <B>friend bool operator&lt;(double, Fixed10Dot6)</B>, so that the comparison above works. These additional operators are part of the <B>Fixed10Dot6</B> class, which I needed anyway for mixed math.</p>
+<p>The rest of the functions in <B>numeric_limits</B> can be specialized in similar fashion for a user-defined type such as <B>Fixed10Dot6</B>.</p>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>Using the Standard library header <B>&lt;limits&gt;</B>, with a little help from some forwarding functions, it is simple to generate type-safe code that is very readable and easy to maintain.</p>
+
+<h4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1]  P.J. Plauger wrote a very nice description of the new <B>&lt;limits&gt;</B> header in "Standard C/C++: The Header <B>limits</B>," <I>CUJ,</I> September 1997. I refer you to that article for descriptions of the individual <B>numeric_limits</B> functions available.</p>
+<p><a name="2"></a>[2]  See Paul Jakubik's "Callback Implementations in C++" at <B>http://www.primenet.com/~jakubik/callback.html</B></p>
+<p><a name="3"></a>[3]  Fixed-point numbers are a way of representing real numbers using an <B>int</B>, or a <B>short</B>, or even a <B>char</B>. C++ doesn't automatically shift the decimal point in fixed-point numbers, since they aren't built-in types; the programmer must keep track of it herself, or encapsulate the shifting operations within a class. Fixed-point numbers are often used on machines without a floating-point processer, such as some embedded systems, or old 486s. My fixed-point classes help me out by correctly shifting the decimal point before adding a fixed-point number to constants and reminding me to shift-adjust two different-sized fixed-point numbers before manipulating them.</p>
+
+<p><i><B>Gary Powell</B> Is a Senior Software Engineer at Sierra On-Line. He can be reached at <B>gary.powell@sierra.com</B>.</i></p>
+
+<h4><a href="../../../source/1999/dec99/powell.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

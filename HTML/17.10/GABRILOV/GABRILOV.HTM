@@ -1,0 +1,85 @@
+<HTML>   
+     <HEAD>
+<TITLE>October 1999/Controlling the Destruction Order of Singleton Objects</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tococt.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Objects and Components</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Controlling the Destruction Order of Singleton Objects</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Evgeniy Gabrilovich</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Singletons have to be destroyed, just like any other objects. When and how that happens can be a tricky problem to solve.</p>
+</BLOCKQUOTE>
+
+<hr>
+<BLOCKQUOTE>
+
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>The Singleton object creational pattern presented by the GOF ("Gang of Four") in <I>Design Patterns</I> <a href="#1">[1]</a> is a superior implementation of the notion of global objects. Its major benefits include:</p>
+<p>1.  It limits the number of class instances that can be created.</p>
+<p>2.  Instances are created only if needed.</p>
+<p>3.  The instance is always created prior to being referenced. (This effectively solves the problem of initialization order when several interdependent instances are involved.)</p>
+<p>The sample code provided in <I>Design Patterns</I> ignores the problem of global objects' destruction and relies on the operating system to release the memory they occupy. The resulting memory leak may not be so damaging, since the operating system reclaims the dynamically allocated memory when the process terminates. But if the destructors release system-wide resources, things can get pretty messy if the resource allocation and deallocation do not follow a disciplined pattern.</p>
+<p>In <I>Effective C++</I> <a href="#2">[2]</a>, Scott Meyers suggests an alternative singleton implementation to the one suggested by the GOF. In Meyers' implementation, the object instance is defined static in a dedicated function, which returns a reference to the instance. This alternative implementation invokes the singleton destructor at program termination, thus preventing memory and resource leaks. However, this implementation also tightly binds the singleton object to the enclosing ("wrapping") function.</p>
+<p>Regardless of the number of calls to the singleton's constructing method, only one instance of the class is created. Since all the clients of the class share this instance, the design should impose a controlled protocol regarding the deletion of this object. Although a number of efforts have been made to formalize this approach <a href="#3">[3]</a>, none address the issue of destruction order in the presence of several singleton objects that depend on each other.</p>
+<p>Wrapping globally available objects in functions solves the problem of mutual initialization order, but what happens if the destruction order also matters? Suppose there is a global <B>Logger</B> object, and destructors of other global entities must record with <B>Logger</B> their released resources. Obviously, <B>Logger</B> should be destroyed last. If the language rules destroy the <B>Logger</B> first, other objects might unknowingly attempt to use it, leading to unpredictable (and most likely disastrous) consequences.</p>
+<p><a href="fig1.htm">Figure 1</a> shows an alternative Singleton implementation, which will later serve as the basis for a variation with certain additional properties. The proposed solution has the following important features:</p>
+
+<UL><LI>The Standard C++ library <a href="#4">[4]</a> implementation of the smart pointer (the <B>auto_ptr</B> class template) performs the singleton's resource management. <B>auto_ptr</B> owns the object pointed to by its data member and is responsible for its deletion. To facilitate this scheme, an auxiliary private function of class <B>Singleton</B> (<B>get_instance</B>) defines a static <B>auto_ptr</B> to the actual object. In fact, the <B>auto_ptr</B> serves as a "proxy" for the object. The object instance owned by the <B>auto_ptr</B> is detached from the function wrapper (<B>instance</B>) that ensures its singleton properties. This solution does not sacrifice proper memory management. Instead, it allows real objects to be destroyed in an order other than the one induced by C++ language rules, thus facilitating alternative destruction policies.</LI>
+<LI>If <B>auto_ptr</B> actually deletes the object it owns, it needs access to that object's destructor, hence the friendship between class <B>Singleton</B> and <B>auto_ptr&lt;Singleton&gt;</B>.</LI>
+<LI>The single instance of <B>auto_ptr</B> is implemented as a static variable in the method <B>Singleton::get_instance</B>. <B>auto_ptr</B> in turn controls a single instance of the singleton object, which is created on the heap (using <B>new</B>). This provides a clean solution to the initialization order problem, which would have occurred if <B>auto_ptr</B> were created as a static data member of the class.</LI></UL>
+
+<p>In <I>Design Patterns</I>, the GOF make the pointer to the singleton instance a static data member of the class, but their implementation uses a regular pointer, rather than an <B>auto_ptr</B>. A C++ built-in pointer has no constructor, and the Standard guarantees that a global pointer is initialized to zero. But if the <B>auto_ptr</B> is made a static data member of the class, then the <B>auto_ptr</B> object (not the object it owns) will be created at the global scope. The C++ Standard does not define the initialization order of global objects unless they are all defined within the same translation unit. Hence if another global object, whose constructor needs a singleton, is created first, then the method <B>Singleton::get_instance</B> will be invoked. Since there is no guarantee that <B>auto_ptr</B>'s constructor has already been called, this may result in the disastrous consequence of dereferencing a garbage value as if it were a valid pointer.</p>
+
+<UL><LI>Function <B>get_instance</B> is not defined inline, but rather in the implementation file. The new C++ Standard <a href="#4">[4]</a> states that "a static local variable in a member function always refers to the same object, whether or not the member function is inline." Nevertheless, old compilers may still be in use that implement old language rules. Under these rules, each translation unit that includes the definition of such a function contains its own static copy of this function with its own copy of the variables. This issue is explained in detail in <a href="#2">[2]</a>.</LI>
+<LI>Two public functions provide <B>const</B> and non-<B>const</B> access to the singleton by dereferencing <B>auto_ptr</B>. For additional code safety, if the constant object will do the job, the corresponding function <B>const_instance</B> should be used.</LI>
+<LI>The access functions return a reference to the actual object (not to <B>auto_ptr</B>), in order to conceal the implementation details from the clients.</LI></UL>
+
+<h4><FONT COLOR="#000080">The Singleton Destruction Manager</FONT></H4>
+
+<p>I return to the example in which several global objects depend on one another and consequently cannot be destroyed in an arbitrary order. If some global object is a client of another global object, the latter may not be destroyed until the former terminates. Otherwise, if the former inadvertently invokes a function of the latter after it ceases to exist, the aftermath may be rather gloomy.</p>
+<p>I base my solution on the composite Singleton-Registration-Proxy pattern. I use a dedicated Destruction Manager (implemented as a singleton) to control the global object destruction order. When a singleton object is created, its constructor registers with the Destruction Manager, specifying when this object should be destroyed (relative to other singletons).</p>
+<p>All the singletons in the program are assigned a "destruction phase" figure, so that the smaller the phase, the later the object should be destroyed. (I assume that there are no circular dependencies between the objects, so it is possible to assign each singleton an appropriate destruction phase.) Each singleton constructor creates a destructor object, which encapsulates a pointer to the singleton and its destruction phase. At the end of <B>main</B>, the programmer invokes a dedicated function of the Destruction Manager. This function sorts all the destructor objects registered with the Destruction Manager in decreasing order of their phases and then destroys the singletons in that order. Each singleton's destruction is performed by releasing the singleton pointer from the <B>auto_ptr</B> that encloses it and then deleting that pointer. If the Destruction Manager does not destroy a singleton (for example, the destruction manager is also a singleton, but does not destroy itself), the <B>auto_ptr</B> mechanism destroys the singleton object at the program's end. (Recall that the <B>auto_ptr</B> is defined as a local static variable in a function. Local static objects are destroyed at program termination.)</p>
+<p>In Figures 2-6, I show the gist of my solution. The complete source code is available from the <I>CUJ</I> ftp site (see p. 3 for downloading instructions).</p>
+<p><a href="fig2.htm">Figure 2</a> defines the <B>DestructionPhase</B> class. Each <B>DestructionPhase</B> object can be compared to other <B>DestructionPhase</B> objects using <B>operator&gt;</B>.</p>
+<p><a href="fig3.htm">Figure 3</a> shows the class hierarchy for destructor objects. I first define an abstract <B>Destructor</B> class, whose derived-class instances can be sorted according to their destruction phases. Class template <B>TDestructor</B> derives from <B>Destructor</B> and contains a pointer to the singleton object it is responsible for. The template parameter will be specialized for an actual singleton class, which must define a <B>destroy_instance</B> function that will destroy its own instance. (Note: the <B>Singleton</B> class shown in <a href="fig1.htm">Figure 1</a> does not have a <B>destroy_instance</B> function. This class is for illustration only and will not work with the Destruction Manager.) An example of <B>destroy_instance</B> appears in <a href="fig5.htm">Figure 5</a>. It obtains a reference to the <B>auto_ptr</B> that owns the singleton instance through the singleton's <B>get_instance</B> method and deletes the object owned by <B>auto_ptr</B>. (This shows why <B>auto_ptr</B> is necessary; it detaches the object from its <B>get_instance</B> function wrapper.)</p>
+<p><a href="fig4.htm">Figure 4</a> outlines the Destruction Manager. (Some obvious details have been omitted for brevity's sake). Singletons register their destructors with the Destruction Manager via function <B>register_destructor</B>. The Destruction Manager is responsible for the memory occupied by <B>Destructor</B> objects; therefore, it has to delete these objects before it terminates.</p>
+<p>Function <B>destroy_objects</B> sorts the destructors in decreasing order of their phases and then consecutively destroys the singleton objects they manage. This function should be manually invoked at the end of <B>main</B> to ensure proper destruction order of the program's global objects. Class template <B>greater_ptr</B>, an auxiliary predicate, compares objects based on their pointers.</p>
+<p><a href="fig5.htm">Figure 5</a> gives a sample resource definition, a <B>Logger</B> class. (Again, insignificant details have been omitted.) When invoked, the <B>Logger</B> constructor creates a new <B>TDestructor</B> object, which contains all the information necessary to destroy the <B>Logger</B> object at the right time. The <B>TDestructor</B>'s constructor registers the destructor object with the Destruction Manager. When it is time for the Destruction Manager to destroy the <B>Logger</B> singleton, it calls the <B>TDestructor</B>'s <B>destroy</B> method, which in turn invokes the <B>Logger</B>'s <B>destroy_instance</B> method. Function <B>destroy_instance</B> releases the singleton object from the <B>auto_ptr</B> and then destroys it. The <B>auto_ptr</B> no longer owns the object; therefore, it will not attempt to delete it when the program terminates. Since the <B>TDestructor</B> object must invoke <B>destroy_instance</B>, the <B>TDestructor</B> class is defined as a friend of class <B>Logger</B>. After the singleton is deleted, the Destruction Manager ultimately deallocates the <B>TDestructor</B> object itself.</p>
+<p>The complete source code also defines class <B>Resource</B>, whose destructor uses function <B>Logger::log</B> to record error messages (if any).</p>
+<p>Finally, <a href="fig6.htm">Figure 6</a> shows function <B>main</B>.</p>
+
+<h4><FONT COLOR="#000080">Possible Alternatives</FONT></H4>
+
+<p>Instead of using an express notion of destruction phases, an alternative approach could require each singleton to explicitly specify its dependency on other objects. The destruction manager would then perform a topological sort of the dependencies graph, thus deducing the destruction phases automatically. This would require the constructor of each singleton to inform the Destruction Manager of all the other singletons upon which it depends. In a simple solution where the constructor registers pointers to all the other singletons it might use, all those singletons would be created even if some of them were not needed in a particular program execution. A more elaborate solution would identify singletons by their string names rather than by pointers, but this seems like overkill.</p>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>In this article, I have examined the existing singleton implementations and have analyzed their advantages and drawbacks. I have also proposed an improved Singleton implementation, which detaches the singleton object from its function wrapper, and then have combined that implementation with other design patterns to achieve a certain behavior.</p>
+<p>Using the compound Singleton-Registration-Proxy pattern, I have implemented a Destruction Manager, which controls the lifetime of a singleton and ensures that the given singleton exists as long as it is needed. In fact, it is possible to view the Destruction Manager as a "destructional pattern," as opposed to creational patterns <a href="#1">[1]</a> like Abstract Factory, Factory Method, or even Singleton, for that matter. These types of patterns lie on opposite side of the lifecycle-management spectrum. Certainly, additional research should be conducted (including documenting other known uses) before pronouncing the Destruction Manager a pattern in its own right.</p>
+<p>This article does not address thread-safety. To my knowledge, each available Singleton implementation uses variables defined at global scope. In a multithreaded environment, this may constitute a problem, should a singleton have to serve multiple threads. Mutual exclusion in the presence of threads is a fairly well researched topic, but its application to the Singleton pattern may be non-trivial and thus deserves a detailed examination.</p>
+
+<h4><FONT COLOR="#000080">Acknowledgements</FONT></H4>
+
+<p>The Singleton Destruction Manager was inspired by example code from <a href="#5">[5]</a>, where an initialization manager working in phases was used to resolve the mutual initialization order of global variables (using two-stage object construction instead of singletons).</p>
+<p>Thanks to Brad Appleton for interesting discussions that helped to improve this article and to Avner Ben and Vitaly Surazhsky for their constructive comments.</p>
+
+<h4><FONT COLOR="#000080">References</FONT></H4>
+
+<p><a name="1"></a>[1]  Gamma, E., et al. <I>Design Patterns: Elements of Reusable Software Architecture</I> (Addison Wesley, 1995).</p>
+<p><a name="2"></a>[2]  Meyers, S. <I>Effective C++</I>, 2nd edition (Addison Wesley, 1998), Item 47.</p>
+<p><a name="3"></a>[3]  Vlissides, J. <I>Pattern Hatching. Design Patterns Applied</I> (Addison Wesley, 1998).</p>
+<p><a name="4"></a>[4]  "Information Technology &#151; Programming Languages &#151; C++," International Standard ISO/IEC 14882-1998(E).</p>
+<p><a name="5"></a>[5]  Ben-Yehuda, S. <I>C++ Design Patterns</I> course, SELA Labs, http://www.sela.co.il.</p>
+
+<p><i><B>Evgeniy Gabrilovich</B> is a Strategic Development Team Leader at Comverse Technology Inc., a developer of multimedia communications processing technology. He holds an M.Sc. in Computer Science from the Technion - Israel Institute of Technology. His interests involve natural language processing, artificial intelligence, and speech processing. He can be contacted at <B>gabr@acm.org</B>.</i></p>
+
+<h4><a href="../../../source/1999/oct99/gabrilov.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

@@ -1,0 +1,240 @@
+<HTML><HEAD>
+<TITLE>August 1998/Encapsulating DDE/Figure 3</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Figure 3: The server side of the sample DDE application</A></h4>
+
+<pre>
+//server.h
+
+// Application object
+class CServerApp : public CWinApp
+{
+public:
+   virtual BOOL InitInstance();
+   virtual int  ExitInstance();
+};
+
+// Main window, also inherited from DDEServer
+class CMainWindow : public CFrameWnd, public DDEServer
+{
+   UINT PointClipFormat; // Clipboard format for Position
+   CPoint Position;      // Position of rectangle in client area
+   int CountClients;     // Number of clients connected
+public: 
+   CMainWindow();
+
+   // Overridden DDEServer's virtual functions
+   virtual BOOL AcceptConversation(const DDEString &amp; Topic);
+   virtual BOOL 
+   AcceptAdvise(const DDEString &amp; Topic, const DDEString &amp; Item, 
+      UINT format, HCONV hConv);
+   virtual BOOL 
+   PrepareAdviseData(const DDEString &amp; Topic, 
+      const DDEString &amp; Item, DDEDataOut &amp; Data, 
+      UINT CountRemaining, HCONV hConv);
+   virtual BOOL 
+   HandlePoke(const DDEString &amp; Topic, const DDEString &amp; Item, 
+      const DDEDataIn &amp; Data, HCONV hConv);
+   virtual BOOL 
+   HandleRequest(const DDEString &amp; Topic, const DDEString &amp; Item, 
+      DDEDataOut &amp; Data, HCONV hConv);
+   virtual BOOL 
+   HandleExecute(const DDEString &amp; Topic, LPSTR commands, 
+      HCONV hConv);
+   virtual void 
+   BeginConversation(const DDEString &amp; Topic,HCONV hConversation);
+   virtual void 
+   EndConversation(const DDEString &amp; Topic,HCONV hConversation);
+
+protected:
+
+   // Windows message handlers
+   afx_msg void OnPaint();
+   afx_msg void OnMouseMove(UINT nFlags, CPoint point);
+   afx_msg void OnLButtonDown(UINT nFlags, CPoint point);
+   afx_msg void OnRButtonDown(UINT nFlags, CPoint point);
+   DECLARE_MESSAGE_MAP()
+};
+
+//server.cpp
+
+#include &lt;afxwin.h&gt;
+#include "ddegio.h" // DDE Framework
+#include "Server.h"
+
+// How to use the program:
+// Click left mouse button to open server
+// Click right mouse button to close server
+// Move mouse on client area to send position to clients
+
+CServerApp ServerApp;
+
+BOOL CServerApp::InitInstance()
+{
+   DDEInitialize(); // Initialize framework
+   m_pMainWnd=new CMainWindow;
+   m_pMainWnd-&gt;ShowWindow(m_nCmdShow);
+   m_pMainWnd-&gt;UpdateWindow();
+   return TRUE;
+}
+
+int CServerApp::ExitInstance()
+{
+   DDEUninitialize(); // Cleanup
+   return CWinApp::ExitInstance();
+}
+
+BEGIN_MESSAGE_MAP(CMainWindow,CFrameWnd)
+  ON_WM_PAINT()
+  ON_WM_MOUSEMOVE()
+  ON_WM_LBUTTONDOWN()
+  ON_WM_RBUTTONDOWN()
+END_MESSAGE_MAP()
+
+CMainWindow::CMainWindow() : 
+   Position(0,0), CountClients(0),
+   PointClipFormat(RegisterClipboardFormat("POINT"))
+{
+   Create(NULL,"DDE Server"); // Create main window
+}
+
+// Draw server status and circle at current position
+void CMainWindow::OnPaint()
+{
+   CPaintDC DC(this);
+   CString Status=IsOpen()?"Server Open":"Server Closed";
+   DC.TextOut(0,0,Status);
+   Status.Format("Clients Connected : %i",(int)CountClients);
+   DC.TextOut(0,20,Status);
+   DC.Ellipse(Position.x-9,Position.y-9,Position.x+9,Position.y+9);
+}
+
+// Open DDE service if not already open
+void CMainWindow::OnLButtonDown(UINT nFlags, CPoint point)
+{
+   if (!IsOpen())
+   {
+      OpenServer("DDEServerTest");
+      InvalidateRect(NULL);
+   }
+}
+
+// Close DDE server if it is open
+void CMainWindow::OnRButtonDown(UINT nFlags, CPoint point)
+{
+   if (IsOpen())
+   {
+      CloseServer();
+      CountClients=0;
+      InvalidateRect(NULL);
+   }
+}
+
+// Change position of circle and notify clients
+void CMainWindow::OnMouseMove(UINT nFlags, CPoint point)
+{
+   Position=point;
+   InvalidateRect(NULL);
+   PostAdvise("Mouse","Position"); // Notify clients that item 
+                                   // changed
+}
+
+// Accept conversations on topic "Mouse"
+BOOL CMainWindow::AcceptConversation(const DDEString &amp; Topic)
+{
+   return Topic=="Mouse";
+}
+
+// Accept advise links on topic "Mouse" and item "Position"
+BOOL 
+CMainWindow::AcceptAdvise(const DDEString &amp; Topic, 
+   const DDEString &amp; Item, UINT format, HCONV hConv)
+{
+   return Topic=="Mouse" &amp;&amp; Item=="Position";
+}
+
+// Fill advise data with current position of circle
+// Called by framework after PostAdvise is called
+BOOL 
+CMainWindow::PrepareAdviseData(const DDEString &amp; Topic, 
+   const DDEString &amp; Item, DDEDataOut &amp; Data, 
+   UINT CountRemaining, HCONV hConv)
+{
+   if (Topic=="Mouse" &amp;&amp; Item=="Position")
+   {    
+      Data.SetData(&amp;Position,sizeof(Position)); 
+      return TRUE;
+   }
+   else return FALSE;
+}
+
+// Receive new position of circle from client
+// Notify all clients that position changed by calling PostAdvise
+BOOL 
+CMainWindow::HandlePoke(const DDEString &amp; Topic, 
+   const DDEString &amp; Item, const DDEDataIn &amp; Data, HCONV hConv)
+{
+   if (Topic=="Mouse" &amp;&amp; Item=="Position")
+   {
+      memcpy(&amp;Position,Data.GetData(),sizeof(Position));
+      InvalidateRect(NULL);
+      PostAdvise("Mouse","Position"); // Notify that item changed
+      return TRUE;
+   }
+   else return FALSE;
+}
+
+// Return current position of circle when requested
+BOOL 
+CMainWindow::HandleRequest(const DDEString &amp; Topic, 
+   const DDEString &amp; Item, DDEDataOut &amp; Data, HCONV hConv)
+{
+   if (Topic=="Mouse" &amp;&amp; Item=="Position")
+   { 
+      Data.SetData(&amp;Position,sizeof(Position));
+      return TRUE;
+   }
+   return FALSE;
+}
+
+// Respond to maximize command by maximizing window
+BOOL 
+CMainWindow::HandleExecute(const DDEString &amp; Topic, 
+   LPSTR commands, HCONV hConv)
+{
+   if (Topic=="Mouse" &amp;&amp; strstr(commands,"Maximize"))
+   {
+      ShowWindow(SW_SHOWMAXIMIZED);
+      return TRUE;
+   }
+   else return FALSE;
+}
+
+// When notified that a conversation has started, increment counter
+void 
+CMainWindow::BeginConversation(const DDEString &amp; Topic,
+   HCONV hConversation)
+{
+   CountClients++;
+   InvalidateRect(NULL);
+}
+
+// When notified that a conversation has ended, decrement counter
+void 
+CMainWindow::EndConversation(const DDEString &amp; Topic,
+   HCONV hConversation)
+{
+   CountClients--;
+   InvalidateRect(NULL);
+}
+
+// Report DDE errors
+void ReportDDEErrorToApp(UINT code,LPCSTR message)
+{
+   MessageBox(AfxGetMainWnd()-&gt;GetSafeHwnd(),
+      message,"Dde Error",MB_OK);
+}</pre>
+</BODY>
+</HTML>

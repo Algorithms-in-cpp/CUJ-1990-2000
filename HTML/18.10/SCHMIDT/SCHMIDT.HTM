@@ -1,0 +1,258 @@
+<HTML>   
+     <HEAD>
+<TITLE>October 2000/Uncaught Exceptions</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tococt.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Uncaught Exceptions: Sunshine Superman</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Bobby Schmidt</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Bobby answers several questions from the fringes of valid C++.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+<p>Copyright &copy; 2000 Robert H. Schmidt</p>
+
+<p>I just returned from a week in sunny Orlando, attending Microsoft's Professional Developers Conference (or PDC). Even though I work for Microsoft now, and already knew much of what was going to be announced, I still learned so much new stuff there that I ended up taking 40 pages of notes.</p>
+<p>Just before PDC, Microsoft disclosed their development of the C# language. They also disclosed plans to submit C# to ECMA TC39 for consideration as a language standard. I plan to be an observer on TC39, incorporating what I learn into my MSDN writing. This will my first active participation in a standards process, and I'm very much looking forward to the experience.</p>
+<p>During PDC, Microsoft finally disclosed the execution environment for C# and its brethren: the .NET common language runtime. This runtime provides a common programming model and base class set to all languages, not just Microsoft's. At the show, I saw demonstrations of languages as diverse as APL, COBOL, Eiffel, Python, and Scheme &#151; all interoperating with one another in the common environment.</p>
+<p>For the C# standardization to make sense, ECMA will also have to standardize an abstract machine or execution environment for C#. I'm guessing that environment will be based on a subset of the .NET runtime. If I'm right, then some aspects of that runtime will be migratory to other (non-Microsoft) platforms.</p>
+<p>The potential result: maximal language interoperability across multiple platforms. Vendors of both niche languages and mainstream languages will be on a level playing field. As I mentioned in my first C# column for MSDN, this could mark the end of the C-family hegemony. (But hopefully not the end of <I>CUJ!</I>)</p>
+
+<H4><FONT COLOR="#000080">This Tape Will Self Destruct</FONT></H4>
+
+<H4><FONT COLOR="#000080">Q</FONT></H4>
+<p> Hi Bobby.</p>
+<p>When does it ever make sense to commit suicide with <B>delete this</B>? In particular: after you self-delete the current object from within some non-static member function, is it legal C++ to keep doing some work in that function (provided it doesn't access any non-static member)?</p>
+<p>Thanks! &#151; Patrick Rabau</p>
+
+<H4><FONT COLOR="#000080">A</FONT></H4>
+<p> Does it ever make sense? Yes, barely. Is it "legal" C++? Yes, with restrictions.</p>
+<p>Instanced member functions are not magic. Deleting <B>this</B> within such a function is tantamount to deleting the same object in a non-instanced or non-member function. Consider</p>
+
+<pre>
+class X
+    {
+public:
+    void f1()
+        {
+        delete this;
+        i = 1;       // oops
+        this-&gt;i = 1; // same
+        }
+    static void f2(X *const this_)
+        {
+        delete this_;
+        this_-&gt;i = 1; // oops
+        }
+    int i;
+    };
+
+void f3(X *const this_)
+    {
+    delete this_;
+    this_-&gt;i = 1; // oops
+    }
+
+int main()
+    {
+    X *x = new X;
+    x-&gt;f1();
+    x-&gt;f2(x); // same net effect
+    f3(x);    // same net effect
+    }
+</pre>
+
+<p>All three functions have the same net effect. The only tangible difference: in <B>f1</B> the pointer is implicitly named <B>this</B> and (conceptually) passed as a hidden parameter, while in <B>f2</B> and <B>f3</B> the pointer is explicitly named <B>this_</B> and explicitly passed as a parameter.</p>
+<p>In each case, the object is dead. That the death was suicide rather than murder does not change the post-mortem conditions. So restrictions after <B>delete this</B> really generalize to restrictions after any <B>delete</B> expression:</p>
+
+<UL><LI>   The <B>delete</B> expression's operand must have been created via non-placement non-array <B>new</B>.
+<LI>   Nobody can reference the deleted object or its address. This implies no member accesses through the deleted <B>this</B> pointer.
+<LI>   You can't delete the object twice.</UL>
+
+<p>Having written all that, I do want to highlight an aspect unique to <B>delete this</B>.</p>
+<p>By executing <B>delete this</B>, an object assumes how it was born, and that users will know when it has died. (Since users do not evaluate <B>delete</B> directly, they have no overt evidence of the destruction.) In effect, these assumptions becomes part of the object's contract requirements. Such a contract severely restricts user choice and presumes user discipline. You can mitigate this last point some by hiding constructors and destructors, and presenting alternative object creation/destruction functions (where the destruction function presumably calls <B>delete this</B>).</p>
+<p>Alternatively, you could instrument an object to know how it was allocated, so that it evaluated <B>delete this</B> only if was <B>new</B>ed. For example, a hidden tag could encode the construction path, and be queried for the proper destruction path later. But if you're going to that trouble, you should consider making the class a template, following the spirit (if not the implementation) of STL allocators.</p>
+
+<H4><FONT COLOR="#000080">Partial Specialization</FONT></H4>
+
+<H4><FONT COLOR="#000080">Q</FONT></H4>
+<p> Hi,</p>
+<p>I hope the enclosed short program explains my problem. Are really none of the <B>MODE</B>s 2, 3 and 4 legal C++? I tested it with MSVC++6.0, and it did only accept <B>MODE</B> 1. &#151; Achim Kupferoth</p>
+
+<H4><FONT COLOR="#000080">A</FONT></H4>
+<p> I've simplified your program while maintaining its essence. My version appears as <a href="list1.htm">Listing 1</a>.</p>
+<p>I am able to reproduce your results with all of my compilers: <B>MODE</B> 1 compiles as desired, while <B>MODE</B>s 2 through 4 fail to compile.</p>
+<p>What you're attempting is partial specialization of a function template, something the C++ Standard does not allow. With a conforming compiler, you can get the same effect by partially specializing the class template owning the function:</p>
+
+<pre>
+//
+//    primary X
+//
+template&lt;typename T&gt;
+struct X
+    {
+    static void f();
+    };
+
+//
+//    partially specialized X
+//
+template&lt;typename T&gt;
+struct X&lt; Y&lt;T&gt; &gt;
+    {
+    static void f();
+    };
+</pre>
+
+<p>Now the call</p>
+
+<pre>
+X&lt; Y&lt;int&gt; &gt;::f();
+</pre>
+
+<p>will reference <B>f</B> from the partially specialized class. You can verify this by declaring that <B>f</B> as private, then recompiling &#151; you should get a diagnostic about <B>f</B> being inaccessible.</p>
+<p>As I say, this code will work on a conforming compiler. Unfortunately for you, Visual C++ does not properly support partial specialization of class templates. If you try to compile the two <B>X</B> definitions I've shown, you'll see two diagnostics:</p>
+
+<pre>
+'X&lt;class Y&lt;T&gt; &gt;' : template class has
+already been defined as a
+non-template class
+
+unrecognizable template
+declaration/definition
+</pre>
+
+<p>Sorry, but I can't think of a work-around that is any better than your original <B>MODE</B> 1 solution.</p>
+
+<H4><FONT COLOR="#000080">Ambiguity Rides Again</FONT></H4>
+
+<H4><FONT COLOR="#000080">Q</FONT></H4>
+
+<p> This is most probably a simple question for you. I was surprised that I did not find anything in the usual FAQs but this might be because I do not exactly know the name of the problem.</p>
+<p>Now the problem: why does the following program not compile?</p>
+
+<pre>
+class A
+    {
+public:
+    A(int);
+    };
+
+class B
+    {
+public:
+    B(A const &amp;);
+    void f();
+    };
+
+int main()
+    {
+    int val = 7;
+    B b1(A(7));
+    B b2(A(val));
+    b1.f();
+    b2.f(); // error!
+    };
+</pre>
+
+<p>I only have two compilers to check this code. Sun's CC 5.0 emits the following error message:</p>
+
+<pre>
+B(*)(A) is not a structure type.
+</pre>
+
+<p>g++ version 2.8.1 gives this error message:</p>
+
+<pre>
+request for member 'f' in 'b2(A)', which
+is of non-aggregate type 'B ()(A)'
+</pre>
+
+<p>I can't figure out the obviously fundamental difference in instantiating <B>b1</B> and <B>b2</B>. Since two compilers complained similarly, I suppose this is not a compiler bug. But where in the C++ Standard lies this rule buried and why?</p>
+<p>Thanks much in advance! &#151; Cristoph Wolf</p>
+
+<H4><FONT COLOR="#000080">A</FONT></H4>
+
+<p> What you have found is not a compiler bug. Your translators are actually trying to explain the problem through their diagnostics: <B>b2</B> is not a structure or aggregate. Put another way, <B>b2</B> is not an object that can be dereferenced as <B>b2.f()</B>.</p>
+<p>If that hint doesn't help, try adding these two lines to the end of <B>main</B>:</p>
+
+<pre>
+b2(val);
+b2(A(val));
+</pre>
+
+<p>You should find that these lines compile. This fact suggests both that something named <B>b2</B> exists, and that <B>b2</B> can take arguments of type <B>int</B> or type <B>A</B>.</p>
+<p>Still give up? Here's the answer: <B>b2</B> is a function, not an object. That's why your translators are complaining &#151; the expression <B>b2.f()</B> is attempting to reference the member <B>f</B> of function <B>b2</B>, and functions don't have members.</p>
+<p>I can anticipate your next question: why is <B>b2</B> a function, especially since its declaration looks so much like that of <B>b1</B>? The answer is one that I've discussed before, but which bears brief repeating here.</p>
+<p>What you've hit is a reasonably well-known ambiguity within the C++ grammar. In essence, the statement</p>
+
+<pre>
+B b2(A(val));
+</pre>
+
+<p>can be interpreted as the declaration of either</p>
+
+<UL><LI>   an object <B>b2</B> of type <B>B</B> directly initialized with the value <B>A(val)</B>, or
+<LI>   a function <B>b2</B> returning <B>B</B> and accepting a parameter named <B>val</B> of type <B>A</B>, where the parameter name <B>val</B> is surrounded by redundant <B>()</B>.</UL>
+
+<p>While you clearly want your translators to pick the first interpretation, evidence suggests that they pick the second. The C++ Standard supports the translators' choice in subclause 8.2/1 (edited for brevity):</p>
+
+<BLOCKQUOTE>
+The choice is between a function declaration with a redundant set of parentheses around a parameter name and an object declaration with a function-style cast as the initializer. The resolution is to consider any construct that could possibly be a declaration a declaration.</p>
+</BLOCKQUOTE>
+
+<p>In the current ambiguity, <B>A(val)</B> can be interpreted either as a the declaration of the parameter <B>val</B>, or as a function-style cast of <B>val</B> to type <B>A</B>. According to the disambiguity rule in 8.2, the compiler interprets <B>A(val)</B> as a declaration, which forces interpretation of <B>b2</B> as a function.</p>
+<p>You can remove the ambiguity, and force <B>b2</B> to be an object, by changing its declarations to any one of</p>
+
+<pre>
+B b2((A) val);
+B b2 = A(val);
+B b2(val);
+B b2 = val;
+</pre>
+
+<H4><FONT COLOR="#000080">Erratica</FONT></H4>
+
+<p>Several Diligent Readers report trouble with Carlo Pescio's latest <B>LENGTHOF</B> variation <a href="#note1">[1]</a>:</p>
+
+<pre>
+template&lt;int N&gt;
+struct Sized
+    {
+    typedef char x[N];
+    };
+
+template&lt;class T, int N&gt;
+typename Sized&lt;N&gt;::x
+    &amp;LengthofHelper(T (&amp;)[N]);
+
+#define LENGTHOF(x) \
+sizeof(LengthofHelper(x))
+</pre>
+
+<p>In particular, these readers can't get Carlo's solution to compile with (drum roll please) Visual C++ version 6! As one reader noted, since I work for Microsoft again, I really ought to test my code against Microsoft's compiler and make those test results known.</p>
+<p>Hmmm. I could have sworn that I tested Carlo's code against that compiler. (Actually, I could have sworn that I've tested just about everything against that compiler, since you-all love it so.) But I apparently suffered a lapse here, for when I compile the code under Visual C++, the compiler laughs back with the too-familiar</p>
+
+<pre>
+reference to a zero-sized
+array is illegal
+
+reference to a non-constant bounded
+array is illegal
+</pre>
+
+<p>I haven't gone digging in the Visual C++ bug database to discover the precise problem here; but evidence suggests that the compiler simply can't use a template parameter to dimension an array. Since this is such a frequently-encountered problem, I have to believe we will fix it in Visual C++.NET. I'll contact the compiler people and let you know what I find.</p>
+
+<H4><FONT COLOR="#000080">Note</FONT></H4>
+<p><a name="note1">[1]</a>  Originally published in my July 2000 column.</p>
+
+<p><i><B>Bobby Schmidt</B> is a freelance writer, teacher, consultant, and programmer. He is also an alumnus of Microsoft, a speaker at the Software Development and Embedded Systems Conferences, and an original "associate" of (Dan) Saks &amp; Associates. In other career incarnations, Bobby has been a pool hall operator, radio DJ, private investigator, and astronomer. You may summon him on the Internet via <B>BobbySchmidt@mac.com</B>.</i></p>
+
+<h4><a href="../../../source/2000/oct00/schmidt.zip">Get Article Source Code</a></h4>
+
+</blockquote></body></html>

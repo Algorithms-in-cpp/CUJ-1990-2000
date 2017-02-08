@@ -1,0 +1,135 @@
+
+
+
+<HTML><HEAD>
+
+<TITLE>January 1998/Creating Active Data Types via Multithreading/Listing 2</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4>
+<A name="HEADING1">Listing 2: Implementing an active data type</A></h4>
+
+
+<pre>
+// File: ActiveQueue.h
+
+#if !defined(__ActiveThread_H)
+#define __ActiveThread_H
+
+#if !defined(_DEQUE_)
+#include &lt;deque&gt;
+#endif
+
+#if !defined(_QUEUE_)
+#include &lt;queue&gt;
+#endif
+
+#if !defined(__THREAD_H)
+#include "thread.h"
+#endif
+
+// Exception class
+class FailedToCreateSemaphore
+{
+};
+class FailedToCreateThread
+{
+};
+
+// We inherit protected from Thread to prevent a user from calling
+// create. We do this instead of changing protection on Create from
+// public to private, because Borland 5.0 has a problem with
+// changing protection on members in base classes.
+template &lt;class T&gt;
+class ActiveQueue : protected Thread
+{
+public:
+    ActiveQueue(DWORD dwParam = 0,DWORD dwCreationFlags = 0);
+    virtual ~ActiveQueue();
+    virtual void Add(const T &amp;data);
+    // Redefine operator HANDLE so an ActiveQueue can be turned into
+    // a HANDLE for syncronization, and other thread related matters
+    operator HANDLE();
+
+protected:
+    virtual bool Initialize();
+    virtual bool HandleData(T &amp;data) = 0;
+
+private:
+    HANDLE hQueueEntries;
+    CRITICAL_SECTION criticalSection;
+    // We specify the deque as default container, because
+    // Borland 5.0 has a limited support for default templates
+    std::queue&lt;T,std::deque&lt;T&gt; &gt; dataQueue;
+    virtual UINT ThreadFunction(DWORD);
+    ActiveQueue(ActiveQueue&amp;); //prevent copying - make ctor private
+    operator =(ActiveQueue&amp;);  //prevent assignment - ctor private
+};
+
+template &lt;class T&gt;
+ActiveQueue&lt;T&gt; :: ActiveQueue(DWORD dwParam,DWORD dwCreationFlags)
+{
+    hQueueEntries = CreateSemaphore(NULL,0,MAXLONG,NULL);
+    if (hQueueEntries == NULL)
+        throw FailedToCreateSemaphore();
+    // Create the thread
+    if (Create(dwParam,dwCreationFlags) == FALSE)
+    {
+        CloseHandle(hQueueEntries);
+        throw FailedToCreateThread();
+    }
+    InitializeCriticalSection(&amp;criticalSection);
+}
+
+template &lt;class T&gt;
+ActiveQueue&lt;T&gt; :: ~ActiveQueue()
+{
+    CloseHandle(hQueueEntries);
+    DeleteCriticalSection(&amp;criticalSection);
+}
+
+template &lt;class T&gt;
+void ActiveQueue&lt;T&gt; :: Add(const T &amp;data)
+{
+    EnterCriticalSection(&amp;criticalSection);
+    dataQueue.push(data);
+    LeaveCriticalSection(&amp;criticalSection);
+    ReleaseSemaphore(hQueueEntries,1,NULL);
+}
+
+template &lt;class T&gt;
+ActiveQueue&lt;T&gt; :: operator HANDLE()
+{
+    return Thread::operator HANDLE();
+}
+
+template &lt;class T&gt;
+bool ActiveQueue&lt;T&gt; :: Initialize()
+{
+    return true;
+}
+
+template &lt;class T&gt;
+UINT ActiveQueue&lt;T&gt; :: ThreadFunction(DWORD)
+{    
+    T data;
+
+    if (Initialize() == false)
+        return 0;
+    while (true)
+    {
+        WaitForSingleObject(hQueueEntries,INFINITE);
+        EnterCriticalSection(&amp;criticalSection);
+        data = dataQueue.front();
+        dataQueue.pop();
+        LeaveCriticalSection(&amp;criticalSection);                    
+        if (HandleData(data) == false)
+            break;        
+    }
+    return 0;
+}
+
+#endif
+//End of File
+</pre>
+</body></html>

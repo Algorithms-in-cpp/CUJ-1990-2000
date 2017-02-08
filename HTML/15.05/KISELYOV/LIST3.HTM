@@ -1,0 +1,222 @@
+
+
+
+
+<HTML><HEAD>
+
+<TITLE>May 1997/Speaking in Iostreams-ese/Listing 3</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4>Listing 3:	Compiling graphical primitives to send an accelerator card</h4>
+
+<pre>
+
+class LineArray
+{
+  BView&amp; my_view;
+  BPoint curr_point;
+  rgb_color curr_color;
+  
+  class LineParm // A compilation "unit" describing one line segment
+  {
+    BPoint from, to;
+    rgb_color color;
+  public:
+    LineParm(void) {} // this is an incomplete constructor: careful!
+    LineParm(const BPoint _from, const BPoint _to, rgb_color _color)
+        : from(_from), to(_to), color(_color) {}
+    BPoint q_from(void) const { return from; }
+    BPoint q_to(void) const   { return to; }
+    void doAddLine(BView&amp; view) const
+        { view.AddLine(from,to,color); }
+    void offset_by(const BPoint pt) { from += pt; to += pt; }
+    friend ostream&amp; operator &lt;&lt; (ostream&amp; os, LineParm&amp; line_parm);
+  };
+  
+// An array of line segments...
+  enum {allocation_quantum =5};
+  LineParm * current_path;
+  int path_length;
+  int allocated;
+  LineParm path_preallocated[5];
+  
+  void append_path(const BPoint from, const BPoint to);
+  
+public:
+
+  // "Compilation" classes
+  class line_to
+  {
+    friend class LineArray;
+    BPoint to_point;
+  public:
+    line_to(const BPoint&amp; pt) : to_point(pt) {}
+    line_to(const float x, const float y) : to_point(x,y) {}
+  };
+  
+  class rline_to
+  {
+    friend class LineArray;
+    BPoint to_point;
+  public:
+    rline_to(const BPoint&amp; pt) : to_point(pt) {}
+    rline_to(const float x, const float y) : to_point(x,y) {}
+  };
+
+  class line_from_to
+  {
+    friend class LineArray;
+    BPoint from_point;
+    BPoint to_point;
+  public:
+    line_from_to(const BPoint&amp; _from, const BPoint&amp; _to)
+        : from_point(_from), to_point(_to) {}
+   };
+   
+   
+  // inline constructor/destructor
+  LineArray(BView&amp; view) : my_view(view), curr_point(0,0),
+    curr_color(view.HighColor()),
+    current_path(path_preallocated),
+    allocated(
+      sizeof(path_preallocated)/sizeof(path_preallocated[0])),
+    path_length(0)
+      {}
+  ~LineArray(void) { if( current_path != path_preallocated )
+                       delete current_path; }
+  // Setting the current point of a path  
+  LineArray&amp; operator &lt;&lt; (const BPoint point)
+    { curr_point = point; return *this;}
+  // draw an outline of a rect
+  LineArray&amp; operator &lt;&lt; (const BRect point);  
+  // Adding line segments to the path
+  LineArray&amp; operator &lt;&lt; (const line_to&amp; lineto)
+    { append_path(curr_point, lineto.to_point);
+      curr_point = lineto.to_point; return *this;}
+  LineArray&amp; operator &lt;&lt; (const rline_to&amp; rlineto);
+  LineArray&amp; operator &lt;&lt; (const line_from_to&amp; lineft)
+    { append_path(lineft.from_point, lineft.to_point);
+      curr_point = lineft.to_point; return *this; }
+
+  void close_path(void);    // Connect curr_point to the first pt
+  void stroke(void);        // Stroke the path
+  // Manipulator procedures...
+
+  typedef LineArray&amp; (*LineArrayManip)(LineArray&amp;);
+  LineArray&amp; operator &lt;&lt; (const LineArrayManip manip)
+    { return manip(*this); }
+  friend LineArray&amp; endl(LineArray&amp; larray)
+    { larray.stroke(); return larray; }        
+  // Dealing with the whole path
+  void offset_by(const BPoint pt);
+  
+  // Print the whole path (in a human-readable form)
+  friend ostream&amp; operator &lt;&lt; (ostream&amp; os, LineArray&amp; line_array);
+};
+
+// Add a new segment to the path
+void LineArray::append_path(const BPoint from, const BPoint to)
+{
+  if( ++path_length &gt; allocated )
+  {
+    LineParm * old_path = current_path;
+    current_path = new LineParm[allocated =
+      path_length+allocation_quantum];
+    cout &lt;&lt; "reallocating path to " &lt;&lt; allocated &lt;&lt; " elems" &lt;&lt; endl;
+    memcpy((void*)current_path,(void*)old_path,
+           sizeof(current_path[0])*(path_length-1));
+    if( old_path != path_preallocated )
+      delete old_path;
+  }
+  current_path[path_length-1] = LineParm(from,to,curr_color);
+}
+
+LineArray&amp; LineArray::operator &lt;&lt; (const rline_to&amp; rlineto)
+{
+ BPoint to = curr_point + rlineto.to_point;
+ append_path(curr_point, to);
+ curr_point = to;
+ return *this;
+}
+
+// Connect the curr_point to the first pt
+void LineArray::close_path(void)
+{
+  assert( path_length &gt; 0 );
+  if( path_length == 1 )        // Nothing to close
+    return;                
+  append_path(curr_point,current_path[0].q_from());
+}
+
+// Stroke the path
+// This is the only place where BeginLineArray() etc. are
+// called. And they're called in the right sequence!
+void LineArray::stroke(void)
+{
+  assert( path_length &gt; 0 );
+  my_view.BeginLineArray(path_length);
+  for(register int i=0; i&lt;path_length; i++)
+     current_path[i].doAddLine(my_view);
+  my_view.EndLineArray();
+}
+
+// Apply the simplest transform to the path
+void LineArray::offset_by(const BPoint pt)
+{
+  assert( path_length &gt; 0 );
+  for(register int i=0; i&lt;path_length; i++)
+     current_path[i].offset_by(pt);
+  curr_point += pt;
+}
+
+// Print the whole path (in a human-readable form)
+
+ostream&amp; operator &lt;&lt; (ostream&amp; os, LineArray::LineParm&amp; line_parm)
+{ return os &lt;&lt; "line segment: from " &lt;&lt; line_parm.from &lt;&lt; " to " 
+            &lt;&lt; line_parm.to &lt;&lt; endl; }
+
+ostream&amp; operator &lt;&lt; (ostream&amp; os, LineArray&amp; line_array)
+{
+  if( line_array.path_length == 0 )
+   return os &lt;&lt; "empty path" &lt;&lt; endl;
+   
+  os &lt;&lt; "Line path of " &lt;&lt; line_array.path_length
+     &lt;&lt; " line segments" &lt;&lt; endl;
+  for(register int i=0; i&lt;line_array.path_length; i++)
+     os &lt;&lt; line_array.current_path[i];
+  return os &lt;&lt; endl;
+}
+
+//------------------------------------------------------------------
+//             Here's how everything is used
+
+static void test_line_array(void)
+{
+  BView view;
+  LineArray lines(view);
+  lines &lt;&lt; BPoint(10,10);
+  lines &lt;&lt; LineArray::line_to(10,20);
+  lines &lt;&lt; LineArray::rline_to(10,0);
+  lines &lt;&lt; LineArray::rline_to(0,-10);
+  lines.close_path();        // connect to the first point
+
+  lines.stroke();
+                  // Add more segments to the old path...
+  lines &lt;&lt; BPoint(20,20) &lt;&lt; LineArray::rline_to(-10,-10);
+  lines &lt;&lt; LineArray::line_from_to(BPoint(10,20),BPoint(20,10));
+  lines.offset_by(BPoint(100,100));
+  lines.stroke();
+  
+  cout &lt;&lt; "The path last stroked was " &lt;&lt; lines &lt;&lt; endl; 
+  
+}
+
+static void test_line_array1(void)
+{
+  BView view;
+  cout &lt;&lt; "\n\ntesting an one-liner " &lt;&lt; endl;
+  LineArray(view) &lt;&lt; LineArray::line_from_to(BPoint(0,0),
+                                             BPoint(20,10)) &lt;&lt; endl;
+}
+//End of File
+</pre>
+</body></html>

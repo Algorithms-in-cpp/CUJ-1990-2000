@@ -1,0 +1,227 @@
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+<TITLE>February 1998/STL Containers Based on Hash Tables</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<H2><A href="../tocfeb.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+<FONT COLOR="#FF0000">Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">STL Containers Based on Hash Tables</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Mike Benzinger</FONT></H3>
+
+<blockquote>Hash tables offer a nice balance between insertion and lookup times. Too bad they
+didn't quite make it into the C++ Standard.</p></blockquote><hr>
+
+<blockquote>
+
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>In the early stages of our latest development effort, my team and I were faced
+with several key decisions that would have long-lasting effects. In most cases,
+these decisions would be irreversible or very costly to modify once large-scale
+development had begun. One of these decisions was to determine which
+container-class libraries we were going to use. The choices came down to
+purchasing a commercial library or adopting the Standard Template Library. Both
+of these choices had their pros and cons.<p>
+We ultimately settled on the Standard Template Library, as defined by the
+upcoming C++ Standard. But the current map and set template container classes
+are based on red-black trees, which have two drawbacks:</p>
+<p>1) Lookup time is logarithmic, not constant.<p>
+2) The elements are ordered, making insertion in large tables expensive <a href="#1">[1]</a>.</p>
+<p>Our design required a component that serially supplies identifiers to
+several threads and processes. To minimize the lookup and insertion times of
+this component, we decided that hash-table based containers were better suited
+to our needs. Unfortunately, hash tables were not accepted as part of the C++
+Standard version of STL.<p>
+The next step in the process was to determine whether to develop these
+containers from scratch or find something that was already developed. A few
+years ago, when STL was first released and gained notoriety, I remembered that
+two implementations of hash-table based containers were publicly available.
+Javier Barreiro and David R. Musser <a href="#2">[2]</a> wrote one and Bob Fraley <a href="#3">[3]</a> the
+other.<p>
+After studying both sets of code, I selected Barreiro and Musser's
+implementation. Having made this selection, however, I still did not have code
+that could be readily used without modification. First of all, their code would
+not compile as is using the Microsoft Visual C++ V5.0 compiler. This was
+primarily due to differences in header-file names. VC++ V5.0 matches the draft
+C++ Standard, but the hash-table code does not.<p>
+There were also problems with the allocator template and with the compiler's
+ability to handle complex template definitions. Moreover, the interface did not
+match that of the associative containers (such as map and set) which are
+provided in the STL as proposed by the draft C++ Standard.<p>
+In this article, I describe the layout of the hash-table based containers map,
+multimap, set, and multiset as I have implemented them using
+standard-conforming STL.</p>
+
+<h4><FONT COLOR="#000080">Representation</FONT></H4>
+
+<p>The class hierarchy, as diagrammed in <A href="fig1.htm">Figure 1</a>,
+ shows that the associative
+containers hash_map, hash_multimap, hash_set, and hash_multiset use the
+template class hash_table. This in turn uses template class hash_bucket to hold
+the data. (The lines connecting the classes in <A href="fig1.htm">Figure 1</a>
+represent containment,
+not inheritance.) The hash-table based container that serves as the foundation
+for the hash map and set classes uses two containers from STL, a deque and a
+list.<p>
+Barreiro and Musser chose to write a singly linked list to reduce the memory
+footprint of the container and eliminate the time needed to maintain the
+backward link when inserting chained elements <a href="#1">[1]</a>. I weighed these consequences
+and decided to use the list as implemented in STL to reduce new code
+development and maintenance.<p>
+The deque contains a sequence of hash buckets. Keys that hash to the same value
+are appended to the beginning of the sequence. For hash_map and hash_multimap,
+the information stored in each element of the hash table is a pair comprising
+the key as the first element and the value associated with it as the second
+element. For hash_set and hash_multiset, the information stored is the value.<p>
+The hash table uses gradual resizing, as opposed to intermittent resizing.
+Intermittent resizing requires allocating a new, larger table, rehashing all
+the old elements into the new table, and deleting the old table <a href="#4">[4]</a>. This can
+be a very expensive operation to complete. Hence we implemented a method of
+gradual resizing as proposed by Per-Ake Larson <a href="#5">[5]</a>. This allows for resizing of
+the hash buckets as elements are added to the table by distributing the
+resizing over time and completely eliminating the need to allocate a new table
+and perform a deep copy.<p>
+Forward and reverse iterators are furnished to allow the class user to iterate
+through all elements that have been added to the hash table. In practical use,
+however, these are furnished only to provide completeness. Under normal
+circumstances, elements will be accessed via their keys.<p>
+We added a few methods to support the hash table. These extra methods are
+present in all hash-table based containers. Function value_compare has been
+replaced by key_hash_func, which returns a reference to the hash function for
+the keys. Since it is not necessary to maintain order, the comparison function
+is not necessary. The functions compareEqual and compareLess allow the class
+user to compare two hash tables for equality or order. (You can't use the
+comparison functions associated with the deque or list templates.)<p>
+The compareEqual function first ensures that the two tables are of equal size.
+If so, then the function iterates through all elements in the first table and
+checks each element to see if it compares equal to an element in the second
+table. The compareLess function, on the other hand, finds the smallest element
+in the first table and then iterates over all items in the second to determine
+if there is an element that is less than the smallest element from the first
+table.<p>
+get_bucket_allocator returns the allocator used for the buckets. Since class
+users can implement their own allocator class, I implemented the class so that
+both the allocators for the deque and the list could be overridden.
+bucket_count, resize, load_factor, max_load_factor, and min_load_factor are all
+functions used to get and control hash table parameters.<p>
+A hash function is used to hash the key to an integer value. This hash value
+can be thought of as an index in the deque to the bucket that contains the map
+values associated with the key. The hash function is implemented in a class by
+overriding operator(). Here is an example, which we will use in the code
+examples that follow:</p>
+
+<pre>
+// Define hash function for integers.
+// The hashing function is invoked through the
+// () operator overload.
+class int_hash_function
+{
+public:
+int_hash_function(long primeArg = 1073741827)
+    : prime(primeArg) {}
+~int_hash_function() {}
+long
+operator()(const int&amp; key) const
+{
+return( (key &gt;= 0) ? (key % prime) : (-key % prime) );
+}
+protected:
+long prime;
+};
+</pre>
+
+<h4><FONT COLOR="#000080">Hash Maps and Sets</FONT></H4>
+
+<p>Template class hash_map is a hash table that stores in each element the key and value as
+a pair. The key stored in a hash_map must be unique. Attempts to insert a
+duplicate key will be rejected. The hash index is computed from the key. The
+public interface is identical to the STL map except for the addition of the
+methods described above. <A href="list1.htm">Listing 1</a>
+shows a small example of a hash map. The
+hash map has an integer for a key and a pointer to an integer as its value. The
+example demonstrates adding values to a hash map, locating some of the values,
+and then iterating over all values to delete the memory allocated when creating
+the integer pointers.<p>
+Template class hash_multimap is a hashmap that permits multiple elements with
+the same key value. The public interface of this class is identical to hash_map
+with the exception of operator[], which is not implemented. <A href="list2.htm">Listing 2</a>
+shows a
+small example of a hash multimap.<p>
+Template class hash_set is a hash table that stores in each element just the
+key. The key stored in a hash_set must be unique. The public interface is
+identical to the STL set except for the addition of methods described above.
+<A href="list3.htm">Listing 3</a>
+shows a small example of a hash set.<p>
+Template class hash_multiset is a hashset that permits multiple elements with
+the same key value. I have been trying to determine a valid use for this
+particular container since I began development work in early 1997. To this day,
+I have still not found any particular application where this container would
+prove useful. <A href="list4.htm">Listing 4</a>
+shows a small example of a hash multiset.<p>
+The hash containers work with many of the common STL algorithms. A small
+example of a hash map using search and search_n is shown in <A href="list5.htm">Listing 5</a>.
+</p>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>The current release of gcc, version 2.7.2.2, will not compile this library due to
+the implementation of the allocator. Currently the allocator is implemented
+using code originally released by Alexander A. Stepanov and Meng Lee <a href="#6">[6]</a>. Until
+STL as defined by the standard has been released as a part of gcc, you should
+use the code as released by Barreiro and Musser.<p>
+Microsoft Visual C++ 5.0 still has some problems dealing with templates. I
+noticed some odd compilation errors when initially developing this library.
+These were primarily related to default arguments and declaring functions
+external to the template definition. As the compilers mature, problems that I
+encountered should disappear. This code has not been optimized for speed or
+memory use. I am certain that, with work and refinement, both of these can be
+improved significantly. Schedule constraints limited the amount of time I had
+to invest in this project.<p>
+Writing this code proved to be very useful to me for gaining a thorough
+understanding of both STL and template programming. It also demonstrated to me
+just how much work compiler vendors must do to fully support templates. We have
+found this library to be very useful.<p>
+All documents and code used to develop this class library, with the exception
+of Per-Ake Larson's article, can be found at the locations cited in <a href="#6">[6]</a>. A
+sample program that tests the functionality of the hash containers can be found
+in the distribution. For a deeper understanding of hash tables and this
+implementation, consult the references defined below. They provide an excellent
+treatise on hash tables and the rationale for including them as part of STL.</p>
+
+<h4><FONT COLOR="#000080">References</FONT></H4>
+
+<p>Unless otherwise specified, the documents that follow are available by anonymous ftp
+from ftp.cs.rpi.edu as /pub/stl/doc.ps.Z or from butler.hpl.hp.com as part of
+/stl/sharfile.Z.</p>
+<p><a name="1"></a>[1] David R. Musser. "Rationale for Adding Hash Tables to the C++ Standard
+Template Library," February 20, 1995.<p>
+<a name="2"></a>[2] Javier Barreiro, Robert Fraley, and David R. Musser. "Hash Tables for the
+Standard Template Library," February 20, 1995.<p>
+<a name="3"></a>[3] Bob Fraley. "A STL Hash Table Implementation," February 16, 1995.<p>
+<a name="4"></a>[4] Javier Barreiro and David R. Musser. "An STL Hash Table Implementation
+With Gradual Resizing," February 20, 1995.<p>
+<a name="5"></a>[5] Per-Ake Larson. CACM, Vol. 31, Number 4, April 1988.<p>
+<a name="6"></a>[6] Alexander A. Stepanov and Meng Lee. "The Standard Template Library,"
+Technical Report, Hewlett-Packard Laboratories, September 20, 1994, revised
+February 7, 1995.
+</p>
+<p><i>Mike Benzinger is a Principal at SABRE Technology Solutions, where he
+works in the Research Group. He has 17 years of experience in software
+development. He can be reached at bzinger@iName.com. 
+</i></p>
+
+<h4><a href="../../../source/1998/feb98/benzing.zip">Get Article Source Code</a></h4>
+
+</blockquote>
+</body></html>

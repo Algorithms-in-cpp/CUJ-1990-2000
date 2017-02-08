@@ -1,0 +1,249 @@
+
+
+
+<HTML><HEAD>
+
+<TITLE>December 1997/Filename Pattern Matching/Listing 2</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4>Listing 2:	The functions that do actual pattern matching</h4>
+
+<pre>
+/*--------------------------------------------------------------*/
+/* Copyright (c)1997 by David R. Tribble, all rights reserved.  */
+/*--------------------------------------------------------------*/
+/*
+* fpattern_submatch()
+*        Attempts to match subpattern 'pat' to subfilename 'fname'.
+*
+* Returns
+*        1 (true) if the subfilename matches, otherwise 0 (false).
+*
+* Caveats
+*        This does not assume that 'pat' is well-formed.
+*
+*        If 'pat' is empty (""), the only filename it matches is the 
+*        empty ("") string.
+*
+*        Some non-empty patterns (e.g., "") will match an empty<br>*        filename ("").
+*/
+
+static int fpattern_submatch(const char *pat, const char *fname)
+{
+    int                fch;
+    int                pch;
+    int                i;
+    int                yes, match;
+    int                lo, hi;
+
+    /* Attempt to match subpattern against subfilename */
+    while (*pat != '\0')
+    {
+        fch = *fname;
+        pch = *pat;
+        pat++;
+        switch (pch)
+        {
+        case FPAT_ANY:
+            /* Match a single char */
+        #if DELIM
+            if (fch == DEL  ||  fch == DEL2  ||  fch == '\0')
+        #else
+            if (fch == '\0')
+        #endif
+            {
+                return (FALSE);
+            }
+            fname++;
+            break;
+
+        case FPAT_CLOS:
+            /* Match zero or more chars */
+            i = 0;
+        #if DELIM
+            while (fname[i] != '\0'  &amp;&amp;
+                    fname[i] != DEL  &amp;&amp;  fname[i] != DEL2)
+                i++;
+        #else
+            while (fname[i] != '\0')
+                i++;
+        #endif
+            while (i &gt;= 0)
+            {
+                if (fpattern_submatch(pat, fname+i))
+                {
+                    return (TRUE);
+                }
+                i--;
+            }
+            return (FALSE);
+
+        case SUB:
+            /* Match zero or more chars */
+            i = 0;
+            while (fname[i] != '\0'  &amp;&amp;
+        #if DELIM
+                    fname[i] != DEL  &amp;&amp;  fname[i] != DEL2  &amp;&amp;
+        #endif
+                    fname[i] != '.')
+                i++;
+            while (i &gt;= 0)
+            {
+                if (fpattern_submatch(pat, fname+i))
+                    return (TRUE);
+                i--;
+            }
+            return (FALSE);
+
+        case QUOTE:
+            /* Match a quoted char */
+            pch = *pat;
+            if (lowercase(fch) != lowercase(pch)  ||  pch == '\0')
+                return (FALSE);
+            fname++;
+            pat++;
+            break;
+
+        case FPAT_SET_L:
+            /* Match char set/range */
+            yes = TRUE;
+            if (*pat == FPAT_SET_NOT)
+            {
+               pat++;
+               yes = FALSE;        /* Set negation */
+            }
+
+            /* Look for [s], [-], [abc], [a-c] */
+            match = !yes;
+            while (*pat != FPAT_SET_R  &amp;&amp;  *pat != '\0')
+            {
+                if (*pat == QUOTE)
+                    pat++;        /* Quoted char */
+
+                if (*pat == '\0')
+                    break;
+                lo = *pat++;
+                hi = lo;
+
+                if (*pat == FPAT_SET_THRU)
+                {
+                    /* Range */
+                    pat++;
+
+                    if (*pat == QUOTE)
+                        pat++;        /* Quoted char */
+
+                    if (*pat == '\0')
+                        break;
+                    hi = *pat++;
+                }
+
+                if (*pat == '\0')
+                    break;
+
+                /* Compare character to set range */
+                if (lowercase(fch) &gt;= lowercase(lo)  &amp;&amp;
+                    lowercase(fch) &lt;= lowercase(hi))
+                    match = yes;
+            }
+
+            if (!match)
+            {
+                return (FALSE);
+            }
+
+            if (*pat == '\0')
+                return (FALSE);          /* Missing closing bracket */
+            fname++;
+            pat++;
+            break;
+
+        case FPAT_NOT:
+            /* Match only if rest of pattern does not match */
+            if (*pat == '\0')
+                return (FALSE);          /* Missing subpattern */
+            i = fpattern_submatch(pat, fname);
+            return !i;
+
+#if DELIM
+        case DEL:
+    #if DEL2 != DEL
+        case DEL2:
+    #endif
+            /* Match path delimiter char */
+            if (fch != DEL  &amp;&amp;  fch != DEL2)
+                return (FALSE);
+            fname++;
+            break;
+#endif
+
+        default:
+            /* Match a (non-null) char exactly */
+            if (lowercase(fch) != lowercase(pch))
+            {
+                return (FALSE);
+            }
+            fname++;
+            break;
+        }
+    }
+
+    /* Check for complete match */
+    if (*fname != '\0')
+        return (FALSE);
+
+    /* Successful match */
+    return (TRUE);
+}
+
+/*---------------------------------------------------------------------
+* fpattern_match()
+*        Attempts to match pattern 'pat' to filename 'fname'.
+*
+* Returns
+*        1 (true) if the filename matches, otherwise 0 (false).
+*
+* Caveats
+*        If 'fname' is null, zero (false) is returned.
+*
+*        If 'pat' is null, zero (false) is returned.
+*
+*        If 'pat' is empty (""), the only filename it matches is the
+*        empty string ("").
+*
+*        If 'fname' is empty, the only pattern that will match it is 
+*        the empty string ("").
+*
+*        If 'pat' is not a well-formed pattern, zero (false) is
+*        returned.
+*
+*        Upper and lower case letters are treated the same; alphabetic
+*        characters are converted to lower case before matching occurs.
+*        Conversion to lower case is dependent upon the current locale
+*        setting.
+*/
+
+int fpattern_match(const char *pat, const char *fname)
+{
+    int                rc;
+
+    /* Check args */
+    if (fname == NULL)
+        return (FALSE);
+
+    if (pat == NULL)
+        return (FALSE);
+
+    /* Verify that the pattern is valid, and get its length */
+    if (!fpattern_isvalid(pat))
+        return (FALSE);
+
+    /* Attempt to match pattern against filename */
+    if (fname[0] == '\0')
+        return (pat[0] == '\0');        /* Special case */
+    rc = fpattern_submatch(pat, fname);
+
+}
+
+/* End of File */
+</pre>
+</body></html>

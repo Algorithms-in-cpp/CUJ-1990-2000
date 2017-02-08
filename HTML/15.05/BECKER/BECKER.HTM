@@ -1,0 +1,551 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>May 1997/Questions &amp; Answers</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><A href="../tocmay.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          <FONT COLOR="#FF0000">Columns</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">Questions &amp; Answers</FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">Pete Becker</FONT></H3>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">Not All operator='s Are
+          Equal</FONT></H2>
+          
+          <BLOCKQUOTE>
+               
+               <P>To ask Pete a question about C or C++, send e-mail to
+                    pbecker@oec.com, use subject line: Questions and Answers, or
+                    write to Pete Becker, C/C++ Users Journal, 1601 W. 23rd St.,
+                    Ste. 200, Lawrence, KS 66046.</P>
+               
+               <P>Assignment kinda looks like destruction followed by
+                    reconstruction, but don't be fooled.</P></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <h4><FONT COLOR="#000080">Q</FONT></H4> I'm struggling to remember where I saw an implementation
+                    of operator=() that looked something like this:</FONT>
+
+<PRE>
+T &amp; T::operator=(const T &amp; t)
+{
+    if (this != &amp;t)
+    {
+        // explicit call to destructor
+        // explicit call to copy constructor with parameter t
+    }
+
+    return *this;
+}
+</PRE>
+               
+               <p>Questions:</P>
+               
+               <p>1. What is the exact syntax of the explicit calls?
+                    <BR> 2. Was this code published somewhere? Anyone know the
+                    citation?
+                    <BR> 3. Does anyone use this technique?
+                    <BR> 4. What are the advantages/disadvantages?
+                    <BR> &#151; Robert Schwartz</P>
+               
+               <h4><FONT COLOR="#000080">A</FONT></H4> The first place I saw this technique used was as an example
+                    in the discussion of C++ object lifetimes in the ANSI/ISO
+                    working paper. I think it's an unfortunate choice for an
+                    example because its use in the working paper suggests that
+                    it is a technique that programmers ought to be familiar
+                    with, when in fact it should rarely or never be used. There
+                    are almost always better solutions to the problems that it
+                    solves. Unfortunately, some programmers are driven by what
+                    they consider to be clever rather than by what is truly
+                    effective, and we're going to see more use of this technique
+                    before folks finally understand that it usually causes more
+                    problems than it solves.</P>
+               
+               <p>Writing the code is simple:</FONT></FONT></p>
+
+<PRE>
+T &amp; T::operator=(const T &amp; t)
+{
+ if (this != &amp;t)
+    {
+    // explicit destructor call
+    this-&gt;~T();
+    // copy constructor with
+    // placement new
+    new(this)T(t);
+    }
+ return *this;
+}
+</PRE>
+               
+               <p> In simple cases this works just fine: the destructor call
+                    cleans up the old object, and the copy constructor creates a
+                    new object at the same memory location as the old one. In
+                    fact, that's what the example in the working paper is
+                    intended to illustrate: if you destroy an object and overlay
+                    the memory that it occupied with a new object of the same
+                    type, any outstanding pointers or references to the original
+                    object will remain valid. </P>
+               
+               <p> The fundamental problem with applying this technique in your
+                    code is that classes derived from types that handle
+                    assignment this way must also use this technique. The
+                    compiler-generated assignment operator will not work
+                    correctly, nor will a user-defined assignment operator that
+                    uses the standard techniques for assignment. Let's look at
+                    what goes wrong by expanding this class a bit:</FONT></FONT></P>
+
+<PRE>
+#include &lt;new&gt;
+#include &lt;iostream&gt;
+
+class Base
+{
+public:
+    virtual ~Base() {};
+    Base&amp; operator = ( const Base&amp; );
+    virtual void f()
+    {
+        cout &lt;&lt; "Base::f\n";
+    }
+};
+
+Base&amp; Base::operator =
+    ( const Base&amp; b )
+{
+    if( this != &amp;b )
+    {
+        this-&gt;~Base();
+        new(this)Base(b);
+    }
+    return *this;
+}
+
+class Derived : public Base
+{
+public:
+    Derived&amp; operator =
+        ( const Derived&amp; );
+    void f()
+    {
+        cout &lt;&lt; "Derived::f\n";
+    }
+};
+
+Derived&amp; Derived::operator =
+    ( const Derived&amp; d )
+{
+    Base::operator = ( d );
+    return *this;
+}
+
+int main()
+{
+    Derived d1;
+    Derived d2;
+    Base &amp;bref = d1;
+    bref.f();
+    d1 = d2;
+    bref.f();
+    return 0;
+}
+</PRE>
+               
+               <p>If you compile and run this program here's what you'll get
+                    for output:</FONT></FONT></P>
+
+<PRE>
+Derived::f
+Base::f
+</PRE>
+               
+               <p>The assignment turned our object of type Derived into a
+                    Base object! That's not a compiler bug. What happened here
+                    is that we stepped outside the boundaries for which Base's
+                    assignment operator works correctly. We can only use this
+                    destruct/construct technique on a "complete object,"
+                    and not on a subobject. In this case, the Base component of
+                    our object d1 is a subobject. </P>
+               
+               <p> That's the legalistic explanation of why it didn't work. The
+                    practical explanation is that Derived's assignment operator
+                    called Base's assignment operator. Base's assignment
+                    operator invoked the constructor for Base, and nobody
+                    invoked a constructor for Derived. In most implementations
+                    this means that the vtable pointer for d1 points to a vtable
+                    for a Base object and not for a Derived object. The result
+                    is that virtual function calls for the object d1 are
+                    dispatched as if d1 were of type Base and not type Derived.
+               </P>
+               
+               <p> To make this work correctly we must use the same assignment
+                    technique in Derived. That's easy enough to do; we just need
+                    to change the implementation of the assignment operator:</FONT></FONT></p>
+
+<PRE>
+Derived&amp; Derived::operator =
+    ( const Derived&amp; d )
+{
+    if( this != &amp;d )
+    {
+        this-&gt;~Derived();
+        new(this)Derived(d);
+    }
+    return *this;
+}
+</PRE>
+               
+               <p></P>
+               
+               <p>Now our sample program produces the following output:</FONT></FONT></P>
+
+<PRE>
+
+Derived::f
+Derived::f
+</PRE>
+               
+               <p>So far, so good. But there's still a problem. Let's change
+                    main a bit to see where we still fail:</FONT></FONT></p>
+
+<PRE>
+int main()
+{
+    Derived d1;
+    Derived d2;
+    Base &amp;bref = d1;
+    bref.f();
+    // assign through bref
+    bref = d2;
+    bref.f();
+    return 0;
+}
+</PRE>
+               
+               <p>Now we get the original output again: we've changed the
+                    type of d1 back to Base. That's because we're assigning
+                    through a reference to Base, so the compiler uses Base's
+                    assignment operator. Once again we're invoking the
+                    constructor for Base rather than the constructor for
+                    Derived, so we end up with the wrong type. </P>
+               
+               <p> The solution is simple; make the assignment operator
+                    virtual. Be careful, though: it's harder than it looks. If
+                    you just add the virtual keyword in front of the assignment
+                    operator in Base you may get a warning from your compiler
+                    about the assignment operator in Derived hiding the
+                    assignment operator in Base. If you run the resulting
+                    program you'll get the same output as before: the assignment
+                    still creates a Base object instead of a Derived object.
+                    That's because the assignment operator in Derived takes a
+                    reference to Derived, not a reference to Base. It doesn't
+                    override the virtual assignment operator in Base, so it
+                    doesn't get called. To fix this we need to add an assignment
+                    operator in Derived that takes a reference to Base, checks
+                    whether its argument is, in fact, an object of type Derived,
+                    and if so, uses the right destructor/constructor pair. </P>
+               
+               <p> I haven't shown the code for this fix. I wrote it and it
+                    works. It's easy enough to do, using a dynamic_cast to
+                    convert the reference to Base into a reference to Derived.
+                    But look at all the work we've had to go through to make
+                    what used to be simple work correctly. Why bother? </P>
+               
+               <p> Some argue that this technique is useful when dealing with
+                    polymorphic types, where assignment is tricky to get right.
+                    In fact, that's the problem in our second version of main:
+                    when we assign through a reference to Base, things get
+                    confusing. The usual techniques for implementing assignment
+                    also fail here. So the argument is that this complexity is
+                    necessary in order to get assignment semantics right in the
+                    presence of polymorphism. </P>
+               
+               <p> I don't accept this argument. At least, not as an argument
+                    for doing such violence to the assignment operator. If you
+                    truly need to copy polymorphic objects correctly, put this
+                    mechanism in a function with a suitable name such as copy.
+                    Don't try and fix the assignment operator. Yes, it doesn't
+                    work right with polymorphic objects. We understand that, and
+                    know better than to try to assign polymorphic objects
+                    through references to bases. Don't set traps for programmers
+                    who derive from your class. Give them a reasonable chance to
+                    understand what's going on.</P>
+               
+               <h4><FONT COLOR="#000080">Q</FONT></H4> I wanted to make a comment about your answer to Eric
+                    Nagler's question in your column in the Feb 1997 CUJ. Your
+                    answer was very educational, but I think the best answer to
+                    the particular question Eric posed would be to use an STL
+                    vector. His code would simply become:</FONT></FONT></FONT></FONT></p>
+
+<PRE>
+#include &lt;vector&gt;
+
+template &lt;class T, int dim&gt;
+class Array {
+   std::vector&lt;T&gt; array;
+public:
+   Array() : array(dim) {}
+}
+</PRE>
+               
+               <p>I would think that this should get the effect that he
+                    wanted &#151; since the constuctor initializes the elements
+                    using placement new.
+                    <BR> &#151; Robert Mashlan</P>
+               
+               <h4><FONT COLOR="#000080">A</FONT></H4>You raise a good point. I missed an opportunity for my usual
+                    injunction to be sure that you're asking the right question,
+                    and instead simply answered the question that Eric asked.
+                    That's because I think using traits is a clever technique
+                    that needs to be better understood, and I let my enthusiasm
+                    for them overcome my usual skepticism. In general, our
+                    concern as programmers and as designers ought to be to
+                    determine how to create classes that provide the behavior we
+                    need. Sometimes we need to resort to clever implementation
+                    tricks, but we must always be alert for opportunities to
+                    reuse existing code. With reuse firmly in mind, let's
+                    re-examine Eric's question: is there a way to infer whether
+                    a parametrized type is primitive or user-defined? His
+                    example was implementing an Array template which provides
+                    suitable initialization for each of the array elements. When
+                    the Array template is instantiated each element of the
+                    internal array is initialized with the default constructor.
+                    For built-in types the default constructor does nothing, and
+                    you cannot say anything about the values that the resulting
+                    elements will have. To give builtins meaningful values his
+                    code looped through the array explicitly, assigning a value
+                    to each element. That step is not needed when the template
+                    is instantiated for a user-defined type, since such types
+                    have meaningful default constructors. He wanted to know how
+                    to avoid having to run through the loop when it was not
+                    necessary.</P>
+               
+               <p>As is often the case, the best answer to this question is to
+                    not ask the question in the first place, but to explore
+                    other designs. As you suggest, one simple approach is to use
+                    the vector template provided by the Standard C++ library.
+                    Since a vector is a sequence container it provides a
+                    constructor that takes an element count and an initial
+                    value. According to the current working paper, for every
+                    sequence container the constructor X(n,t) "constructs a
+                    sequence with n copies of t." The vector template
+                    further refines this constructor by providing a default
+                    argument for the second parameter, created with an explicit
+                    invocation of the default constructor for T. That is, the
+                    constructor is defined like this:</FONT></FONT></P>
+
+<PRE>
+explicit vector(size_type n,
+    const T&amp; value = T(),
+    const Allocator&amp; = Allocator());
+</PRE>
+               
+               <p>We won't concern ouselves here with the third parameter.
+                    When we invoke this constructor for a vector the way you did
+                    in your code we end up with a vector whose elements are all
+                    initialized to the value T(). When the type T is a built-in
+                    type, this value is the same value that we would get if we
+                    created a static object of type T. As you suggested, this
+                    provides the initialization value that Eric was looking for.
+               </P>
+               
+               <p> Be careful, though: there is nothing in the working paper
+                    that guarantees the performance that Eric also specified.
+                    Remember, his other goal was to avoid having to walk through
+                    the array twice in order to initialize it. If you look at
+                    the description of this constructor in the current working
+                    paper you'll see the following complexity requirement:</FONT></FONT></P>
+              
+<PRE> 
+vector(const Allocator&amp; = Allocator());
+explicit vector(size_type n, const T&amp; value = T(),
+    const Allocator&amp; = Allocator());
+template &lt;class InputIterator&gt;
+    vector(InputIterator first, InputIterator last,
+        const Allocator&amp; = Allocator());
+vector(const vector&lt;T,Allocator&gt;&amp; x);
+</PRE>
+               
+               <UI><p> Complexity: The constructor template &lt;class InputIterator&gt;
+                    Vector(InputIterator first, InputIterator last) makes only N
+                    calls to the copy constructor of T (where N is the distance
+                    between first and last) and no reallocations if iterators
+                    first and last are of forward, bidirectional, or random
+                    access categories. It does at most 2N calls to the copy
+                    constructor of T and log(N) reallocations if they are just
+                    input iterators, since it is impossible to determine the
+                    distance between first and last and then do copying.</P></UI>
+               
+               <p>Notice that this text says nothing about the complexity
+                    requirements for the constructor that we're interested in.
+                    This is clearly an oversight, and there's an obvious
+                    implementation for this constructor that makes only n calls
+                    to the copy constructor of T and no calls to the default
+                    constructor. It's reasonable to assume that implementors
+                    will use this technique. It is not required by the working
+                    paper, however, so you could run into an implementation that
+                    does exactly what Eric wanted to avoid: initialize each
+                    element of the array with the default constructor then copy
+                    the desired value into each element. </P>
+               
+               <p> If you really want to avoid this admittedly remote
+                    possibility you need to code the initialization yourself.
+                    The easiest way to do this is to reuse the technique that
+                    the Standard Library uses, through the template function
+                    uninitialized_fill_n. Here's its definition from the current
+                    working paper:</FONT></FONT></p>
+               
+<PRE>          
+template &lt;class ForwardIterator, class Size, class T&gt;
+void uninitialized_fill_n(ForwardIterator first, Size n, const T&amp; x);
+</PRE>
+               
+               <p> Effects:</p>
+                    
+<PRE>
+while (n--)
+new (static_cast&lt;void*&gt;(&amp;*result++))
+    typename iterator_traits&lt;ForwardIterator&gt;::
+        value_type(*first++);
+</PRE>
+               
+               <p>This function takes three arguments: the location of the
+                    memory to be filled, the number of elements to be filled,
+                    and the value to fill those elements with. It's a bit
+                    complex to use, since you have to provide a forward iterator
+                    that properly references the raw memory. Because of this
+                    requirement, if I needed to use this function explicitly in
+                    my code I'd write a helper class to handle the raw memory
+                    and its initialization, then use that helper class as a data
+                    member in my Array class. Here's the public interface to the
+                    helper template InitializedMemory:</p>
+
+<PRE>
+template &lt;class T, int dim&gt;
+class InitializedMemory
+{
+public:
+    InitializedMemory( const T&amp; value = T() );
+    T&amp; operator[] ( int );
+};
+</PRE>
+               
+               <p>Here's how this template is used to implement our Array
+                    template:</p>
+
+<PRE>
+
+template &lt;class T, int dim&gt;
+class Array
+{
+private:
+    InitializedMemory&lt;T,dim&gt; data;
+};
+</PRE>
+               
+               <p>The various member functions of the Array template can now
+                    use data as an array of elements, accessing the individual
+                    elements using the array index operator. The default
+                    constructor for Array will properly invoke the constructor
+                    for data, so all that we have left to do is write the
+                    template InitializedMemory correctly. </P>
+               
+               <p> The tricky part in writing InitializedMemory is providing an
+                    iterator that we can use as the first argument when we call
+                    uninitialized_fill_n. The Standard library helps us a bit
+                    here by providing a template named raw_storage_iterator.
+                    When we instantiate raw_storage_iterator by giving it an
+                    output iterator that writes to raw storage, we can use the
+                    resulting iterator with uninitialized_fill_n. This
+                    simplifies our coding task, because we now only need to
+                    provide an appropriate output iterator, rather than a
+                    forward iterator. With this in mind, here's the full
+                    definition of the class InitializedMemory:</FONT></FONT></P>
+
+<PRE>
+template &lt;class T, int dim&gt;
+class InitializedMemory
+{
+public:
+    InitializedMemory( const T&amp; value = T() );
+    T&amp; operator[] ( int );
+private:
+
+    // raw storage for our objects
+    char raw_memory[dim*sizeof(T)];
+
+    // output iterator to initialize raw storage
+    struct Iterator : 
+        public iterator&lt;output_iterator_tag,T&gt;
+    {
+    public:
+        // initialize it to point to the start of our memory
+        Iterator( void *mem_block ) : cur_block(mem_block) {}
+
+    // dereference to produce an lvalue
+    T&amp; operator *() { return
+        *reinterpret_cast&lt;T*&gt;(cur_block); }
+
+    // increment operators
+    Iterator operator++ ()
+    {
+        cur_block = reinterpret_cast&lt;T*&gt;(cur_block)+1;
+        return *this;
+    }
+    Iterator operator++ (int)
+    {
+        Iterator old_iter = *this;
+        cur_block = reinterpret_cast&lt;T*&gt;(cur_block)+1;
+        return old_iter;
+    }
+
+    private:
+    void *cur_block;
+    };
+};
+</PRE>
+               
+               <p>Now all we need to do is implement the constructor for
+                    InitializedMemory:</FONT></FONT></P>
+
+<PRE>
+template &lt;class T, int dim&gt;
+InitializedMemory&lt;T,dim&gt;:: InitializedMemory( const T&amp; value = T() )
+{
+    uninitialized_fill_n(
+        raw_storage_iterator&lt;InitializedMemory&lt;T,dim&gt;:: Iterator,T&gt;(data), dim, value );
+}
+</PRE>
+               
+               <p>That's a lot of work. Personally, I'd trust library
+                    implementors to implement the constructor for vector
+                    sensibly, and avoid doing all of this. Most of us already
+                    have enough things to do without duplicating work that our
+                    libraries already do for us. o </P>
+               
+               <p><I>Pete Becker is director of development at Borland
+                    International's Open Environment Division in Boston, MA. He
+                    has been actively involved in C++ development work at
+                    Borland for seven years, both as a developer and a manager.
+                    He is Borland's representative to the ANSI/ISO C++
+                    standardization committee. He can be reached by e-mail at
+                    pbecker@oec.com. </I></P> </BLOCKQUOTE>
+     </BODY>
+</HTML>

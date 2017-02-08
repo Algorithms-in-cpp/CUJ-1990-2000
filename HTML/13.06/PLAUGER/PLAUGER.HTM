@@ -1,0 +1,104 @@
+
+
+<HTML>
+<HEAD>
+
+<TITLE>June 1995/Standard C/C++</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocjun.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Columns</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Standard C/C++<A name="00D2_007A"><A name="00D2_007A"></font></h2><P>
+<h3 align="center"><A name="00D2_0000"><A name="00D2_0000">The Header &lt;iostream&gt;</h3><P>
+<h3 align="center"><font color="#800000">P.J. Plauger</font></h3><hr><blockquote><P>
+<P><i><A name="00D2_0000"><A name="00D2_0000">P.J. Plauger is senior editor of C/C++ Users Journal. He is convener of the ISO C standards committee, WG14, and active on the C++ committee, WG21. His latest books are The Draft Standard C++ Library, and Programming on Purpose (three volumes), all published by Prentice-Hall. You can reach him at pjp@plauger.com.</i></P><P>
+<h4><FONT COLOR="#000080"><A name="00D2_007B">Introduction<A name="00D2_007B"></FONT></h4></P>
+The header <I>&lt;iostream&gt;</I> declares four objects:<P>
+<UL><li><I>cin</I>, to control the unbuffered standard input stream (as does <I>stdin</I>)</li>
+<li><I>cout</I>, to control the unbuffered standard output stream (as does <I>stdout</I>)</li>
+<li><I>cerr</I>, to control the unbuffered standard error stream (as does <I>stderr</I>)</li>
+<li><I>clog</I>, to control the buffered standard error stream (as does <I>stderr</I>)</li></UL>
+These objects are constructed for you, so they offer a particularly easy way to perform input and output in a C++ program. The three objects that are unbuffered also support reads and writes that are properly synchronized with any C file operations that the program may also perform on the standard streams. I described buffered and unbuffered operations on stream buffers in conjunction with the header <I>&lt;fstream&gt;</I>. (See "Standard C/C++: The Header <I>&lt;fstream&gt;</I>," <I>CUJ</I>, April 1995 and "Standard C/C++: Implementing <I>&lt;fstream&gt;," </I><I>CUJ</I>, May 1995.<P>
+The header <I>&lt;iostream&gt;</I> is in many ways the culmination of all the iostreams machinery that I have described over the past year or so. Historically, in fact, the header <I>&lt;iostream.h&gt;</I> includes everything represented here in the headers <I>&lt;ios&gt;, &lt;streambuf&gt;, &lt;istream&gt;, &lt;ostream&gt;</I>, and <I>&lt;iostream&gt;</I>. The general assumption has been that, if you want to work with any part of iostreams, you certainly want to declare <I>cin</I> and friends as well.<P>
+<h4><FONT COLOR="#000080"><A name="00D2_007C">Early Construction<A name="00D2_007C"></FONT></h4></P>
+The four objects declared in <I>&lt;iostream&gt;</I> also share a peculiar property. They are all constructed before any expression that accesses them, even if that expression is in a constructor for a static object. Equally, none of these objects is destroyed, at least until after the execution of the last expression that accesses them, even if that expression is in a destructor for a static object. That means you can read and write the standard streams before <I>main</I> is called and after <I>main</I> returns. At the very least, such latitude is very convenient for debugging.<P>
+Pulling it off takes a bit of trickery, however. Consider the problem. Unless the Standard C++ library indulges in some extra-linguistic magic, <I>&lt;iostream&gt;</I> must contain declarations something like:<P>
+<pre>extern istream cin;
+extern ostream cout;
+extern ostream cerr;
+extern ostream clog</pre>
+One of the object modules linked to form a program must define these objects, if any other object module refers to them. Say a constructor for the static object <I>x</I> extracts characters from <I>cin.</I> Then <I>cin</I> must be constructed before <I>x</I> is. But C++ defines no ordering among object modules for the calling of constructors for static objects. The language cannot guarantee that the two objects are constructed in the proper order.<P>
+Fortunately, the language does define the ordering of constructor calls <I>within</I> a given object module. It promises to construct objects in the order in which they appear in the translation unit that defines the object module. You can't define <I>cin</I> early in each translation unit &#151; exactly one instance of the object must occur throughout the entire program. But you can define <I>something</I> early enough to give you a fighting chance.<P>
+<h4><FONT COLOR="#000080"><A name="00D2_007D">Class<B><I> ios: :Init</I><A name="00D2_007D"></B></FONT></h4></P>
+That something is an object of class <I>ios::Init.</I> I promised a year ago that I'd return to this nested class, and at last I have. (See "Standard C/C++: The Header <I>&lt;ios&gt;," </I><I>CUJ</I>, May 1994.) An important part of the trick to constructing <I>cin</I> and friends is an additional declaration in <I>&lt;iostream&gt;</I>. It looks something like: <P>
+<pre>static ios::Init_Ios_init;</pre>
+This declares an object with the secret name <I>_Ios_init</I>, local to the translation unit. Because the name doesn't have external linkage, each translation unit that includes <I>&lt;iostream&gt;</I> declares a separate instance of the object. Because class <I>ios::Init</I> defines a default constructor, that constructor gets called to initialize the object. And because you must include a header before you make any reference to anything it declares or defines, that default constructor gets called in each translation unit before any static constructor can execute that references <I>cin</I> and friends.<P>
+So far so good. A mechanism exists to get control in time. Presumably, it can ensure that <I>cin</I> and friends are properly constructed. For that, you can use a <I>placement</I><I> new</I> expression. (See "Standard C: C++ Language Support Library," <I>CUJ</I>, March 1994.) Say, for example, you want to construct <I>cin</I> with the single-argument constructor that specifies a pointer to the stream buffer <I>fin</I>. You can then write:<P>
+<pre> new (&amp;cin) istream(&amp;fin);</pre>
+The effect is as if you had originally defined <I>cin</I> by writing:<P>
+<pre> istream cin(&amp;fin);</pre>
+But this raises another problem. The definition for <I>cin</I> is also going to call a constructor. Either the definition will occur before the placement <I>new</I> expression executes or after it:<P>
+<UL><li>Say the definition occurs first. If it does anything nontrivial &#151; such as allocating storage and storing a pointer to it in the constructed object &#151; the placement <I>new</I> is going to stomp all over the result. This is bad hygiene.</li>
+<li>Say the placement <I>new</I> expression occurs first. If the definition later stores much anything at all in the object, it will mess up the effect of the placement <I>new</I>. This is disastrous.</li></UL>
+The only scenario that works is to have the definition call a constructor that <I>does nothing at all</I>. Then it doesn't matter whether the definition occurs before or after. So long as the placement <I>new</I> expression does any necessary initializing before the first use of the object, everything works fine. Classes <I>ios, istream, ostream</I>, and who knows what else must each have a constructor that does nothing. For much the same reason, each of these classes must also have an empty (virtual) destructor. Otherwise, a critical object might be destroyed before it is accessed from the destructor for another static object.<P>
+The final trick is to avoid constructing <I>cin</I> and friends too many times. It's bad enough to have to <I>double construct</I> so many important objects within the iostreams package. You certainly don't want to construct them all once for each translation unit in a program that includes <I>&lt;iostream&gt;</I>. Class <I>ios::Init</I> again comes to the rescue by defining a static member object for counting constructor calls, as in:<P>
+<pre> static int _Init_cnt;</pre>
+Such a member object is shared across all objects of class <I>ios::Init</I>. Say the member object is initialized to -1, and that the constructor for <I>ios::Init</I> increments this common counter each time it is called. Then a given call to the constructor knows whether it is the first such call. The counter increments to zero only on that first call. And <I>that</I> is the call that does the actual construction of <I>cin</I> and friends (and any support objects). This trick is known as the "nifty counter" technique. With just a little more logic, the nifty counter also can tell when to flush all the output streams, in preparation for program termination.<P>
+So there's at least one way to ensure that <I>cin</I> and friends have such an extraordinarily useflifetime. The trick is clever enough, but you might still wonder why the draft C++ Standard spells out so much of the machinery. Why not leave it to each implementation to solve the problem in its own way, under the hood as it were.?<P>
+<h4><FONT COLOR="#000080"><A name="00D2_007E">Limitations<A name="00D2_007E"></FONT></h4></P>
+As it turns out, situations can arise where even all this trickery fails to deliver. Say the function <I>f</I> is defined in one translation unit and is called during the construction of a static object in another translation unit. If <I>f</I> wants to extract from <I>cin</I>, it needs to be sure that <I>cin</I> has been properly constructed, as described above. But calling a function in a translation unit does <I>not</I> ensure that static constructors for that translation unit have first been called. The nifty counter supplied by the header <I>&lt;iostream&gt;</I> may not come through in time.<P>
+The fix is to explicitly initialize an <I>ios::lnit</I> object within <I>f</I>, as in:<P>
+<pre>void f()
+   {      // read during static construction
+   ios::Init not_otherwise_used;
+   <I><B>&lt;</I></B><I>can now reference cin, etc</I><I><B>&gt;</B></I>
+   }</pre>
+If this mechanism were not spelled out in the draft C++ Standard, there would be no way to solve the initialization problem portably.<P>
+<h4><FONT COLOR="#000080"><A name="00D2_007F">Recent Changes<A name="00D2_007F"></FONT></h4></P>
+Once again, I note that a major recent change to iostreams is the addition of wide-character streams. The effect on <I>&lt;iostream&gt;</I> is to add declarations for four more objects:<P>
+<pre>win
+wout
+werr
+wlog</pre>
+If you want to control the standard streams as wide-character streams, you must use these objects instead of the traditional <I>cin</I> and friends. Note, however, that you cannot mix operations. Amendment 1 to the C Standard says that the first operation on a C stream, standard or otherwise, makes it either "narrow oriented" or "wide oriented." Operations of the other orientation subsequently fail.<P>
+It takes some magic to make these objects wide oriented, but otherwise they are  constructed much like their predecessors. The magic represents a major diversion, while the rest is just tedious repetition. So I continue to avoid the complications of showing these recent additions.<P>
+<h4><FONT COLOR="#000080"><A name="00D2_0080">Using <B><I></B>&lt;iostream&gt;<A name="00D2_0080"></I></FONT></h4></P>
+You include the header <I>&lt;iostream&gt;</I> to make use of any of the objects <I>cin, cout, cerr,</I> or <I>clog.</I> These objects let you read and write the standard streams available to any executing C++ program: <P>
+<UL><li>Extract from <I>cin</I> to read from the standard input stream.</li>
+<li>Insert to <I>cout</I> to write to the standard output stream.</li>
+<li>Insert to <I>cerr</I> to write to the standard error stream,</li>
+<li>Insert to <I>clog</I> to write to the standard error stream.</li></UL>
+Insertions to <I>cerr</I> are flushed at the end of each inserter call, (The format flag <I>ios: :unitbuf</I> is set.) It is the preferred destination for debugging or error messages, lest the program crash before displaying useful output. Insertions to <I>clog </I>are more likely to be buffered. It is the preferred destination for "logging" high volumes of trace information, because insertions to it are less likely to degrade overall program performance.<P>
+These objects are constructed before any constructor is called to initialize a static object. On rare occasions, as described above, you may need to be sure that <I>cin</I> and friends are initialized even earlier. In that case, be sure that program execution declares an object of class <I>ios::lnit</I> before the first expression that references any of these objects.<P>
+You can redirect any of these streams by suppling a replacement pointer to <I>streambuf</I>. For example, you can alter <I>cin</I> to extract from the named file "<I>input</I>" by writing:<P>
+<pre>#include &lt;fstream&gt;
+#include &lt;iostream&gt;
+   .....
+   filebuf fb;
+   fb.open("input", ios::in);
+   cin.rdbuf(&amp;fb);</pre>
+Do <I>not</I> redirect <I>cerr</I> this way, however, lest diagnostics go astray.<P>
+<h4><FONT COLOR="#000080"><A name="00D2_0081">Implementing <B><I>&lt;iostream&gt;</I><A name="00D2_0081"></B></FONT></h4></P>
+<A href="list1.htm">Listing 1</a>
+shows the file <I>iostream,</I> which implements the header <I>&lt;iostream&gt;.</I> It is one of those rare headers that is both short and overt. Given the general description of <I>&lt;iostream&gt;</I> above, you should not be surprised at anything you see here.<P>
+<A href="list2.htm">Listing 2</a>
+shows the file <I>iostream. c</I>. Its primary business is to define the four objects declared in <I>&lt;iostream&gt;.</I> Its primary source of complexity is the need to double construct these and other objects, as I described earlier.<P>
+I first described the type <I>_Uninitialized,</I> and the value <I>_Noinit</I>, in conjunction with the header <I>&lt;ios&gt;</I>. (See the May 1994 installment, mentioned earlier.) A constructor that takes a single argument of type <I>_Uninitialized</I> is expected to perform no initialization. A declaration with the single argument value _<I>Noinit</I> calls this constructor. Along the way, I've shown several classes that have constructors of this sort &#151; <I>ios, streambuf</I>, <I>istream</I>, <I>ostream</I>, and <I>filebuf</I>. Here is where they all come into play.<P>
+Seven objects require double construction in this implementation. Four are the objects declared in <I>&lt;iostream&gt;</I>: <I>cin, cout, cerr</I>, and <I>clog</I>. Three more are objects of type <I>filebuf</I> that do not have external linkage: <I>fin, fout</I>, and <I>ferr</I>. All seven are constructed with placement new expressions in the constructor for <I>ios::Init</I>. This implementation of class <I>filebuf</I> accepts a constructor with a <I>pointer</I><I> to FILE</I> parameter. That eliminates the need for yet another do-nothing constructor, for class <I>stdiobuf</I>.<P>
+The constructor for <I>ios::Init</I> never leaves the construction count <I>ios::Init::_Init_cnt</I> at zero. That way, the destructor can decrement the contraction count with no fear of future confusion. When it decrements the construction count to zero, the destructor knows to flush all three objects that control output streams. Bizarre patterns of constructor and destructor calls might cause the streams to be flushed more than once, but no reasonable pattern should ever cause the seven objects to be constructed more than once.<P>
+<h4><FONT COLOR="#000080"><A name="00D2_0082">Testing <B><I>&lt;iostream&gt;</I><A name="00D2_0082"></B></FONT></h4></P>
+<A href="list3.htm">Listing 3</a>
+shows the file <I>tiostrea.c.</I> It tests the basic properties of the objects declared in &lt;<I>iostream</I>&gt;. These are mostly cursory tests of the overt properties of the objects, without altering the streams they control until the very end. The program concludes by inserting into each of the three objects that control output streams. If all goes well, and if the standard error stream is directed to the same display as the standard output stream, the program prints:<P>
+<pre>Can write on streams:
+
+   cout
+   cerr
+   clog
+SUCCESS testing &lt;iostream&gt;</pre>
+and takes a normal exit.<P>
+<I>This article is excerpted in part from P.J. Plauger,</I> The Draft Standard C++ Library, <I>(Englewood Cliffs, N.J.: Prentice-Hall, 1995).</I><P>
+
+<h4><a href="../../../source/1995/jun95/pjp.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

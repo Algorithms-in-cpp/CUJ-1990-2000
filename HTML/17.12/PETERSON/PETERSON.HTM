@@ -1,0 +1,187 @@
+<HTML>   
+     <HEAD>
+<TITLE>December 1999/Manipulating Sparse Matrices</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocdec.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Manipulating Sparse Matrices</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Mark C. Peterson</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Many matrix computations involve far more zeros than nonzero element values. A representation that squeezes out zeros can really speed up several critical operations.</p>
+</BLOCKQUOTE>
+
+<hr>
+<BLOCKQUOTE>
+
+<p>A very good technique for efficiently handling matrices is to take advantage of the fact that most of the coefficients in real-world matrices are zeros. Matrices that are mostly zeros are called sparse matrices. Their counterparts, which contain very few zeros, are called dense matrices. This article focuses on sparse matrices. I present a stable, easy-to-use matrix template class upon which you can build complex algorithms that compile to efficient object code. I also show how to use this template class to solve linear systems.</p>
+<p>The storing, adding, and multiplying of large quantities of zeros can be a horrendous waste of computing power. I use template class <B>smatrix</B> to specify base classes that efficiently handle these types of matrices. (A partial listing of <B>smatrix</B> is shown in <a href="fig1.htm">Figure 1</a>. <B>smatrix</B> is much too large to show in its entirety here. The full source code is available on the <I>CUJ</I> ftp site. See p. 3 for downloading instructions.) This template leverages the template classes found in the Standard C++ headers <B>&lt;map&gt;</B> and <B>&lt;vector&gt;</B> to produce highly efficient code that is orders of magnitude faster than dense-matrix algorithms. For example, using <B>smatrix&lt;t&gt;</B> I am able to solve a 2,000 x 2,000 matrix with 15,000 nonzero entries in nine seconds on a 330 MHz Pentium class machine.</p>
+
+<h4><FONT COLOR="#000080">Storage Format</FONT></H4>
+
+<p>I use a <B>vector&lt;t&gt;</B> member <B>e</B> in <B>smatrix&lt;t&gt;</B> to store the nonzero matrix coefficients. Each row in <B>smatrix&lt;t&gt;</B> has a corresponding object of class <B>map&lt;size_t, size_t&gt;</B> that maps the column index for that row to the coefficient position in <B>e</B>. Likewise, each column also has a similar map object that maps the row indices for that column. The <B>iMap</B> and <B>jMap</B> members in <B>smatrix&lt;t&gt;</B> are vectors that contain the pointers to these maps. These mapping vectors are base one rather than base zero to match the conventional matrix index notation. The extra maps at <B>iMap[0]</B> and <B>jMap[0]</B> are used to reference zero coefficients.</p>
+<p><a href="fig2.htm">Figure 2</a> shows the output from the function <B>smatrix&lt;t&gt;::PrintListing</B>, defined in the header <B>smatrix.h</B>, for a random 5x5 matrix. (The file <B>smatrix.h</B> is too large to list in this article, but is available on the <I>CUJ</I> ftp site.) To look up the coefficient for a matrix element in row 2, column 5, you can use the map pointed to by <B>iMap[2]</B>, which contains a list of all the entries for row 2, sorted by column index. A search of this map for column index 5 would retrieve offset 3. I could then retrieve the coefficient at e[3]. Alternatively, you can use <B>jMap</B> in a similar manner. Here you would look up row 2 in <B>jMap[5]</B> to retrieve offset 3.</p>
+<p>Each mapping contains a well ordered set of indices that you can use efficiently in matrix algorithms. For example, suppose the <B>iMap</B> and <B>jMap</B> elements were for the multiplicator and multiplicand arguments respectively for a matrix multiplication algorithm. A typical multiplication algorithm would calculate each (i, j) element in the product matrix as the dot product of row i in the multiplicator with column j in the multiplicand. This would require ten floating-point operations (five multiplications and five additions to an accumulator) to calculate the element (2, 1) in a fully populated matrix. For a sparse matrix, I instead sum only the products of matching entries in row 2 and column 1:</p>
+
+<pre>
+ row(2) (1,1)     (3,2)     (5, 3)
+*col(1)      (2,1)     (4,5)(5, 8)
+&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;&#151;
+elem(2,1) =                 e[3]*e[8]
+</pre>
+
+<p>Here I need to perform only two floating-point operation and five integer comparisons.</p>
+<p>What if these two rows and columns were in a 2,000x2,000 matrix instead of a 5x5 matrix? Using dense-matrix methods would require 2,000 multiplications and 2,000 additions. You could modify the dense matrix code to avoid the multiplications and additions by explicitly checking for zeros, but this still involves 2,000 floating-point comparisons for just this one element. Using sparse-matrix techniques, you would need only two floating-point operations and five integer comparisons to calculate this element regardless of the overall matrix dimensions.</p>
+<p>Note that while I designed the <B>smatrix</B> template class to efficiently handle sparse matrices, it also works perfectly well with dense matrices. There is some additional overhead associated with the map storage class that you would not have in algorithms designed expressly for dense matrices, but this additional overhead is trivial compared to the computing complexity associated with the dense matrix itself.</p>
+
+<h4><FONT COLOR="#000080">Populating Matrix Elements</FONT></H4>
+
+<p><B>smatrix</B> has four constructors:</p>
+
+<pre>
+smatrix();
+smatrix(const smatrix&lt;t&gt;&amp; a);
+smatrix(const t* d, size_t iDim,
+   size_t jDim);
+smatrix(size_t iDim, size_t jDim,
+   size_t MaxNZ);
+</pre>
+
+<p>The first constructor instantiates an empty matrix, the second is a copy constructor, and the third initializes a matrix from a given array of fully populated elements. The last constructor instantiates a matrix with pre-allocated storage, where <B>MaxNZ</B> is the maximum number of expected nonzero entries.</p>
+<p>The first three functions in the test program <B>main.cpp</B>, <a href="list1.htm">Listing 1</a>, show how to use these constructors to create the matrix shown in <a href="fig1.htm">Figure 1</a>. Function <B>CoefInit5x5</B> constructs an empty matrix <B>c</B> and explicitly assigns the coefficients. While this is notationally convenient, it is rather inefficient. The code in <B>smatrix</B> will have to dynamically resize the <B>iMap</B>, <B>jMap</B>, and <B>vector&lt;t&gt;</B> members as their capacities are exceeded.</p>
+<p>Function <B>ArrayInit5x5</B> initializes the matrix by passing it a fully populated array representation of the matrix. Function <B>InsertInit5x5</B> shows the most efficient initialization method. It first constructs <B>c</B> by declaring the matrix dimensions and number of nonzero elements. It then inserts each nonzero coefficient.</p>
+
+<h4><FONT COLOR="#000080">Manipulating Rows and Columns</FONT></H4>
+
+<p>Three functions in <B>main.cpp</B>, <a href="list1.htm">Listing 1</a>, demonstrate how to create algorithms that manipulate the matrix row and column vectors. The vectors described in this context are the mathematical ones rather than objects of class <B>vector&lt;t&gt;</B> from the Standard C++ library.</p>
+<p>Template function <B>MyMultiply</B> is a simplified version of the <B>smatrx&lt;t&gt;::operator*</B> for multiplying two matrices. It forms the product matrix element-by-element by calculating the dot product of the row vectors in matrix <B>a</B> and the column vectors in matrix <B>b</B>. Likewise template function <B>MyAdd</B> is a simplified version of <B>smatrix&lt;t&gt;::operator+</B>. Both functions use the <B>row</B> and <B>col</B> member functions to access specific rows and columns.</p>
+<p>The third template function <B>MyUpperTrans</B> transposes the upper triangular portion of one matrix into the lower triangle of a new matrix. This function references portions of row and column vectors rather than the entire vector by using <B>rng</B> to specify a range restriction.</p>
+<p>I use three classes of mathematical vectors within <B>smatrix</B> to efficiently enable the manipulations shown in <a href="list2.htm">Listing 2</a>:</p>
+
+<pre>
+const_svector_ref
+svector_ref
+svector
+</pre>
+
+<p>These classes return sparse vectors. The reference versions are related to the matrix that originated them. For example, the call <B>row(2)</B> on a const matrix will return a <B>const_svector_ref</B> that contains a pointer to the original matrix, a flag indicating that it is a row-oriented sparse vector, and the row index value of 2. The non-reference instances of <B>svector</B> are temporaries resulting from manipulating the references.</p>
+<p>The expression <B>row(2) - row(3)</B> generates a temporary <B>svector</B> that contains the difference between rows 2 and 3. The non-constant sparse vector reference instances, encapsulated by the <B>svector_ref</B> class, are intended for assignment within the non-constant matrix. The <B>row(1)</B> portion of the expression <B>row(1) = row(2) - row(3)</B> returns an <B>svector_ref</B> instance that is assigned the temporary <B>svector</B> generated by <B>row(2) - row(3)</B>.</p>
+
+<h4><FONT COLOR="#000080">Matrix Transposition and Pivots</FONT></H4>
+
+<p>Independent storage of the <B>i</B> and <B>j</B> indices also supports extremely efficient matrix transpositions. The function <B>smatrix&lt;t&gt;::Transpose</B> executes a transposition by simply interchanging the two pointers to the <B>iMap</B> and <B>jMap</B> vectors and interchanging <B>iDim</B> and <B>jDim</B>, which requires about six assignments regardless of the size of the matrix.</p>
+<p>Interchanging individual rows and columns in a matrix is equivalent to reordering the original equations and variables respectively. This is known as pivoting. The <B>smatrix</B> template provides two functions to support explicit pivoting:</p>
+
+<pre>
+void PivotRow(size_t a, size_t b,
+   smatrix&lt;t&gt; *pMatrix = NULL);
+void PivotCol(size_t a, size_t b,
+   smatrix&lt;t&gt; *pMatrix = NULL);
+</pre>
+
+<p>These functions interchange row or column <B>a</B> with row or column <B>b</B> and execute a corresponding pivot in the <B>smatrix&lt;t&gt;</B> pointed to by <B>pMatrix</B> if it is not null.</p>
+<p>Two similar functions also execute pivots, but these functions look for the coefficient with largest magnitude in the rows or columns with indices greater than <B>k</B>:</p>
+
+<pre>
+bool PivotRow(size_t k, t&amp; MaxCoef,
+   smatrix&lt;t&gt; *pMatrix = NULL);
+bool PivotCol(size_t k, t&amp; MaxCoef,
+   smatrix&lt;t&gt; *pMatrix = NULL);
+</pre>
+
+<p>You generally use these functions to perform a partial pivot in a forward-elimination algorithm. Each returns a value of <B>false</B> if it is unable to locate a coefficient with an absolute magnitude greater than the matrix's current round-off error estimate, <B>epsilon</B>. Each also sets the <B>MaxCoef</B> reference to the coefficient of the located row or column.</p>
+<p>I also include in the <B>smatrix</B> template a <B>GetDiag</B> function with the following prototype:</p>
+
+<pre>
+bool GetDiag(size_t k, t&amp; Diag,
+   bool bWithPartialPivot = false,
+   smatrix&lt;t&gt; *pMatrix = NULL);
+</pre>
+
+<p>This functions sets the <B>Diag</B> reference to the diagonal coefficient at (<B>k</B>, <B>k</B>). It uses the <B>PivotRow</B> function if the <B>bWithPartialPivot</B> flag is set to <B>true</B>, which will pivot any row greater than <B>k</B> with the current row if it finds a coefficient with a greater absolute value. It will also perform a corresponding pivot on any matrix pointed to by <B>pMatrix</B>.</p>
+
+<h4><FONT COLOR="#000080">Random and Identity Matrices</FONT></H4>
+
+<p>Template classes <B>TRndSMatrix</B> and <B>TRndDMatrix</B> in <B>RndSMatrix.h</B> (not shown), create random sparse and dense matrices, respectively. Here are two examples from <B>main.cpp</B>, <a href="list1.htm">Listing 1</a>:</p>
+
+<pre>
+a = TRndDMatrix&lt;double, double&gt;
+    (4, 5, -6, 7);
+b = TRndSMatrix&lt;double, int&gt;
+    (8, 9, -11, 12, 50);
+</pre>
+
+<p>Matrix <B>a</B> is assigned a densely populated 4x5 <B>smatrix&lt;double&gt;</B> with double-precision coefficients ranged between -6 and 7. Matrix <B>b</B> is assigned a sparsely populated 8x9 <B>smatrix&lt;double&gt;</B> with 50 nonzero integer coefficients ranged between -11 and 12.</p>
+<p>Most purely random sparse matrices are not solvable. The <B>TRndSolvable</B> template class creates a random sparse matrix that is very likely solvable. It does this by creating a random matrix with nonzero coefficients along the diagonal. It then expands the number of coefficients along each side of the diagonal until it reaches the desired number of nonzero coefficients. This creates what is known as a banded matrix. After creating the banded matrix, it shuffles the rows and columns using the <B>PivotRow</B> and <B>PivotCol</B> functions.</p>
+<p>The <B>smIdentity&lt;t&gt;</B> class creates an <B>smatrix&lt;t&gt;</B> identity matrix for a given dimension. You specify the dimension of the matrix in the constructor.</p>
+
+<h4><FONT COLOR="#000080">Inversion and Equation Solving</FONT></H4>
+
+<p>There are many different ways to solve a set of linear equations, but they all fall into one of two categories &#151; direct or iterative. Iterative methods involve an initial estimate of the correct answer. You run this estimate through a formula to arrive at a new estimate that is hopefully closer to the correct solution. You continue iterating these estimates through your formula until you are satisfied that the estimate is close enough. If the iterations diverge, then the matrix does not have a solution using that technique.</p>
+<p>The <B>JonesMayerInv</B> template function in <B>main.cpp</B>, <a href="list1.htm">Listing 1</a>, implements an iterative method for calculating the inverse of a matrix suggested by Jones and Mayer in 1995 and described in the book <I>Topics in Advanced Scientific Computation,</I> by Richard E. Crandall <a href="#1">[1]</a>. Jones and Mayer discovered how to adapt Newton's method for calculating reciprocals to calculating matrix inversions.</p>
+<p>Direct methods use variations on Gaussian elimination to solve a set of linear equations and are generally much faster than iterative methods. Of the direct methods, LU decomposition is considered the fastest method for solving linear systems. The <B>TLUDecomp</B> template in <B>LUDecomp.h</B>, <a href="list2.htm">Listing 2</a>, implements this algorithm as a subclass of <B>smatrix&lt;t&gt;</B>. The <B>TestLUDecomp</B> function in <B>main.cpp</B> shows how to use the <B>TLUDecomp&lt;t&gt;</B> constructor and the <B>TLUDecomp&lt;t&gt;::Solve</B> function to solve a linear system. Note that the <B>TLUDecomp&lt;t&gt;</B> constructor results in an empty matrix if the system is not solvable. You can use <B>smatrix&lt;t&gt;::operator!()</B> to check for an empty matrix.</p>
+<p>Note that if the LU decomposition fails, the system may still be solvable using an iterative method. This is because the LU decomposition may have failed due to round-off error. There are iterative methods available that compensate for the round-off error inherent in the direct methods.</p>
+<p>The <B>TLUDecomp</B> template is actually composed of three matrices: the lower triangular factor L, the upper triangular factor U, and a matrix of recorded pivots. The two triangular matrices L and U are combined as a single matrix in the <B>smatrix&lt;t&gt;</B> base class. You can extract these imbedded matrices using the <B>L</B> and <B>U</B> functions. The pivots matrix is initially an identity matrix with the same dimension as the matrix to be decomposed. As the LU decomposition algorithm performs a partial pivot during the forward elimination phase, it performs corresponding pivots on the pivots matrix such that the pivot matrix represents the pivoted identity. The <B>P</B> function will return a copy of the pivots matrix.</p>
+<p>The <B>TLUDecomp&lt;t&gt;::Solve</B> function does not restrict you to solving for single vectors, i.e. matrices with only one column. You can pass the <B>TLUDecomp&lt;t&gt;::Solve</B> function an <B>smatrix&lt;t&gt;</B> with multiple columns, where each column in the matrix is a vector you would like solved. I use a similar technique in the <B>TLUDecomp&lt;t&gt;::Inverse</B> function, where I arrive at the inverse by performing a solution on the identity matrix. The <B>TestLUInverse</B> in <B>main.cpp</B> shows a test of this algorithm.</p>
+
+<h4><FONT COLOR="#000080">Row and Column Iterators</FONT></H4>
+
+<p>The code in <B>LUDecomp.h</B>, <a href="list2.htm">Listing 2</a>, also demonstrates how to use the <B>smatrix&lt;t&gt;</B> row and column iterators. These iterators generally reference only nonzero coefficents. Iterating in this manner is key to the efficiency of <B>smatrix&lt;t&gt;</B>-based algorithms. Note that there could be zero or near-zero coefficients within the matrix as a result of a previous addition or subtraction.</p>
+<p>There are two forms of the <B>IterForRow</B> and <B>IterForCol</B> functions. The <B>IterForCol(k)</B> form used in the <B>BackElim</B> function returns an iterator for the first nonzero coefficent in column <B>k</B>. The <B>IterForCol(k, k + 1)</B> form used in the <B>FwdElim</B> function returns an iterator for the first nonzero coefficent in column <B>k</B> starting at or after row <B>k + 1</B>. Both forms support the return of constant and non-constant iterators.</p>
+<p>I also provided <B>Index</B> and <B>Coef</B> functions that return the index and coefficient values respectively associated with the current location of the iterator. The <B>EndOfRow</B> and <B>EndOfCol</B> functions test the iterator to determine if it has been incremented past the last nonzero coefficient.</p>
+
+<h4><FONT COLOR="#000080">Calculating the Determinant</FONT></H4>
+
+<p>The <B>smatrix</B> template provides two functions for calculating the determinant &#151; <B>smatrix&lt;t&gt;::det</B> and <B>smatrix&lt;t&gt;::lnScaledDet</B>. The <B>det</B> function performs a forward elimination and returns the product of the resulting diagonals times -1 if it performed an odd number of pivots.</p>
+<p>Large matrices that are even slightly scaled can have very large determinants that can easily overflow even for double-precision numbers. The <B>lnScaledDet</B> function operates in a similar fashion to the <B>det</B> function except that it sums the natural log of the absolute value of the diagonals while keeping track of the sign of the underlying determinant number. The <B>TestDeterminant</B> function in <B>main.cpp</B> shows how use the <B>lnScaledDet</B> function to remove the scaling factor from a matrix to create an unscaled matrix where the determinant of the unscaled matrix is +/-1.0.</p>
+
+<h4><FONT COLOR="#000080">Matrix Epsilon</FONT></H4>
+
+<p>Round-off errors are the bane of matrix computations. Small errors in poorly conditioned matrices can lead you down the garden path into believing you have arrived at a valid solution, when it is in fact not even close.</p>
+<p>The Standard C library defines a macro related to double-precision floating point round-off error in the header <B>&lt;float.h&gt;</B>. The macro <B>DBL_EPSILON</B> is the smallest value such that <B>1.0 + DBL_EPSILON</B> is guaranteed not to be equal to <B>1.0</B>. The <B>smatrix</B> template maintains a member <B>epsilon</B> for each matrix. For the <B>smatrix&lt;double&gt;</B> classes the value for <B>epsilon</B> is <B>DBL_EPSILON</B> times the absolute value of the maximum matrix coefficient. Coefficients less than <B>epsilon</B> are treated as zero. Thus, division during forward elimination by a diagonal coefficient less than the current <B>epsilon</B> value for the matrix indicates that the matrix is not solvable by that technique.</p>
+<p>The <B>Solvable</B> and <B>Unsolvable</B> functions in <B>main.cpp</B> show the effects of round-off errors in ill-conditioned matrices and demonstrates that the <B>LUDecomp</B> template constructor results in an empty matrix when they are too severe.</p>
+
+<h4><FONT COLOR="#000080">Optimizations and Temporaries</FONT></H4>
+
+<p>You will notice that the non-optimzied debug compilations of <B>smatrix&lt;t&gt;</B> code will run many times slower than the optimized version. This is due to the extensive use of inline functions and returning of temporaries. Consider this template function that returns a temporary:</p>
+
+<pre>
+template &lt;class t&gt;
+smatrix&lt;t&gt; ReturnTemporary(
+const smatrix&lt;t&gt; &amp;m)
+{
+   smatrix&lt;t&gt; c;
+   // some stuff that manipulates 'c'
+   return(c);
+}
+
+cout &lt;&lt; ReturnTemporary(m) &lt;&lt; endl;
+</pre>
+
+<p>A literal compilation constructs and manipulates <B>c</B> within the function and calls the copy constructor to return the result to the output stream. An optimized compilation should compile the template code with the unnecessary temporaries removed. That version constructs <B>c</B> once, manipulates its contents, and passes the reference to <B>c</B> to the output stream.</p>
+<p>Be forewarned that while Microsoft VC++ v6.0 will remove unnecessary temporaries, other compilers may not. For the optimizers in other compilers, you should either check the compiler documentation or examine the compiled assembler code listing.</p>
+
+<h4><FONT COLOR="#000080">FastHeap Dynamic Allocation</FONT></H4>
+
+<p>One of the drawbacks to using a Standard C++ library <B>map</B> template is that it allocates and frees tree nodes. The C++ heap manager for most compilers is designed to continuously defragment the heap by merging freed blocks with adjacent blocks that are also free. This entails some significant overhead when used frequently as described in an article published last year by Vladimir Batov. (See "A Quick and Simple Memory Allocator" in the January 1998 issue of <I>CUJ</I> <a href="#2">[2]</a>). Unfortunately, Vladimir's code will not work on the <B>map</B> template tree nodes. The <B>map</B> template allocates tree nodes out of the global heap rather than the <B>allocator&lt;t&gt;</B> in the template declaration.</p>
+<p>Instead, I use a simliar technique which intercepts global heap usage by overriding <B>::operator new</B> and <B>::operator delete</B>. This code is not shown here, but is also available with the source code archive accompanying this article. After you call a function named <B>EnableFastHeap</B>, it begins caching small freed blocks (less than 256 bytes) rather than returning them to the global heap. This allows the memory to remain fragmented until there is a subsequent call to a <B>DisableFastHeap</B> function, which returns the cached blocks to the global heap. This technique roughly doubles the execution speed.</p>
+
+<h4><FONT COLOR="#000080">Information Sources</FONT></H4>
+
+<p><a name="1"></a>[1]   Richard E. Crandall. <I>Topics in Advanced Scientific Computation</I> (Springer-Verlag, 1996). ISBN 0387944737.</p>
+<p><a name="2"></a>[2]   Vladimir Batov. "A Quick and Simple Memory Allocator," <I>C/C++ Users Journal,</I> January 1998.</p>
+<p><a name="3"></a>[3]   The University of Notre Dame publishes a sparse-matrix library at <B>http://www.lsc.nd.edu/research/mtl/</B> that you may wish to investigate. It does, however, require a good deal of knowledge regarding its internal functions and formats.</p>
+<p><a name="4"></a>[4]   The National Institute of Standards and Technology has a Matrix Market web site at <B>http://math.nist.gov/MatrixMarket/</B> that contains a set of matrices you can use to test matrix software. The root page at <B>http://math.nist.gov</B> also has links and a search engine to other information sources.</p>
+<p><a name="5"></a>[5]   David S. Watkins. <I>Fundamentals of Matrix Computations</I> (John Wiley &amp; Sons, 1991). ISBN 0471614149. This is an excellent book for anyone who would like to understand the theory of matrix computations.</p>
+<p><a name="6"></a>[6]    Gene H. Golub and Charles F. Van Loan. <I>Matrix Computations &#151; John Hopkins Series in Mathematical Sciences</I> (John Hopkins University Press, 1996). ISBN 0801854148, paperback; 080185413X, hardcover. This book provides much more depth than Watkins'</p>
+<p><a name="7"></a>[7]    Yousef Saad. <I>Iterative Methods for Spares Linear Systems &#151; The Pws Series in Computer Science</I> (Pws Publishing Company, 1996). ISBN 053494776X. This book covers iterative techniques for dealing with sparse matrices that do not solve well using direct methods discussed in this article.</p>
+
+<p><i><B>Mark C. Peterson</B> is a Business Applications Systems Developer for Northeast Utilities. He has published several books, including the <I>Borland C++ Developer's Bible</I>. He is currently pursuing a Masters in CS at RPI. You can email him at <B>petermc1@home.com</B>.</i></p>
+
+<h4><a href="../../../source/1999/dec99/peterson.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

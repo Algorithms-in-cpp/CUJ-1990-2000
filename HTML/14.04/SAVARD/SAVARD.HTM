@@ -1,0 +1,403 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+          <TITLE>April 1996/Shared Memories as Files</TITLE>
+     </HEAD>
+     <BODY BGCOLOR="#FFFFFF">
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><A href="../tocapr.htm"><IMG src="../../toc.gif" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">Unix</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="CENTER"><FONT COLOR="#800000">Shared Memories as Files</FONT></H2>
+          
+          <H3 ALIGN="CENTER"><FONT COLOR="#800000">Marco Savard</FONT></H3>
+          
+          <BLOCKQUOTE>
+               
+               <p>Shared memories are a real convenience
+                    at times under UNIX, but using them can be a bit cumbersome
+                    unless youre content to treat them as specialized files.</p></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <h4><FONT COLOR="#000080">Introduction</FONT></H4>
+               
+               <p>UNIX has long supported the concurrent
+                    running of several processes. These processes often must
+                    exchange data an operation called Inter-Process
+                    Communication (IPC). The development of client-server
+                    technology makes IPC essential for a great number of
+                    applications. IPC facilities on UNIX are crude, but noneless
+                    essential. So I wrote a small library to make using IPC as
+                    simple as using files.</p>
+               
+               <p>IPC is generally based upon either
+                    message passing or shared variables (as semaphores). Shared
+                    memory, which belongs to the second category, is one of the
+                    better known facilities that UNIX provides to share a great
+                    number of variables. How does it work? Shared memories are
+                    identified by numerical "keys." A key can be
+                    created by one process and conveyed to a second process. The
+                    second process can use the key to attach itself to this
+                    shared memory and access its contents.</p>
+               
+               <p>This is the theory, the implementation
+                    is more complex. You begin by calling the shmget function:</p>
+
+<PRE>#include &lt;sys/types.h&gt; 
+#include &lt;sys/ipc.h&gt;
+#include &lt;sys/shm.h&gt;
+int shmget(key_t key, int size, int shmflg);</PRE>
+               
+               <p>The shmget function allows a process
+                    to get the shared memory identifier (shmid) associated with
+                    a key. When shmflag is equal to IPC_PRIVATE and the shared
+                    memory associated with the key exists, the corresponding
+                    shmid is returned by the function. On the other hand, if the
+                    IPC_CREAT bit in shmflg is set to 1 and no shared memory
+                    associated with the key exists, a new shared memory is 
+                    created and its shmid is returned. This shmid can now be
+                    returned to other processes that know the key.</p>
+               
+               <p>Once you have the shmid, is it
+                    possible to access the contents of the shared memory? Not
+                    yet! You need to call another function to attach the process
+                    to the shared memory. Later, you will need to call another
+                    one to detach it from the shared memory:</p>
+
+<PRE>void *shmat(int shmid, 
+            void *shmaddr,
+            int shmflg); 
+int   shmdt(void *shaddr);</PRE>
+               
+               <p>For someone who has never used shared
+                    memories before, all this may seem a bit obscure. In fact, I
+                    dont see why shared memories should be harder to use than
+                    files. When I began using this kind of IPC, I frequently
+                    referred to the related man pages to know how to handle
+                    them. So I decided to create a package that could hide the
+                    complexity of use behind an interface that looks like the 
+                    standard I/O routines. My motto is: If you are able to open,
+                    read, write, and close files, you should be able to open,
+                    read, write, and close shared memories with the same ease. I
+                    created shared-memory access routines whose prototypes
+                    appear in <A href="listing1.htm">Listing 1</a>.
+</p>
+               
+               <h4><FONT COLOR="#000080">Interface Routines</FONT></H4>
+               
+               <p>Three major differences exist between
+                    files and shared memories. The first relates to their nature
+                    files are objects usually on disks, while shared memories
+                    are objects in memory. This difference should be transparent
+                    from a users point of view, however. You manipulate files on
+                    disk and files on diskettes with the same abstraction, after
+                    all. The package lets you hide implementation details and
+                    present shared memories to the user as memory files.</p>
+               
+               <p>The second difference is that files
+                    are identified by alphanumerical names, and shared memories
+                    by keys. My package could include a naming system to
+                    associate names with shared-memory keys. But I dont want to
+                    complicate my software, and it is not really essential.
+                    Usually, you handle tens of thousands of files, but only
+                    dozens of shared memories. Keys are adequate to identify 
+                    memory files.</p>
+               
+               <p>The third difference occurs when you
+                    create a new file. In the case of a traditional file, you
+                    write into a buffer of BUFSIZ bytes. Its contents are copied
+                    to disk when the buffer is full, when the file is closed, or
+                    when the buffer is explicitly flushed. Hence, the size of
+                    the newly-created file is known only when you close the
+                    file. By contrast, when you create a new shared memory, you 
+                    need to know its size at the open-time.</p>
+               
+               <p>Fortunately, my package allows the
+                    creation of a new memory file just like a disk file. You
+                    need no previous knowledge of the final size. Here is how it
+                    works. The same fopen function is used to either create a
+                    file, open it in read-only mode, or open it for updating.
+                    There is also a single function shm_open to create a memory
+                    file, open it in read-only mode, or open it for updating 
+                    update memory files. The first </p>
+               
+               <p>argument is the memory files
+                    identifier, a key. The second one is the opening mode, which
+                    is much the same as for fopen. You write a mode of "r",
+                    "r+", or "w+" to indicate that the
+                    memory file already exists. You write "w" to
+                    specify that the file has to be created.
+                    <A href="savardt1.htm">Table 1</a>
+summarizes the access
+                    modes of shm_open. I explain pinned shared memories later in
+                    this article.</p>
+               
+               <h4><FONT COLOR="#000080">Operations on Memory
+               Files</FONT></H4>
+               
+               <h4><FONT COLOR="#000080">Creation</FONT></H4>
+               
+               <p>As I mentioned earlier, when you call
+                    shmget to create a new shared memory, you have to know its
+                    final size. Because the final size will be known at close
+                    time, the package calls shmget when you close the memory
+                    file. Until you close it, where does the package keep the
+                    contents? One solution is to allocate space on the heap
+                    (local memory for the process) to store data until it can be
+                     written into a newly created memory file. The contents of a
+                    newly created file is then not available to other processes
+                    until the file is closed. This is often a reasonable
+                    limitation, but I have discarded this solution because I
+                    wish to keep the software as simple as possible. The
+                    simplest solution I have found is to store data in a
+                    temporary disk file for a newly created memory file, then
+                    copy its contents to a shared memory when the memory file is
+                    closed.</p>
+               
+               <p>Note that if you create a file with
+                    fopen(filename, "w"), and the file named by
+                    filename already exists, it is overwritten. By contrast,
+                    shm_open(key, "w") returns an error if the key is
+                    already used by a shared memory. (See
+                    <A href="savardt2.htm">Table 2</a>.
+) The reason for this
+                    choice of implementation is that shared memories are usually
+                    critical in a running application, so I prefer to not
+                    overwrite an existing shared memory if the user did not
+                    explicitly ask to delete it.</p>
+               
+               <h4><FONT COLOR="#000080">Read-Only Access</FONT></H4>
+               
+               <p>Once the users process is attached to
+                    a shared memory, the user gets its address and has total
+                    control over its content. If a process should only read data
+                    from a shared memory, it is the users responsibility to
+                    avoid corrupting its contents. The ability to open a memory
+                    file in read-only mode provides a level of security. Each
+                    access to its content will be controlled by the shm_read 
+                    routine. So the shm_open function not only makes it easier
+                    to use shared memories, it also allows a secure access to
+                    its content.</p>
+               
+               <h4><FONT COLOR="#000080">Seeking</FONT></H4>
+               
+               <p>Just as you can seek to a specified
+                    position in a file with fseek, you can do the same thing in
+                    a memory file with shm_seek. The package implements it as a
+                    macro to reduce overhead. The function returns an error if
+                    the user tries to reach a position beyond the end of the
+                    memory file. This is an extra security feature provided by
+                    the package. Also, shm_tell returns the current position in 
+                    a memory file, as ftell does in a disk file.</p>
+               
+               <h4><FONT COLOR="#000080">Reading and Writing</FONT></H4>
+               
+               <p>The shm_read and shm_write functions
+                    are used to read and write a memory file. They accept four
+                    arguments (same as fread and fwrite). Using them helps you
+                    avoid corruption of shared memories. For example, shm_write
+                    verifies whether the memory file has been opened for
+                    updating. These two functions also prevent access beyond the
+                    end of the shared memory. Of course, if your application 
+                    have to meet some real-time constraints, you can always use
+                    smd-&gt;addr directly if the shared memory already exists,
+                    to avoid the overhead of calling shm_read and shm_write.</p>
+               
+               <h4><FONT COLOR="#000080">UNIX Tools</FONT></H4>
+               
+               <p>These are all the routines needed to
+                    handle shared memories with the same ease as conventional
+                    files. What follows are some UNIX tools that use the
+                    interface routines. My goal with these tools is to show how
+                    the interface routines work, and to present some tools that
+                    facilitate the manipulation of shared memories.<A href="savardt2.htm">
+                         Table 2</a>
+shows the list of UNIX tools.</p>
+               
+               <p>The first program, shm_load (see
+                    <A href="listing2.htm">Listing 2</a>)
+, lets you load a
+                    flat file into a shared memory. No standard UNIX tool can do
+                    that. shm_load requires two arguments, the file to load and
+                    the key for the shared memory:</p>
+
+<PRE>% shm_load datafile.bin 101</PRE>
+               
+               <p>Its alter ego is shm_cat (not shown
+                    here, but available for download and on the codedisk), which
+                    reads the content of a shared memory and writes it to the
+                    standard output, much like the UNIX cat command. The output
+                    can be redirected toward a file, and several shared memories
+                    can be concatenated:</p>
+
+<PRE>% shm_cat 101 102 103 &gt; output.bin</PRE>
+               
+               <p>To get the list of shared memories
+                    that are currently loaded, you can use the shm_ls command.
+                    UNIX provides a command to list all the shared memories
+                    (ipcs -m), but I prefer to use my own command, because its
+                    output has the same format as the ls command. For example,
+                    both ls and shm_ls output the date of creation of a shared
+                    memory, data which is not displayed by default by ipcs. (You
+                     have to use the -t option.) Furthermore, ipcs displays the
+                    shared memories keys in hexadecimal, which can be confusing.
+                    Hence, shm_ls is much simpler to use. Here, for example, is
+                    the display of shared memory 101 created by the user marco
+                    [broken to fit on page mb]:</p>
+
+<PRE>% shm_ls  -rw-rw-rw-   marco  sys 
+  70144   Dec 21 14:47        101</PRE>
+               
+               <p>The fourth command is used to copy the
+                    content of a shared memory into another one. It can be
+                    useful when you want to capture an image of a shared memory
+                    at a given time. Again, UNIX does not provide any tool that
+                    offers this functionality.</p>
+
+<PRE>% shm_cp 101 102</PRE>
+               
+               <p>UNIX provides a command to remove a
+                    shared memory:</p>
+
+<PRE>% ipcrm -m &lt;shmid&gt;</PRE>
+               
+               <p>Note that you have to provide the
+                    shared memory ID, not the key, and you can only remove one
+                    shared memory at a time. Again, the shm_rm command is more
+                    intuitive:</p>
+
+<PRE>% shm_rm 101 102 103</PRE>
+               
+               <h4><FONT COLOR="#000080">Pinning a Shared
+               Memory</FONT></H4>
+               
+               <p>The shm_open function also accepts a p
+                    mode, to pin a shared memory. How does it work? UNIX works
+                    with virtual memory, a memory that is larger than the
+                    physical one. Only the used memory pages are actually loaded
+                    in memory, the other pages are kept on disk. When the system
+                    needs more memory, it swaps out the memory pages that have
+                    not been accessed for some amount of time. The problem is 
+                    that shared memories are often used to perform a critical
+                    task, for example to store requests and replies between a
+                    client and a server. Because client-server applications
+                    often must meet real-time constraints, you dont always want
+                    the system to swap out the shared memory. But there is no
+                    general way to determine when a page will be swapped out.
+                    Its at the systems discretion.</p>
+               
+               <p>Fortunely, UNIX provides a way to lock
+                    (or pin) memory pages in physical memory. This functionality
+                    is also offered by shm_open. If a real-time process accesses
+                    a memory file, and needs this memory file to stay in memory,
+                    it can open it in pin mode. This memory file will stay
+                    pinned until the process closes it. The memory file will be
+                    automatically unpinned by shm_close. Note that it is 
+                    possible for several processes to pin the same shared
+                    memory. The shared memory is actually pinned if at least one
+                    process pins it. </p>
+               
+               <h4><FONT COLOR="#000080">A Final Example</FONT></H4>
+               
+               <p>The last example is the implementation
+                    of a very simple client-server program that uses a shared
+                    memory to communicate. The goal is not to show how a
+                    concrete client-server application works, but how shared
+                    memories can be used for client-server applications.
+                    <A href="savardf1.htm">Figure 1</a>
+displays the structure
+                    of a simple hello world application. <A href="listing3.htm">Listing
+                         3 </A>shows the code of both server.c and client.c.</p>
+               
+               <p>A shared memory is used to store
+                    requests from a client and replies from the server. There is
+                    just one client for this tiny application. The server is
+                    responsible for the creation and the deletion of the shared
+                    memory. It must thus be started before the client:</p>
+
+<PRE>% server.exe -key=101 &amp;</PRE>
+               
+               <p>The number 101 (my favorite number)
+                    indicates which shared memory will be used. The ampersand (&amp;)
+                    tells UNIX that this command should run in the background.
+                    You can continue entering commands at the UNIX prompt while
+                    server.exe is executing. The next step is to start the
+                    client:</p>
+
+<PRE>% client.exe -key=101</PRE>
+               
+               <p>The client.exe program prompts the
+                    user until a line beginning with a dot (.) is entered. Each
+                    line is sent to the server, which prints it. An empty line
+                    entered generates a Hello world message. When the user
+                    enters a line beginning with a dot, the client terminates.
+                    The client will send an ultimate request to the server to
+                    terminate. The server process will close the shared memory, 
+                    delete it, and finally kill itself. The client process will
+                    terminate at the same time.</p>
+               
+               <h4><FONT COLOR="#000080">Distributed
+               Applications</FONT></H4>
+               
+               <p>Client-server applications give the
+                    ablity to enhance the client without changing the server (as
+                    long as the protocol stays the same). They also permit
+                    restricting access to a privileged resource (e.g. CPU time)
+                    to a server only. And they permit several clients to
+                    communicate with a single server. Furthermore, client-server
+                    applications usually allow clients and the server to run on 
+                    different machines.</p>
+               
+               <p>Is it possible to build a distributed
+                    application using shared memories? The answer is yes. The
+                    shared memory used in the hello world application is divided
+                    in two blocks. (See Figure 1.) The request block is written
+                    only by the client process, and the reply block is written
+                    only by the server. So, it is possible to implement a
+                    mirrored shared memory on a second machine.</p>
+               
+               <p>I have not implement that here its
+                    beyond the scope of shared memories. But<A href="savardf2.htm">
+                         Figure 2</a>
+shows how it can be done. One daemon
+                    (similar to a DOS TSR program) runs on each machine. The
+                    daemon on the client machine reads the contents of the
+                    request block and sends changes to the daemon on the client
+                    machine. That daemon writes changes on the server machines
+                    shared memory. The server machines daemon also sends changes
+                    in the reply block to the client machines daemon. The
+                    advantage with this implementation is that you can move
+                    either the client or the server executable to another
+                    machine without changing one line of code. Each one of them
+                    communicates only with the shared memory, and hence believes
+                    that the other one is still running on the same machine.</p>
+               
+               <p>I tested my software on several UNIX
+                    flavours: Silicon Graphics IRIX, IBM RISC-6000s AIX, and
+                    DECs OSF. I think that it is easily portable to SUNs
+                    Solaris. I wish to thank Jacques Dagenais and Beno&#186;t
+                    Dicaire for their help and comments on this article.</p>
+               
+               <p><I>Marco Savard is a computer
+                    professionnal who has been programming in C/UNIX for four
+                    years. He has a degree in Computer Science from Laval
+                    University (Quebec City). He has developed real-time
+                    software for flight simulation. He can be reached via the
+                    Internet at marco.savard@silverrun.com.</I></p>
+
+<h4><a href="../../../source/1996/apr96/savard.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+     </BODY>
+</HTML>

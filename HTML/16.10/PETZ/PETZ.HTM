@@ -1,0 +1,154 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>October 1998/A C++ Telephony Interface</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tococt.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Client/Server</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">A C++ Telephony Interface</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">John Petz</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>TAPI standardizes the business of making a phone call. This interface hides the messy details.</p></BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>Microsoft's TAPI (Telephony Applications Interface) makes it possible to create distributed applications across a telephone network. However, TAPI is a C API and can be quite complex to understand and use. This article features a pair of C++ wrapper classes, <B>CLocalConnect</B> and <B>CRemoteConnect,</B> that make it easy to add dial-up capability to new or existing MFC Win32 applications.</p>
+<p>In this article, I define a simple distributed model that has two modes of operation, remote and local. Remote mode uses the telephone network, in which a server application can accept calls from one or more client applications. Local mode does not use the phone network, but may use a direct serial connection such as a null modem cable to another node in the distributed system.</p>
+
+<h4><FONT COLOR="#000080">An Overview of TAPI</FONT></H4>
+
+<p>TAPI provides a Windows desktop application with the ability to communicate voice, fax, and data media over the public telephone network. Each TAPI application begins by opening a logical line device to an underlying physical device (i.e., a modem). The logical line device provides an abstraction layer. Multiple logical devices can map to the same physical device, and TAPI determines which application gets access to the physical line. (This discussion refers to the standard Windows 95 telephony driver UniModem. UniModem supports only the typical residential analog phone line, not the more sophisticated digital phone lines. The analog phone lines are known as POTS, or "Plain Old Telephone Service" lines.)</p>
+<p>A logical line is defined here as a single POTS line supporting data media, with one phone number per line and one call per phone number. Once a logical line is opened, the application supplies a phone number (unless accepting a call) and then is ready to make a phone call. When the application opens the logical line, TAPI provides information about the line, primarily whether it is suitable for the type of media to be transferred (which is data in this case).</p>
+
+<h4><FONT COLOR="#000080">TAPI States</FONT></H4>
+
+<p>Each call made by the application transitions through a number of TAPI states, starting from Idle at call initiation to Disconnect at call completion. Intermediate states are Dialtone, Ringing, Call Offered, and Connect. The Connect and Disconnect states are the most important to the application because they represent the conditions for which application data can be transferred and terminated, respectively.</p>
+<p>The sequence of transitions through TAPI states is shown as follows:</p>
+<p>Client outbound call:</p>
+
+<pre>
+Idle -&gt; dialtone   
+     -&gt; dialing
+     -&gt; proceeding
+     -&gt; ringback
+     -&gt; Connected
+     -&gt; Disconnected
+     -&gt; Idle
+</pre>
+
+<p>Server inbound call:</p>
+
+<pre>
+Idle -&gt; Call Offered
+     -&gt; Call Accepted
+     -&gt; Connected
+     -&gt; Disconnected
+     -&gt; Idle
+</pre>
+
+<h4><FONT COLOR="#000080">Dynamic Sizing</FONT></H4>
+
+<p>TAPI uses many C structures, all supplied by <B>tapi.h.</B> However, using these structures is a bit more complicated than using a normal C struct because many of them are dynamically sized. These structures contain two special fields, <B>dwTotalSize</B> and <B>dwNeededSize</B>. <B>dwTotalSize</B> represents the size of the currently allocated struct as measured by <B>sizeof</B>. <B>dwNeededSize</B> is filled in by various functions, such as TAPI's <B>lineGetID</B>, with the size actually needed. <A HREF="fig1.htm">Figure 1</A> shows the variable-size struct <B>VARSTRING</B> (from <B>tapi.h</B>) used with function <B>lineGetID</B> to retrieve the modem handle and name <a href="#1">[1]</a>. After <B>lineGetID</B> returns, the code checks for (<B>needed</B> &gt; <B>total</B>). If true, the structure is reallocated to the needed size and the function is invoked again.</p>
+<p>This dynamic sizing is due to environmental factors on the Windows platform that may render the basic header structures insufficient.</p>
+
+<h4><FONT COLOR="#000080">Version Negotiation</FONT></H4>
+
+<p>Software facilities such as TAPI are continually being updated, which could break an existing application and cause it to crash. Since TAPI is realized in a DLL, replacing the DLL with a newer version illustrates such a situation. To avoid breaking the code, TAPI requires the application to negotiate a version that is agreeable to both the application and the DLL. When the application is developed it records which TAPI version is in use. It later uses this version number (actually a range of versions) when invoking the function <B>lineNegotiateAPIVersion</B>. TAPI then determines if the specified version is supported by the DLL in use, and if so, a version number common to both is returned. The application then specifies this use-version number in subsequent TAPI function invocations for which versioning is required. If the versioning process fails, the application can fail gracefully and supply an error message stating the version incompatibility. To those familiar with versioning from Microsoft's COM, the concept is the same although the mechanism is quite different. <A HREF="fig2.htm">Figure 2</A> illustrates the versioning mechanism used by TAPI.</p>
+
+<h4><FONT COLOR="#000080">Asynchronous Procedure Calls</FONT></H4>
+
+<p>TAPI needs APCs (Asynchronous Procedure Calls) because the application's event initiation (e.g., making a connection) does not happen synchronously following the mere return of a function call. The external environment affects the timing and success of an application request. An appropriate application response depends on a mechanism to inform it when such asynchronous events occur, which is the purpose of the APC mechanism.</p>
+<p>TAPI v2.0 provides an event-driven APC method that uses a Win32 event object. However, this method is currently supported only under Windows NT, whereas TAPI v1.4's "hidden window" method is supported under both NT and 95 and is the method I used for this article. The hidden window method uses the normal Windows thread messaging scheme to signal asynchronous events. Windows GUI developers know that window message events are dispatched to the thread where the window was created and entered on the thread's message queue. The thread has a message loop which processes each message on the queue by activating the registered window procedure (also known as a callback function) for that window and supplying the message as a parameter.</p>
+<p>Likewise, TAPI asynchronous events are dispatched to the thread that registered the callback. Note that, in Win32 terminology, this thread cannot be a non-GUI or worker thread; it must be a UI (user-interface) thread because a UI thread has a message queue. With this mechanism in place, asynchronous events such as Call Connected, Disconnected, Idle, and so forth can now be communicated to the application. For C++ considerations, the callback thread must be a static function because TAPI is based on the C model. Figure 3 demonstrates callback registering via function <B>lineInitialize</B> (<A HREF="fig3a.htm">Figure 3a</A>); <B>this</B> pointer linkage via <B>lineOpen</B> (<A HREF="fig3b.htm">Figure 3b</A>); and subsequent callback linkage via the <B>dwInstance</B> parameter (<A HREF="fig3c.htm">Figure 3c</A>).</p>
+
+<h4><FONT COLOR="#000080">The Raw TAPI API</FONT></H4>
+
+<p>I have previously referred to a number of TAPI functions without mentioning their parameters. Here is a brief overview of those parameters:</p>
+
+<pre>
+lineInitialize(&amp;hTAPI, hInstance,
+  lpfnCallbackFuncton.szAppName,
+  &amp;numLines)
+</pre>
+
+<p><B>hTAPI</B> returns the Windows API handle; <B>hInstance</B> is the application instance handle; <B>lpfnCallbackFunction</B> points to the application callback function; <B>szAppName</B> is an application-unique name; and <B>numLines</B> returns the number of logical line devices, also known as Telephony Service Providers (TSP). The last parameter reflects the number of TSPs installed under the modems applet in Control Panel.</p>
+
+<pre>
+lineNegotiateAPIVersion(hTAPI,
+  deviceLine, lowVersion,
+  highVersion, &amp;versionToUse,
+  &amp;extensions)
+</pre>
+
+<p><B>hTAPI</B> is the API handle; <B>deviceLine</B> is the logical line device to be tested for compatibility with the application's range of versions; <B>lowVersion/highVersion</B> specify the version range the application can work with; <B>versionToUse</B> is the returned negotiated version; and <B>extensions</B> returns feature extensions beyond standard TAPI for this TSP. The last parameter can normally be ignored, but if used must also be negotiated via <B>lineNegotiateExtVersion</B> (not discussed here).</p>
+
+<pre>
+lineOpen(hTAPI, deviceLine, &amp;hLine,
+  versionToUse, extensionVersion,
+  instanceData, privileges,
+  mediaModes, lpCallparams)
+</pre>
+
+<p><B>hTAPI</B> is the API handle; <B>deviceLine</B> is the logical line to open; <B>hLine</B> returns the handle to the line device; <B>versionToUse</B> is the negotiated TAPI version; <B>extensionVersion</B> is the negotiated extension (set to 0 for UniModem); <B>instanceData</B> is 32-bit application-specific data that is passed to the callback function, and is where a <B>this</B> instance pointer is assigned (as seen later); <B>privileges</B> specifies how the owner wants to handle calls; and <B>mediaModes</B> specifies which types of calls to answer or monitor.</p>
+
+<pre>
+lineGetID(hLine, addressID, hCall,
+  select, lpDeviceID,
+  lpszDeviceClass)
+</pre>
+
+<p><B>hLine</B> is a handle to the open logical line; <B>addressID</B> and <B>hCall</B> specify the address and call handles for the modem; <B>select</B> specifies which of the first three parameters <B>lineGetID</B> should use to retrieve the modem handle; <B>lpDeviceID</B> points to a <B>VARSTRING</B> structure to which Windows assigns the modem handle and name; and <B>lpszDeviceClass</B> specifies the device class, which for Win32 must be <B>comm/datamodem</B>.</p>
+
+<h4><FONT COLOR="#000080">The TAPI Class Design</FONT></H4>
+
+<p>Following is the rationale for applying object orientation to the telephony design.</p>
+
+<UL><LI>The complexity of the TAPI architecture makes it an excellent candidate for encapsulation.</LI>
+    <LI>A need for inheritance arises from the notion of developing a local or null modem interface, and then deriving a remote modem interface from it. Class <B>CRemoteConnect</B> is accordingly derived from the base class <B>CLocalConnect</B>. Finally, the application may want to override some features of either interface (e.g., the I/O thread), so polymorphism is needed.</LI>
+    <LI>Another design consideration is deciding how the class should be packaged. Since the class will require unique dialog resources independent of the client application, I decided to use a DLL for this purpose. I opted for Microsoft's Visual C++ MFC extension DLL method (v5.0) for implementation. I selected the extension DLL because I can export the entire class using the storage modifier <B>AFX_EXT_CLASS</B>. Moreover, shared linkage makes for much smaller executables and is excellent for development, since link time is much faster. <A HREF="fig4.htm">Figure 4</A> and <A HREF="fig5.htm">Figure 5</A> list portions of the null modem interface and derived modem class declarations, respectively.</LI></UL>
+
+<p>The rationale for encapsulating the TAPI class design as a DLL should make it clear that the user of this class is alleviated from the TAPI details while also benefiting from not having to augment the client GUI with additional resource dialogs to support user interaction. Moreover, using inheritance and polymorphism extends the class flexibility by allowing the user to tailor the class behavior to the specific needs of the client application.</p>
+
+<h4><FONT COLOR="#000080">Implementation</FONT></H4>
+
+<p>A detailed description of TAPI and the requisite source code is beyond the scope of this article. An excellent text from the Microsoft Programming Series is titled <I>Communications Programming for Windows 95</I> and is my primary reference for this article <a href="#2">[2]</a>. This book provides a C demo program that was the starting point for my class design. I also consulted a good text on multithreading: <I>Multithreading Applications in Win32</I> <a href="#3">[3]</a>. This book is an invaluable reference for Win32 thread programming, was quite useful for developing the callback and default I/O threads, and even provided some helpful hints on DLLs.</p>
+<p>My initial challenge was to migrate the demo program to an encapsulated class-based design. The demo program runs from the primary (GUI) thread which also serves as the callback thread. I lifted the core TAPI architecture from the demo program and interfaced it to a dedicated callback UI thread while converting C functions to C++ member functions. However, this presented a memory management problem, since what was once a single thread became multithreaded so that memory allocated in the application thread at instantiation could be freed by the callback thread or vice versa. This situation created an unsafe scenario in multithreaded applications. I solved this problem by replacing calls to <B>malloc/free</B> with <B>HeapFree/HeapAlloc</B> as seen in <A HREF="fig1.htm">Figure 1</A>.</p>
+<p>Another problem was the very likely situation in which multiple telephony drivers, or TSPs, are installed. I decided to use a listview control that would display all installed modem device strings and an associated TAPI icon for the user to select as the line device to open. I used this method to fill an MFC <B>ClistCtrl</B> object, remembering to close each logical line after the information was obtained.</p>
+<p>My final challenge concerned shutting down the TAPI device. I noticed that periodically the shutdown process could take seconds, possibly tricking the user into thinking that the application had somehow stopped responding. If that happened and the user aborted the application during debug or normal operation, the device shutdown would not complete and subsequent attempts to make a new call would result in system errors, correctable only via system reboot. Researching this problem &#151; an artifact of using the Windows 95 <B>tapi32.dll</B>, which performs address thunks to the 16-bit version &#151; I concluded that the simplest and perhaps only way to avoid this was to send status messages to the user while shutdown was in progress. Therefore, I used a modeless dialog listbox, which displays status messages during shutdown so the user will know the application is actively shutting down. TAPI v2.0, supplied with Windows NT 4.0, is a true 32-bit implementation, so such system errors may now be avoidable.</p>
+
+<h4><FONT COLOR="#000080">Detailed Operation</FONT></H4>
+
+<p>Consider the simple distributed model: a server application that is waiting to accept an incoming call, and a client application that is about to make a call to the server. Both applications will instantiate the <B>CremoteConnect</B> class and request use of the default I/O thread.</p>
+<p>As shown in <A HREF="fig6.htm">Figure 6</A>, the server thread instantiates <B>CRemoteConnect</B> to answer a call and requests use of the default I/O thread <a href="#4">[4]</a>. The constructor invokes TAPI functions as necessary to prepare for an incoming call. If no TAPI error messages are reported, the server thread is ready to answer a call so it blocks using Win32's <B>WaitForMultipleObjects</B> until either a connection is made or an exit command has been received. On connection, the callback in my DLL spawns the default I/O thread and sets the <B>Connect</B> event. In turn, the server thread's <B>WaitForMultipleObjects</B> returns, indicating that a client connection has occurred. The server thread now enters a <B>while</B> loop which terminates on client disconnect or thread exit.</p>
+<p>The server thread uses the message I/O methods from the base class <B>CLocalConnect</B>. I also added the synchronous read member function <B>SyncRead</B> to allow the thread to block until either a data request arrives or a timeout occurs. When the client call terminates, the DLL callback will ensure that member function <B>isModemConnected</B> returns <B>false</B>. The server thread detects the disconnection and automatically prepares to answer the next incoming call by calling member function <B>ReAnswerModem</B>, which simply reconstructs the object to answer the next call.</p>
+<p>The client thread shown in <A HREF="fig7.htm">Figure 7</A> instantiates <B>CRemoteConnect</B> to make a call and requests default I/O. In addition to bringing up a Properties dialog, the class constructor will prompt the user for phone number and area code. The Dialing Properties dialog also appears to optionally specify long distance and/or credit card number. This dialog can also be viewed from the Modems applet under Control Panel <a href="#4">[4]</a>. If no errors are reported, the call is made and upon connection or termination, control returns to the application.</p>
+<p>On connection, the DLL callback spawns the default I/O thread. The callback will set the connect event and a flag such that base class member function <B>PortInitOk</B> returns <B>true</B>. The client thread uses the message I/O methods from the base class <B>CLocalConnect</B>. Again, I use the synchronous read member <B>SyncRead</B> to allow the client thread to block until either a data response arrives or a timeout occurs. When data arrives, the client thread writes it to an output file.</p>
+<p>Connection termination is first initiated by the client thread by allowing the <B>CRemoteConnect</B> object to go out of scope, which happens when a thread exit event has been received from the application menu. The destruction of the client object displays a shutdown progress dialog while the shutdown procedure for TAPI is carried out. At the server end, the disconnect event is reported by TAPI and, as already discussed, the server thread prepares to answer the next call.</p>
+<p>Note that once a connection is made, the handle to the opened modem can be used as if it were a handle to a Win32 serial port, so all Win32 I/O methods are applicable, including the exotic I/O completion port method popular with Windows NT servers. Speaking of serial ports, the features of base class <B>CLocalConnect</B> can also be used if a null modem connection is used. In this case, the server and client threads instantiate <B>CLocalConnect</B>. If <B>PortInitOk</B> returns <B>true</B>, data transfers can proceed using the same I/O methods.</p>
+
+<h4><FONT COLOR="#000080">Conclusions</FONT></H4>
+
+<p>The abstraction layer provided by TAPI comes at a price in the complexity of the programming model. This alone makes it an excellent candidate for C++ class encapsulation. Moreover, since a modem handle obtained via TAPI inherits all the Win32 serial port functionality, it makes sense to first develop a null modem base class with a default, virtual thread I/O interface which the derived TAPI class can redefine if necessary. I developed my DLL for a single application and found it quite simple to reuse in other applications.</p>
+<p>For readers familiar with Microsoft COM, my DLL could easily be extended to a COM interface simply by inheriting from <B>IUnknown</B> and defining GUIDs for the local and remote interfaces. In fact, TAPI v3.0, scheduled to be included in NT 5.0 (and currently included in NT 5.0 Beta 1) is advertising support for a COM version of TAPI. The advantage here is that explicit linkage to the DLL disappears in favor of run-time <B>QueryInterface</B> calls to the COM library with the specified GUID. Moreover, the TAPI and COM versioning methods could be combined such that newer TAPI version methods such as v2.0 would be realized in a unique COM interface with its own GUID. This would allow newer applications to query for the latest TAPI version without breaking older applications relying on older TAPI versions.</p>
+
+<h4><FONT COLOR="#000080">Notes and References</FONT></H4>
+
+<p><a name="1"></a>[1]  Some of the figures in this article refer to the data member <B>M_TapiStruct</B>. This is an instance of a user-defined structure that bundles most of the TAPI structures into one for convenience. It also keeps track of which structures have been dynamically allocated.</p>
+<p><a name="2"></a>[2]  Charles A. Mirho and Andre Terrisse. <I>Communications Programming for Windows 95</I>. (Microsoft Press, 1996.)</p>
+<p><a name="3"></a>[3]  Jim Beveridge and Robert Wiener. <I>Multithreading Applications in Win32</I>. (Addison-Wesley, 1997.)</p>
+<p><a name="4"></a>[4]  The Properties dialog, which appears when <B>CRemoteConnect</B> is constructed, can also be viewed from the Modems applet under Control Panel, noting that an additional Options tab is available only from TAPI. The Options panel provides the ability to bring up a terminal window to manually send <B>AT</B> commands to the modem before and/or after dialing. (Hit F7 to send the AT command.) Under Options, you can also manually dial the phone number if automatic dialing is not possible. Unless you experience trouble with a particular modem, the Properties dialog should not require any changes.</p>
+
+<p><i>John Petz is an R&amp;D engineer at Advanced Control Systems in Atlanta, GA. He has a Master's degree in Computer Engineering and has been designing real-time embedded systems for over ten years. His current interests are in distributed computing and component middleware.</i></p>
+
+<h4><a href="../../../source/1998/oct98/petz.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

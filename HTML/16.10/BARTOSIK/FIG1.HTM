@@ -1,0 +1,257 @@
+<HTML><HEAD>
+<TITLE>October 1998/Encapsulating the Observer Pattern/Figure 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Figure 1: The Event and Multicast classes</A></h4>
+
+<pre>
+#if !defined(MULTICAST_H)
+#define MULTICAST_H
+#include &lt;windows.h&gt;
+#include &lt;vector&gt;
+#include &lt;strstream&gt;
+#include &lt;set&gt;
+#include &lt;assert.h&gt;
+
+template &lt;unsigned&gt; class NumType {};
+typedef NumType&lt;0&gt; Args0; // Use to overload on values
+                          // 0, 1, 2, etc.
+typedef NumType&lt;1&gt; Args1; // typedef'ed for readability and to
+typedef NumType&lt;2&gt; Args2; // appease VC 5.0
+
+class DefType{}; // Minimal default type
+
+// ArgC&lt;T&gt;::Count is 1 for all types except DefType.
+template &lt;typename T&gt; struct ArgC{enum {Count=1};};
+template &lt;&gt; struct ArgC&lt;DefType&gt;{enum {Count=0};};
+
+// The interface to the Event class
+template &lt;class IObserver&gt; class AbstractEvent {
+   public:
+      typedef AbstractEvent&lt;IObserver&gt; Self;
+      virtual ~AbstractEvent(){}
+      virtual void Invoke(IObserver * p) const = 0;
+
+      // Compare two events, events are equal if they invoke
+      // the same function.
+      bool operator==(const Self &amp; rhs) const
+          {return Value()== rhs.Value();}
+   protected:
+      typedef void (DefType:: * ValueType)();
+      virtual ValueType Value() const = 0;
+};
+
+// Event class holding zero to n parameters, for brevity n = 2;
+template &lt;class IObserver, typename ObserverFunc,
+          typename P1 = DefType, typename P2 = DefType&gt;
+class Event : public AbstractEvent&lt;IObserver&gt; {
+   public:
+      explicit Event(ObserverFunc Func, const P1&amp; v1 = P1(),
+                     const P2&amp; v2 = P2()) :
+         // Take a copy of the parameters for the event
+         pFunc(Func), p1(v1), p2(v2) {}
+
+      // Call an observer, by delegating to
+      // the correct implementation
+      virtual void Invoke(IObserver * pObserver) const {
+         const size_t ArgCount =
+             ArgC&lt;P1&gt;::Count + ArgC&lt;P2&gt;::Count;
+         if (pObserver != NULL)
+            InvokeImpl(pObserver, NumType&lt;ArgCount&gt;());
+      }
+   protected:
+      // Provides a means of comparing events
+      virtual ValueType Value() const {
+         return reinterpret_cast&lt;ValueType&gt;(pFunc);
+      }
+
+      // These functions will pass the parameters to the
+      // observer. Only one function is instantiated, and only
+      // it is legal. We are effectively overloading on the value
+      // of the ArgCount.
+      template &lt;class T&gt;
+      void InvokeImpl(T * pObserver, Args0) const {
+         (void)(pObserver-&gt;*pFunc)(); // Call with 0 parameters
+      }
+      template &lt;class T&gt;
+      void InvokeImpl(T * pObserver, Args1) const {
+         (void)(pObserver-&gt;*pFunc)(p1); // Call with 1 parameter
+      }
+      template &lt;class T&gt;
+      void InvokeImpl(T * pObserver, Args2) const {
+         (void)(pObserver-&gt;*pFunc)(p1, p2); // Call with 2 params
+      }
+   private: // The member function to call and
+            // the parameters to pass
+      const ObserverFunc pFunc; const P1 p1; const P2 p2;
+};
+
+// For thread safety, this automatically locks and
+// unlocks an object.
+template &lt;class Lockable&gt; class AutoLock {
+   public:
+      AutoLock(Lockable &amp; obj) :
+         m_obj(obj) {m_obj.Lock();}
+      ~AutoLock()   {m_obj.Unlock();}
+   private:
+      AutoLock(); // Stop default construction
+      Lockable &amp; m_obj;
+};
+
+// ** TODO ** Implement CritSec class to provide thread safety
+struct CritSec {void Lock(){} void Unlock(){}};
+typedef AutoLock&lt;CritSec&gt; TSLock; // Thread safe lock
+
+template &lt;class IObserver&gt; class Multicast {
+   typedef Multicast&lt;IObserver&gt; Self;
+   typedef std::multiset&lt;IObserver*,std::less&lt;IObserver*&gt; &gt;
+      Observers;
+   typedef std::vector&lt;AbstractEvent&lt;IObserver&gt; *&gt; Events;
+
+   public:
+      virtual bool OnActive(){return true;} // 1st observer
+                                            // registered
+      virtual void OnInactive(){} // Last observer deregistered
+
+      // Called by observers to register
+      bool Advise(IObserver * pObserver) {
+         TSLock write_lock(m_Lock);
+         m_Observers.insert(pObserver);
+         if (m_Observers.size() == 1) // Tell the subject that the
+             if (!OnActive()) {       // 1st observer wants to
+                m_Observers.clear();  // register. The subject can
+                return false;         // refuse to accept the
+                                      // registration.
+             }
+         return true;
+      }
+
+      // Called by observers to deregister
+      void Unadvise(IObserver * pObserver) {
+         TSLock write_lock(m_Lock);
+         m_Observers.erase(pObserver);
+         if (m_Observers.empty()) // Tell the subject that the
+             OnInactive();        // last observer has deregistered
+      }
+
+      // A window per object is inefficient but it works.
+      Multicast() : m_hWnd(UniqueWindow()) {}
+
+      // Facilitate copying of derived objects
+      Multicast(const Self &amp;) : m_hWnd(UniqueWindow()) {}
+      Self &amp; operator =(const Self &amp;) {return *this;};
+
+      virtual ~Multicast() {
+         for (size_t i = 0; i &lt; m_Events.size(); ++i)
+            delete m_Events[i];
+         (void) DestroyWindow(m_hWnd);
+      }
+
+      // Called by the subject to fire events to the observers.
+      // The repetition gives the appearance of two template
+      // functions:
+      // FireEvent(Func, [P1 .. Pn])
+      // FireSingleEvent(Func, [P1 .. Pn])
+      //
+      // Func: member function pointer - the observers' function
+      // P1 .. Pn: between 0 &amp; n parameters to pass
+      // to the observers.
+      template &lt;typename FuncType&gt;
+         void FireEvent(FuncType Func) {
+         typedef Event&lt;IObserver, FuncType&gt; EventType;
+         DoEvent(new EventType(Func));
+      }
+      template &lt;typename FuncType, typename P1&gt;
+         void FireEvent(FuncType Func, const P1&amp; p1) {
+         typedef Event&lt;IObserver, FuncType, P1&gt; EventType;
+         DoEvent(new EventType(Func, p1));
+      }
+
+      template &lt;typename FuncType&gt;
+         void FireSingleEvent(FuncType Func) {
+         typedef Event&lt;IObserver, FuncType&gt; EventType;
+         DoSingleEvent(new EventType(Func));
+      }
+      template &lt;typename FuncType, typename P1&gt;
+         void FireSingleEvent(FuncType Func, const P1&amp; p1) {
+         typedef Event&lt;IObserver, FuncType, P1&gt; EventType;
+         DoSingleEvent(new EventType(Func, p1));
+      }
+   protected:
+      // Create a new window based on a unique window class. 
+      HWND UniqueWindow() const {
+          std::ostrstream Name;
+          Name &lt;&lt; "Multicast" &lt;&lt; this &lt;&lt; '\0'; // Unique class
+                                               // name
+          WNDCLASSA wc = {0, WndProc, 0, 0, GetModuleHandle(NULL),
+                          0, 0, 0, 0, Name.str()};
+          (void) RegisterClassA(&amp;wc);
+          HWND hWnd = CreateWindowA(wc.lpszClassName, 0, 0, 0, 0,
+                                    0, 0, 0, 0, wc.hInstance,0);
+          assert(hWnd != NULL);
+          return hWnd;
+      }
+       
+      void DoEvent(AbstractEvent&lt;IObserver&gt; * pEvent) {
+         TSLock write_lock(m_Lock);
+         if (m_Events.empty())
+            PostMessage(m_hWnd, WM_USER+100, 0, (DWORD)this);
+         m_Events.push_back(pEvent);
+      }
+
+      void DoSingleEvent(AbstractEvent&lt;IObserver&gt; * pEvent) {
+          TSLock write_lock(m_Lock);
+          Events::iterator i;
+          // Search for a pre-existing event
+          for (i = m_Events.begin(); i != m_Events.end(); ++i)
+              if (**i == *pEvent) { // If event is
+                                    // already scheduled.
+                  const AbstractEvent&lt;IObserver&gt; * pOldEvent = *i;
+                  *i = pEvent;  // Replace old event
+                                // with latest event
+                  delete pOldEvent;
+                  break;
+              }
+          if (i == m_Events.end())
+              DoEvent(pEvent);
+      }
+
+      // This function is called by the operating system
+      // asynchronously.
+      static LRESULT WINAPI
+      WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+         if (msg != WM_USER+100)
+            return DefWindowProc(hWnd, msg, wParam, lParam);
+         ((Self*)lParam)-&gt;AsyncCall();
+         return 0;
+      }
+
+      inline void AsyncCall() {
+          TSLock write_lock(m_Lock);
+          // Invoke each event for each observer, then delete it.
+          for (size_t i = 0; i &lt; m_Events.size(); ++i) {
+              const AbstractEvent&lt;IObserver&gt; * pEvent =
+                 m_Events[i];
+              for (Observers::iterator ppObserver =
+                      m_Observers.begin();
+                   ppObserver != m_Observers.end();
+                   ++ppObserver)
+                 pEvent-&gt;Invoke(*ppObserver);
+              delete pEvent;
+          }
+          m_Events.clear();
+      }
+   private:
+      HWND       m_hWnd;      // Window handle to enable
+                              // an async call
+      CritSec    m_Lock;      // Thread safe protection for:
+      Events     m_Events;    //  A collection of events to invoke
+      Observers  m_Observers; //  A collection of registered
+                              //  observers
+};
+#endif // MULTICAST_H
+/* End of File */
+</pre>
+</BODY>
+</HTML>

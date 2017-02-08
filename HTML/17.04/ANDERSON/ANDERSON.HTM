@@ -1,0 +1,124 @@
+<HTML>   
+     <HEAD>
+<TITLE>April 1999/CORBA Load Balancing with VisiBroker</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocapr.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   COM &amp; CORBA</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">CORBA Load Balancing with VisiBroker</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Marc Anderson</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>There's more to sharing CORBA requests among multiple servers than just dealing them out, at least if you want robustness and good response.</p>
+</BLOCKQUOTE>
+<HR>
+<BLOCKQUOTE>
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>In many client/server applications, there are significant benefits in running multiple instances of the server process. The most important of these benefits are fault tolerance and scalability. However, the success of this approach depends upon the ability to distribute incoming client requests across available server processes, in a manner that is transparent to the client and dynamically able to account for changing server conditions.</p>
+<p>When using CORBA as the middleware, no universal solution exists for distributing client requests effectively. The two major ORB (Object Request Broker) vendors, Iona and Inprise, offer the means (products) by which requests can be distributed across multiple instances of an object interface. However, these methods are proprietary and limited in applicability. Therefore, they will not work with other ORBs (see the <A HREF="sidebar.htm">sidebar</A>). Even so, you can implement a server based on one of these ORBs that performs true load balancing in a way that is both transparent to the client and customizable by the developer. This article describes a VisiBroker-based implementation that provides actual transparent load balancing.</p>
+<p>Note that the term <I>load balancing</I> is often used synonymously with <I>request distribution</I>, which is unfortunate since there is an important distinction. Request distribution simply attempts to spread the work among all participating servers without regard to the server's current state or to any other external conditions. Typically, this is accomplished via a round-robin or random selection mechanism. Such techniques are appropriate and sufficient in cases where workload is light, processing times for each request are fairly constant, and server environments are nearly identical. However, if any of these conditions do not hold, these mechanisms can break down quickly, with some servers getting backed up while others are starved. These cases require a more sophisticated approach. Load balancing attempts to remedy this situation by adding intelligence to the distribution mechanism and taking into account these other factors when selecting the server to process a request.</p>
+<p>This article assumes that you have a basic understanding of CORBA concepts, such as IDL, interfaces, and ORBs. If you're new to CORBA, you can find out more about it from the material listed in the CORBA Reading section at the end of this article.</p>
+
+<h4><FONT COLOR="#000080">Intercepting a Client Request</FONT></H4>
+
+<p>Inprise foresaw the need for developers to modify the normal processing of requests and provided hooks, called interceptors, into the request-processing layer of the ORB. Subclassing <B>VISServerInterceptor</B> creates a server-side interceptor. There are also client-side and bind interceptors. This class defines eleven methods that are called by the ORB at various stages while processing a client request.</p>
+<p>Some of the methods defined in this class include <B>locate</B>, <B>receive_request</B>, <B>prepare_reply</B>, and <B>send_reply</B>. By overriding these methods, code can be added to perform such actions as logging and encryption and, as is the case with the <B>locate</B> method, can alter the normal flow of processing. <A HREF="fig1.htm">Figure 1</A> shows a typical sequence of events that occur when the client obtains a reference to a server object and invokes a method on that object.</p>
+<p>The client ORB sends a <B>locate</B> message to the server when the client performs a <B>_bind</B> or when a generic Object reference is narrowed to its more specific sub-type. As its name implies, the <B>locate</B> message is sent out when a client needs to find a specific object implementation. Normally, the server ORB would check that the object exists within the server and respond with an <B>OBJECT_HERE</B>. However, if an interceptor has been installed, the <B>locate</B> method can redirect or forward the <B>locate</B> message to another destination. If the <B>locate</B> method returns the Interoperable Object Reference (IOR) of an object, the server ORB will send back that IOR to the client ORB with a status of <B>OBJECT_FORWARD</B>, indicating that the client ORB should look in this other place for the object implementation.</p>
+<p>Note that the <B>locate</B> operation happens only when the object is initially bound or narrowed. Once the specific object reference is obtained, all actions on that object result in invocation messages being sent to the server (except where rebinding is enabled). However, for purposes of this article, the <B>locate</B> method is key to developing a transparent load-balancing mechanism.</p>
+
+<h4><FONT COLOR="#000080">Design Issues</FONT></H4>
+
+<p>Two main design issues must be resolved before getting into the code. First, when multiple instances of the server process are running, one server is responsible for accepting incoming client requests and forwarding them to the other servers (or itself) for processing. Thus, there must be a method for determining this master server. Second, since the master forwards requests to the other slave servers, it must know which slaves are available, and it must be kept current as to each current load for use when forwarding new requests. Implicitly, servers must have the ability to find one another.</p>
+<p>The short answer to the second problem is that all servers register with the master server when they are started. At regular intervals of time, they update the master with load information. The significance is that, a server process can contain multiple instances of a particular object implementation (as would most likely be the case in a multithreaded server). So, an implementation can either register the server or register the individual objects within the server.</p>
+<p><A HREF="fig2.htm">Figure 2</A> illustrates both of these alternatives. If only the server is registered, when the master forwards a request to the server, it must forward the request to one of its (co-located) objects. In my implementation, I chose to register individual objects with the master and allow it to forward requests directly to those objects. This simplifies overall design and requires that an interceptor be installed only in the master server.</p>
+<p>To determine which server will be the master, one option is that the first server started will be the master. While sounding straightforward, this option is problematic due to difficulty in determining which server was started first, particularly when the servers are running on different systems. Alternatively, the master could be designated on the command line when the server is started. This, however, introduces the possibility of human error (e.g., no master or too many masters).</p>
+<p>In either case, both options are not very robust if the master server should fail or be shut down. A better alternative would be for the servers themselves to determine which will be the master. That eliminates the potential for human error, and, if the master server becomes unavailable, the remaining server could select a new master and resume normal operations with no human intervention required.</p>
+<p>The solution I chose involves using the CORBA Naming Service. The master server is the one bound to a well-known name in the Naming Service. When a server starts up, it checks for that name. If it does not find the name, it will bind to that name, thereby becoming the master. If the name already exists, the server can be resolved to get a reference to the master server. This solves some of the problems since I now know which is the master (the one bound to a particular name), and I now have a way to reference the master (by resolving that name).</p>
+<p>However, this solution is not as simple as it sounds for a couple of reasons. First, the name in the Naming Service could be old, and it could be bound to a non-existent server. (Binding to a non-existent server might be useful if using the Object Activation Daemon (OAD) to launch the server, but I will not be considering that here.) Second, there is no easy way to synchronize the activities of multiple servers when dealing with the Naming Service.</p>
+<p>Thus, potential exists for a race condition in which one server finds that the name does not exist and so binds itself as the master. But, before the server can do the binding, another server might check the Naming Service, also find that the name is not bound, and then try to make itself the master. <A HREF="fig3.htm">Figure 3</A> shows the process I used to solve these problems. More robust solutions are possible, such as using the Locate Service, but this solution works simply and sufficiently for most situations.</p>
+<p>Finally, a mechanism is required by which slaves can monitor availability of the master. Since the slaves must periodically update the master with load information, this same mechanism can be used to ping the master to make sure it is still alive. Update and ping intervals will be controlled separately, so they can be tuned to the environment. If a ping should fail, the slave re-initiates the above procedure to register a new master in the Naming Service.</p>
+
+<h4><FONT COLOR="#000080">Implementation</FONT></H4>
+
+<p>The implementation of the load-balancing server is based on a load-balancing class, <B>AWSLoadBalancing</B>. Before I discuss this class, I briefly digress to discuss the <B>AWSServer</B> and <B>AWSNames</B> classes. These classes provide a framework that simplifies the task of creating a CORBA server and of working with the Naming Service. They also offer a convenient place to hide some of the complexities of using the load-balancing code. Following this discussion, I will explain some of the more important sections of code in the <B>AWSLoadBalancing</B> class. This article concludes by showing you how to run the test programs and providing sample output.</p>
+
+<h4><FONT COLOR="#000080">Server Framework</FONT></H4>
+
+<p>When writing a CORBA server, certain administrative work is required that has no bearing on your primary task, that is, implementing the business object interface. These "extra" tasks include processing command-line arguments, initializing the ORB and Basic Object Adaptor (BOA), binding and unbinding object names in the Naming Service, and executing the <B>main</B> event loop. The <B>AWSServer</B> class spares the programmer from these repetitive tasks and provides for a very clean <B>main</B>. <A HREF="fig4.htm">Figure 4</A> shows the <B>main</B> of an example server application.</p>
+<p>The <B>AWSServer</B> class makes it quick and easy to get a new CORBA server up and running, while hiding details of the particular ORB being used. Implemented as a singleton, it is initialized by the first call to the static <B>instance</B> method that accepts an optional reference to an <B>AWSLoadBalancing</B> object. Specifying this optional argument enables load balancing for this server and changes the object scope in the BOA to local.</p>
+<p>The reason for changing the scope is that global CORBA objects are registered automatically with the <B>osagent</B> <a href="#1">[1]</a> upon creation, and all global objects can be accessed through a <B>_bind</B> <a href="#2">[2]</a>, thus circumventing the load-balancing scheme. This is a minor detail since everything will still work even if someone does <B>_bind</B> to the objects. But, it may cause the load-balancing algorithm to be less effective.</p>
+
+<h4><FONT COLOR="#000080">Naming Service Utility</FONT></H4>
+
+<p>The Naming Service is a directory service in which an object reference can be bound to a name. However, dealing with the Naming Service can be very tedious since you have to work with the <B>CosNaming::NamingContext</B> and <B>CosNaming::Name</B> structures when referring to directory elements.</p>
+<p>The <B>AWSNames</B> utility allows developers to refer to objects and contexts using simple strings with a more familiar Unix directory-like syntax. For example, "/MyFolder/MyObject" refers to the object <B>MyObject</B>, located in the <B>MyFolder</B> context. The <B>AWSNames</B> utility also lets you use absolute and relative names and contains methods for performing the most common Naming Service operations. These operations include creating and destroying contexts, binding and unbinding names, resolving names, and listing contents of a naming context.</p>
+
+<h4><FONT COLOR="#000080">Load Balancing</FONT></H4>
+
+<p>Before getting into code for the load balancing, one point is especially important. Specifically, the goal is to be able to run multiple identical copies of a server process and have them cooperate with one another to share the workload. Therefore, the load-balancing object must contain the functionality of both a master and a slave and know when to use which.</p>
+<p>The IDL <a href="#3">[3]</a> for the load-balancing object, shown in <A HREF="fig5.htm">Figure 5</A>, defines two interfaces: <B>IProxy</B> and <B>IAgent</B>. The <B>IProxy</B> interface, a marker interface <a href="#4">[4]</a>, contains no methods or attributes. An object in the master server implements <B>IProxy</B>, and the Naming Service binds it to a name known by the clients. When a client resolves that name and narrows the object reference, the master server eventually receives a <B>locate</B> request for the <B>IProxy</B> interface. The master, in turn, forwards the request to one of the actual business objects. The proxy object is necessary since, as the interceptor code shows, the master server needs it to distinguish between a request from a client for a "real" object and one originating from another server wanting to talk with the load-balancing object.</p>
+<p>The class <B>AWSLoadBalancing</B> implements the <B>IAgent</B> interface, which defines methods used by servers to coordinate their activities. It contains methods for registering and unregistering servers and their objects. All methods in the <B>IAgent</B> interface, except for <B>setAgentList</B>, are called only by the slaves on the master.</p>
+<p>To update the master with current load information, each slave uses the <B>updateLoadFactor</B> method. The slave passes the load as a <B>double</B> value computed by the virtual function <B>computeLoad</B>. The default implementation returns a fixed value except when compiled on HPUX, where it uses the <B>pstat</B> function to obtain an average load for the host. By overriding the <B>computeLoad</B> method, an application-specific measure of load can be used.</p>
+<p>The <B>AWSLoadBalancing</B> class contains two other methods of interest, used only by the master server: <B>pickObject</B> and <B>selectObject</B>. The interceptor calls the <B>pickObject</B> method (shown in <A HREF="fig6.htm">Figure 6</A>) when it receives a <B>locate</B> request for an <B>IProxy</B> interface. It returns a reference to one of the available business objects or a null if none could be found.</p>
+<p>Although the <B>pickObject</B> method is just a wrapper around the <B>selectObject</B> method, it serves two important purposes. First, it obtains the mutex that prevents other threads from making changes to internal data structures while an object is being selected. Second, it checks to ensure that the object returned by <B>selectObject</B> still exists, thereby removing these responsibilities from <B>selectObject</B>.</p>
+<p>The <B>selectObject</B> method contains the logic for selecting the object to service the client request. <B>selectObject</B> is declared as virtual so that custom selection algorithms can be implemented. The default implementation, shown in <A HREF="fig7.htm">Figure 7</A>, first selects the server with the minimum load. Then, within that server, it selects objects in a round-robin fashion.</p>
+<p>The final detail involves looking at the interceptor that calls the <B>pickObject</B> method. The <B>locate</B> method, defined in <B>VISServerInterceptor</B>, is called when a client needs to find an implementation for a particular interface. The load-balancing interceptor overrides the <B>locate</B> method to handle requests for the <B>IProxy</B> interface (see <A HREF="fig8.htm">Figure 8</A>). When a <B>locate</B> request is received, the interface name is extracted. If it is an <B>IProxy</B>, <B>locate</B> responds with the IOR for the object returned by <B>pickObject</B>. Otherwise, <B>locate</B> returns a null value, in which case the ORB will proceed with its normal dispatching activities.</p>
+
+<h4><FONT COLOR="#000080">Running the Sample Applications</FONT></H4>
+
+<p>The source, which accompanies this article, contains all of the code discussed above along with two sample applications, <B>client</B> and <B>server</B>, that demonstrate how it is used (see p. 3 for downloading instructions). To build and run these applications on Windows, you must have Visual C++ and VisiBroker 3.2 or 3.3 with the Naming Service installed. Then complete the following steps:</p>
+<p>1.  Modify the variable <B>VBROKERDIR</B> defined in the file <B>stdmk</B> to point to the directory where VisiBroker is installed.</p>
+<p>2.  Build the code using <B>Nmake</B> with the provided makefile. To build the code on another platform or using a different compiler, make the appropriate changes in <B>stdmk</B>.</p>
+<p>3.  Make sure the VisiBroker agent (<B>osagent</B>) is running.</p>
+<p>4. Start the Naming Service. Type:</p>
+
+<pre>
+NameExtF MyRoot myroot.log
+</pre>
+
+<p>5. Start two instances of the server application. Type:</p>
+
+<pre>
+server -SVCnameroot MyRoot
+</pre>
+
+<p>6. Run the client application. Type:</p>
+
+<pre>
+client -SVCnameroot MyRoot /MyFolder/MyObject</p>
+</pre>
+
+<p>Each time you run the client, it tries to resolve in the Naming Service the object name specified on the command line (i.e. /MyFolder/MyObject). If successful, the client invokes the <B>getName</B> method on the object and prints out the results. The <B>getName</B> method returns the name associated with the object, and it will also print the name to the console so that you can tell which server is being accessed. The servers (when compiled with the <B>DEBUG</B> flag defined) send random load factors to the master so that the client should get objects from different servers if run often enough.</p>
+<p>Play with the servers: kill the master, start a third, a fourth, a fifth. Run the client several times after each change to make sure that requests are still being routed and that the servers are still responding.</p>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>The two major ORB vendors provide basic capabilities for distributing requests to multiple objects. However, these mechanisms fall short of true load balancing, in which a load factor is used when selecting the object to process a request. These mechanisms may be sufficient in situations where all the machines are lightly loaded and of the same capacity, and when request processing times are short and of approximately the same duration.</p>
+<p>However, when these conditions are not true or more control is desired, VisiBroker interceptors provide the means for implementing a turnkey solution. In this article, I have shown how such a custom solution can be developed. The <B>AWSLoadBalancing</B> class, which I have presented, can be effectively used as given, or it can be used as a starting point for building your own solution.</p>
+
+<h4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1]  In VisiBroker, the <B>osagent</B> (or Smart Agent) is a dynamic, distributed directory service, which keeps track of the objects available on the network, and is used by the <B>_bind</B> method to locate objects for client applications.</p>
+<p><a name="2"></a>[2]  A <B>_bind</B> is a proprietary method, which uses the Smart Agent to locate and return a handle to the appropriate server object.</p>
+<p><a name="3"></a>[3]  IDL stands for Interface Definition Language. IDL is a platform- and compiler-neutral language used to describe object interfaces.</p>
+<p><a name="4"></a>[4]  A marker is an entity that conveys information by virtue of its being of a certain type. In this implementation, if the interface is of type <B>IProxy</B>, the load-balancing server knows that the request originated with a client, not another server.</p>
+
+<h4><FONT COLOR="#000080">Corba Reading</FONT></H4>
+
+<p>Robert Resendes. "Introduction to CORBA Distributed Objects," <I>C/C++ Users Journal,</I> April 1998.</p>
+<p>Se&aacute;n Baker. <I>CORBA Distributed Objects</I> (Addison-Wesley, 1997). ISBN 0-201-92475-7 (Hardback).</p>
+<p>Alan Pope. <I>The CORBA Reference Guide &#151; Understanding the Common Object Request Broker Architecture</I> (Addison-Wesley, 1998). ISBN 0-201-63386-8.</p>
+<p>Object Management Group. <I>The Common Object Request Broker: Architecture and Specifications</I>, revision 2.1, Document 97-09-01 (Object Management Group, Framingham, MA, 1997). <B>www.omg.org</B>.</p>
+
+<p><i>Marc J. Anderson is a Systems Architect in the Austin office of Houston-based SIG, Inc., one of the fastest growing information technology firms, with branches in four U.S. cities. A 14-year IT professional, Marc holds an M.S., Operations Research, from the University of Texas at Austin and a B.S., Math and Computer Science, from the University of Puget Sound. His key capabilities include management of software development teams, web-based design and development, and applied experience in OO methodologies. His areas of expertise are Java and e-commerce, and his primary interests are EJB and CORBA. He can be reached at <B>marcj@flash.net</B>.</i></p>
+
+
+<h4><a href="../../../source/1999/apr99/anderson.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

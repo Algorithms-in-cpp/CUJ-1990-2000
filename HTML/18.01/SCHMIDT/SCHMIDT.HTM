@@ -1,0 +1,263 @@
+<HTML>   
+     <HEAD>
+<TITLE>January 2000/Uncaught Exceptions</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocjan.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Uncaught Exceptions: Tempus Fugit</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Bobby Schmidt</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Bobby deals this month with various kinds of passages, including a very difficult personal one.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+<p>Copyright &copy; 1999 Robert H. Schmidt</p>
+
+<p>Timed flies: In high school I raised colonies of Drosophila melanogsaster (a.k.a. fruit flies) for a genetics class. We did time the flies, or at least timed how long they'd be knocked out. At one point we ran out of ether anesthetic. Fortunately we took the class in the winter; as a surrogate anesthetic we bought carburetor anti-freeze, which had ether as its active indredient.</p>
+<p>Time flies: As a little kid I hardly believed that one day I'd get to live in a time called 20-something. Everything and everyone I knew came from the era of 19-something. It all seemed impossibly remote; yet now that I'm older than my parents were then, it seems rather normal and &#151; Y2K frenzy aside &#151; anticlimactic.</p>
+<p>Time flew: I missed last month's issue attending to family business. My mother has cancer, and will be gone by the time you read this. Our family have been through the traditional accommodation steps, starting with denial and leading to our present acceptance. Unlike many families, my parents and I don't really have old hurts and lingering unfinished business; so while we are sad, we aren't suffering guilt or regret &#151; with one exception.</p>
+<p>Time's flown for Mom faster than she expected (she's only 60). Time's flown, but she hasn't; I've been in more airplanes in the past three years than she's been in her whole life. In particular, she never made the time to visit me in Redmond. She always wanted to, but let other things get in the way, reckoning she'd have more time.</p>
+<p>When I was growing up, our living room sported a wall-size mural of a lush green forest. Mom adored that mural. We didn't know it then, but the mural was of the Hoh Rain Forest on Washington's Olympic Peninsula, close to where I live now. She wants her final earthly resting place to be near the trees from that mural. I guess she'll finally come "visit" me after all.</p>
+<p>Much of the personality you see in my columns has come to me from her. That I had the courage to write publicly in the first place I largely attribute to her faith in me. As a small gesture of what she has and will continue to mean, I want to dedicate this year's columns to the memory of Carole Madaline Schmidt.</p>
+
+<H4><FONT COLOR="#000080">Deconstruction</FONT></H4>
+
+<H4><FONT COLOR="#000080">Q</FONT></H4>
+<p>Bobby,</p>
+<p>I have a question about exceptions. When I run the attached code (<a href="list1.htm">Listing 1</a>) I get this result:</p>
+
+<pre>
+Test 1: specification empty
+error()
+~error()
+caught
+~error()
+</p>
+Test 2: specification 'throw()'
+error()
+caught
+~error()
+</pre>
+
+<p>(The compiler is VC++ 6.0.)</p>
+<p>Why does the exception get destroyed before it gets caught? I thought that if a function did not declare <B>throw()</B>, then it was declaring that it could throw any object.</p>
+<p>Thanks in advance &#151; Andy Brummer</p>
+
+<H4><FONT COLOR="#000080">A</FONT></H4>
+
+<p>I've included my version of your code as <a href="list1.htm">Listing 1</a>. That code, and the run-time results, bring up some interesting points about exception handling.</p>
+<p>At first the results indeed look puzzling. In Test 1, only one <B>error</B> object is apparently constructed, yet two are destroyed; while in Test 2, only one object appears to be constructed and destroyed. To help separate appearance from truth, I augmented <B>error</B> to show the object address associated with each function call:</p>
+
+<pre>
+class error
+   {
+public:
+   error()
+      {
+      printf("%p error()\n", this);
+      };
+   ~error()
+      {
+      printf("%p ~error()\n", this);
+      };
+   };
+</pre>
+
+<p>The new results <a href="#1">[1]</a>:</p>
+
+<pre>
+Test 1: specification empty
+0065FD7C error()
+0065FD7C ~error()
+caught
+0065FD80 ~error()
+
+Test 2: specification 'throw()'
+0065FD88 error()
+caught
+0065FD8C ~error()
+</pre>
+
+<p>are more revealing:</p>
+
+<UL><LI>   In Test 1, the original error object is constructed then destroyed. Along the way, some other object is silently constructed, then destroyed after the exception is caught.</LI>
+<LI>   In Test 2, what originally looked to be a single object construction/destruction is actually construction of one object and destruction of another.</LI></UL>
+
+<p>In both cases, some object is apparently destroyed without being constructed first. I'm going to focus on Test 1, although I suspect the same "problem" underlies both tests. (Test 2 also exposes a somewhat related deficiency in VC++ that I'll discuss shortly.)</p>
+<p>As you surmise, the lack of exception specification on <B>test_1</B> implies that the function can legitimately throw anything. Consistent with that implication, <B>test_1</B> does indeed throw an exception object (<B>0065FC7C</B>), which <B>main</B> dutifully catches. By the time the exception handler is entered, the thrown object is destroyed &#151; a sequence you find puzzling.</p>
+<p>Adding to the confusion is the apparent destruction of an object (<B>0065FD80</B>) that was never constructed. Unless VC++ is playing by language rules I don't know about, the number of constructions should be &gt;= the number of destructions. Since your declared constructor isn't getting called, some other constructor must be.</p>
+<p>Recall the Miranda Rules of C++: if you don't explicitly provide certain member functions, the translator will often implicitly provide them for you. Among those provided functions is the copy constructor, which your class omits. Following the Miranda Rules, the translator acts as if you had really declared</p>
+
+<pre>
+public:
+   inline error(error const &amp;)
+      {
+      };
+</pre>
+
+<p>I suspect that the "synthesized" copy constructor induces your confusion. Adding an explicit &#151; and traced &#151; copy constructor should clear things up:</p>
+
+<pre>
+class error
+   {
+public:
+   error()
+      {
+      printf("%p error()\n", this);
+      };
+   error(error const &amp;)
+      {
+      printf
+        ("%p error(error const &amp;)\n",
+           this);
+      };
+   ~error()
+      {
+      printf("%p ~error()\n", this);
+      };
+   };
+</pre>
+
+<p>Or maybe not. Consider the results:</p>
+
+<pre>
+Test 1: specification empty
+0065FD8C error()
+caught
+0065FD8C ~error()
+
+Test 2: specification 'throw()'
+0065FD8C error()
+caught
+0065FD8C ~error()
+</pre>
+
+<p>Now the extra constructions and destructions are gone! Counter-intuitively, making the implicit copy constructor explicit kept it from being called. What's going on?</p>
+<p>When an object is thrown, the translator can make a temporary copy of the thrown object. That temporary in turn initializes the local handler object <a href="#2">[2]</a>:</p>
+
+<pre>
+throw t; // Exception #1 is thrown.
+         // Temporary Exception #2
+         //   initialized from
+         //   Exception #1.
+
+// ...
+
+catch (E &amp;c) // Exception #3
+             //   initialized from
+             //   Exception #2.
+</pre>
+
+<p>In many cases, however, the translator is allowed to omit the temporary exception, and can instead initialize the handler's exception directly from the original thrown exception <a href="#3">[3]</a>. That's what VC++ is doing here. As a result, only one exception object is constructed/destroyed in each test.</p>
+<p>By the way, all of this object construction implies that you should catch exceptions by reference</p>
+
+<pre>
+catch (X &amp;x2) // good
+</pre>
+
+<p>and not by value</p>
+
+<pre>
+catch (X x2) // bad
+</pre>
+
+<p>That way, your handler binds to an existing exception object instead of needlessly cloning that existing object.</p>
+<p>Now to the VC++ deficiency: function <B>test_2</B> violates its exception specification by throwing an exception it promised not to. According to the Standard, such violation should result in the Standard Library function <B>unexpected</B> being called <a href="#4">[4]</a>. From what I can tell, VC++ does not properly call <B>unexpected</B>; otherwise, your program would never enter the <B>catch</B> clause following the call to <B>test_2</B>.</p>
+
+<H4><FONT COLOR="#000080">No Construction</FONT></H4>
+
+<H4><FONT COLOR="#000080">Q</FONT></H4>
+<p>Hi Bobby,</p>
+<p>I'm a longtime reader, first time emailer.</p>
+<p>I realize that this problem isn't explicitly covered in the Standard, but...</p>
+<p>I have a class that performs some data registration when it is constructed:</p>
+
+<pre>
+class fred
+   {
+   fred()
+      {
+      RegisterData();
+      }
+   void RegisterData();
+   };
+</pre>
+
+<p>As a stand-alone module, it works fine. Now, move this module into a static <B>.LIB</B>, and add a global instantiation:</p>
+
+<pre>
+fred register_class;
+</pre>
+
+<p>This way, whenever you link to the <B>.LIB</B>, the data will be automatically registered at startup time.</p>
+<p>Clever, eh? Well, no. Using either Visual C++ 6 or Borland C++ Builder 4, this global class is optimized away during the link phase, even if you have optimizations turned off. Essentially you must reference the global object somewhere in your main program (not another <B>.LIB</B>) for it to be actually instantiated and constructed &#151; even though by definition the global object should always be there.</p>
+<p>I've read on the Internet that the Solaris compilers used to behave this way, but now will actually construct the global object.</p>
+<p>So my question: is this incorrect behavior on the part of the compiler, or incorrect design on my part?</p>
+<p>Thanks &#151; Charles Cafrelli</p>
+
+<H4><FONT COLOR="#000080">A</FONT></H4>
+<p>In a couple of non-normative notes <a href="#5">[5]</a>, the C++ Standard allows newly translated code to link with previously translated code:</p>
+
+<BLOCKQUOTE><p>A C++ program need not all be translated at the same time.</p>
+<p>Previously translated translation units and instantiation units can be preserved individually or in libraries. The separate translation units of a program communicate by (for example) calls to functions whose identifiers have external linkage, manipulation of objects whose identifiers have external linkage, or manipulation of data files. Translation units can be separately translated and then later linked to produce an executable program.</p>
+</BLOCKQUOTE>
+
+<p>However, the Standard does not detail how a translator creates and uses such libraries. I don't know if Microsoft has special semantic rules for code in static libraries. For now I'll assume that if a VC++ program is Standard conforming to begin with, it stays that way when some parts are moved into a static library.</p>
+<p><a href="list2.htm">Listing 2</a> shows a small sample demonstrating your problem. This sample contains three source files:</p>
+
+<UL><LI>   <B>other.h</B> defines <B>other_class</B>.</LI>
+<LI>   <B>other.cpp</B> implements <B>other_class</B> and defines <B>other_object</B>.</LI>
+<LI>   <B>main.cpp</B> contains an empty <B>main</B>.</LI></UL>
+
+<p>I created a new VC++ console application project, included these three source files, then built and ran the program. According to your theory, <B>other_object</B> should still be initialized even though it is not explicitly referenced in <B>main</B>. Tracing with the VC++ debugger, I found that <B>other_object</B> was indeed being initialized, contrary to your findings.</p>
+<p>To fully replicate your scenario, I needed to create two projects: one static library to house <B>other_object</B>, and a console application defining <B>main</B> and linking to this library. Once I partitioned the source among these two projects, I built the library, then built the application. Debugging once again, I was finally able to reproduce your results: execution never flowed into the <B>other_class</B> constructor.</p>
+<p>That you find this behavior distasteful does not imply that the behavior is incorrect. After a few minutes of poking about the Standard, I discovered this <a href="#6">[6]</a>:</p>
+
+
+<BLOCKQUOTE>
+<p>It is implementation-defined whether or not the dynamic initialization of an object of namespace scope is done before the first statement of main. If the initialization is deferred to some point in time after the first statement of main, it shall occur before the first use of any function or object defined in the same translation unit as the object to be initialized.</p>
+<p>An object defined in namespace scope having initialization with side-effects must be initialized even if it is not used.</p>
+</BLOCKQUOTE>
+
+<p>In our case, VC++ may defer construction of <B>other_object</B> unless or until one of these conditions is met:</p>
+<p>1.  Some other object or function in <B>other_object</B>'s translation unit is used.</p>
+<p>2.  The act of constructing <B>other_object</B> causes side effects.</p>
+<p>Our program meets neither of these conditions:</p>
+<p>1.  No other function or object is defined in the same translation unit as <B>other_object</B>. Thus, there's no opportunity for "the first use" of such an object or function to cause <B>other_object</B> "to be initialized."</p>
+<p>2.  The <B>other_class</B> constructor has no side effects.</p>
+<p>Verdict: VC++ is allowed to defer construction of <B>other_object</B> indefinitely. Note that deferment is allowed, but not required. In the stand-alone version, construction was not deferred; in the library version, construction was deferred. Based on my interpretation of the Standard, both behaviors are correct.</p>
+<p>I leave this as an Exercise for the Student: modify both the stand-alone and library versions of my example to meet either of the above two conditions, then determine if the resulting programs are Standard conformant. Hints:</p>
+
+<UL><LI>   To meet condition #1, add an external <B>other_func</B> or some such to <B>other.cpp</B>, then call <B>other_func</B> from <B>main</B>.</LI>
+<LI>   To meet condition #2, call <B>printf</B> from the <B>other_class</B> constructor <a href="#7">[7]</a>.</LI></UL>
+
+<H4><FONT COLOR="#000080">Erratica</FONT></H4>
+
+<p>Two more Diligent Reader responses to my "Chicken and Egg" topic from the July 1999 <I>CUJ</I>:</p>
+<p>Karim Ratib found a similar problem discussed in a "Stump the Wizard" entry on Rogue Wave's site. The relevant URL is <B>&lt;http://www.roguewave.com/products/resources/sw/sw002/sw002.html&gt;</B>.</p>
+<p>Mike Suman suggested the problem is confusion of function name use and mention. He ended his mail with this thought:</p>
+
+<p><I>"If Marlon Nelson were actually allowed by his compiler to execute </I><B>f=f()</B><I> for a function which returns a pointer to itself, his computer would write an address over the functions's code. I get a vision of a great Monty Python hand coming suddenly out of the sky with a rubber stamp and flattening the lowly programmer with his name."</I></p>
+<p>Barring some piercing insight from another Diligent Reader, I'll let that same great hand squish this topic underground and into hibernation.</p>
+
+<H4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<a name="1"></a>[1]  These are the object addresses on my machine. Your mileage may vary.</p>
+<a name="2"></a>[2]  C++ Standard subclause 15.1/3 ("Throwing an exception").</p>
+<a name="3"></a>[3]  Subclause 15.1/5.[</p>
+<a name="4"></a>[4]  Subclause 15.5.2 ("The <B>unexpected()</B> function").</p>
+<a name="5"></a>[5]  Mainly Clause 2/2 ("Lexical conventions").</p>
+<a name="6"></a>[6]  Subclause 3.6.2/3 ("Initialization of non-local objects").</p>
+<a name="7"></a>[7]  According to subclause 1.9/7 ("Program execution"), "calling a library I/O function" qualifies as a side effect. <B>printf</B> also lets you trace the construction without a debugger.</p>
+
+<p><i><b>Bobby Schmidt</B> is a freelance writer, teacher, consultant, and programmer. He is also an alumnus of Microsoft, a speaker at the Software Development and Embedded Systems Conferences, and an original "associate" of (Dan) Saks &amp; Associates. In other career incarnations, Bobby has been a pool hall operator, radio DJ, private investigator, and astronomer. You may summon him on the Internet via <B>rschmidt@netcom.com</B>.</i></p>
+
+<h4><a href="../../../source/2000/jan00/schmidt.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY></HTML>
+

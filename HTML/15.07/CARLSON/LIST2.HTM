@@ -1,0 +1,525 @@
+
+
+
+
+<HTML><HEAD>
+
+<TITLE>July 1997/An Automated Testing Tool for Win16/Listing 2</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4>Listing 2:	Test library implementation</h4>
+
+<pre>
+//*******************************************************************
+// Application Module : TRACKER.C
+//
+// Description :        This DLL will capture system activity for
+//                      the purpose of playing it back later.
+//    
+// Target :             Windows 16-bit DLL.
+//
+// Creator :            Paul D. Carlson
+//
+// Notes : This application (DLL) was compiled using Borland C++,
+//         v. 3.11. Further, this application uses the static
+//         declaration to ensure that local variables are allocated
+//         to the DLLs data segment rather than the calling program's
+//         stack segment.  (DS != SS)
+//
+//         Compiled with Borland C++, Version 3.1
+//*******************************************************************
+
+#include &lt;windows.h&gt;
+#include &lt;string.h&gt;
+#include &lt;fcntl.h&gt;
+
+#include "tracker.h"
+
+//*******************************************************************
+// Function : LibMain
+//
+// Purpose :  Entry point for DLL.
+//
+//*******************************************************************
+int FAR PASCAL
+LibMain(HANDLE hInstance, WORD wDataSeg, WORD wHeapSize,
+   LPSTR lpszCmdLine)
+{
+    ghInstance = hInstance;
+
+    if (wHeapSize &gt; 0)
+        UnlockData(0);
+
+    return(1);
+}
+
+//*******************************************************************
+// Function : WEP
+//
+// Purpose :  Windows Exit Procedure.
+//
+//*******************************************************************
+int FAR PASCAL _export WEP(int wParam)
+{
+    // Unhook our system monitoring functions
+    UnhookWindowsHookEx(hhRecordProc);
+    UnhookWindowsHookEx(hhPlaybackProc);
+
+    return(1);
+}
+
+//*******************************************************************
+// Function : initializeDLL
+//
+// Purpose  : This function will initialize all the memory structures
+//            used by this DLL.
+//
+//*******************************************************************
+void FAR PASCAL _export initializeDLL()
+{
+    // Check to see if we already have some hooks installed.  If so,
+    // unhook them.  This is to recover from GPFs.
+
+    if (hhRecordProc != 0)
+        UnhookWindowsHookEx(hhRecordProc);
+
+    if (hhPlaybackProc != 0) 
+        UnhookWindowsHookEx(hhPlaybackProc);
+
+    memset(&amp;lastTimeMark, 0, sizeof(struct timeb) );
+
+} // end function
+
+//*******************************************************************
+// Function : startRecording
+//
+// Purpose :  This function will start recording.
+//
+//*******************************************************************
+int FAR PASCAL _export startRecording(char far *filename)
+{
+    // Copy the file.
+    lstrcpy(logFileName, filename);
+
+    // Initialize our logging file, keeping track of the file handle.
+    if (!initLogFile() ) 
+        return(0);
+
+    // Install our hook procedure.
+    recordProc =
+       GetProcAddress(ghInstance, (LPCSTR)"JournalRecordProc");
+
+    if (recordProc == 0)
+        return(0);
+
+    hhRecordProc = SetWindowsHookEx(WH_JOURNALRECORD, recordProc,
+                                    ghInstance, NULL);
+
+    // If error occurs, return false, otherwise, return true.
+    if (hhRecordProc == 0)
+        return(0);
+
+    // Capture the current time for use in delay section.
+    ftime(&amp;lastTimeMark);
+
+    return(1);
+}
+
+//*******************************************************************
+// Function : stopRecording
+//
+// Purpose  : This function will stop recording.
+//
+//*******************************************************************
+void FAR PASCAL _export stopRecording()
+{
+    if (hhRecordProc != 0)
+        UnhookWindowsHookEx(hhRecordProc);
+
+    hhRecordProc = 0;
+}
+
+//*******************************************************************
+// Function : startPlayback
+//
+// Purpose :  This function will start playback.
+//
+//*******************************************************************
+int FAR PASCAL _export
+startPlayback(char far *filename, int nIterations)
+{
+    // Install our hook procedure.
+    playbackProc =
+        GetProcAddress(ghInstance, (LPCSTR)"JournalPlaybackProc");
+
+    if (playbackProc == 0)
+        return(0);    
+
+    hhPlaybackProc = SetWindowsHookEx(WH_JOURNALPLAYBACK,
+                                      playbackProc, ghInstance,
+                                      NULL);
+
+    // If error occurs, return false
+    if (hhPlaybackProc == 0)
+        return(0);
+
+    // Set the number of times to iterate our playback
+    iterations = nIterations;
+
+    // Reset the read offset.
+    readOffSet = 0;
+
+    // Set the file name
+      lstrcpy(logFileName, filename);
+
+    // Return TRUE.
+    return(1);
+} // end function
+
+//*******************************************************************
+// Function : stopPlayback
+//
+// Purpose :  This function will stop playback.
+//
+//*******************************************************************
+void stopPlayback()
+{
+    if (hhPlaybackProc != 0)
+        UnhookWindowsHookEx(hhPlaybackProc);
+    hhPlaybackProc = 0;
+}
+
+//*******************************************************************
+// Function : JournalRecordProc
+//
+// Purpose :  This function records system activity.
+//
+//*******************************************************************
+LRESULT CALLBACK _export
+JournalRecordProc(int code, WPARAM wParam, LPARAM lParam)
+{
+    static struct timeb currentTime;
+    static long milliseconds = 0;
+    // Pass this on to the next callback function.  Do not process!
+    if (code &lt; 0)
+        return(CallNextHookEx(hhRecordProc, code, wParam, lParam));                
+
+    switch(code)
+    {
+        case HC_ACTION:
+        case HC_SYSMODALOFF:
+
+            // Current Time
+            ftime(&amp;currentTime);
+    
+            // Calculate time elasped in milliseconds.
+            milliseconds = elaspedTime(&amp;currentTime, &amp;lastTimeMark);
+
+            // Write our information into a log file.
+            if (!logger((LPEVENTMSG)lParam, milliseconds) )
+            {
+                openLogFile(OF_WRITE);
+                _lwrite(logFileHandle, "Error Writing to File", 21);
+                closeLogFile();
+            }
+
+            lastTimeMark = currentTime;
+
+            break;
+
+        case HC_SYSMODALON:
+            break;
+
+    };
+
+    // Return
+    return(0);
+
+} // end function
+
+//*******************************************************************
+// Function : JournalPlaybackProc
+//
+// Purpose :  This function plays system activity.
+//
+//*******************************************************************
+LRESULT CALLBACK _export
+JournalPlaybackProc(int code, WPARAM wParam, LPARAM lParam)
+{
+    static EVENTMSG eventMsg;
+    static LPEVENTMSG lpEventMsg;
+    static BOOL callNextHook;
+    static long delay;
+    static BOOL delayFlag;
+
+    // Reset the callNextHook variable.
+    callNextHook = FALSE;
+
+    // Call our reader and fill the LPEVENTMSG structure.
+    switch (code)
+    {
+        case HC_SKIP:
+            delayFlag = TRUE;
+
+            // Get next message to process.
+            reader(&amp;eventMsg, &amp;delay);
+            break;
+
+        case HC_GETNEXT:
+            lpEventMsg = (LPEVENTMSG)lParam;
+            *lpEventMsg = eventMsg;
+
+            if (delayFlag)
+            {
+                delayFlag = FALSE;
+                return(delay + 10); // Milliseconds + some lag time
+            }
+
+            break;
+
+        case HC_SYSMODALON:
+        case HC_SYSMODALOFF:
+            callNextHook = TRUE;
+            break;
+    };
+
+    if (callNextHook)
+        return(CallNextHookEx(hhPlaybackProc, code, wParam, lParam));
+
+    return(0);
+
+} // end function
+
+//*******************************************************************
+// Function : logger
+//
+// Purpose :  Write the message structure to disk.
+//
+//*******************************************************************
+int logger(LPEVENTMSG msg, long delay)
+{
+    static int returnCode = 0;
+
+    // Here, we actually write our message structure to disk.  We use
+    // the open/close logic here to prevent file handles from
+    // remaining open just in case the host program crashes or there
+    // is some other weird problem.
+
+    if (!openLogFile(OF_WRITE) )
+    {
+        returnCode = 0;
+    }
+    else
+    {
+        if (!writeLogFile(msg, delay) )
+            returnCode = 0;
+        else
+            returnCode = 1;
+
+        closeLogFile();
+    }
+
+    return(returnCode);
+
+} // end function
+
+//*******************************************************************
+// Function : reader
+//
+// Purpose :  Read the information from the disk and translate from a
+//            EVENTMSG structure to an EVENTMSG structure.
+//
+//*******************************************************************
+void reader(EVENTMSG *pEventMsg, long *delay)
+{
+    static int readResult = 0;
+
+    // Now, open our log file for reading.
+    if (!openLogFile(OF_READ) )
+        return;
+
+    // Read our message and close the log file.
+    readResult = readLogFile(pEventMsg, delay);
+    closeLogFile();
+
+    // Check for EOF.
+    if (!readResult)
+    {
+        // Stop playback of our previously recorded script.
+        stopPlayback();
+
+        // Check if we need to start up the testing script again
+        if (iterations &gt; 1)
+        {
+            startPlayback((char far *)logFileName, iterations - 1);
+        } // end if
+            
+    } // end if
+
+} // end function
+
+//*******************************************************************
+// Function : initLogFile
+//
+// Purpose :  This function will initialize a new log file.
+//
+//*******************************************************************
+int initLogFile()
+{
+    // Create our log file.
+    logFileHandle = _lcreat(logFileName, 0);
+
+    if (!checkFileHandle() ) return(0);
+
+    closeLogFile();
+
+    return(1);
+} // end function
+
+//*******************************************************************
+// Function : openLogFile
+//
+// Purpose :  This function will open an existing log file.
+//
+//*******************************************************************
+int openLogFile(int access_mode)
+{
+    // Open file and reset the total number of bytes read.
+    logFileHandle = _lopen(logFileName, access_mode | O_BINARY);
+
+    if (!checkFileHandle() )
+        return(0);
+
+    // Seek to the end of the file...if we are writing data.
+    switch (access_mode)
+    {
+        case OF_WRITE:
+            _llseek(logFileHandle, 0L, 2);
+                
+            break;
+
+        case OF_READ:
+            _llseek(logFileHandle, readOffSet, 0);
+
+            break;
+    }
+
+    return(1);
+} // end function
+
+//*******************************************************************
+// Function : closeLogFile
+//
+// Purpose :  This function will close our log file.
+//
+//*******************************************************************
+void closeLogFile()
+{
+    // Close our log file.
+    _lclose(logFileHandle);
+} // end function
+
+//*******************************************************************
+// Function : checkFileHandle
+//
+// Purpose : This function will check to make sure the log file
+//           opened (or was created) properly
+//
+//*******************************************************************
+int checkFileHandle()
+{
+    static char errMsg[151];
+
+    // Make sure we have a valid file pointer.
+    if (logFileHandle &lt; 0)
+    {
+        sprintf(errMsg, "Error opening log file : %s ", logFileName);
+        MessageBox(0, errMsg, "Error", MB_OK);
+        return(0);
+    }
+    else
+    {
+        return(1);
+    }
+} // end function
+
+//*******************************************************************
+// Function : writeLogFile
+//
+// Purpose :  Write to our log file.
+//                        
+//
+//*******************************************************************
+int writeLogFile(LPEVENTMSG msg, long delay)
+{
+    static long bytesWritten = 0;
+
+    // Write to our log file.
+    bytesWritten = _lwrite(logFileHandle, msg, sizeof(EVENTMSG) );
+
+    if (bytesWritten != sizeof(EVENTMSG) )
+        return(0);
+
+    bytesWritten = _lwrite(logFileHandle, &amp;delay, sizeof(long));
+
+    if (bytesWritten != sizeof(long) )
+        return(0);
+
+    return(1);
+
+} // end function
+
+//*******************************************************************
+// Function : readLogFile
+//
+// Purpose :  Read from our log file.
+//                        
+//*******************************************************************
+int readLogFile(EVENTMSG *pEventMsg, long *delay)
+{
+    static long bytesRead = 0;
+
+    // Read from our log file.
+
+      // First, get our message.
+    bytesRead = _lread(logFileHandle, pEventMsg, sizeof(EVENTMSG) );
+
+    // Stop when at EOF or error.
+    if (bytesRead &lt;= 0 )
+        return(0);
+
+    readOffSet += bytesRead;
+
+    // Next, get the amount of time to delay between messages.
+    bytesRead = _lread(logFileHandle, delay, sizeof(long) );
+
+    // Stop when at EOF or error.
+    if (bytesRead &lt;= 0)
+        return(0);
+
+    readOffSet += bytesRead;
+
+    return(1);
+
+} // end function
+
+//*******************************************************************
+// Function : elaspedTime
+//
+// Purpose :  Calculate time elasped from one event to the next.
+//            Returns the elasped time in milliseconds.
+//                        
+//*******************************************************************
+long
+elaspedTime(struct timeb *currentTime, struct timeb *previousTime)
+{
+    static long milliseconds;
+
+    milliseconds =
+        ((currentTime-&gt;time * 1000) + currentTime-&gt;millitm) -
+            ((previousTime-&gt;time * 1000) + previousTime-&gt;millitm);
+
+    return(milliseconds);
+}
+// End of File
+</pre>
+</body></html>

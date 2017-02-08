@@ -1,0 +1,121 @@
+<HTML><HEAD>
+<TITLE>September 2000/Network Programming with Linux/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2: Implementation of CComm class</A></h4>
+<pre>
+//developed for C/C++ Users Journal by Erik L. Nelson
+//this code may be used freely with no restrictions on use
+
+#include "comm.h"
+
+CComm::CComm(){
+   ListenSocket=INVALID_SOCKET;
+   #ifdef _WIN32
+      WORD VersionRequested = MAKEWORD(1,1);
+      WSADATA wsaData;
+      WSAStartup(VersionRequested, &amp;wsaData);
+      if(wsaData.wVersion != VersionRequested){
+         printf("Wrong version or WinSock not loaded\n");
+         fflush(0);  // make sure the message gets printed out
+      }
+   #endif
+}
+
+CComm::~CComm(){
+   if(ListenSocket != INVALID_SOCKET){
+      closesocket(ListenSocket);
+   }
+   #ifdef _WIN32
+      WSACleanup();
+   #endif
+}
+
+
+bool CComm::SendMsg(char *Msg, int Len, char *host, short port){
+   signed int Sent;
+   hostent *hostdata;
+   if(atoi(host)){
+      u_long ip=inet_addr(host);
+      hostdata=gethostbyaddr((char *)&amp;ip,sizeof(ip),PF_INET);
+   }else // otherwise, assume it is a name
+      hostdata=gethostbyname(host);
+
+   if(! hostdata){
+      printf("Error getting host address\n");
+      fflush(0);
+      return false;
+   }
+   sockaddr_in dest;  // the address of the destination computer
+   dest.sin_family = PF_INET;
+   dest.sin_addr=*(in_addr *)(hostdata-&gt;h_addr_list[0]);
+   dest.sin_port = htons(port);
+   printf("Message being sent to host %s port %i\n",
+      inet_ntoa(dest.sin_addr),ntohs(dest.sin_port)); 
+   Sent=sendto(ListenSocket,Msg,Len,0,(sockaddr *)&amp;dest,
+           sizeof(sockaddr_in));
+   if(Sent != Len){
+      printf("Error sending UDP packet from listen socket\n");
+      fflush(0);
+      return false;
+   }
+   return true;
+}
+
+void *CComm::ListenThread(void *data){
+   char buf[4096];
+   CComm *Comm=(CComm *)data;
+   int len=sizeof(Comm-&gt;client);
+   while(1){  // loop forever  
+      int result=recvfrom(Comm-&gt;ListenSocket,buf, sizeof(buf)-1,
+         0,(sockaddr *)&amp;Comm-&gt;client,(socklen_t *)&amp;len);
+      if(result &gt; 0){
+         buf[result]=0;
+         printf("Message received from host %s port %i\n",
+            inet_ntoa(Comm-&gt;client.sin_addr),
+            ntohs(Comm-&gt;client.sin_port));      
+         printf("%s",buf);
+         fflush(0);
+      }  // end check to see if socket read was OK
+   }  // end of infinite loop 
+}
+
+
+bool CComm::Listen(int PortNum){
+   ListenSocket=socket(PF_INET, SOCK_DGRAM, 0);
+   if(ListenSocket == INVALID_SOCKET){
+      printf("Error: listen socket creation failed\n");
+      return false;
+   }
+  
+   srv.sin_family = PF_INET;
+   srv.sin_addr.s_addr = htonl(INADDR_ANY);
+   srv.sin_port = htons(PortNum);
+
+   if(bind(ListenSocket, 
+         (struct sockaddr *)&amp;srv,sizeof(srv)) != 0){
+      printf("Error: bind on listen socket failed\n");
+      closesocket(ListenSocket);
+      return false;
+   }
+   int ThreadID;  // the listening thread's handle
+   #ifdef _WIN32
+      DWORD thread;
+      ThreadID = (int)CreateThread(NULL,0,
+                    (LPTHREAD_START_ROUTINE)(CComm::ListenThread),
+                    (void *)this,0,&amp;thread);
+      ThreadID=ThreadID ? 0 : 1;  // reverse the value for Windows
+   #else
+      pthread_t thread;
+      ThreadID=pthread_create(&amp;thread,0,CComm::ListenThread,
+                  (void *)this);
+   #endif
+   if(ThreadID){  // if failed creating thread
+      printf("Error creating listen thread\n");
+      return false;
+   }else{
+      return true;
+   }
+}
+</pre></body></html>

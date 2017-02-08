@@ -1,0 +1,350 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>August 1996/High Speed Win32 Animation/Listing 1</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H4>Listing 1: The demo program</H4>
+
+<PRE>
+
+/* MAIN.C by Jeff Heaton - Demo of how 
+   to interface to the Sprite Routines */
+#include "sprite.h"
+#include &lt;math.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;time.h&gt;
+
+/* Global defines */
+#define NUM_SPRITES 8
+#define Random(range) \
+    ((int)((double)range* \
+    ((double)rand()/ \
+    (double)RAND_MAX)))
+
+/* Global Variables */
+
+/* The class name and application names, instance */
+char *szClassName = "STARDEMO";
+char *szAppName = "Stars Demo";
+HANDLE hInstance;
+
+/* The master bitmap, made by CreateDIBSection */
+HBITMAP dibSect = NULL;    
+BITMAPINFO *info = NULL;    
+BYTE *bitmap;
+
+/* The palette created from STARS.BMP's color table */
+HPALETTE hp=NULL;
+
+/* Pixel number of frames, size and pixel map */
+extern struct SPRITE *firstSprite;
+int maxFrames,spriteSize;
+BYTE *spritePattern=NULL;
+
+int fps,tfps;/* Calculate frames-per-second */
+/* A brush to fill the client background, and the
+   size of the background */
+RECT clientSize;
+extern struct SPRITE *firstSprite;
+
+/* LoadSprites - Load the sprite images in from STARS.BMP */
+BOOL LoadSprites(void)
+{
+int     i,iSysColors,iPalEntries,j;
+BYTE     table[256],*flipPattern;
+FILE     *fp;
+BITMAPFILEHEADER fhdr;
+BITMAPINFOHEADER starInfo;
+LOGPALETTE     *pal;
+HDC     hdcScreen;
+HWND     hwndScreen;
+HPALETTE oldPal;
+PALETTEENTRY pe[256];
+RGBQUAD quad[256],*qptr;
+WORD     *qd;
+BYTE     *s,*d;
+
+    hp=NULL;
+/* Read in STARS.BMP and allocate enough memory */
+/* Also, make sure STARS.BMP is in the right format */
+    fp=fopen("STARS.BMP","rb");
+    if( fp == NULL ) {
+        MessageBox(NULL,
+            "Can't open STARS.BMP.",
+            szAppName,MB_ICONSTOP);
+        return FALSE;
+    }
+    
+    fread( &amp;fhdr, sizeof(BITMAPFILEHEADER), 1, fp);
+    fread( &amp;starInfo, sizeof(BITMAPINFOHEADER), 1, fp);
+    if( starInfo.biBitCount != 8 ) {
+        MessageBox(NULL,
+            "STARS.BMP must be stored as a 8-bit"
+            "(256 color) bitmap.",szAppName,MB_ICONSTOP);
+        return FALSE;
+    }
+
+    if( starInfo.biCompression != BI_RGB ) {
+        MessageBox(NULL,"STARS.BMP must not be compressed,"
+            " and have a palette.",szAppName,MB_ICONSTOP);
+        return FALSE;
+    }
+
+    memset( quad, 0,  sizeof(RGBQUAD) * 256 );
+    fread(quad, sizeof(RGBQUAD) * starInfo.biClrUsed, 1, fp);
+    spritePattern = malloc( starInfo.biWidth * starInfo.biHeight );
+    flipPattern = malloc( starInfo.biWidth * starInfo.biHeight );
+    fread( flipPattern, starInfo.biWidth * starInfo.biHeight, 1, fp);
+    fclose(fp);
+
+    maxFrames = starInfo.biHeight / starInfo.biWidth;
+    spriteSize = starInfo.biWidth;
+
+    // Now flip all sprites(BMP's are stored upside down)
+    for(i = 0;i &lt; maxFrames; i++){
+        s = flipPattern + (spriteSize * spriteSize * i )
+ +( (spriteSize-1) * spriteSize);// Address of bottom row
+        d = spritePattern + ( spriteSize * spriteSize * i );
+        
+        for( j = 0 ; j &lt; spriteSize ; j++) {
+            memcpy( d, s ,spriteSize);
+            s -= spriteSize;
+            d += spriteSize;
+        }
+    }
+    free(flipPattern);
+
+/* Allocate enough, or perhaps just a bit more than 
+    enough memory for info structure */
+
+    info = malloc(sizeof(BITMAPINFOHEADER)+(256*sizeof(RGBQUAD)));
+    info-&gt;bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+       info-&gt;bmiHeader.biWidth = (clientSize.right/4L)*4L;
+       info-&gt;bmiHeader.biHeight = -clientSize.bottom;
+       info-&gt;bmiHeader.biPlanes = 1;
+       info-&gt;bmiHeader.biBitCount = 8;
+       info-&gt;bmiHeader.biCompression = BI_RGB;
+       info-&gt;bmiHeader.biSizeImage = 0;
+       info-&gt;bmiHeader.biXPelsPerMeter = 0;
+       info-&gt;bmiHeader.biYPelsPerMeter = 0;
+       info-&gt;bmiHeader.biClrUsed = 0;
+       info-&gt;bmiHeader.biClrImportant = 0;
+
+/* Get a window to realize the palette(that we just created) into */
+
+    hwndScreen = GetActiveWindow();
+    hdcScreen = GetDC(hwndScreen);
+
+/* Does this device support palettes */
+
+    if( GetDeviceCaps(hdcScreen, RASTERCAPS) &amp; RC_PALETTE ) {
+/* Convert the bitmap's color table into a palette */
+        pal = malloc( sizeof(LOGPALETTE) + sizeof(PALETTEENTRY) * 256);
+        pal-&gt;palVersion = 0x300;
+        pal-&gt;palNumEntries = 256;
+        for( i = 0; i &lt; 256 ; i++) {
+            pal-&gt;palPalEntry[i].peRed = quad[i].rgbRed;
+            pal-&gt;palPalEntry[i].peBlue = quad[i].rgbBlue;
+            pal-&gt;palPalEntry[i].peGreen = quad[i].rgbGreen;
+            pal-&gt;palPalEntry[i].peFlags = 0;
+        }
+        hp = CreatePalette(pal);
+        free(pal);
+/* The following code is very important for using CreateDIBSection
+    with the DIB_PAL_COLORS option.  This code transforms the above
+    DIB's optimal palette into the true mix of the requested palette,
+    and the 20(or so) reserved windows colors.  The resulting 
+    palette, when selected, becomes BOTH the logical and physical
+    palette.  Because of this we can save windows the processor
+    expensive process of mapping a DIB's color tables to the physical
+    palette.
+
+    This, of course, means we have to readjust the DIB's
+    pixel map to make it correct for the new color map.  
+    This is done later */
+
+/* Determine how many colors we have available, and how many
+    are system(that Windows does not allow to be changed)*/
+
+        iSysColors = GetDeviceCaps(hdcScreen, NUMCOLORS);
+        iPalEntries = GetDeviceCaps(hdcScreen, SIZEPALETTE);
+
+/* The following code causes Windows to correctly combine 
+    our palette with the System palette */
+
+        SetSystemPaletteUse(hdcScreen, SYSPAL_NOSTATIC);
+        SetSystemPaletteUse(hdcScreen, SYSPAL_STATIC);
+
+/* Realize our optimal palette */
+        oldPal = SelectPalette(hdcScreen, hp, FALSE);
+        RealizePalette(hdcScreen);
+        SelectPalette( hdcScreen, oldPal, FALSE);
+
+/* The system palette is now a combination of its 20 
+    reserved colors, and our new optimal palette. We now
+    read in this palette color data, and setup a new palette
+    that is the same as the system palette we created. */
+
+        GetSystemPaletteEntries(hdcScreen, 0, iPalEntries, pe);
+
+        for( i = 0; i &lt; iSysColors/2 ; i++)
+            pe[i].peFlags=0;
+
+        for( ;i&lt;iPalEntries-iSysColors/2;i++)
+            pe[i].peFlags=PC_NOCOLLAPSE;
+
+        for( ;i&lt;iPalEntries;i++)
+            pe[i].peFlags=0;
+
+/* Create our "identity" palette as a real palette */
+        ResizePalette(hp,iPalEntries);
+        SetPaletteEntries(hp,0,iPalEntries,pe);
+        ReleaseDC(hwndScreen,hdcScreen);
+
+/* Build a table that will allow us to convert the pixel
+    map to the new color table. */
+           
+        for(i=0;i&lt;=255;i++)
+            table[i]=GetNearestPaletteIndex(hp,RGB(
+                quad[i].rgbRed,
+                quad[i].rgbGreen,
+                quad[i].rgbBlue));
+
+/* Now remap the pixel map to the new color table */
+        for(i=0;i&lt;(starInfo.biWidth*starInfo.biHeight);i++)
+            spritePattern[i]=table[spritePattern[i]];
+
+        qd=(WORD*)&amp;info-&gt;bmiColors[0];
+        for(i=0;i&lt;=255;i++,qd++)
+            *qd=(WORD)i;
+    } else {
+        qptr = &amp;info-&gt;bmiColors[0];
+
+        for(i = 0;i &lt;= 255; i++, qptr++){
+            qptr-&gt;rgbRed = quad[i].rgbRed;
+            qptr-&gt;rgbGreen = quad[i].rgbGreen;
+            qptr-&gt;rgbBlue = quad[i].rgbBlue;
+        }
+    }
+    ReleaseDC(hwndScreen,hdcScreen);
+    return TRUE;
+}
+
+/* not shown: functions RenderReset (in Listing 2) and function
+   MoveSprite (on code disk) -- mb */
+   
+/* Window Procedure for the main window */
+LRESULT CALLBACK MainWndProc(
+    HWND hwnd, 
+    UINT message, 
+    WPARAM wParam, 
+    LPARAM lParam)
+{
+PAINTSTRUCT ps;
+HDC hdc,memDC;
+HBITMAP old;
+struct SPRITE *sprite;
+int i;
+char str[80];
+
+    switch(message)
+    {
+        case WM_CREATE:
+            if(LoadSprites()) {
+                SetTimer( hwnd, 2, 10, NULL);
+                SetTimer( hwnd, 1, 1000, NULL);
+                srand( (unsigned)time( NULL ) );
+                for( i = 0 ; i &lt; NUM_SPRITES; i++) {
+                    sprite =
+                         CreateSprite(spriteSize,spriteSize,<BR>                                      spritePattern);
+                    SpriteSetPos(sprite, Random(100), Random(100));
+                    sprite-&gt;xd = Random(40)-30;
+                    sprite-&gt;yd = Random(40)-30;
+                }
+            } else {
+                PostQuitMessage(0);
+                return -1;
+            }
+            break;
+
+        /* Each timer tick moves the sprites */
+        case WM_TIMER:
+            if(wParam==1) {
+                tfps = fps;
+                fps = 0;
+            } else {    
+                MoveSprite( hwnd, &amp;clientSize);
+                InvalidateRect( hwnd, NULL, FALSE);
+            }
+            break;
+
+        case WM_PAINT:
+            hdc=BeginPaint( hwnd, &amp;ps);
+            fps++;
+
+            memDC = CreateCompatibleDC( hdc);
+            old = SelectObject( memDC, dibSect);
+
+            if(hp!=NULL) {
+                SelectPalette( memDC, hp, FALSE);
+                SelectPalette( hdc, hp, FALSE);
+															 RealizePalette(hdc);
+            }
+
+            FillRect( memDC, &amp;clientSize, GetStockObject(BLACK_BRUSH));
+            RenderSprites(hwnd);        
+            sprintf(str,"%i Frames Per Second   ",tfps);
+            TextOut( memDC, 0, 0, str, strlen(str));
+
+            BitBlt(hdc,
+                    0, 0, clientSize.right, clientSize.bottom,
+                    memDC, 0, 0, SRCCOPY);
+
+            SelectObject(memDC,old);            
+            
+            DeleteDC(memDC);
+
+            EndPaint(hwnd,&amp;ps);
+            break;
+
+        case WM_SIZE:
+            GetClientRect(hwnd,&amp;clientSize);
+            RenderReset(hwnd);         
+            break;
+
+        case WM_DESTROY:
+            while(firstSprite!=NULL)
+                DeleteSprite(firstSprite);
+            if(info!=NULL)
+                free(info);
+            if(spritePattern!=NULL)
+                free(spritePattern);
+            if(hp!=NULL)
+                DeleteObject(hp);
+            if(dibSect!=NULL)
+                DeleteObject(dibSect);
+            PostQuitMessage(0);
+            break;
+        }
+    return (DefWindowProc(hwnd, message, wParam, lParam));
+}
+
+/* not shown: WinMain function (on code disk) -- mb */
+/* End of File */
+</PRE>
+     </BODY>
+</HTML>

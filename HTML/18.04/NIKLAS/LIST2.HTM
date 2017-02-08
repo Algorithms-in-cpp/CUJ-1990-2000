@@ -1,0 +1,186 @@
+<HTML><HEAD>
+<TITLE>April 2000/A Class for Scanning Directories/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2: CFileList member function definitions</A></h4>
+<pre>
+/* cdir.cpp */
+/* class to do some operation on all files that match masks */
+/* task: maintain '*' and '?' in file masks */
+/* author: Michal Niklas mniklas@computer.org */
+
+// those headers include dir and file functions 
+#include &lt;stdio.h&gt;
+#include &lt;sys/types.h&gt;
+#include &lt;dirent.h&gt;
+#include &lt;sys/stat.h&gt;
+
+
+#include "sflre.h"
+#include "cdir.h"
+
+bool CFileList::DefaultIgnoreCase = false;
+/* for MS systems case doesn't matter while others systems
+   are more sensitive */
+
+const char DIR_SEPARATOR = '/';
+// should work for MS systems and unices 
+
+// I found that Borland C++ 5.02 have some problems with inline
+// if you want do use real inline uncomment this:
+// #define _inline inline
+#define _inline
+
+_inline void CFileList::Init()
+  {
+  SetIgnoreCase(DefaultIgnoreCase);
+  m_recursive = false;
+  } // CFileList::Init
+  
+// construcors 
+_inline CFileList::CFileList() { Init();  }
+
+_inline CFileList::CFileList(std::string mask)
+  {
+  Init();
+  AddMask(mask);
+  }
+
+_inline CFileList::CFileList(char *masks[], int count)
+  {
+  Init();
+  SetMasks(masks, count);
+  }
+// end constructors
+
+
+_inline void CFileList::AddMask(std::string mask)
+  {
+  m_masks.insert(m_masks.end(), mask);
+  } // CFileList::AddMask 
+
+_inline void CFileList::SetMasks(char *masks[], int count)
+  {
+  for (int i = 0; i &lt; count &amp;&amp; masks[i] != NULL; ++i)
+    m_masks.insert(m_masks.end(), masks[i]);
+  } // CFileList::SetMasks 
+
+// does file_name match any of mask 
+_inline bool CFileList::MatchAnyMask(char *file_name)
+  {
+  for (unsigned int i = 0; i &lt; m_masks.size(); ++i)
+    if (m_match_fun(m_masks[i].c_str(), file_name))
+      return true;
+  return false;
+  } // CFileList::MatchAnyMask 
+
+
+
+_inline bool CFileList::SetIgnoreCase(bool new_value)
+  { // setting this value changes match_fun also
+  m_ignore_case = new_value;
+  m_match_fun = (IgnoreCase() ? &amp;matchi : &amp;match);
+  return m_ignore_case;
+  } // SetIgnoreCase 
+
+
+// check if all chars from src are ch 
+_inline int AllCharsAre(char ch, const char *str)
+  {
+  while (*str)
+    if (*str++ != ch)
+      return 0;
+  return 1;
+  } // AllCharsAre 
+
+
+bool CFileList::CheckMasks()
+  {
+  return (m_masks.size() &gt; 0);
+  } // CFileList::CheckMasks 
+
+
+unsigned int CFileList::ProcessFiles(std::string dir_name, file_fun_ptr file_fun,
+                                     file_fun_ptr dir_fun, void *data)
+  {
+  if (file_fun == NULL || !CheckMasks())
+    return 0;
+  DIR *dir;
+  std::string sError;
+
+  dir = opendir(dir_name.c_str());
+  if (dir == NULL)
+    {
+    sError = "Error during opendir(\"" + dir_name + "\"): ";
+    perror(sError.c_str());
+    return 0;
+    }
+  dirent *direntry;       // info about what does dir contains 
+  struct stat stat_buf;   // info about particular file (or dir) 
+  std::vector &lt;std::string&gt; Files;
+  std::vector &lt;std::string&gt; Dirs;
+  std::string full_file_name;   // file name with full path 
+  while ((direntry = readdir(dir)) != NULL)
+    {
+    full_file_name = dir_name;
+    full_file_name.append(DIR_SEPARATOR);
+    full_file_name.append(static_cast&lt;char *&gt;(direntry-&gt;d_name));
+    // unfortunately more natural
+    //    full_file_name = dir_name + DIR_SEPARATOR + static_cast&lt;char *&gt;(direntry-&gt;d_name);
+    // doesn't work with Borland C 5.02
+
+    // getting info about file
+    if (stat(full_file_name.c_str(), &amp;stat_buf) != 0)
+      {
+      sError = "Error during stat(\"" + full_file_name + "\"): ";
+      perror(sError.c_str());
+      continue;
+      }
+    if ((stat_buf.st_mode &amp; S_IFMT) == S_IFDIR)
+      {                  // our direntry-&gt;d_name contains directory 
+      if (Recursive())   // we must avoid '.' and '..' dirs 
+        if (!AllCharsAre('.', direntry-&gt;d_name))
+          Dirs.insert(Dirs.end(), full_file_name);
+      }
+    else
+      if (MatchAnyMask(direntry-&gt;d_name))
+        Files.insert(Files.end(), full_file_name);
+    } // while direntry 
+  closedir(dir);
+
+  unsigned int i, count = 0;
+  for (i = 0; i &lt; Files.size(); ++i)
+    count += file_fun((Files[i]).c_str(), data); // process all files
+  for (i = 0; i &lt; Dirs.size(); ++i)
+    {
+    if (dir_fun != NULL)
+      dir_fun((Dirs[i]).c_str(), data);
+    count += ProcessFiles(Dirs[i], file_fun, dir_fun, data); // process all dirs
+    }
+  return count;
+  } // CFileList::ProcessFiles 
+
+
+bool IsOptionOn(char arg[], char opt)
+  {
+  if (arg[0] == '-' &amp;&amp; arg[1] == opt &amp;&amp; arg[2] == '\0')
+    return true;
+  return false;
+  } // IsOptionOn 
+
+_inline bool CFileList::ParseArgs(int argc, char *argv[])
+  {
+  for (int i = 0; i &lt; argc; ++i)
+    {
+    if (IsOptionOn(argv[i], 'h') || IsOptionOn(argv[i], '?'))
+      return false;  // show help only
+    if (IsOptionOn(argv[i], 'r'))
+      m_recursive = true;
+    if (IsOptionOn(argv[i], 'i'))
+      m_ignore_case = true;
+    }
+  return true;
+  } // CFileList::ParseArgs 
+
+</pre></body></html>

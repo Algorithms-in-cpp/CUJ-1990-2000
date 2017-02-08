@@ -1,0 +1,460 @@
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+<TITLE>June 1998/Testing Error Handlers by Simulating Errors</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<H2><A href="../tocjun.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+<FONT COLOR="#FF0000">Graphics/Image Processing</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Testing Error Handlers by Simulating Errors</FONT></H2>
+
+<H3 ALIGN="center"><FONT COLOR="#800000">Dave Pomerantz</FONT></H3>
+
+<BLOCKQUOTE>
+<P>Buggy error handlers often escape detection, or are tested only half-way. Here are
+some tools to help you finish the job.</P></BLOCKQUOTE>
+
+<HR>
+
+<BLOCKQUOTE>
+<p>As recently as two years ago, I had no systematic way to simulate errors, so
+I was never sure if my software could gracefully recover from a problem. If my
+program contained a buried code sequence like this:</p>
+
+<pre>
+
+try
+{   
+   DBTable *pPersTable =
+      new DBTable("Personnel");
+   if (pPersTable == 0)
+   {
+      throw(E_OPENING_DB_TABLE);
+   }
+   DoUsefulWork(pPersTable);
+}
+catch(HRESULT hr)
+{
+   DBErrorRecovery(hr);
+}
+</pre>
+<p>eleven
+of the above thirteen lines of code would be present only to detect and
+propagate a failure in new. How could I know if I made a mistake in those
+eleven lines before shipping the product to a customer?</p>
+<p>Good programs can contain hundreds of these error handlers. Most of them
+respond to conditions that rarely occur and are difficult to force in normal
+use. If I run my program in an environment low in memory, I can force one or
+two errors. Repeated testing will usually trigger the same errors, especially
+when testing memory allocation failures. It's nearly impossible to force all
+the different errors with an external test.<p>
+In this article, I present a simple but powerful tool to simulate all the
+errors a program handles. You can use this tool to verify that your error
+handlers are working. After all, why bother writing an error handler if you
+can't be sure it works?</p>
+
+<h4><FONT COLOR="#000080">A Simple Example</FONT></h4>
+
+<p><A href="list1.htm">Listing 1</a>
+shows a small program with four failure points: new, malloc, AdjustValve, and
+UpdateDatabase. Each of these functions might return an error, throw an
+exception, or both. After detecting a failure, the sample program responds by
+logging a message, skipping the remaining functions, and returning an error
+code. <A href="list2.htm">Listing 2</a>
+shows the same program with functions inserted to simulate
+errors. The functions are conditionally compiled to appear only in a debug
+version.</p>
+
+<h4><FONT COLOR="#000080">Simulating Allocation Failure</FONT></h4>
+
+<p>In
+the example below, taken from the sample program, the SimErrMalloc function
+simulates an allocation error immediately after a call to malloc:</p>
+
+<pre>
+pArray = (char *) malloc(100);
+pArray =
+   SimErrMalloc(SIMLINE, pArray);
+if (pArray==0)
+{
+   printf("C allocation error\n");
+   bOK = false;
+}
+else
+{
+   delete pArray;
+}
+</pre>
+<p>SimErrMalloc
+is a conditionally compiled C++ template function. The release version compiles
+to a null function, eliminating all traces of the error simulator from
+production software. The debug version compiles the following template, which
+frees allocated memory and returns zero, to simulate a failed allocation.</p>
+
+<pre>
+#define SIMLINE  __FILE__, __LINE__
+// Simulate failed C allocation
+template &lt;class T&gt;
+T *SimErrMalloc
+      (const char *strFile,
+       int nLine, T *pData,
+       long nCount = 1,
+       double nProb = 1.0)
+{
+   if ((pData != 0) &amp;&amp;
+       SimErr(strFile, nLine,
+          SIMERR_MEMORY_ERROR,
+          nCount, nProb))
+   {
+      free(pData);
+      pData = 0;
+   }
+   return pData;
+}
+</pre>
+<p>SIMLINE
+is a simple macro that passes the first two parameters &#151; the source file and
+line number &#151; to SimErrMalloc. These parameters identify the location of the
+simulation function. The third parameter, pData, points to the allocated
+memory.<p>
+The last two parameters, nCount and nProb, apply only to a random test. They
+control the number of times to simulate an error at this location and the
+probability of an error each time. The default is to simulate the error once
+(nCount = 1), the first time through (nProb = 1.0). For now, I'll ignore these
+two parameters and save the discussion of random error simulation for later.<p>
+SimErrMalloc calls SimErr to determine whether or not to simulate an error.
+SimErr looks up the location, finds out how many times it has already simulated
+an error in that location, and returns true to simulate an error, or false to
+peacefully continue on.<p>
+If SimErr returns true, SimErrMalloc frees the allocated memory and returns
+zero, simulating a failed allocation.</p>
+
+<h4><FONT COLOR="#000080">Simulating Exceptions</FONT></h4>
+
+<p>In
+addition to handling failure codes, most programs face the greater complexity
+of handling exceptions. In the sample, UpdateDatabase can return an error, but
+it can also throw an exception. The sample rigorously simulates
+both:</u></b></p>
+
+<pre>
+try
+{
+   ...
+   if (bOK)
+   {
+      nResult = UpdateDatabase();
+      SimErrException(SIMLINE,
+         SIMERR_DATABASE_EXCEPTION);
+      nResult =
+         SimErrResult(SIMLINE,
+            nResult,
+            DATABASE_ERROR);
+      if (nResult == DATABASE_ERROR)
+      {
+         printf("Update failed.\n");
+         bOK = false;
+      }
+   }
+}
+....
+catch(CDatabaseException
+   *pDBException)
+{
+   printf("Unrecoverable "
+      "database error.\n");
+   delete pDBException;
+   bOK = false;
+}
+</pre>
+<p>SimErrException
+throws an exception. SimErrResult sets nResult to DATABASE_ERROR.<p>
+<A href="tab1.htm">Table 1</a>
+summarizes the error simulation functions and their parameters.</p>
+
+<h4><FONT COLOR="#000080">Systematic Testing</FONT></h4>
+
+<p>The
+simulation functions are simple. Inserting the function calls, though tedious,
+is also simple. The only tricky part is deciding when to trigger the errors. If
+the first function always triggers an error, the program always exits before
+exercising other error handlers.<p>
+An error simulation function needs to turn itself off after its associated
+error handler has succeeded. To test the six error handlers in <A href="list2.htm">Listing 2</a>,
+ I
+should run the program six times. On each successive run, the previous error
+should be inactive and the next one should fire, until all errors have been
+simulated.<p>
+Each simulation function calls SimErr to determine whether or not it should
+trigger an error. SimErr maintains a log, by source file and line number, that
+tracks the number of the times the simulation has fired. Each time SimErr is
+called, it updates an internal copy of the log. At initialization, SimErrInit
+reads the simulation log and writes a backup copy. Before the program
+terminates, SimErrExit writes the simulation log.<p>
+After recovering from an error and exiting properly, the next run of the
+program will skip the previous failure and advance to the next error
+simulation. This permits successive program runs to proceed stepwise until each
+failure point has been tested.<p>
+If an error handler fails and the program aborts before calling SimErrExit, the
+updated log won't be written. This is important, because it allows you to
+repeat the same failure until you fix the error handler that's responding
+incorrectly.<p>
+It's possible for the program to exit successfully even if the error handler
+fails. For example, the error handler may have caught the error but displayed
+the wrong message. In this case, you need to manually copy the backup log file
+over the updated log file to repeat the same test.</p>
+
+<h4><FONT COLOR="#000080">Oh, the chore of testing!</FONT></h4>
+
+<p>It's
+certainly tedious testing several hundred error handlers, each of which causes
+the program to exit. It's worse if your program takes a long time to restart.
+Unfortunately, I don't think there's a simple answer. This kind of thorough
+testing is at the heart of quality assurance. Using an automated test framework
+to script the tests will make it easier, but error handlers account for
+approximately twenty percent <a href="#1">[1]</a> of your code. If your product is at all
+complex, testing and fixing twenty percent of it will take time.<p>
+I prefer to do the testing piecemeal, at the same time that I unit-test each
+module. Testing periodically is a lot more tolerable than testing all at once,
+and I catch mistakes closer to when I made them. Besides, it's enormously
+satisfying to watch my software handle all kinds of system and hardware
+failures without blinking. Because of the propagation of errors, however, it's
+necessary at some point to test the complete integrated system, even if each
+module has been tested separately.</p>
+
+<h4><FONT COLOR="#000080">Random Testing</FONT></h4>
+
+<p>Once
+you've systematically tested all the error handlers, you'll have gone farther
+than most programmers toward building bulletproof software, but the real world
+has some nasty ordnance. The bullets don't always come from where you're
+looking.<p>
+A systematic test triggers a failure at the first opportunity. A random test
+waits for the second, or perhaps the tenth or thousandth, opportunity to
+trigger a failure. Because the state of the software may be different at that
+point, error handling that worked in a systematic test may fail in a random
+test.<p>
+The simulation template functions such as SimErrMalloc set the default count
+and probability to 1, which guarantees an error will be simulated once, the
+first time through. By filling in these parameters, you can simulate the error
+more than once, each time with a given likelihood. If you set the count to
+SIMERR_FOREVER, the error will be simulated indefinitely.<p>
+In the sample, the AdjustValve function is followed by a simulation function
+that will fail roughly one-third of the time it's executed until it has failed
+four times.</p>
+
+<pre>
+bOK = AdjustValve();                  
+SimErrException(SIMLINE, SIMERR_DEVICE_EXCEPTION, 4, 0.33);
+</pre>
+<p>If
+you change this function to:</p>
+
+<pre>
+SimErrException(SIMLINE, SIMERR_DEVICE_EXCEPTION, SIMERR_FOREVER, 0.0001);
+</pre>
+<p>the
+valve will return a failure indefinitely at the rate of one in ten thousand.
+This is useful for simulating intermittent failures during an extended stress
+test.</p>
+<p>I typically test all the error handlers once for basic operation, then test
+again randomly. As a convenience, SimErrInit takes a parameter which turns
+random testing off. This forces all errors to be simulated exactly once,
+regardless of their parameters, making it easy to switch back and forth between
+systematic and random testing.</p>
+
+<h4><FONT COLOR="#000080">Error Tracing</FONT></h4>
+
+<p>Most
+debug environments have some form of trace output. The simulation functions
+direct all their output through a callback function, which you can tailor to
+your environment. <A href="list3.htm">Listing 3</a>
+shows the trace output from the first program run,
+which simulates a single memory error. The first line of the trace:</p>
+
+<pre>
+&lt;SIMERR&gt; Starting error simulator with a systematic test.
+</pre>
+<p>shows
+whether the test is random or systematic. If it were a random test, the trace
+would also show the seed used for the random numbers.</p>
+<p>Before forcing an error, the simulator writes the source file and line
+number of the function along with the type of error:</p>
+
+<pre>
+&lt;SIMERR&gt; at sample.cpp(42) *** SIMULATING MEMORY ERROR ***
+C++ allocation error
+Sample program exiting with return code = -1
+</pre>
+<p>In
+this case, the simulated failure caused the sample program to report the error
+and exit. Just before exiting, the program called SimErrExit, which wrote a
+detailed report divided into three sections:<p>
+<UL><LI>Errors that were simulated in this session and prior sessions. Errors in
+this session are marked NEW.</LI>
+    <LI>Simulation functions that were encountered but not yet triggered. This can
+happen only during random testing.</LI>
+    <LI>A summary count of simulated errors, organized by error type.</LI>
+</UL>
+<p><A href="list4.htm">Listing 4</a>
+shows the output after six systematic runs. At this point, all
+errors have been simulated.</p>
+
+<h4><FONT COLOR="#000080">How the Simulator Works</FONT></h4>
+
+<p>The
+simulator tracks functions that call it. Each entry in this list contains the
+source file name, line number, error type, and number of times a function at
+that location has simulated an error. At initialization, the simulator reads
+the list from the log file and makes a backup copy of the file.<p>
+Each time a simulation function is executed, the simulator looks up the
+corresponding entry and decides whether or not to simulate a failure. To
+simulate an error, it returns true. To simulate an exception, the simulator
+invokes a callback routine that the target program provided to throw
+environment- and application-specific exceptions. At termination, the simulator
+writes the simulation log file and the summary report.<p>
+The list entries themselves are C++ objects and the list is an STL vector. The
+simulator is a singleton C++ object that, in the Windows implementation,
+resides in its own DLL.</p>
+
+<h4><FONT COLOR="#000080">Customizing the Simulator</FONT></h4>
+
+<p>The
+simulator source code is freeware. It's written in ANSI C++ and is available
+from ftp://ftp.mfi.com/pub/cuj and at www.targetsoft.com. The simulator was
+built with Visual C++ but could easily be adapted to any ANSI C++ compiler.
+Each program that uses the simulator needs a small source file to customize the
+error types and trace output. Alternatively, you could build the customization
+right into the simulator library, but I prefer the flexibility of allowing
+different error types in the target program.<p>
+The custom header and source files are shown in Listings  <A href="list5.htm">5</a> and  <A href="list6.htm">6</a>. They
+provide:</p>
+<UL><LI>application-defined error and exception types</LI>
+    <LI>a callback function to write the simulator messages to the debug log file</LI>
+    <LI>a callback function to throw exceptions.</LI>
+</UL>
+<p>If you're not using C++, you have more work ahead of you. Fortunately, the
+simulator is only 1,200 lines of code and would therefore not be difficult to
+rewrite in another language. I feel the payoff would be worthwhile for all but
+the smallest projects. See the FAQ <a href="sidebar.htm">sidebar</a>
+on what would be involved to
+re-implement in C.</p>
+
+<h4><FONT COLOR="#000080">Adding Environment-Specific Functions</FONT></h4>
+
+<p>Since
+the simulator DLL provides the error logging and triggering, the simulation
+functions need only five or six lines of code to simulate specific errors. This
+makes it easy to add functions for error conditions that are particular to an
+environment. For example, to simulate an error in a function that creates a
+Windows timer, you might use this code sequence:</p>
+
+<pre>
+m_nTimer = SetTimer(1000, // ID
+                    100,  // interval
+                    0);   // WM_TIMER
+m_nTimer = SimErrZero(SIMLINE, m_nTimer);
+</pre>
+<p>When
+the error is simulated, SimErrZero will return zero. This causes a problem,
+however, since a Windows timer really did get created and is now dangling,
+unused and inaccessible.<p>
+For these kinds of system calls, it may be helpful to write a few functions
+like SimErrTimer to destroy the system resource that was created:</p>
+
+<pre>
+inline UINT
+SimErrTimer(const char *strFile, int nLine, UINT nTimer,
+   long nCount = 1, double nProb = 1.0)
+{
+   if ((nTimer != 0) &amp;&amp;
+       SimErr(strFile, nLine, SIMERR_RESULT_ERROR,
+          nCount, nProb))
+   {  
+      KillTimer(0, nTimer);
+      nTimer = 0;
+   }
+   return nTimer;
+}
+</pre>
+<p>In
+my experience, a few of these functions &#151; for timers, windows, files, and
+graphic objects &#151; will handle your needs with a minimal amount of code.</p>
+
+<h4><FONT COLOR="#000080">Limitations and Caveats</FONT></h4>
+
+
+<h4><FONT COLOR="#000080">Inaccurate Report</FONT></h4>
+
+<p>The
+simulator reports only the simulation functions that have called it. It's
+strictly a run-time analyzer, so it doesn't know about all the simulations that
+remain unexecuted in the target program. To get the count of simulation
+functions, I search all source files for all occurrences of SIMLINE. This is
+clumsy, but it works.<p>
+I've thought about writing a pre-processor to build the simulation log at
+compile time. That would, however, dramatically increase the size and
+complexity of the simulator and complicate its administration, so I've held off.</p>
+
+<h4><FONT COLOR="#000080">Editing Source Files</FONT></h4>
+
+<p>The
+simulation log persists between runs of the target program, tracking the line
+numbers of simulation functions. If you change a source file by inserting or
+deleting lines, an existing simulation function will have a different location
+in the file and will appear to the simulator to be a new function. Typically,
+the simulator will trigger it again, unnecessarily. Worse, it may never trigger
+a simulation function, assuming it had already been triggered.<p>
+To be safe, do one of the following:</p>
+<p>1. Edit the log file to update the line numbers that have changed. This is
+the only viable option if you're in the middle of a long, complex test. The
+file is ASCII and is easy to edit.<p>
+2. Delete the simulator log file and restart the tests. If you've only just
+started testing, this is the best option.<p>
+This problem would be solved, of course, if the simulator had a pre-processor.</p>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></h4>
+
+<p>The
+error simulator is effective because it's simple and it solves a problem not
+addressed elsewhere. It takes time, however, to insert the simulation functions
+and more time to run the tests and fix the bugs. It's might seem hard to
+justify the time to test such unlikely errors. With projects such as embedded
+software and mission-critical applications, you have no choice. For other
+projects, you might consider the cost of finding and fixing one intermittent
+data-corruption bug that occurs when an out-of-memory condition triggers an
+obscure error handler. In that case, it may be cheaper to fix all the error
+handlers in controlled tests during development than to fix a single
+intermittent bug at a customer site.</p>
+
+<h4><FONT COLOR="#000080">Note</FONT></h4>
+
+<p><a name="1"></a>[1]
+I admit, that's a wild guess. I haven't seen hard numbers on this, so I counted
+lines in my own software. Excluding comments, I found that testing,
+propagating, and responding to errors made up between 7 and 34 percent of the
+code, averaging about 20 percent. The percentage is lowest in modules that have
+few external interfaces, and is highest in I/O modules and other routines that
+interact heavily with the system. o
+</p>
+<p><i>Dave Pomerantz is the owner of On Target Software, a consulting firm in
+Marshfield, MA, focusing on C++ development for Windows, especially Windows CE.
+The error simulator source code, sample program, Win32 DLL, and complete
+technical documentation are available at http://www.targetsoft.com.
+</i></p>
+
+<h4><a href="../../../source/1998/jun98/pomerant.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</body>
+</html>

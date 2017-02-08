@@ -1,0 +1,277 @@
+<HTML><HEAD>
+<TITLE>September 1998/Extending the Reference-Counting Pattern/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1: Header file for smart pointers implementation</A></h4>
+
+<pre>
+// Copyright (c) 1996-1997 Vladimir Batov
+//
+// Permission to use, copy, modify, distribute and sell this
+// software and its documentation for any purpose is hereby
+// granted without fee, provided that the above copyright notice
+// appear in all copies and that both that copyright notice and
+// this permission notice appear in supporting documentation.
+// I make no representations about the suitability of this software
+// for any purpose. It is provided "as is" without express or
+// implied warranty.
+
+// Handle&lt;T&gt; requires T class to have T::T() and
+// T::T(const T&amp;) constructors.
+
+#ifndef BATOV_HANDLE_H
+#define BATOV_HANDLE_H
+
+typedef unsigned int uint;
+
+class HandleError
+{
+   public:
+
+      ~HandleError () {}
+       HandleError () : _error(_allocate()) {}
+       HandleError (uint err) : _error(err) {}
+   operator   uint () const { return _error; }
+   bool operator== (const HandleError&amp; e) const
+      { return _error == e._error; }
+
+   static HandleError no_error;
+   static HandleError  unknown;
+
+   private:
+
+   uint _error;
+   uint _allocate();
+};
+
+template&lt;class T/*, class Allocator = MemoryAllocator
+                    When supported*/&gt;
+class Handle
+{
+   public:
+
+   typedef HandleError Error;
+
+   private:
+
+   class Counted
+   {
+      public:
+
+     ~Counted () {}
+      Counted ();
+      Counted (const T&amp;);
+
+      void dismiss () { if (!--_num_references) delete this; }
+      void     use () { ++_num_references; }
+
+      operator         T&amp; ()       { return  _instance; }
+      operator   const T&amp; () const { return  _instance; }
+      operator         T* ()       { return &amp;_instance; }
+      operator   const T* () const { return &amp;_instance; }
+      T*       operator-&gt; ()       { return &amp;_instance; }
+      const T* operator-&gt; () const { return &amp;_instance; }
+
+//    Possible memory optimization. See [6]. 
+//    void*   operator new (size_t)
+//       { return   _allocator.allocate(); }
+//    void operator delete (void* storage)
+//       { _allocator.deallocate(storage); }
+
+      bool  is_shared () const
+         { return 1 &lt; _num_references ? true : false; }
+      bool   is_error () const { return _error ? true : false; }
+      Error get_error () const { return _error; }                
+      void  set_error (Error);                                   
+
+      private:
+
+      T               _instance;
+      uint _num_references : 16; // Reference counter.
+                                 // (&lt;=65535 looks enough)
+      uint          _error : 16; // Error conditions flag.
+                                 // (&lt;=65535)
+
+//    Possible memory optimization. See [6]. 
+//    static MemoryAllocator _allocator;
+   };
+
+   public:
+
+  ~Handle ();
+   Handle ();
+   Handle (const T&amp;);
+   Handle (const T*);
+   Handle (const Handle&lt;T&gt;&amp;);
+
+   operator T&amp; () { return _counted-&gt;operator T&amp;(); }
+   operator T* () { return _counted-&gt;operator T*(); }
+   operator const T&amp; () const { return _counted-&gt;operator T&amp;(); }
+   operator const T* () const { return _counted-&gt;operator T*(); }
+   const T* operator-&gt; () const
+      { return _counted-&gt;operator -&gt;(); }
+   T* operator-&gt; () { return _counted-&gt;operator -&gt;(); }
+   Handle&lt;T&gt;&amp; operator = (const T&amp;);
+   Handle&lt;T&gt;&amp; operator = (const T*);
+   Handle&lt;T&gt;&amp; operator = (const Handle&lt;T&gt;&amp;);
+
+   static Handle&lt;T&gt; error (Error =Error::unknown);
+   void             set_error (Error =Error::unknown);
+   Error     get_error () const { return _counted-&gt;get_error(); }
+   bool      is_error () const { return _counted-&gt; is_error(); }
+   bool      is_shared () const { return _counted-&gt;is_shared(); }
+   Handle&lt;T&gt; duplicate () const; // Convenience method to create 
+                                 // a copy of a "T-Handle&lt;T&gt;" pair.
+   private:
+
+   Counted* _counted;
+
+   // User has NO ACCESS TO THE ADDRESS OF A HANDLE instance
+   // as such access bypasses reference counter mechanism.
+   // User is forced to pass it by value (Handle) that is 
+   // supervised by the mechanism.
+
+   Handle&lt;T&gt;* operator&amp; (); // Not defined to prevent usage.
+};
+
+template&lt;class T&gt;
+inline
+Handle&lt;T&gt;::Counted::Counted() : _num_references(0), 
+                                _error(Error::no_error), 
+                                _instance()
+{
+   // Preferred form of T instance creation.
+}
+
+template&lt;class T&gt;
+inline
+Handle&lt;T&gt;::Counted::Counted(const T&amp; from)
+                              : _num_references(0),
+                                _error(Error::no_error),
+                                _instance(from)
+{
+   // Should be avoided as an internal copy of 'from'
+   // is created.
+}
+
+template&lt;class T&gt;
+inline
+void
+Handle&lt;T&gt;::Counted::set_error(Error err)
+{
+   _error = err &lt; Error::unknown
+          ? err
+          : Error::unknown;
+}
+
+template&lt;class T&gt;
+inline
+Handle&lt;T&gt; 
+Handle&lt;T&gt;::error(Error num) 
+{ 
+   Handle&lt;T&gt; h; 
+   h.set_error(num); 
+   return h; 
+}
+
+template&lt;class T&gt;
+inline
+void         
+Handle&lt;T&gt;::set_error(Error err) 
+{ 
+   _counted-&gt;set_error(err); 
+
+}
+
+template&lt;class T&gt;
+inline
+Handle&lt;T&gt;::~Handle()
+{
+   _counted-&gt;dismiss();
+}
+
+template&lt;class T&gt;
+inline
+Handle&lt;T&gt;::Handle() : _counted(new Counted())
+{
+   _counted-&gt;use();
+}
+
+template&lt;class T&gt;
+inline
+Handle&lt;T&gt;::Handle(const T&amp; copy) : _counted(new Counted(copy))
+{
+   _counted-&gt;use();
+}
+
+template&lt;class T&gt;
+inline
+Handle&lt;T&gt;::Handle(const T* copy) 
+   : _counted(copy ? new Counted(*copy) : new Counted())
+{
+   _counted-&gt;use();
+}
+
+template&lt;class T&gt;
+inline
+Handle&lt;T&gt;::Handle(const Handle&lt;T&gt;&amp; ref) : _counted(ref._counted)
+{
+   _counted-&gt;use();
+}
+
+template&lt;class T&gt;
+inline
+Handle&lt;T&gt;&amp;
+Handle&lt;T&gt;::operator=(const T&amp; src)  //8.
+{
+   if (*this != &amp;src)
+   {
+      _counted-&gt;dismiss();
+      _counted = new Counted(src);
+      _counted-&gt;use();
+   }
+   return *this;
+}
+
+template&lt;class T&gt;
+inline
+Handle&lt;T&gt;&amp;
+Handle&lt;T&gt;::operator=(const T* src) //8.
+{
+   if (*this != src)
+   {
+      _counted-&gt;dismiss();
+      _counted = src ? new Counted(*src) : new Counted();
+      _counted-&gt;use();
+   }
+   return *this;
+}
+
+template&lt;class T&gt;
+inline
+Handle&lt;T&gt;&amp;
+Handle&lt;T&gt;::operator=(const Handle&lt;T&gt;&amp; src)
+{
+   if (this-&gt;_counted != src._counted)
+   {
+      _counted-&gt;dismiss();
+      _counted = src._counted;
+      _counted-&gt;use();
+   }
+   return *this;
+}
+
+template&lt;class T&gt;
+inline
+Handle&lt;T&gt;    
+Handle&lt;T&gt;::duplicate() const 
+{ 
+   return Handle&lt;T&gt;(operator-&gt;()); 
+}
+
+#endif // BATOV_HANDLE_H
+
+// End of File</pre>
+</BODY>
+</HTML>

@@ -1,0 +1,90 @@
+<HTML><HEAD>
+<TITLE>February 1995/Programming Flash Memory/Listing 5</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 5 <I>Time-out and erase routines</A></I></h4>
+<pre>/***********************************************************************
+Handle a time-out or fail-safe error. The expected value is checked with
+the actual value to determine if a time-out happened. fm_error is called
+with errcode for a fail-safe error, or with errcode+1 for a time-out error.
+***********************************************************************/
+
+static void fm_tofs_error(addr, exp, act, errcode)
+unsigned short *addr, exp, act;
+int errcode;          /* fail-safe error=errcode; time-not error=errcode+1 */
+{
+       unsigned short to_val;          /* value used to check for time-out */
+       unsigned short tmp;             /* time-out check temporary */
+
+       /* this value has timeout &amp; data-poll bits set to mean time-out: */
+       to_val = (~exp &amp; FM_NDATA_POLL) | FM_TIMEOUT;
+
+       /* mask out the interesting bits and xor them: */
+       tmp = (act &amp; (FM_TIMEOUT | FM_NDATA_POLL)) ^ to_val;
+
+       /* both bits clear in a byte means that chip timed-out: */
+       if (!(tmp &amp; 0x00ff) || !(tmp &amp; 0xff00))
+              ++errcode;
+
+       /* timeout error or fail-safe error handling: */
+       fm_error(addr, exp, act, errcode);
+
+       /* leave chips usable */
+       fm_reset();
+}
+
+/*********************************************************************
+Erase by sectors. The sector(s) which are overlapped by the indicated
+flash address memory range are erased. Returns non-zero on success;
+otherwise zero is returned and fm_err contains failure data. Assumes
+FMInfo and pBase are initialized.
+*********************************************************************/
+
+#define E_FS_ITER 240000  /* number of fail-safe loop iterations per sec. */
+       /** Re-measure this constant if the fail-safe loop is changed! **/
+
+static fm_sector_erase(pLow, pHigh)
+volatile unsigned short *pLow;  /* ptr somewhere into first sector to erase */
+volatile unsigned short *pHigh; /* ptr somewhere into last sector to erase */
+{
+       size_t SectorAddrMask;  /* converts ptr to offset within a sector */
+       size_t SectOffset;            /* offset into ending sector */
+       unsigned long fail_safe;      /* safety counter */
+
+       /* this masks off address bits indicating offsets into a sector: */
+       SectorAddrMask = FMInfo.SectorSize - 1;
+
+       /* set end pointer to the last location in it's sector: */
+       SectOffset = ((size_t) pHigh) &amp; SectorAddrMask;
+       pHigh = pHigh - (SectOffset &gt;&gt; 1) + (FMInfo.SectorSize &gt;&gt; 1) - 1;
+
+       /* send erase preamble sequence: */
+       fm_cmd(FMCMD_ERASE);
+
+       /* send sector erase preamble sequence: */
+       fm_cmd(FMCMD_NONE);
+
+       /* loop indicating which sectors to erase: */
+       while (pLow &lt;= pHigh)
+       {
+              /* tell chip to erase this sector: */
+              *pLow = FMCMD2_SECTOR;
+
+              /* bump pointer by one sector: */
+              plow += FMInfo.SectorSize &gt;&gt; 1;
+       }
+
+       /* loop checking for erase completion: */
+       for (fail_safe = FMInfo.MaxErase_* E_FS_ITER;  --fail_safe;  )
+              if (*pHigh == FM_ERASE_VAL)
+                     return 1; /* done! */
+
+       /* time-out and fail-safe error handling: */
+       fm_tofs_error(pHigh, FM_ERASE_VAL, *pHigh, 2);
+       return 0;
+}
+
+/* End of File */</pre>
+</BODY>
+</HTML>

@@ -1,0 +1,398 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>August 1997/Named Pipes Under Windows 95</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><A href="../tocaug.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          <FONT COLOR="#FF0000">Windows</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">Named Pipes Under Windows
+          95</FONT></H2>
+          
+          <H3 ALIGN="Center"><FONT COLOR="#800000">Brian Danilko</FONT></H3>
+          
+          <BLOCKQUOTE>
+               
+               <P>If you miss named pipes after moving to Windows 95, here's a 
+                    useful replacement.</P></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <h4><FONT COLOR="#000080">A Plumbing Problem</FONT></H4>
+               
+               <p>As applications become larger and more
+                    complex, the ability to partition programs into different
+                    processes becomes more important. Pipes provide a form of
+                    interprocess communication (IPC) between two processes (see
+                    sidebar, "<A href="sidebar.htm">Windows 95IPC and
+                         Synchronization</A>"). Typically, a server process
+                    creates a pipe and listens to one end. Clients open this
+                    pipe and write their requests in the other end. The server
+                    process uses this information to perform its tasks before it
+                    returns to the pipe to see if it contains anything new.
+                    </p>
+               
+               <p> Before Windows 95 was released I
+                    thought it would be a rewrite of Windows NT with security
+                    and some minor features removed. To my dismay, I found that
+                    named pipes was one of those "minor features"
+                    removed. I frequently write programs that use cooperative
+                    processes. And, since I typically rely upon named pipes to
+                    carry out IPC, their absence creates a problem. Windows 95
+                    does provide a form of pipes known as anonymous pipes. The
+                    problem with anonymous pipes is that you must know the
+                    handle of such a pipe to open it. Parent and child processes
+                    can communicate under this scheme, but two totally unrelated
+                    processes need another form of IPC to pass the duplicated
+                    handle between them. A named pipe allows any process that
+                    knows its name to use it; so my solution to this problem is
+                    to implement a form of named pipes under Windows 95.</p>
+               
+               <h4><FONT COLOR="#000080">Implementing Named
+               Pipes</FONT></H4>
+               
+               <p>To implement named pipes I had two
+                    choices: I could either use an existing Win 95 IPC and put a
+                    named-pipe wrapper on it, or I could build the pipes from
+                    the ground up. Using an existing IPC would tie me to the
+                    limitations of that method and prohibit low-level tuning. I
+                    therefore decided to create a simple named pipe using one of
+                    the lower-level Windows IPC mechanisms &#151; memory-mapped 
+                    files. The solution had to provide efficient and safe
+                    functioning in multitasking environments so that it could
+                    form the base for more ambitious mechanisms as the need
+                    arose. </p>
+               
+               <p> The result was a class called
+                    CommsChannel. CommsChannel (see <A href="list1.htm">Listing
+                         1</a>)
+ provides constructors for opening a channel as
+                    either a server or as a client. Both constructors take a
+                    name to identify the channel but the server must supply a
+                    second parameter for the size of the internal buffers. This
+                    second parameter is also used to differentiate a server from
+                    a client. When the destructor is called on a server object,
+                    the channel is closed. Subsequent use by clients will return
+                    an error. </p>
+               
+               <p> Other operations supported by
+                    CommsChannel include reading and writing (with variations
+                    supporting different blocking schemes) and information
+                    methods for returning the available room or data and the
+                    name of the channel. The statusEnum enumeration is quite
+                    complete, as communications layers are often difficult to
+                    debug. By supplying a specific error indication, problems 
+                    are much easier to correct. </p>
+               
+               <p> Note that CommsChannel uses one other
+                    class besides itself and CommsData. This class is the string
+                    class as detailed in the proposed C++ Standard. CommsChannel
+                    uses only construction, destruction, conversion to a char
+                    array, and assignment of string objects, so it is easy to
+                    replace string with a very simple string class if needed.</p>
+               
+               <h4><FONT COLOR="#000080">Two Types of Memory</FONT></H4>
+               
+               <p>CommsChannel's private data isn't the
+                    whole story. Except for noName, which is used to represent
+                    an unopened channel, all of the data members are object data
+                    members. The two ends (server and client) of a CommsChannel
+                    will therefore contain different data. Where is the shared
+                    memory? </p>
+               
+               <p> The key to this memory is the private
+                    data member CommsData* data. CommsData appears in the header
+                    file before the CommsChannel definition as a forward
+                    definition; its body is not in the header file. The
+                    CommsData pointer refers to shared memory that is created
+                    when the server side of the CommsChannel is opened. The
+                    shared memory is created using a memory-mapped file.</p>
+               
+               <h4><FONT COLOR="#000080">Memory-Mapped Files</FONT></H4>
+               
+               <p>Memory-mapped files use the virtual
+                    memory system to create prototype page table entries that
+                    point to the data pages of the shared file. These prototype
+                    page table entries (PPTE) are placed in the page tables of
+                    all processes that want to access the same file. Since the
+                    PPTE is implemented at the level of the virtual memory
+                    system, reads and writes to the file are cached, but are 
+                    immediately available to all processes. </p>
+               
+               <p> CommsChannel isn't interested in
+                    creating separate files for each channel, so it uses the
+                    system pagefile. The virtual memory system uses this file
+                    when it needs to swap out data pages. In
+                    <A href="list2.htm">Listing 2</a>,
+ the first open method
+                    (used by server processes) makes the following call to
+                    create the memory-mapped file:</p>
+
+<PRE>
+handle =
+  CreateFileMapping(
+    (HANDLE)0xffffffff, NULL,
+    PAGE_READWRITE, 0,
+    sizeof(CommsData) + (size+4)*2,
+    mapName.c_str());
+</PRE>
+               
+               <p>The handle, 0xffffffff, is a special
+                    value indicating that the system pagefile should be used.
+                    When the system pagefile is used a size must be specified.
+                    This is the size of the controlling data (in CommsData) plus
+                    enough room for two buffers. The last function argument
+                    specifies a name, which is the key to the whole thing.
+                    mapName.c_str forms a name that should be unique in the 
+                    system, by adding a prefix to the name that was specified in
+                    the CommsChannel constructor. The client can access the
+                    shared memory through this name. </p>
+               
+               <p> This call to CreateFileMapping
+                    returns a handle but no pointers. To get the pointer another
+                    call is needed:</p>
+
+<PRE>
+data = (CommsData*)MapViewOfFile
+    (handle, FILE_MAP_WRITE, 0, 0, 0);
+</PRE>
+               
+               <p>MapViewOfFile takes the handle
+                    returned from CreateFileMapping and creates a view from the
+                    caller's process space to the system pagefile. The final
+                    three zeros indicate that all of the shared memory created
+                    by CreateFileMapping is accessible through this pointer.
+                    When this new pointer is used, the system pagefile is
+                    accessed through cached pages in memory.</p>
+               
+               <p>When clients call the client version
+                    of open they use the following call to get access to an
+                    existing memory-mapped file:</p>
+
+<PRE>
+handle = OpenFileMapping
+    (FILE_MAP_WRITE, false, mapName.c_str());
+</PRE>
+               
+               <p>as long as the mapName is the same and
+                    the server has created the memory-mapped file, this call
+                    will return a handle to the same area in the system
+                    pagefile. The subsequent call to MapViewOfFile is exactly
+                    the same as for the server. (The client-side open is not
+                    shown here, but is available from the CUJftp site. See p.3
+                    for details.)</p>
+               
+               <h4><FONT COLOR="#000080">Using DLLs</FONT></H4>
+               
+               <p>From my previous work using DLLs under
+                    Windows 3.1, I struggled with the idea of keeping a list of
+                    CommsChannels in shared memory. The server open function
+                    would use an empty element. The client open would search for
+                    the element with the correct name. But since a Windows 95
+                    DLL's memory is, by default, per process, Ihad to re-think
+                    my approach. As is often the case a much simpler idea came
+                    to me &#151; let Windows 95 handle it. </p>
+               
+               <p> By using a common prefix for the
+                    memory-mapped file's name, both the server and client
+                    processes can recreate the name from the simpler channel
+                    name. Using this common name Windows 95 will, in the
+                    server's case, make sure that it isn't already used, and in
+                    the client's case, make sure that it already exists. The
+                    only down side to this approach is that it isn't possible to
+                     enumerate all CommsChannels in use. A fair trade-off for
+                    much simpler code. </p>
+               
+               <p> A DLL is still desirable since IPC is
+                    used by multiple processes. A DLL provides a single copy of
+                    the code on the disk and in memory. The only concession that
+                    the CommsChannel code need make to reside in a DLL is to use
+                    __declspec(export) in front of the class definition (see<A href="list1.htm">
+                         Listing 1</a>)
+ and a function for the entry point of
+                    the DLL. With the class marked export, a DEF file isn't
+                    needed. The __DLL__ macro is set if the compiler is creating
+                    the DLL, otherwise it is undefined. </p>
+               
+               <p> Windows 95 calls the DLLEntryPoint
+                    function whenever a thread or a process attaches or detaches
+                    from the DLL. An application could use this function to
+                    create or initialize memory to store class data (for
+                    example, memory for keeping track of the names of the open
+                    CommsChannels). The simple approach of using common prefixes
+                    for the memory-mapped file names eliminated the need for my 
+                    originally planned data structures.</p>
+               
+               <h4><FONT COLOR="#000080">Making it Safe and
+               Efficient</FONT></H4>
+               
+               <p>IPC, by its very nature, is used in
+                    multitasking environments. This complicates matters because
+                    any shared data must be protected against two separate
+                    processes or threads updating the same memory at the same
+                    time. Even though Win32 DLLs implement different data
+                    segments for each process, synchronization is still needed
+                    because variables inside these different data segments still
+                     point to shared memory (see sidebar). This process
+                    synchronization also makes CommsChannel safe while using
+                    multiple threads. </p>
+               
+               <p> In <A href="list2.htm">Listing 2</a>,
+
+                    the open method creates a general mutex that protects the
+                    shared data for that channel. Note that the mutex name uses
+                    the channel name in its construction so that there is a
+                    different mutex for each channel. This allows different
+                    channels to be accessed in parallel. If the mutex is created
+                    without error, open creates a set of four semaphores for the
+                    channel. These semaphores are not used to protect shared
+                    data, they signal events. </p>
+               
+               <p> If a channel is empty the NotEmptySem
+                    semaphore is not signalled. This semaphore provides an
+                    efficient means for a thread to wait for data to become
+                    available in the channel. When data becomes available the
+                    semaphore is signalled, releasing any processes that are
+                    waiting to do reads on the channel. Similarly, the
+                    NotFullSem semaphore provides an efficient waiting mechanism
+                     for writing on a full channel. When the channel has some
+                    room (because it has been read from) the NotFullSem is
+                    signalled. CommsChannel's read and write methods ensure that
+                    the semaphores are set correctly before they return. </p>
+               
+               <p> Because CommsChannel provides two-way
+                    communication, it needs two separate buffers and a set of
+                    NotFull and NotEmpty semaphores for each buffer. These
+                    buffers are called the tsBuffer (to server) and the fsBuffer
+                    (from server). The semaphores have the same ts and fs
+                    prefixes.</p>
+               
+               <h4><FONT COLOR="#000080">Chunks and Timeouts</FONT></H4>
+               
+               <p>So far, my use of semaphores is safe,
+                    but it is not efficient in all cases. These cases arise when
+                    the buffer is not full, but does not have enough room to
+                    hold the writer's full message. If the writer writes only a
+                    portion of its message, the caller must keep looping to
+                    write the full message. This is inefficient, and the reader
+                    has no guarantee that it can read a whole message &#151; the 
+                    reader has to loop as well. To prevent this behavior, the
+                    chunk argument to write, when set to true, forces the
+                    message to be written in its entirety or not at all. </p>
+               
+               <p> A simple implementation of chunking
+                    would involve looping internally. Internal looping is not
+                    efficient and, even worse, can cause deadlock in the
+                    presence of mutexes. Instead, I supply a private method
+                    called blockOnChannel (also in <A href="list2.htm">Listing
+                         2</a>)
+, which takes references to the mutex and the
+                    relevant semaphore along with the required size.
+                    blockOnChannel starts by waiting on the mutex and semaphore
+                    simultaneously. If the buffer has enough room,
+                    blockOnChannel returns holding the mutex and semaphore. If
+                    there is not enough room, blockOnChannel releases the
+                    semaphore and mutex and the process repeats. This action 
+                    could degenerate into a looping situation, so blockOnChannel
+                    forces a yield to other processes by calling the Windows 95
+                    function sleep(0). </p>
+               
+               <p> The read method uses a similar logic,
+                    wherein the caller indicates that read should completely
+                    fill its buffer. The reading case is not as important as the
+                    writing case because, with the mutex and chunking, writes
+                    become atomic. </p>
+               
+               <p> All calls that wait on mutexes or
+                    semaphores have a timeout parameter. This parameter allows
+                    the caller to specify how long to wait: 0 returns
+                    immediately if the mutex and semaphores aren't signalled,
+                    INFINITE will wait forever, and anything else will return if
+                    the time elapses or the wait finishes &#151; whichever occurs
+                    first. </p>
+               
+               <p> Implementing the timeouts is simple
+                    except when chunking is being used. In that case,
+                    blockOnChannel may block multiple times so the timeout value
+                    needs to be recalculated each time.</p>
+               
+               <p>A final point with timeouts is that a
+                    fail because of a timeout is not an error in the same sense
+                    as other errors. To reflect this concept the enumeration
+                    statusEnum (<A href="list1.htm">Listing 1</a>)
+ defines
+                    timeout errors with values &gt; 0, while all other errors
+                    are &lt; 0.</p>
+               
+               <h4><FONT COLOR="#000080">Using CommsChannel</FONT></H4>
+               
+               <p>Each process that wants to communicate
+                    on a CommsChannel creates an object of type CommsChannel
+                    with the name of the channel. A server process must be the
+                    first to create an object with the name, supplying an extra
+                    parameter which specifies the size of the channel buffers.
+                    Using the CommsChannel consists of just using the read and
+                    write methods once the channel is open. Any timeouts are 
+                    specified as 0, INFINITE, or a number of milliseconds.
+                    </p>
+               
+               <p> As an example, <A href="list3.htm">Listing
+                         3</a>
+contains two simple classes &#151; LogServer and
+                    Logger. LogServer prints whatever is in the log channel
+                    while Logger provides a simple interface for writing to the
+                    log channel. This example uses a very simple protocol of
+                    prefacing all messages with their lengths to separate
+                    multiple messages in the channel.</p>
+               
+               <h4><FONT COLOR="#000080">Enhancement Ideas</FONT></H4>
+               
+               <p>I wrote CommsChannel to provide a
+                    foundation for more elaborate communications. Here are some
+                    ideas I've had for enhancing the code:</p>
+               <p><UL><LI>Provide a peek method and allow multiple readers to
+                         attach to a channel.</LI>
+                    <LI>Provide a transaction class which specializes
+                         CommsChannel to always deal with messages instead of
+                         streams of bytes.</LI>
+                    <LI>Use Winsock or another network protocol to connect
+                         internal buffers over networks. Users would see a
+                         familiar interface but would be communicating over a
+                         network.</LI>
+               </UL></p>
+               
+               <p>It is possible to have something very
+                    close to named pipes under Windows 95, with the added
+                    benefit of being able to study and improve them. With
+                    CommsChannel you can split programs into separate process
+                    without having to worry about the communication layer, and
+                    can concentrate on the functionality of each process. o
+                    </p>
+               
+               <p><I>Brian Danilko is a director of
+                    Formal Solutions in Adelaide, South Australia, where he
+                    develops software and writes and teaches courses in C, C++,
+                    Java, and OO development. Current projects include research
+                    into literate programming and C++ source preprocessing. He
+                    may be reached at tsg@olis.net.au. </I></p>
+     
+<h4><a href="../../../source/1997/aug97/danilko.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+     </BODY>
+</HTML>

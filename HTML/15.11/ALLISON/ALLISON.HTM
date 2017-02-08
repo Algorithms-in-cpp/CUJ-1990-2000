@@ -1,0 +1,432 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>November 1997/Error Handling with C++ Exceptions, Part 1</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><A href="../tocnov.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          <FONT COLOR="#FF0000">Features</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">Error Handling with C++
+          Exceptions, Part 1</FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">Chuck Allison</FONT></H3>
+          
+          <BLOCKQUOTE>
+               
+               <p>To err is an inevitable part of
+                    program execution. To recover gracefully, however, is the
+                    responsibility of the programmer.</p></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <h4><FONT COLOR="#000080">Error Handling
+               Alternatives</FONT></H4>
+               
+               <p>With the traditional programming
+                    languages of yore, a developer's alternatives for handling
+                    errors consisted mainly of two options:</p>
+               <DL><DD>1. Ignore them.<BR>
+                          2. Check return codes (fastidiously).</DD>
+                    <DD> </DD>
+               </DL>
+               
+               <p>The first alternative should find its
+                    way only into toy programs such as school assignments or
+                    magazine articles that aren't discussing exceptions. Such a
+                    non-strategy just won't do for anything you plan to actually
+                    execute.</p>
+               
+               <p> Consider the program in
+                    <A href="list1.htm">Listing 1</a>,
+ for example, which
+                    deletes an entire directory tree using standard POSIX
+                    directory-handling functions. (For an explanation of these
+                    functions, see my column, "Code Capsules," CUJ, June
+                    1993). What could possibly go wrong? Well, I see the
+                    following potentialities:</p>
+               
+               <p>
+               <UL><LI>The chosen directory doesn't exist.</LI>
+                   <LI>The directory is read-protected.</LI>
+                   <LI>Files in the directory are delete-protected.</LI>
+                   <LI>The directory itself is delete protected.</LI></UL></p>
+               
+               <p>For these reasons, most C library
+                    functions return a status code which you can test to detect
+                    if an error occurred. As <A href="list2.htm">Listing 2</A>
+                    illustrates, making use of these codes requires a lot of
+                    checking throughout a deeply nested call chain. The deeper
+                    it gets, the more tired you get. Since the goal in such
+                    cases is to return to some safe state, it would be nice if
+                    there were some way to yank  the thread of execution "out
+                    of the deep" and place it higher up in the call chain.</p>
+               
+               <p> Well, there is such a mechanism,
+                    which brings us to a third error handling alternative:</p>
+               
+               <p>3. Use non-local jumps to re-route the
+                    thread of execution.</p>
+               
+               <p>This is what C's setjmp/longjmp
+                    mechanism is all about.</p>
+
+               <p>As you can see in <A href="list3.htm">Listing 3</a>,
+
+                    setjmp uses a jump buffer, of type jmp_buf, which is a
+                    compiler-defined structure that records information
+                    sufficient to restore control to a previous point in the
+                    program. Such information might include the stack pointer,
+                    instruction pointer, etc. A jump buffer must be global, of
+                    course. (Think about it &#151; references to the jump buffer
+                    transcend a single function.)</p>
+               
+               <p> When setjmp first executes, it
+                    initializes the buffer and returns zero. If a longjmp call
+                    further down in the call chain refers to the same jmp_buf,
+                    then control transfers immediately back to the setjmp call,
+                    this time as if it returned the second argument from the
+                    longjmp call. It would really confuse things if you could
+                    return a zero via a longjmp call (which you would never do, 
+                    I realize), so if some other foolish programmer makes the
+                    attempt, setjmp will return a 1 instead.</p>
+               
+               <p> You may be wondering why the volatile
+                    keyword appears in this version of the program. Compilers do
+                    funny things sometimes, and it turns out that any local
+                    variables declared in the same block as the setjmp call are
+                    not guaranteed to retain their original values after a
+                    longjmp, unless you adorn their declaration with the
+                    volatile qualifier.</p>
+               
+               <p> It would seem that all problems are
+                    solved, and I can bid you adieu. It turns out, however, that
+                    jumping out of a function into another one higher up in the
+                    call chain can be risky in C++. The main problem, as
+                    <A href="list4.htm">Listing 4</a>
+illustrates, is that
+                    automatic variables created in the execution thread between
+                    the setjmp and longjmp may not get properly destroyed.
+                    Fortunately, C++ provides for such  alternate returns that
+                    know about destructors, via the exception handling
+                    mechanism. So, if you program in C++, you might consider
+                    this final error handling alternative:</p>
+               
+               <p>4. Use Exceptions.</p>
+               
+               <p>That's what the remainder of this
+                    article is about.</p>
+               
+               <h4><FONT COLOR="#000080">Stack Unwinding</FONT></H4>
+               
+               <p>The program in <A href="list5.htm">Listing
+                         5</a>
+is a rewrite of <A href="list4.htm">Listing 4</A>
+                    using exceptions. You turn on exception handling in a region
+                    of code by surrounding it with a try block. You place
+                    exception handlers immediately after the try block, in a
+                    series of catch clauses. An exception handler is much like a
+                    definition for a function, named by the keyword catch.</p>
+               
+               <p> You raise an exception with a throw
+                    expression. The statement</p>
+
+<PRE>
+throw 1;
+</PRE>
+               
+               <p>causes the compiler to search back up
+                    the chain of nested function calls for a handler that can
+                    catch an integer, so control passes to that handler in main.
+                    The run-time environment invokes destructors for all
+                    automatic objects constructed after execution entered the
+                    try block. This process of destroying automatic variables on
+                    the way to an exception handler is called stack unwinding.</p>
+               
+               <p>As you can see, executing a throw
+                    expression is semantically similar to calling longjmp, and a
+                    handler is like a setjmp. Just as you cannot longjmp into a
+                    function that has already returned, you can only jump to a
+                    handler associated with an active try block &#151; one for which
+                    execution control has not yet exited. After a handler
+                    executes, control passes to the first statement after all 
+                    the handlers associated with the try block (the return
+                    statement, in this case).</p>
+               
+               <p> The notable differences between
+                    exceptions and the setjmp/longjmp facility are:</p>
+               
+               <p>1. Exception handling is a language
+                    mechanism, not a library feature. The overhead of
+                    transferring control to a handler is invisible to the
+                    programmer.</p>
+               
+               <p> 2. The compiler generates code to
+                    keep track of all automatic variables that have destructors
+                    and executes those destructors when necessary (it unwinds
+                    the stack).</p>
+               
+               <p> 3. Local variables in the function
+                    that contains the try block are safe &#151; you don't need to
+                    declare them volatile to keep them from being corrupted as
+                    you do with setjmp.</p>
+               
+               <p> 4. Handlers are found by matching the
+                    type of the exception object that you throw. This allows you
+                    to handle categories of exceptions with a single handler,
+                    and to classify them via inheritance.</p>
+               
+               <p> 5. Exception handling is a run-time
+                    mechanism. You can't always tell which handler will catch a
+                    specific exception by examining the source code.</p>
+               
+               <p>The last point is significant. C++
+                    exception handling allows a clean separation between error
+                    detection and error handling. A library developer may be
+                    able to detect when an error occurs, such as an argument out
+                    of range, but the developer doesn't know what to do about
+                    it. You, the user, can't always detect an exceptional
+                    condition, but you know how your application needs to handle
+                     it. Hence, exceptions constitute a protocol for runtime
+                    error communication between components of an application.</p>
+               
+               <p> It is also significant to realize
+                    that C++ exception handling is designed around the
+                    termination model. That is, when an exception is thrown,
+                    there is no direct way to get back to the throw point and
+                    resume execution where you left off, as you can in languages
+                    like Ada that follow the resumption model. C++ exceptions
+                    are intended for reporting rare, synchronous events.</p>
+               
+               <h4><FONT COLOR="#000080">Catching Exceptions</FONT></H4>
+               
+               <p>Since exceptions are a run-time and
+                    not a compile-time feature, standard C++ specifies the rules
+                    for matching exceptions to catch-parameters a little
+                    differently than those for finding an overloaded function to
+                    match a function call. You can define a handler for an
+                    object of type T several different ways. In the examples
+                    that follow, the variable t is optional, just as it is for 
+                    ordinary functions in C++:</p>
+
+<PRE>
+catch(T t)
+catch(const T t)
+catch(T&amp; t)
+catch(const T&amp; t)
+</PRE>
+               
+               <p>Such handlers can catch exception
+                    objects of type E if:</p>
+               
+               <p>1. T and E are the same type, or<BR>
+                     2. T is an accessible base class of E at the throw point,
+                    or<BR>
+                     3. T and E are pointer types and there exists a standard
+                    pointer conversion from E to T at the throw point. T is an
+                    accessible base class of E if there is an inheritance path
+                    from E to T with all derivations public.</p>
+               
+               <p>To understand the third rule,
+                    let E be a type pointing to type F, and T be a type that
+                    points to type U. Then there exists a standard pointer
+                    conversion from E to T if:</p>
+               
+               <p>1. T is the same type as E, except it
+                    may have added any or both of the qualifiers const and
+                    volatile, or<BR>
+                     2. T is void*, or<BR>
+                     3. U is an unambiguous, accessible base class of F. U is an
+                    unambiguous base class of F if F's members can refer to
+                    members of U without ambiguity (this is usually only a
+                    concern with multiple inheritance).</p>
+               
+               <p>The bottom line of all these rules is
+                    that exceptions and catch parameters must either match
+                    exactly, or the exception caught by pointer or reference
+                    must be derived from the type of the catch parameter. For
+                    example, the following exception is not caught:</p>
+
+<PRE>
+#include &lt;iostream&gt;
+     
+void f();
+     
+main()
+{    try
+    {
+        f();
+    }
+    catch(long)
+    {
+        cerr &lt;&lt; "caught a long" &lt;&lt; endl;
+    }
+}
+     
+void f()
+{
+    throw 1;        // not a long!
+}
+</PRE>
+               
+               <p>When the system can't find a handler
+                    for an exception, it calls the standard library function
+                    terminate, which by default aborts the program. You can
+                    substitute your own termination function by passing a
+                    pointer to it as a parameter to the set_terminate library
+                    function. (See <A href="list6.htm">Listing 6</a>)
+</p>
+               
+               <p> The following exception is caught,
+                    since there is a handler for an accessible base class:</p>
+
+<PRE>
+#include &lt;iostream&gt;
+using namespace std;
+     
+class B {};
+class D : public B {};
+     
+void f();
+     
+main()
+{
+    try
+    {
+        f();
+    }
+    catch(const B&amp;)
+    {
+        cerr &lt;&lt; "caught a B" &lt;&lt; endl;
+    }
+}
+     
+void f()
+{
+    throw D();
+}
+</PRE>
+               
+               <p>An exception caught by a pointer can
+                    also be caught by a void* handler.</p>
+               
+               <p>Question: Since the context of a throw
+                    statement is lost when control transfers to a handler, how
+                    can the exception object still be available in the handler?</p>
+               
+               <p> Answer: Good question! Here is
+                    another area where exception handling differs from function
+                    calls. The runtime mechanism creates a temporary copy of the
+                    thrown object for use by the handler. This suggests that it
+                    is never really a good idea to define catch parameters with
+                    value semantics, since a second copy will be made. Also, it
+                    can be dangerous to define a catch parameter as a pointer, 
+                    because you may not know if it came from the heap or not (in
+                    which case you must delete it). The safest strategy is
+                    always to catch by reference. And even though the exception
+                    is a temporary, you can catch it as a non-const reference if
+                    you want (yet another departure from the normal
+                    function-processing rules to accommodate exception
+                    handling).</p>
+               
+               <h4><FONT COLOR="#000080">Standard Exceptions</FONT></H4>
+               
+               <p>The Standard C++ library throws
+                    exception objects of types found in the following class
+                    hierarchy:</p>
+
+<PRE>
+exception
+    logic_error
+        domain_error
+        invalid_argument
+        length_error
+        out_of_range
+    runtime_error
+        range_error
+        overflow_error
+        underflow_error
+bad_alloc
+bad_cast
+bad_exception
+bad_typeid
+</PRE>
+               
+               <p>A logic error indicates an
+                    inconsistency in the internal logic of a program, or a
+                    violation of pre-conditions on the part of client software.
+                    For example, the substr member function of the standard
+                    string class throws an out_of_range exception if you ask for
+                    a substring beginning past the end of the string. Run-time
+                    errors are those that you cannot easily predict in advance, 
+                    and are usually due to forces external to a program. A range
+                    error, for instance, violates a post-condition of a
+                    function, such as arithmetic overflow from processing legal
+                    arguments.</p>
+               
+               <p> A bad_alloc exception occurs when
+                    heap memory is exhausted. (See "Memory Management" in Part
+                    2 next month.) C++ will generate a bad_cast exception when a
+                    dynamic_cast to a reference type fails. If you rethrow an
+                    exception from within an unexpected handler, it gets
+                    converted into a bad_exception. (See "Exception
+                    Specifications" in Part 2.) If you attempt to apply the 
+                    typeid operator to a null expression, you get a bad_typeid
+                    exception.</p>
+               
+               <p> The program in <A href="list7.htm">Listing
+                         7</a>
+derives the dir_error exception class from
+                    runtime_error, since the associated errors are detected by
+                    the return status of system services. The exception base
+                    class has a member function called what that returns the
+                    string argument that created the exception. I use this
+                    member function to pass information about the error to the
+                    exception handler.</p>
+               
+               <p>The handler with the ellipsis
+                    specification (catch (...)) will catch any exception, so the
+                    order of handlers in program text is significant. You should
+                    always order catch clauses according to their respective
+                    types, from the most specific to the most general.</p>
+               
+               <h4><FONT COLOR="#000080">We're Not Done Yet</FONT></H4>
+               
+               <p>I know what you're thinking. Things
+                    can't be this easy. There has to be a "catch" somewhere
+                    (ha ha). Well there is. The error handling plot really
+                    thickens when allocating resources fails. Next month I'll
+                    explore that issue, and also share Chuck's Pretty Good Error
+                    Handling Strategy for C++ development. o</p>
+               
+               <h4><FONT COLOR="#000080">Acknowledgment</FONT></H4>
+               
+               <p>This article is based on material from
+                    the author's forthcoming book, C and C++ Code Capsules: A
+                    Guide for Practitioners, Prentice-Hall, 1998. </p>
+               <p><i>Chuck Allison is Consulting Editor and a former columnist with CUJ. He is
+                    the owner of Fresh Sources, a company specializing in object-oriented software
+                    development, training, and mentoring. He has been a contributing member of J16,
+                    the C++ Standards Committee, since 1991, and is the author of C and C++ Code
+                    Capsules: A Guide for Practitioners, Prentice-Hall, 1998. You can email Chuck
+                    at cda@freshsouces.com.</i></p>
+     
+<h4><a href="../../../source/1997/nov97/allison.zip">Get Article Source Code</a></h4>
+
+     </BLOCKQUOTE>
+     </BODY>
+</HTML>

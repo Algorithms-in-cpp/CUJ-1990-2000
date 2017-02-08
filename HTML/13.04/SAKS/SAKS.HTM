@@ -1,0 +1,194 @@
+
+
+<HTML>
+<HEAD>
+
+<TITLE>April 1995/Stepping Up To C++</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocapr.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Columns</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Stepping Up To C++<A name="008E_0054"><A name="008E_0054"></font></h2><P>
+<h3 align="center"><A name="008E_0000"><A name="008E_0000">Mutable Class Members</h3><P>
+<h3 align="center"><font color="#800000">Dan Saks</font></h3><hr><blockquote><P>
+<P><i><A name="008E_0000"><A name="008E_0000">Dan Saks is the president of Saks &amp; Associates, which offers consulting and training in C++ and C. He is secretary of the ANSI and ISO C++ committees. Dan is coauthor of C++ Programming Guidelines, and codeveloper of the Plum Hall Validation Suite for C++ (both with Thomas Plum). You can reach him at 393 Leander Dr., Springfield OH, 45504-4906, by phone at (513)324-3601, or electronically at dsaks@wittenberg.edu.</i></P><P>
+For the past three months, I've been listing ways that the programming language described by the C++ Draft Standard (as of Fall, 1994) differs from the language described in the Annotated Reference Manual (ARM <a href="#1">[1]</a>). Thus far, I've described the <I>major extensions</I> (see "Stepping Up to C++: C++ at CD Registration," <I>CUJ</I>, January 1995.) I've also described numerous <I>minor enhancements</I> (see "Stepping Up to C++: Minor Enhancements to C++ as of CD Registration" and "...More Minor Enhancements to C++ as of CD Registration," <I>CUJ</I>, February and March, 1995.)<P>
+I have a few minor enhancements left to go. This month I present one more such enhancement, mutable class members. Not that mutable members are very important in themselves, but giving the background necessary to explain them raises a lot of interesting design and language issues along the way, so I think it's worth the time.<P>
+Mutable class members provide added support for <I>logically-const</I> class objects. Understanding mutable class members requires an understanding of the <I>const</I> qualifier, logical vs. physical const-ness, const member functions, and the "casting away" of const. Those of you already familiar with these terms can skip directly to the discussion of lazy evaluation, which presents a problem solved by mutable class members. If you skip too far ahead, you can always skip back.<P>
+<h4><FONT COLOR="#000080"><A name="008E_0055">The <B><I>const</I></B> Qualfier<A name="008E_0055"></FONT></h4></P>
+C++ introduced the <I>const</I> qualifier as a way to specify read-only objects. When applied to an object, <I>const</I> means the program may inspect but not change the value of that object. A C++ translator is therefore free to place const-qualified objects in read-only memory (ROM). In an environment that supports multitasking with shared memory, a translator can place const objects in a sharable, read-only data segment (which is just another flavor of ROM). In some cases, a translator can even optimize a const object out of existence.<P>
+For example, given<P>
+<pre>const int MAX = 100;</pre>
+a C++ translator (with the appropriate compiler and linker options) may place <I>MAX</I> into ROM. Moreover, if the program never takes the address of, nor binds a reference to <I>MAX</I>, a compiler need not generate storage for it. The compiler can simply "optimize away" <I>MAX</I> by using its value (100) as an immediate operand in generated machine instructions.<P>
+C++ erects various barriers to prevent programs from accidentally modifying const objects. For example, a C++ compiler must diagnose every attempt to modify a const-qualified object, such as<P>
+<pre>MAX = 99;     // error</pre>
+or<P>
+<pre>++MAX;        // error</pre>
+Furthermore, the pointer and reference conversion rules won't let you strip off <I>const</I> qualifiers (at least not without casts). For example,<P>
+<pre>int *pi = &amp;MAX;   // error</pre>
+is an error because it attempts to convert a <I>const int *</I> (the type of <I>&amp;MAX</I>) to an <I>int *</I> (the type of<I> pi</I>), losing a <I>const</I> qualifier in the process. Failure to catch this error would permit an otherwise valid assignment like<P>
+<pre>*pi = 99;</pre>
+to write into a const object. Of course, you can strip a <I>const</I> qualifier using a cast, such as<P>
+<pre>int *pi = (int *)&amp;MAX;</pre>
+or the new-style<P>
+<pre>int *pi = const_cast&lt;int *&gt;(&amp;MAX);</pre>
+if you think you know what you're doing. A cast expression that strips away a <I>const</I> qualifier is said to "cast away const."<P>
+When applied to an aggregate, such as an array or <I>struct</I>, the <I>const</I> qualifier actually percolates down to the elements of the aggregate. That is, the elements of a const array are themselves const objects, as are the members of a const object of a <I>struct</I> type. Thus, given<P>
+<pre>const char name[] = "jem";</pre>
+an assignment such as<P>
+<pre>name[0] = "J";</pre>
+is an error because it tries to alter the value of <I>name[0]</I>, which is an object of type <I>const char</I>.<P>
+<h4><FONT COLOR="#000080"><A name="008E_0056">Logically const vs. Physically const<A name="008E_0056"></FONT></h4></P>
+C++ actually supports different degrees of const-ness. Some objects defined const may be <I>physically</I> const, that is, residing in ROM and therefore absolutely immutable. Other objects declared const are merely <I>logically</I> const. A logically const object can't be modified in the current context, but it may be modifiable in some other context.<P>
+For example, the standard header <I>&lt;string.h&gt;</I> declares the <I>strlen</I> function as<P>
+<pre>size_t strlen(const char *s);</pre>
+Inside the body of <I>strlen</I>, <I>*s</I> designates a logically-const object of type <I>char. strlen</I> can modify <I>s</I>, but it can't modify <I>*s</I> (any character addressed by <I>s</I>). On some calls to <I>strlen, s</I> might point to an actual argument that's a physically-const object. On other calls, it might point to a non-const object. For example, during the call <I>strlen(name)</I>, where <I>name</I> is as defined earlier, <I>s</I> points to characters that are both logically and physically const. But during the call <I>strlen(title)</I>, where <I>title</I> is<P>
+<pre>char title[] = "Fing";</pre>
+<I>s</I> is a pointer to logically-const characters that are actually non-const. <I>strlen</I> can't change the characters in <I>title</I>, but other parts of the program might.<P>
+In general, I recommend using <I>const</I> as often as appropriate in declarations. Specifically, I suggest declaring every logically- or physically-const object as such by using the <I>const</I> qualifier explicitly. Any purportedly general-purpose library must obey this rule, or it won't be very useful in ROM-based applications.<P>
+For instance, the standard <I>strcmp</I> function is declared<P>
+<pre>int strcmp
+   (const char *s1, const char *s2);</pre>
+<I>strcmp</I> compares two strings without altering them. Therefore, inside <I>strcmp</I>, both <I>s1</I> and <I>s2</I> point to logically-const strings, and the declaration says so explicitly. If either <I>const</I> were missing, an application could not use this function to compare two const strings. On the other hand, a function such as<P>
+<pre>char *strcpy(char *s1, const char *s2);</pre>
+can only declare its second parameter as <I>const. strcpy</I> must reserve the right to alter the string addressed by <I>s1</I>, otherwise it can't do its job of copying <I>s2</I> to <I>s1</I>.<P>
+Even if you don't write ROM-based applications, you should still use the <I>const</I> qualifier generously. Using the <I>const</I> qualifier builds more static type information into programs. The compiler can use this information to detect logic errors. As always, the more you tell the compiler about your intent, the more easily it can tell when your program violates that intent. Code that consistently enforces logical constness without casting away const is said to be "const correct."<P>
+<h4><FONT COLOR="#000080"><A name="008E_0057"><I>const</I><I><B> </I></B><B>Member Functions<A name="008E_0057"></B></FONT></h4></P>
+Indeed, writing const-correct classes requires extra effort. For instance, consider the array class template sketched in <A href="list1.htm">Listing 1</a>.
+ (This is a templatized version of the <I>float_array</I> class I used for my examples in "Stepping Up to C++: Dynamic Arrays," <I>CUJ</I>, November, 1992.) Let's see what's required to make it const correct.<P>
+<A href="list1.htm">Listing 1</a>
+includes a non-member function template, <I>sigma</I>, that returns the sum of the elements in an <I>array&lt;T&gt;</I>. The function declaration:<P>
+<pre>template &lt;class T&gt;
+T sigma(array&lt;T&gt; &amp;a)</pre>
+suggests by the absence of any <I>const</I> qualifiers that <I>sigma</I> might change its actual argument in the course of summing the elements. But logically, <I>sigma</I> shouldn't change its argument, and nothing in the function body seems to suggest that it does. Therefore, <I>sigma</I>'s parameter should be <I>const</I>, as in<P>
+<pre>template &lt;class T&gt;
+T sigma(const array&lt;T&gt; &amp;a)</pre>
+so the compiler can enforce the logical const-ness of array <I>a</I>.<P>
+In effect, the <I>const</I> qualifier in the declaration is <I>sigma</I>'s promise that it won't change the actual <I>array&lt;T&gt;</I> object referenced by <I>a</I>. The compiler then backs that promise by rejecting any statement in <I>sigma</I>'s body that tries to change <I>a</I>. In particular, since every member of a const object is itself const, the compiler rejects any statement that tries to change a member of <I>a</I>. This includes any attempt to pass <I>a</I>, or a member of <I>a</I>, as a non-const argument to another function.<P>
+Recompiling the code after adding the <I>const</I> qualifier to <I>sigma</I>'s parameter list triggers a number of compile-time errors inside <I>sigma</I>. For one, the compiler complains about the call to <I>a.length()</I> in<P>
+<pre>for (size_t i = 0; i &lt; a.length(); ++i)
+   sum += a[i];</pre>
+The problem is, now that <I>a</I> is const, <I>sigma</I> can't call a member function applied to <I>a </I>unless it can be sure that the member function won't alter <I>a</I>. How can you tell the compiler that calling <I>a. length()</I> won't alter <I>a</I>? By declaring <I>length</I> as a <I>const member function</I>:<P>
+<pre>size_t length() const;</pre>
+In effect, a const member function promises to treat the object to which it applies as a const object. Once you change <I>length</I> to a const member function, <I>sigma</I> has no problem calling it.<P>
+The keyword <I>const</I> after the parameter list actually modifies the object addressed by the implicit <I>this</I> parameter. A non-const member function for a class <I>X</I> implicity declares <I>this</I> as<P>
+<pre>X *const this;</pre>
+That is, <I>this</I> is a non-modifiable pointer to a modifiable object. In a const member function, the implicit declaration for <I>this</I> is:<P>
+<pre>const X *const this;</pre>
+or equivalently:<P>
+<pre>X const *const this;</pre>
+In other words, <I>this</I> is a non-modifiable pointer to a non-modifiable object.<P>
+You can apply a const member function to a non-const object. The function simply treats the non-const object as const. However, you cannot apply a non-const member function to a const object, because the non-const member function might try to change the const object.<P>
+Adding the <I>const</I> qualifier to <I>sigma</I>'s parameter list also causes a compile-time error on the call <I>a[i]</I> inside <I>sigma</I><I>.</I> Again, the problem is that <I>array&lt;T&gt;::operator[](size_t)</I> is a non-const member function. Rather than simply change <I>operator[]</I> to a const member function, a better solution is to overload <I>operator[]</I> as both const and non-const member functions:<P>
+<pre>const T &amp;operator[](size_t i) const;
+T &amp;operator[](size_t i);</pre>
+Hence, the expression <I>a[i]</I> invokes the const <I>operator[]</I> if <I>a</I> is a const array, and invokes the non-const <I>operator[]</I> if <I>a</I> is non-const. Both forms of <I>operator[]</I> return a reference to the selected array element, but the const form returns a reference to a const array element, while the non-const form returns a reference to a non-const element. The const-corrected array class appears in <A href="list2.htm">Listing 2</a>.
+ (For more about overloading <I>operator[]</I> as both const and non-const member functions, see "Stepping Up to C++: <I>operator[]</I>," <I>CUJ</I>, January, 1993, or Meyers <a href="#2">[2]</a>.)<P>
+<h4><FONT COLOR="#000080"><A name="008E_0058">Lazy Evaluation<A name="008E_0058"></FONT></h4></P>
+Without a doubt, the primary benefit of C++ classes is that they support data abstraction. A well-written class defines an abstract type with complete and consistent behavior that you can use with little or no concern for its underlying data representation. It hides the data representation as private data members, and grants restricted access to that data through public member functions.<P>
+Most classes have attributes that you can represent in more than one way. For a particular class attribute, you might simply store a value representing the attribute in a data member. Or, you might be able to compute the attribute from other data in the object's representation.<P>
+For example, complex numbers have two common representations:<P>
+1.     in rectangular form, <I>(r, i)</I>, where <I>r</I> is the real part and <I>i</I> is the imaginary part<P>
+2.     in polar form, <I>(rho, theta)</I>, where <I>rho</I> is the magnitude (distance from the origin), and <I>theta</I> is the phase angle (typically in radians)<P>
+These two forms are related by the following equations:<P>
+<pre>rho = sqrt(re * re + im * im);
+theta = arctan(im/re);</pre>
+If your application for complex numbers uses both forms at one time or another, you might design a complex number class that stores both representations:<P>
+<pre>class complex
+   {
+public:
+   // ...
+private:
+   double re, im;
+   double rho, theta;
+   };</pre>
+This design is certainly straightforward, but it has at least two drawbacks:<P>
+1.     It doubles the storage requirements for every complex number.<P>
+2.     Every arithmetic operation on complex numbers, such as <I>+</I> or <I>*</I>, must compute the results twice &#151; once for each form.<P>
+As an alternative, your complex class can store just one form, and compute the other form on demand, as shown in <A href="list3.htm">Listing 3</a>.
+ The <I>complex</I> class in <A href="list3.htm">Listing 3</a>
+stores only the rectangular form, and recomputes the polar form on demand. For instance, calling <I>z1. real()</I> simply returns the value of the private data member <I>re</I>, which stores the real part. Calling <I>z1.theta()</I> computes the angle using <I>re</I> and <I>im</I>, the imaginary part.<P>
+Note that the four member functions, <I>real</I>,<I> imag</I>,<I> rho</I>, and <I>theta</I>, are const member functions. And well they should be. Indeed, none of them changes the value of the complex number. I see no reason to prevent a program from requesting these values of a const complex object.<P>
+The problem with computing the polar form on demand is that some applications might calculate the <I>rho</I> and <I>theta</I> for the same complex numbers over and over again. Granted, the computation is not that complicated, but it uses the <I>sqrt</I> and <I>atan2</I> functions which are more than just a few instructions on most architectures. If these recalculations prove to be too expensive, a different design for complex numbers might be appropriate.<P>
+<A href="list4.htm">Listing 4</a>
+shows a complex number class that caches the polar form in a dynamically-allocated auxiliary structure. Each complex number has three private data members:<P>
+<pre>class complex
+   {
+   //...
+private:
+   double re, im;
+   struct polar;
+   polar *p;
+   };</pre>
+As before, <I>re</I> and <I>im</I> hold the real and imaginary parts. <I>p</I> is a a pointer to an auxiliary structure of type <I>polar</I>. <I>polar</I> is a forward-declared nested type, defined simply as<P>
+<pre>struct complex::polar
+   {
+   double rho, theta;
+   };</pre>
+That is, it holds the polar representation of a complex number.<P>
+By this design, all complex numbers start out by storing only the rectangular form (in <I>re</I> and <I>im</I>). The constructors always store 0 (a null pointer) into member <I>p</I>. Most arithmetic operations, such as <I>operator+</I> in <A href="list4.htm">Listing 4</a>,
+ use the rectangular forms of the operands, and return a result in rectangular form. Since <I>operator+</I> uses a constructor to build the result, that constructor sets the pointer in the result to null.<P>
+Like its previous version (in <A href="list3.htm">Listing 3</a>)
+, this complex class never computes the polar form until needed. However, unlike before, this implementation doesn't just discard the result and calculate again when asked. Rather, it dynamically allocates a <I>complex::polar</I> object, and caches the result in that object. If the value of the complex object doesn't change, the class satisfies repeated requests for the polar coordinates by reading them from the cache, which is much faster than recalculating.<P>
+This caching technique is an example of a more general technique known in some circles as "lazy evaluation." The basic philosophy of lazy evaluation is "Don't do it unless you have to, and then don't do it again." This technique is most useful for any class that has an attribute where<P>
+<UL><li>accessing the attribute's value incurs a high cost in time or space or both, and</li>
+<li>typical applications request the attribute's value from relatively few objects.</li></UL>
+Meyers <a href="#2">[2]</a>, Murray <a href="#3">[3]</a>, and Plum and Saks <a href="#4">[4]</a> offer other examples using lazy evaluation (although none uses that term). Meyers uses lazy evaluation to postpone computing the length of string objects. Murray presents a variation on the complex number class. Plum and I sketch a class for tokens (such as in a parser) that caches each token's hash value during symbol lookup.<P>
+<h4><FONT COLOR="#000080"><A name="008E_0059">Casting Away const, Again<A name="008E_0059"></FONT></h4></P>
+As in the earlier <I>complex</I> class (<A href="list3.htm">Listing 3</a>)
+, the four member functions, <I>real</I>,<I> imag</I>,<I> rho</I>, and <I>theta</I> of the later class (<A href="list4.htm">Listing 4</a>)
+ are also const member functions. Programmers using complex numbers should quite reasonably expect to be able to obtain any of these values from a const complex object, regardless of the implementation. There's no problem declaring <I>real</I> and <I>imag</I> in <A href="list4.htm">Listing 4</a>
+as <I>const</I>; they are identical to the corresponding functions in <A href="list3.htm">Listing 3</a>.
+ However, the <I>rho</I> and <I>theta</I> functions in <A href="list4.htm">Listing 4</a>
+are a little tricky and require a careful look.<P>
+The problem with the <I>rho</I> and <I>theta</I> functions is that even though they don't change the value of a <I>complex</I> object as seen outside the class, they might change the private data of that object. Specifically, if pointer <I>p</I> is null, then <I>rho</I> or <I>theta</I> must change <I>p</I> to point to a newly-allocated <I>polar</I> object, using something of the form:<P>
+<pre>if (p == 0)
+   p = new polar(..., ...);</pre>
+However, in a const member function of class <I>complex</I>,<I> this</I> points to a const <I>complex</I> object, meaning that <I>re</I>,<I> im</I> and <I>p</I> are themselves const. Thus, the assignment to <I>p</I> as written above is an error.<P>
+Of course, you can always change <I>rho</I> and <I>theta</I> to non-const member functions. But then you won't be able to call <I>rho</I> and <I>theta</I> for a const <I>complex</I> object. Not good. Alternatively, you can leave <I>rho</I> and <I>theta</I> as const member functions and cast away const from the <I>complex</I> object inside each function, as shown in <A href="list4.htm">Listing 4</a>.
+<P>
+There are various ways to cast away const inside a const member function. <I>rho</I> and <I>theta</I> each illustrate a different style. <I>rho</I> uses the following approach:<P>
+<pre>complex *This =
+   const_cast&lt;complex *&gt;(this);
+This-&gt;p = new polar(..., ...);</pre>
+<I>This</I> is local variable which points to the same object as <I>this</I>. However, <I>This</I> is declared without <I>const</I>, so <I>rho</I> can use it to treat the object as non-const. Copying <I>this</I> to <I>This</I> loses a <I>const</I> qualifer, so the conversion requires a cast to sneak past the compiler. I used the new-style cast. On compilers that don't yet support new-style casts, use<P>
+<pre>complex *This = (complex *)this;</pre>
+<I>theta</I> casts away const a little differently. It simply applies a cast to <I>p</I> itself:<P>
+<pre>(polar *&amp;)p = new polar(..., ..);</pre>
+This casts <I>p</I> to a reference to a (non-const) pointer to <I>polar</I>. Writing the cast as just <I>(polar *)p</I> converts <I>p</I> to the correct type, but the cast yields an rvalue. An rvalue expression cannot appear on the left of an assignment. Casting to a reference yields an lvalue, which can appear to the left side of an assignment. The reference yields the same result as the slightly longer-winded pointer cast, <I>*(polar **)&amp;p</I>.<P>
+By the way, <A href="list4.htm">Listing 4</a>
+uses only two relatively new C++ features: the forward-declaration of nested class <I>complex::polar</I> and the new-style cast in <I>complex::rho</I>. I found two compilers that will compile and execute <A href="list4.htm">Listing 4</a>
+as written, namely Borland C++ 4.5 for DOS/Windows, and MetaWare High C++ 3.3 for Extended DOS using the Phar Lap 386 DOS Extender 4.1. If you move the definition for <I>complex::polar</I> back inside the definition for <I>complex</I>, and change the new-style cast to an old-style cast, most other compilers should accept it.<P>
+<h4><FONT COLOR="#000080"><A name="008E_005A">At last, Mutable Class Members<A name="008E_005A"></FONT></h4></P>
+If using casts, as I did above, makes you queasy, that's good. Casts can be pretty dangerous, and you should use them sparingly and with great care. In this case, how can you know that it's safe to cast away const from a complex number? Functions such as <I>rho</I> and <I>theta</I> are indeed logically const, but they assume the object is not physically const (it's not in ROM). If the complex object is really physically const, writing into the object causes undefined behavior.<P>
+Mutable class members offer a way to implement logically const operations without casting away const. A mutable member is one that is never const, even if it is a member of an object declared const. For example, in<P>
+<pre>class complex
+   {
+public:
+   // ....
+private:
+   double re, im;
+   struct polar;
+   mutable polar *p;
+   };</pre>
+Here, <I>p</I> is always a non-const object, even in <I>complex</I> objects declared const. Thus, const member functions like <I>rho</I> and <I>theta</I> need not cast away const in order to write to <I>p</I>. <A href="list5.htm">Listing 5</a>
+shows the changes to the <I>complex</I> class that result from using a mutable member instead of casts. So far, I've found only one compiler that compiles and executes this code &#151; the MetaWare/Phar Lap combination.<P>
+Syntactically, <I>mutable</I> is a storage class specifier, like <I>auto</I>,<I> register</I>, or <I>static</I>. It can only appear in declarations of class data members. You cannot declare a data member both <I>mutable</I> and <I>const</I>. For example,<P>
+<pre>class X
+   {
+   mutable const int *p;  // ok
+   mutable int *const q;  // error
+   };</pre>
+The declaration for <I>p</I> is okay because (ignoring the <I>mutable</I> specifier for the moment) <I>p</I> is a non-const pointer to a const <I>int</I>. Adding <I>mutable</I> to the declaration specifies that <I>p</I> will always be non-const, even in a const <I>X</I> object.<P>
+The declaration for <I>q</I> is an error because (ignoring the <I>mutable</I> specifier for the moment) <I>q</I> is a const pointer to a non-const <I>int</I>. That is, <I>q</I> itself is declared <I>const</I>. Adding the <I>mutable</I> specifier to the declaration conflicts with the const already applied to <I>q</I>, hence the error.<P>
+Next month... the remaining minor enhancements.<P>
+<h4>References</FONT></h4></P>
+<a name="1"></a>[1]     Margaret A. Ellis and Bjarne Stroustrup. <I>The Annotated C++ Reference Manual</I>. (Addison-Wesley, 1990).<P>
+<a name="2"></a>[2]     Scott Meyers. <I>Effective C++</I>. (Addison-Wesley, 1992).<P>
+<a name="3"></a>[3]     Robert B. Murray. <I>C++ Strategies and Tactics</I>. (Addison-Wesley, 1993).<P>
+<a name="4"></a>[4]     Thomas Plum and Dan Saks. <I>C++ Programming Guidelines</I>. (Plum Hall, 1991).<P>
+
+<h4><a href="../../../source/1995/apr95/saks.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

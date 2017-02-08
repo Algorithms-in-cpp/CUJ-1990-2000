@@ -1,0 +1,191 @@
+<HTML><HEAD>
+<TITLE>August 2000/Converting VCL Components to Windows Resources/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2: Main conversion functions</A></h4>
+<pre>
+#include &lt;vcl.h&gt;
+#pragma hdrstop
+
+#include "DialogBox.h"
+#include "controls.h"
+#include "CommonControls.h"
+#include "CommonDialogs.h"
+#include "pmenu.h"
+
+typedef list &lt;pVisualControl*&gt; VCList;
+typedef VCList::iterator VC_iter;
+
+typedef list &lt;pVCLComponent*&gt; ObjList;
+typedef ObjList::iterator OL_iter;
+
+typedef list &lt;pMenuBase*&gt; MBList;
+typedef MBList::iterator MB_iter;
+
+
+struct LowerTab
+{       
+    bool operator()(pVisualControl* vc1, pVisualControl* vc2)
+    {return vc1-&gt;GetTabIndex() &lt; vc2-&gt;GetTabIndex();}
+
+} lower_tab;
+
+
+struct LowerLevel
+{       
+    bool operator()(pVisualControl* vc1, pVisualControl* vc2)
+    {return vc1-&gt;GetLevel() &lt; vc2-&gt;GetLevel();}
+
+} lower_level;
+
+
+pVCLComponent* 
+GetVCLComponent(char* szName, char *sz_type,
+    const char* dlg_box_name)
+{       
+    pVCLComponent *cmp = NULL;
+
+    ... // some code not shown here
+
+    if (!strcmpi(sz_type, "Animate")) cmp = new pAnimate(szName);
+    if (!strcmpi(sz_type, "Bevel")) cmp = new pBevel(szName);
+    ... // other classes not shown here that might 
+        // need dlg_box_name
+    if (!strcmpi(sz_type, "UpDown")) cmp = new pUpDown(szName);
+
+    return cmp;
+}
+
+
+void 
+RecurseFile(FILE *fin, ObjList&amp; ol, char *sz, char *szName, 
+    char *szType, const char *szForm)
+{       
+    int pos;
+    while (!feof(fin))
+    {  
+        if (!strcmpi(sz, "object"))
+        {  
+            fscanf(fin, "%s %s", szName, szType);
+            szName[strlen(szName) - 1] = 0;
+
+            pVCLComponent *obj = NULL;
+            obj = GetVCLComponent(szName, szType, szForm);
+
+            fscanf(fin, "%s%n", sz, &amp;pos);
+            pos -= (3 + strlen(sz));
+
+            if (obj)
+            {      
+                ol.push_back(obj);
+                obj-&gt;Parse(fin, sz, pos / 2);
+                if (!strcmpi(sz, "object"))
+                    RecurseFile(fin, ol, sz, szName, szType, szForm);
+            }
+            else
+                ... // SkipComponent
+        }
+    fscanf(fin, "%s", sz);
+    }
+}
+
+int 
+DfmConvert(char *szFnDfm, int form_id, int ctl_id_base,
+    int ratio_x, int ratio_y)
+{  
+    char sss[256], sz_name[256], sz_type[256];
+    char drv[MAXDRIVE], dir[MAXDIR], file[MAXFILE], ext[MAXEXT];
+    char szFnTxt[MAXPATH], szFnCpp[MAXPATH], szFnHpp[MAXPATH];
+    char szFnRc[MAXPATH], szFnRh[MAXPATH];
+
+    VCList vc_list;
+    MBList mb_list;
+    ObjList obj_list;
+
+    fnsplit(szFnDfm, drv, dir, file, ext);
+
+    fnmerge(szFnTxt, drv, dir, file, ".txt");
+    fnmerge(szFnRc, drv, dir, file, ".rc");
+    fnmerge(szFnRh, drv, dir, file, ".rh");
+
+    if (!strcmpi(".dfm", ext))
+    {  
+        TFileStream *dfm = new TFileStream(szFnDfm, fmOpenRead);
+        TFileStream *txt = new TFileStream(szFnTxt, fmCreate);
+        ObjectResourceToText(dfm, txt);
+        delete dfm;
+        delete txt;
+    }
+    else if (strcmpi(".txt", ext)) return -10;
+
+    wsprintf(szFnCpp, "%s%sAPI_%s.cpp", drv, dir, file);
+    wsprintf(szFnHpp, "%s%sAPI_%s.hpp", drv, dir, file);
+
+    FILE *fin = fopen(szFnTxt, "rt");
+    if (!fin) return -20;
+
+    fscanf(fin, "%*s %*s %s %s", sz_name, sss);
+
+    //the first component is always a Form
+    pVisualObject::global_id = form_id;
+    pDialogBox *dlg_box = new pDialogBox(sz_name, "");
+    dlg_box-&gt;Parse(fin, sss, 0);
+
+    obj_list.push_back(dlg_box);
+
+    pVisualObject::global_id = ctl_id_base;
+
+    RecurseFile(fin, obj_list, sss, sz_name, sz_type,
+        dlg_box-&gt;GetName().c_str());
+    fclose(fin);
+
+    for (OL_iter i = obj_list.begin(); i != obj_list.end(); i++)
+    {  
+        pVisualControl *vc = dynamic_cast &lt;pVisualControl*&gt;(*i);
+        pMenuBase *mb = dynamic_cast &lt;pMenuBase *&gt; (*i);
+
+       if (vc) vc_list.push_back(vc);
+       if (mb) mb_list.push_back(mb);
+    }
+    ... // some code not shown here to adapt metrics
+
+    StrList SL_RC, SL_RH, SL_CPP, SL_HPP;
+   
+    ... // some code not shown here for include files in .rc and 
+    ... // defined in .rh
+
+    ... // some code not shwon here required for menus arranging
+
+    for (MB_iter i = mb_list.begin(); i != mb_list.end(); i++)
+        (*i)-&gt;WriteRcRh(SL_RC, SL_RH);
+
+    vc_list.sort(lower_tab);
+    vc_list.sort(lower_level);
+
+    dlg_box-&gt;WriteRcRh(SL_RC, SL_RH);
+    for (VC_iter i = vc_list.begin(); i != vc_list.end(); i++)
+        (*i)-&gt;WriteRcRh(SL_RC, SL_RH);
+
+    SL_RC.Append("}\n\n//VCL Form Converter, by Luigi Bianchi");
+    SL_RH.Append("\n\n#endif");
+
+    SL_RC.WriteFile(szFnRc);
+    SL_RH.WriteFile(szFnRh);
+
+    ... // some code not shown here for include files in .cpp and 
+    ... // defined in .hpp
+
+    for (OL_iter i = obj_list.begin(); i != obj_list.end(); i++)
+        (*i)-&gt;WriteCppHpp(SL_CPP, SL_HPP);
+
+    SL_CPP.WriteFile(szFnCpp);
+    SL_HPP.WriteFile(szFnHpp);
+
+    for (OL_iter i = obj_list.begin(); i != obj_list.end(); i++)
+        delete (*i);
+
+    return 0;
+}
+
+</pre></body></html>

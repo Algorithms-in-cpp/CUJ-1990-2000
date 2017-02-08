@@ -1,0 +1,180 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>September 1998/Applying Stream Encryption</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocsep.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Algorithms</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Applying Stream Encryption</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Warren Ward</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>A surprisingly small amount of effort can yield a large degree of protection, if you encrypt just the right stuff just the right way.</p></BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+<p><B><I>Copyright &copy; 1998 by Warren Ward.</I></B></p>
+
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>Most commercial software developers occasionally need simple, fast encryption. A developer may want to protect registration information on a customer computer after the product is paid for, conceal proprietary file formats and data, or encrypt a product's user file to protect passwords.</p>
+
+<p>For purposes such as these, the encryption doesn't have to be completely unbeatable, though it should provide reasonable security against unsophisticated attacks. Just as important, it should be fast, use little code, work on large or small amounts of data, and be free for commercial use.</p>
+
+<p>Unfortunately, few good options exist for this type of task. Some well known approaches have a big code footprint or cannot process small amounts of data efficiently. Other suitable encryption approaches are protected by patents, or suffer other impediments.</p>
+
+<p>This article gives a solution for fast, compact, unencumbered encryption in C++. It is based on techniques described in Bruce Schneier's excellent book <I>Applied Cryptography</I> <a href="#1">[1]</a>. The encryption algorithm has only a few dozen lines of code but gives reasonable protection for all sorts of practical applications.</p>
+
+<p>Encryption algorithms come in two styles, block encryption and stream encryption. The widely-used Data Encryption Standard (DES), for example, is based on block encryption. Block encryption needs a minimum "block" of data to work on, usually 128 to 512 bytes. If you have to encrypt less than a full block, you fill the rest of the block with junk so encryption can proceed. Block encryption works most efficiently with data that is at least several times the block size. Most popular block-encryption methods need a lot of code and data space as well. They are not much use for concealing a ten-byte user password.</p>
+
+<p>Stream encryption, on the other hand, can work on as little as one bit or byte at a time. Some stream encryption techniques use very little code, work well on small amounts of data, and provide adequate commercial security. I've selected one of these techniques and adapted it for byte encryption in C++.</p>
+
+<p>Like many other programmers, I have used a naive form of stream encryption in the past. I process the sensitive information before writing it to disk or the modem, by XORing each byte with a constant byte or with the next character from a key string. Sure enough, the output is scrambled. And decryption is easy. Just repeat the same XOR operation with the encrypted data and the same key, and the original data reappears. The only problem with this approach is the ease with which repeating keys can be broken by today's crypto-smart programmers. Schneier's book, as well as many places on the Web, describe techniques for recovering a repeating XOR key from a stream.</p>
+
+<p>The <B>Cryptor</B> class described in this article uses the same XOR principle for encryption and decryption. But the key isn't a repeating byte or string. Rather, it's an unpredictable stream of bytes from a pseudo-random number generator (PRNG), software that outputs a random-appearing series of bits. Because the bytes used for XORing seem random, the usual ways of ferreting out a repeating key don't work. As with any serious encryption approach, knowing the algorithm helps little in breaking the encryption. While the key is unknown, the data is safe.</p>
+
+<h4><FONT COLOR="#000080">Encryption Engine</FONT></H4>
+
+<p>The PRNG algorithm in class <B>Cryptor</B> uses simple shift registers, which are modified to produce pseudo-random output and then combined into a good random bit generator. If you run the generator eight times, you will get a random byte. The <B>Cryptor</B> class does all this processing in <B>Transform_Char</B>, which takes an unsigned character to be encrypted and XORs it with the generator's random output byte. (See <A HREF="list1.htm">Listing 1</A> for the class definition.)</p>
+
+<p>A shift register is a fixed-length string of bits maintained either in hardware or in software. When a shift register is clocked once, its contents usually rotate one bit. For example, a right rotation shifts all the bits in the register one position right, moving the former rightmost bit into the empty leftmost bit position. The rightmost bit before the rotation is the output bit. (The term "clock" comes from hardware shift registers, which finish all operations in a single tick of the hardware clock.)</p>
+
+<p>To simulate a hardware shift register in C++, one or more unsigned integers contain the string of bits. While there is no real ceiling on a software-based shift register's length, storing the shift register contents in one long integer for efficient processing limits it to 32 or fewer bits. Code also simulates rotation, for which C++ has no built-in operator. The function saves a copy of the integer's rightmost bit, performs a right shift on the whole integer, and replaces the saved bit in the shift register's leftmost position.</p>
+
+<p>For shift registers shorter than 32 bits, the leftmost bit of the shift register is not the leftmost bit of the integer. To work around this difference in size, the <B>Cryptor</B> class contains two masks for each shift register. One puts a zero in the leftmost bit of the register, wherever that bit is situated. The other puts a 1 there.</p>
+
+<p>Simply rotating the shift register will produce the same sequence of bits over and over again, which is cryptographically useless. To get an unpredictable stream of bits, the shift register has to modify its contents regularly. This requirement is met by a Linear Feedback Shift Register (LFSR).</p>
+
+<p>An LFSR modifies its own contents once per clock, by XORing the values of certain bits in the shift register with a feedback mask. After applying the feedback mask, register contents are scrambled. This transformation is the magic that makes the LFSR's output unpredictable.</p>
+
+<p>The bit positions used for feedback have to be selected carefully. You want a maximum-length generator, which produces every possible shift register state before it repeats itself. For example, you can clock a maximum-length 16-bit LFSR 65,535 times (216 - 1 times) before it begins to repeat.</p>
+
+<p>Only certain patterns of feedback bits produce a maximum-length generator. Using incorrect feedback can cause the LFSR to begin repeating itself in a few hundred or thousand cycles, making it cryptographically weak. The correct bits for feedback are based on primitive polynomials, and are described by Schneier <a href="#1">[1]</a>. The <B>Cryptor</B> class uses some of several hundred possible bit patterns he presents. Select different ones to make your own implementation unique.</p>
+
+<p>The <B>Cryptor</B> class stores the feedback bit pattern as a mask. Each time an LFSR outputs a 1, its feedback mask is XORed with its current contents. With this step, the shift register contents are scrambled once per clock and the output changes from the predictable simple shift register to the varying pseudo-random bits you need for stream encryption.</p>
+
+<p>A single LFSR is not considered cryptographically strong, though it does meet the our other requirements of being simple, small, and fast. Output is random but not entirely unpredictable, so it is weak for cryptographic purposes. <A HREF="fig1.htm">Figure 1</A> shows the function <B>Weak_Transform_Char</B>, encryption based on a single shift register. You can substitute it where desired for the slower but much more secure generator in <B>Transform_Char</B>, shown in <A HREF="fig2.htm">Figure 2</A>.</p>
+
+<p>Two or more LFSRs can be combined for greater unpredictability. The encryption featured here uses three LFSRs organized as an alternating stop-and-go generator (<A HREF="fig3.htm">Figure 3</A>). The three shift registers have different sizes, relatively prime to each other. LFSR A is 32 bits wide, LFSR B is 31 bits, and LFSR C is 29 bits. The total period of the generator is the product of these three register sizes, so this generator does not repeat for approximately (232 * 231 * 229 = 292) cycles, or over 1025 (ten bazillion) repetitions of the <B>Transform_Char</B> method. Longer cycles mean better security.</p>
+
+<p>The first shift register, LFSR A, generates a random bit when it is clocked. If the output bit is a 1, LFSR B is also clocked and LFSR C is not. The new output bit from B and the previous one from C are XORed together to get the output bit for this cycle. If the output of LFSR A is zero, B is not clocked but C is. The previous bit from B and the new one from C are XORed to produce the generator's output bit. This combination of three random generators produces an unpredictable stream of bits, suitable for stream encryption.</p>
+
+<p>To control the stream of pseudo-random bits, initialize each LFSR with a specific seed value before starting to clock it. Starting with the same seed, the LFSR will always produce the same stream of bits. The only seed to avoid is 0x00000000, which produces a decidedly non-random stream of 0 bits forever.</p>
+
+<p>The accessor method <B>Set_Key</B> stores a key within the <B>Cryptor</B> object and initializes the LFSR contents. It places the first four characters of the key in LFSR A, the next four in LFSR B, and four more in LFSR C.</p>
+
+<p>If the key has more than twelve characters, only the first twelve are used. If the key is shorter, it is repeated until it reaches twelve characters in length. For an empty key or one where the four characters placed in an LFSR are all <B>'\0'</B>, the class substitutes a default value. Though these steps can prevent disaster, you may want to return an error instead if the key fails.</p>
+
+<p>The effective key size for this generator is the combined size of the shift registers, about 90 bits. If you need to export software containing this encryption and have to reduce your key size to 40 bits or less, use the same four bytes to initialize each of the three LFSRs. Your effective key size is then 32 bits. An alternative, though cryptographically weaker, approach is to encrypt with <B>Weak_Transform_Char</B>. It uses a single 32-bit key.</p>
+
+<p>Knowing the algorithm is not much use in breaking this encryption. You really need to know the key. The programmer's challenge is making sure that the key used for encryption is actually available later for decryption, without leaving it laying out in the open.</p>
+
+<p>The <B>Set_Key</B> method initializes the <B>Cryptor</B> LFSRs for use by the <B>Transform</B> methods (<A HREF="list2.htm">Listing 2</A>). These methods take a reference to the source data so they can scramble it in place, leaving no unencrypted copy to clean up. <B>Transform_String</B> and <B>Transform_File</B> take a key and the data to be encrypted. They reset the LFSRs with the key automatically each time they are called.</p>
+
+<p><B>Transform_Char</B> takes no key. Instead, it lets you decide when to set the key. Remember that you do so at exactly the same point in decryption as you did in encryption, for example, at the twentieth character of a stream. With <B>Transform_Char</B>, you can encrypt arbitrarily large objects and streams.</p>
+
+<p>Decryption works exactly like encryption. Use the same <B>Transform</B> method and key that encrypted the data to process it again. Data will return to its original form.</p>
+
+<p>Don't forget that encryption can create the character <B>'\0'</B>. Avoid using Standard C character arrays, text files, and associated functions with encrypted data. Many C functions treat the <B>'\0'</B> character as end of string, and will cause unexpected errors manipulating encrypted data. It is better to use objects of class <B>string</B>, declared in the header <B>&lt;string&gt;</B> in the Standard C++ library. They store the string length as a property and are not affected by null bytes within the string, or any other magic values. For similar reasons, always open files in binary mode rather than text.</p>
+
+<h4><FONT COLOR="#000080">Encryption at Work</FONT></H4>
+
+<h4><FONT COLOR="#000080">Database Encryption</FONT></H4>
+
+<p>Database standards like SQL and ODBC give developers access to great tools and speed up development. Unfortunately, they also give everyone else easy access to the data. In a big corporate database with full security features, the database administrator can keep the snoops out. But in lightweight databases or local copies of the secure master database, you should use encryption to control sensitive information.</p>
+
+<p>You can scramble individual columns, such as Salary in the Employee table. Set up system constants defining a separate key for each column you need to protect. When the application writes data to the table, encrypt it on the way out with <B>Transform_String</B>. Use the same keys to reverse the encryption when data is read by an authorized user.</p>
+
+<p>If your application must know the plaintext value of an encrypted column as part of a query, decrypt that value to a column in a temporary table or cursor. Then use the temporary result as needed, for example, to sort on Salary. Discarding the temporary table when done keeps decrypted data out of the database.</p>
+
+<p>When you have a lot of columns to protect in one table, or want to hide the link between two tables, create a private table containing the sensitive information. Its primary key field is the encrypted form of the primary database key field from the public table. (Note that this "database key" is the unique value identifying each row, while the "encryption key" is your secret value for encrypting data.) For example, in a secure log of system activity, tie activity records to the employee record using the encrypted employee ID. Only someone with access to the encryption routine can join the two tables for a full record.</p>
+
+<p>Be careful in any application that encrypts database key fields. You must use the same encryption key for all data in a single column. If you use more than one key &#151; for example, using each row's SIN number as a key for encrypting its employee ID &#151; you may unintentionally create duplicate database keys in the private table.</p>
+
+<h4><FONT COLOR="#000080">Persistent Objects</FONT></H4>
+
+<p>Many programs use persistent objects, which can stream their contents to and from a disk file. A common example is the serialization technique built into the MFC base class <B>CObject</B> and all its children.</p>
+
+<p>You can protect some or all of these contents with encryption. Place a unique ID in each class as a static property. Use each object's class ID as the key for encryption and decryption. (If you are applying this to MFC, override the inherited <B>Serialize</B> method with your secure approach.) Use <B>Transform_Char</B>, resetting the <B>Cryptor</B> with <B>Set_Key</B> before each object begins to read or write.</p>
+
+<p>If the object contents vary in size, write each block of object data prefaced with an unencrypted one- or two-byte number carrying the block's length. When reading, get the length first, then read that many bytes while decrypting with the object's class ID as key.</p>
+
+<h4><FONT COLOR="#000080">Authentication and Logging In</FONT></H4>
+
+<p>To enforce secure login for your standalone product, keep a local file of user IDs and passwords. Encrypt each record with a secret key. When someone logs in, encrypt the ID and password they enter, using the same key. Search the file for a match. If one is found, log in the user with the privileges decrypted from the user record. If not, reject the login attempt.</p>
+
+<p>This scheme ensures that plaintext user IDs and passwords are never stored on disk for outside inspection. You can strengthen it even further if your application is particularly sensitive or open to external users (like those on the Internet). First, use a different key for encrypting the user ID than the password and user privileges. If your customer uses a naming standard, user IDs may be easy to guess, giving an entry point to cryptanalysis of the password. Using a different key for the password helps keep it secure.</p>
+
+<p>Second, add two to four random bytes to the end of the ID and password strings before encrypting. Use an LFSR to generate the random numbers. This random "salt" means that someone with a dictionary of the million most popular passwords cannot simply pass them through your "add a user" routine and look for matches in the user database (one of history's most popular means for cracking Unix systems).</p>
+
+<h4><FONT COLOR="#000080">Software Registration</FONT></H4>
+
+<p>When a customer registers your software package, give them a product ID that unlocks the package for use. Create a string containing the customer ID, product version, and any customer access limitations (like "90-day trial," or "enterprise edition"). Terminate it with a checksum (or a constant two-byte code, which is easier to use though much less secure) and encrypt the whole string. The encrypted string should be as short as possible &#151; say, ten to twelve characters long. Transform it to a printable string, perhaps by converting it to hexadecimal notation. It is now the customer's product ID.</p>
+
+<p>The customer keys the new ID into the product's registration screen to unlock it. The application decrypts it and verifies the checksum or code. If correct, the application runs, with the access limitations you set. Save the product ID in the registry or in a file for later use on the About screen or during product upgrades.</p>
+
+<p>A similar technique lets your technical support hotline identify valid customers. You don't even need to store the generated product codes at your site, since decrypting them on demand gives you the information you need.</p>
+
+<p>Out of the universe of quintillions of possible product codes this process could produce, only a microscopic percentage will be valid. Counterfeiting codes is not likely to succeed. If a paying customer does divulge a product ID to non-payers, trace the loose-fingered source by decrypting the product ID to retrieve the original customer ID.</p>
+
+<p>Though this technique doesn't offer perfect protection, it is easy to implement and familiar to most of today's software buyers. You could use a similar approach to implement licensing for your ActiveX controls in 32-bit Windows. An ActiveX control can be forced to look automatically for a registration file before letting a developer include the control in a product. Enhance the <B>IClassFactory2</B> methods <B>RequestLicKey</B>, <B>GetLicInfo</B>, and <B>CreateInstanceLicense</B> with encryption, to conceal and to verify the contents of the control's license file.</p>
+
+<h4><FONT COLOR="#000080">Disk Files</FONT></H4>
+
+<p>To encrypt a small file, use <B>Transform_File</B>. <A HREF="tab1.htm">Table 1</A> gives some performance test results. <B>Transform_Char</B>, the stronger of the encryption routines, performs about four times slower than a straight read/write on a Pentium 266 under Windows 95. <B>Weak_Transform_Char</B> is a little quicker. An application that needs to encrypt larger amounts of data more quickly may have to turn to a block encryption algorithm, but for many uses this performance is more than adequate.</p>
+
+<p>If you need to recognize whether a file has been encrypted and you cannot change the filename to show it, use the scheme adopted by compression utilities. Add a constant ID of four to eight bytes to the start of the file, followed by the encrypted contents. These opening bytes can contain anything, even your dog's name, as long as the file decryption routine verifies them.</p>
+
+<p>For increased comfort that a file has been successfully encrypted and decrypted, calculate a four-byte checksum or cyclic redundancy check (CRC) value in the encryption routine. Encrypt it and append it to the file after encrypting the original contents.</p>
+
+<p>While decrypting, perform the same calculation on the decrypted data and compare the file's last four bytes against the calculated value. If they match, the job was successful. If not, either the encryption and decryption keys did not match, or something tampered with the contents of the encrypted file.</p>
+
+<p>Note that both of these ideas mean encryption uses different processing than decryption. The single <B>Transform</B> method no longer fits. You need to develop new methods like <B>Encrypt_File</B> and <B>Decrypt_File</B>, which can both call <B>Transform_Char</B>.</p>
+
+<h4><FONT COLOR="#000080">Client/Server Authentication</FONT></H4>
+
+<p>Adding an encrypted authentication protocol to your server application locks out unauthorized clients. Either the server and all authorized clients share one secret key, or (for greater security) each client has a unique key and the server knows them all. Here are the steps for a secure challenge:</p>
+
+<p>1. The client encrypts a random number from the PRNG with its secret key. It sends the result to the server when it logs on to perform a transaction.</p>
+
+<p>2. The server decrypts the random number using the client's key. The server also generates a second random number, encrypts it with the client's secret key, and sends it back with a request to proceed with the transaction.</p>
+
+<p>3. The client decrypts the second random number, adds it to the original random number, and sends the encrypted sum back to the server along with the rest of the transaction (e.g., "Request for customer record").</p>
+
+<p>4. The server decrypts the message, checks that the sum is correct, then processes the transaction.</p>
+
+<p>Strengthen this protocol further by including the sender and receiver IDs in the encrypted messages, and by adding an encrypted checksum or CRC. Each message then identifies its source and destination in a form that cannot be read or altered without the correct key.</p>
+
+<p>Random numbers in the challenge keep authentication messages very short while making it difficult to discover the encryption key. Because the numbers change every time and each party creates one of them, replay attacks (where the attacker repeats an earlier series of messages to simulate an authorized user) are difficult. Even though this protocol uses two more exchanges than a non-secured one, the network messages are small, computation is minimal, and the challenge can be processed quickly.</p>
+
+<h4><FONT COLOR="#000080">Locking Your Libraries</FONT></H4>
+
+<p>Encryption can protect proprietary code libraries like DLLs so that only your software can use them. Use an encrypted challenge protocol like the one described for client/server authentication. The DLL can either challenge the application only when first loaded, or every time particular functions are called.</p>
+
+<p>For example, in 32-bit Windows the optional function <B>DllMain</B> runs automatically when the DLL is loaded. Give it the server functions from the client/server example, and build the client functions into the application. You can protect CORBA, COM, and ActiveX interfaces the same way, forcing the calling program to verify that it is authorized before providing services.</p>
+
+<p>Now you can have pinpoint control over the services available from your DLLs, COM libraries, or ActiveX controls. You can enable or limit functions based on a customer's registration information, or disable libraries a specified time after installation.</p>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>Stronger cryptographic routines than these do exist, but many of the best are patented or otherwise protected. If you need industrial-strength protection, you should investigate a commercial library (like Microsoft's Crypto API or RSA Data Security's BSAFE library) for access to licensed cryptography routines. Here's one rule of thumb: spend money to guard money. That is, if you are protecting financial information or transactions, buy commercial encryption products.</p>
+
+<p>For many purposes, however, the encryption engine presented here is more than powerful enough. Schneier does not identify any critical weaknesses in the stop-and-go generator algorithm. With over 290 possible keys, a brute-force attack on the encryption would take a very long time (remember that the universe is only 259 seconds old). Don't forget to protect your keys, though.</p>
+
+<p>This stream encryption is fast, compact, and easy to implement. Applications abound, particularly in today's networked and multi-user systems. This article presents a few of the best applications I know, and I am sure you will find many more.</p>
+
+<h4><FONT COLOR="#000080">Reference</FONT></H4>
+
+<p><a name="1"></a>[1]  Bruce Schneier. <I>Applied Cryptography,</I> second edition (John Wiley and Sons, New York, 1996).</p>
+
+<p><i>Warren Ward is lead technologist (VP Research and Development) at Winterforce Laboratories, a firm specializing in pattern-based and object-oriented software development. Five years ago, he managed development and implementation of one of North America's first secure Internet EDI applications, the TEDI system. He has presented internationally on commercial and Internet security, and continues to develop secure commercial software with Winterforce.</i></p>
+
+<h4><a href="../../../source/1998/sep98/ward.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

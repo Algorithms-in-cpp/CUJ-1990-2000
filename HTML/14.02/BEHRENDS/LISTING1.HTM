@@ -1,0 +1,640 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+          <TITLE>February 1996/The Poor Man's Serial Protocol Analyzer/Listing 1</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H4>Listing 1: The ttymon program </H4>
+
+<PRE>
+/**********************************************************/
+/* ttymon.c - Monitor communications between two ttys	  */
+/* Release version 11/28/95 by Tim Behrendsen		  */
+/*							  */
+/* Permission to use this source code for any purpose     */
+/* whatsoever is hereby granted. The author assumes no    */
+/* liability or responsibility for any use or misuse of   */
+/* this software or any progeny thereof.		  */
+/**********************************************************/
+
+#include &lt;stdio.h&gt;
+#include &lt;sys/select.h&gt;
+#include &lt;time.h&gt;
+#include &lt;termios.h&gt;
+#include &lt;fcntl.h&gt;
+#include &lt;string.h&gt;
+#include &lt;signal.h&gt;
+
+/* Definitions global to program */
+
+#ifndef min
+#define min(a,b) ((a) &lt; (b) ? (a) : (b))
+#endif
+
+#ifndef max
+#define max(a,b) ((a) &gt; (b) ? (a) : (b))
+#endif
+
+/* Calculate difference between two timeval structs */
+
+#define TimeDiff(a,b) (((a)-&amp;gttv_sec - (b)-&amp;gttv_sec) *    \
+    1000000L + ((a)-&amp;gttv_usec - (b)-&amp;gttv_usec))
+
+#define MAX_FPS 2		/* Maximum log output FPs */
+
+typedef struct termios DeviceState;
+
+/* Global variables */
+
+fd_set rfd, wfd, efd;		/* Structures for select */
+DeviceState StateSave[2];	/* Areas for TTY bits */
+int FDs[2] = {-1, -1};		/* TTY file descriptors */
+struct timeval LastDumpTime;	/* Time of last dump */
+
+/* Buffer areas, pointers and counters */
+
+char *CharBuffer[2];		/* Read buffers */
+char *BufferPos[2];		/* Current free position */
+int WaitingSize[2];		/* Amount in buffer */
+int SizeLeft[2];		/* Chars left in buffer */
+struct timeval IncomingTime;	/* Start time of data */
+
+/* Logging destinations */
+
+char *LogFileName;		/* Log output file name */
+FILE *OutputFPs[MAX_FPS];	/* FPs to output log to */
+int NumOutputFPs;		/* Num of logging dests */
+
+/* Configurable parameters */
+
+int StdoutMode = 1;		/* Write output to stdout */
+int DaemonMode = 0;		/* Make process daemon */
+int NoRawMode = 0;		/* Do not set raw mode */
+int BufferSize = 512;		/* Size of CharBuffer */
+int LogThreshold = 256;		/* Log when size exceeded */
+int ShowBlankData = 0;		/* Output empty log lines */
+char *DeviceNames[2];		/* Name of TTY ports */
+long TimeoutTime = 250000L;	/* Force output time */
+
+/* Function prototypes */
+
+int Usage(char **);
+void NormalExit();
+void AbnormalExit();
+void CleanUp();
+void ExitClean();
+void SetRawMode(int, DeviceState *);
+void RestoreTTYmode(int, DeviceState *);
+void ProcessDevices();
+void LogMessage(char *);
+void LogBuffers();
+void ResetBuffers();
+void SetDaemon();
+
+/********************************************************
+ *	Entry point for tty monitoring program.		*
+ ********************************************************/
+
+int main(
+int argc,
+char *argv[])
+{
+    int i;
+    int parameter = 0;
+    char c, *ptr;
+
+    LogFileName = NULL;
+
+    /* Parse parameters from input line.  Following */
+    /* macro allows "-x parm" or "-xparm". */
+
+#define GetParameter() (*ptr ? ptr : ((++i &gt;= argc) ? \
+    (char*)Usage(argv) : argv[i]))
+
+    for (i = 1; i &lt; argc; ++i) {
+	ptr = argv[i];
+        if (*ptr == '-' &amp;&amp; *(ptr+1) != 0) {
+	    /* Dash parameter */
+
+	    ++ptr;		/* Move past dash */
+	    switch(c = *ptr++) {
+	    case 'd':		/* Make daemon process */
+		DaemonMode = 1;
+		break;
+	    case 'c':		/* Continous output */
+		ShowBlankData = 1;
+		break;
+	    case 'l':		/* Output to log file */
+		LogFileName = GetParameter();
+		break;
+	    case 'b':		/* Set buffer size */
+		BufferSize = atol(GetParameter());
+		break;
+	    case 't':		/* Max chars in buffer */
+		LogThreshold = atol(GetParameter());
+		break;
+	    case 'o':		/* Set timeout value (ms) */
+		TimeoutTime = atol(GetParameter()) * 1000;
+		break;
+	    case 'q':		/* No output to stdout */
+		StdoutMode = 0;
+		break;
+	    case 'r':		/* Do not set raw mode */
+		NoRawMode = 1;
+		break;
+	    case '?':		/* Give Usage and exit */
+		Usage(argv);
+		break;
+	    default:
+		printf("Invalid switch: %c\n", c);
+		Usage(argv);
+	    }
+	} else {
+	    /* Positional parameter, i.e. device name */
+
+	    switch(parameter) {
+	    case 0:		/* First device */
+	    case 1:		/* Second device */
+		if (*ptr == '-')
+		    ptr = "/dev/tty";
+		DeviceNames[parameter] = ptr;
+		break;
+	    default:
+		fprintf(stderr, "Invalid parameter: %s\n",
+		    ptr);
+		Usage(argv);
+	    }
+	    ++parameter;
+	}
+    }
+
+    if (parameter &lt; 2) {
+	fprintf(stderr, "Two devices are required.\n");
+	Usage(argv);
+    }
+
+    for (i = 0; i &lt; 2; ++i) {
+	if ((CharBuffer[i] = malloc(BufferSize)) == NULL) {
+	    fprintf(stderr, "Could not allocated %d "
+		"chars for buffer\n", BufferSize);
+	    return(1);
+	}
+    }
+
+    for (i = 0; i &lt; 2; ++i) {
+	FDs[i] = open(DeviceNames[i], O_RDWR);
+        if (FDs[i] &lt; 0) {
+	    CleanUp();
+	    perror("Invalid device");
+	    return(1);
+	}
+
+	if (! NoRawMode)
+            SetRawMode(FDs[i], &amp;ampStateSave[i]);
+    }
+
+    if (LogFileName != NULL) {
+	i = NumOutputFPs++;
+	if ((OutputFPs[i] =
+	    fopen(LogFileName, "w")) == NULL) {
+	    /* Open of log file failed */
+
+	    CleanUp();
+	    fprintf(stderr, "Unable to open log file %s:",
+		LogFileName);
+	    perror("");
+	    return(1);
+	}
+    }
+
+    if (StdoutMode)
+	OutputFPs[NumOutputFPs++] = stdout;
+
+    /* Make sure we do clean up on termination */
+
+    signal(SIGINT, NormalExit);
+    signal(SIGHUP, NormalExit);
+    signal(SIGTERM, NormalExit);
+
+    /* Ready to go.  ProcessDevices does not return. */
+
+    ProcessDevices();
+}
+
+/********************************************************
+ *	Usage - Report usage and exit.			*
+ ********************************************************/
+
+int Usage(
+char *argv[])		/* Original argv input parameter */
+{
+    fprintf(stderr,
+	"%s - connect two ttys and record session\n"
+	"Usage: %s [options] port1 port2\n"
+	"    Use dash (-) for /dev/tty\n"
+	"    -b[size] - R/W buffer size (default: 512)\n"
+	"    -t[size] - Threshold for dump (Default: 256)\n"
+	"    -b[size] - Buffer size\n"
+	"    -o time  - Set timeout time (default: 250ms)\n"
+	"    -c       - Show continuous output\n"
+	"    -d       - Run as daemon process\n"
+	"    -q       - Quiet mode, no output to stdout\n"
+	"    -l[file] - Write to log file (and stdout)\n"
+	"    -r       - Do not set raw mode on devices\n",
+	argv[0], argv[0]);
+
+    exit(1);
+}
+
+/********************************************************
+ *	NormalExit - Normal program termination.	*
+ *	AbnormalExit - Abnormal program termination.	*
+ *	Calls CleanUp subroutine.			*
+ *	exit() is called with 0 and 1, respectively.	*
+ ********************************************************/
+
+void ExitClean()
+{
+    if (StdoutMode)
+	fprintf(stderr, "Devices disconnected.\n");
+
+    CleanUp();
+    return;
+}
+
+void NormalExit()
+{
+    ExitClean();
+    exit(0);
+}
+
+void AbnormalExit()
+{
+    ExitClean();
+    exit(1);
+}
+
+/********************************************************
+ *	CleanUp - Close all open files.			*
+ *	Restores TTY state if raw mode was set.		*
+ ********************************************************/
+
+void CleanUp()
+{
+    int i;
+
+    for (i = 0; i &lt; 2; ++i) {
+        if (FDs[i] &gt;= 0) {
+	    if (! NoRawMode)
+                RestoreTTYmode(FDs[i], &amp;ampStateSave[i]);
+	    close(FDs[i]);
+	}
+    }
+
+    for (i = 0; i &lt; NumOutputFPs; ++i) {
+	if (OutputFPs[i] != NULL)
+	    fclose(OutputFPs[i]);
+    }
+
+    return;
+}
+
+/********************************************************
+ *	ProcessDevices - Main processing loop.  Copy	*
+ *	    characters through the devices.		*
+ *	Does not return.				*
+ ********************************************************/
+
+void ProcessDevices()
+{
+    struct timeval TimeOut;
+    int maxFD;		/* Maximum FD to use for select */
+    char msg[100];	/* Buffer for errors */
+    int isSet[2];	/* Nonzero = data on port */
+    struct timeval currentTime;
+    int n;
+    long diff;
+    register int i;
+
+    extern int errno;
+
+    maxFD = max(FDs[0], FDs[1]) + 1;
+
+    gettimeofday(&amp;ampLastDumpTime, NULL);
+    ResetBuffers();
+
+    for(;;) {
+	/* Initialize TimeOut to time left until maximum
+	 * allowable interval without dump.
+	 */
+
+        gettimeofday(&amp;ampcurrentTime, NULL);
+        diff = TimeoutTime - TimeDiff(&amp;ampcurrentTime,
+            &amp;ampLastDumpTime);
+        TimeOut.tv_sec = (diff &gt; 0 ? (diff / 1000000L) : 0);
+        TimeOut.tv_usec = (diff &gt; 0 ? (diff % 1000000L) : 0);
+
+	/* Initialize select structures, and wait */
+
+        memset(&amp;amprfd, 0, sizeof(rfd));
+        FD_SET(FDs[0], &amp;amprfd);
+        FD_SET(FDs[1], &amp;amprfd);
+
+        n = select(maxFD, &amp;amprfd, &amp;ampwfd, &amp;ampefd, &amp;ampTimeOut);
+        if (n &lt; 0) {
+	    sprintf(msg, "select system call failed, "
+		"errno = %d\n", errno);
+	    LogMessage(msg);
+	    AbnormalExit();
+	}
+
+	if (n == 0) {
+	    /* Timeout from select call; Display log
+	     * of what we have waiting.  If nothing, set
+	     * buffer time to current time for continous
+	     * mode log output.
+	     */
+
+            if (WaitingSize[0] == 0 &amp;&amp; WaitingSize[1] == 0)
+                gettimeofday(&amp;ampIncomingTime, NULL);
+
+	    LogBuffers();
+	    continue;
+	}
+
+	/* Have data available */
+
+        isSet[0] = FD_ISSET(FDs[0], &amp;amprfd);
+        isSet[1] = FD_ISSET(FDs[1], &amp;amprfd);
+
+        if (WaitingSize[0] == 0 &amp;&amp; WaitingSize[1] == 0) {
+	    /* Completely new data, save incoming time */
+
+            gettimeofday(&amp;ampIncomingTime, NULL);
+	} else {
+	    /* If we have data on one channel that didn't
+	     * have data before, dump opposite channel
+	     */
+
+            if ((isSet[0] &amp;&amp; WaitingSize[0] == 0) ||
+                (isSet[1] &amp;&amp; WaitingSize[1] == 0)) {
+		/* Have data on one/both ports; dump all */
+
+		LogBuffers();
+                gettimeofday(&amp;ampIncomingTime, NULL);
+	    }
+	}
+
+	/* Read data from each port */
+
+        for (i = 0; i &lt; 2; ++i) {
+	    if (isSet[i]) {
+		/* Received characters from port (i) */
+
+		n = read(FDs[i], BufferPos[i], SizeLeft[i]);
+		write(FDs[1 - i], BufferPos[i], n);
+
+                if (NumOutputFPs &gt; 0) {
+		    /* Adjust buffer pointers/counters */
+
+		    BufferPos[i] += n;
+		    SizeLeft[i] -= n;
+		    WaitingSize[i] += n;
+		}
+	    }
+	}
+
+	/* Check for buffer timeout or maximum chars */
+
+        if (NumOutputFPs &gt; 0) {
+            gettimeofday(&amp;ampcurrentTime, NULL);
+            diff = TimeDiff(&amp;ampcurrentTime, &amp;ampLastDumpTime);
+            if (diff &gt; TimeoutTime) {
+		/* Waited long enough; dump the log data */
+
+		LogBuffers();
+	    } else {
+                for (i = 0; i &lt; 2; ++i) {
+                    if (WaitingSize[i] &gt;= LogThreshold) {
+			/* Exceeded buffer size threshold;
+			 * go ahead and dump data.
+			 */
+
+			LogBuffers();
+			break;
+		    }
+		}
+	    }
+	}
+    }	/* End of infinite loop */
+}
+
+/********************************************************
+ *	LogBuffers - Write buffers to log file, in	*
+ *	    side by side format.			*
+ *	CharBuffer[] has data buffer.			*
+ *	BufferPos[] has pointer to free point.		*
+ *	WaitingSize[] has amount of data in buffer.	*
+ *	SizeLeft[] has amount of free space in buffer.	*
+ *	IncomingTime has time data came in.		*
+ *							*
+ *	Pointers and counts are reset on return.	*
+ *	LastDumpTime is updated with current time.	*
+ ********************************************************/
+
+void LogBuffers()
+{
+    int fpIndex, size;
+    char *dPtr[2];
+    int length[2];
+    struct tm *cvtTm;
+    FILE *fp;
+    char c;
+    register int ch;
+    register int i;
+    register char *ptr;
+    int flag;
+
+    gettimeofday(&amp;ampLastDumpTime, NULL);
+
+    if (! ShowBlankData &amp;&amp; WaitingSize[0] == 0 &amp;&amp;	WaitingSize[1] == 0) {
+	/* No data to display */
+
+	return;
+    }
+
+    for (fpIndex = 0; fpIndex &lt; NumOutputFPs; ++fpIndex) {
+	fp = OutputFPs[fpIndex];
+
+	/* Output time stamp on first line */
+
+        cvtTm = localtime(&amp;ampIncomingTime.tv_sec);
+        fprintf(fp, "%02d:%02d.%02d-", cvtTm-&amp;gttm_min,
+            cvtTm-&amp;gttm_sec, IncomingTime.tv_usec / 10000);
+
+	/* Output data in hex and ASCII, 8 bytes / line */
+
+	dPtr[0] = CharBuffer[0];
+	dPtr[1] = CharBuffer[1];
+	length[0] = WaitingSize[0];
+	length[1] = WaitingSize[1];
+
+	flag = 0;	/* First-time-through flag */
+	do {
+	    if (flag)
+		fputs("         ", fp);
+	    flag = 1;
+
+            for (ch = 0; ch &lt; 2; ++ch) {
+                if (ch == 1 &amp;&amp; length[1] == 0)
+		    break;	/* No trailing blanks */
+
+		size = min(length[ch], 8);
+
+		/* Display data in hex */
+
+                for (ptr = dPtr[ch], i = 0; i &lt; 8; ++i) {
+                    if (i &lt; size)
+			fprintf(fp, "%02x ", *ptr++);
+		    else
+			fputs("   ", fp);
+		}
+
+		/* Display data in ASCII */
+
+		fputs(size ? "!" : " ", fp);
+                for (ptr = dPtr[ch], i = 0; i &lt; size; ++i) {
+		    c = *ptr++;
+		    if (! isprint(c))
+			c = '.';
+
+		    fputc(c, fp);
+		}
+
+		fputs(size ? "!" : " ", fp);
+                while (i++ &lt; 8)
+		    fputc(' ', fp);
+
+		length[ch] -= size;
+		dPtr[ch] += size;
+
+		if (ch == 0)
+		    fputs(" |", fp);
+	    }
+
+	    fputc('\n', fp);
+	    fflush(fp);
+	} while (length[0] || length[1]);
+    }
+
+    ResetBuffers();		/* Reset buffer pointers */
+    return;
+}
+
+/********************************************************
+ *	ResetBuffers - Reset read buffer pointers	*
+ *	    and counters.				*
+ ********************************************************/
+
+void ResetBuffers()
+{
+    int i;
+
+    for (i = 0; i &lt; 2; ++i) {
+	BufferPos[i] = CharBuffer[i];
+	SizeLeft[i] = BufferSize;
+	WaitingSize[i] = 0;
+    }
+
+    return;
+}
+
+/********************************************************
+ *	LogMessage - Write message to log file		*
+ ********************************************************/
+
+void LogMessage(
+char *msg)			/* Message to write */
+{
+    struct timeval tp;
+    struct tm *cvtTm;
+    int i;
+
+    for (i = 0; i &lt; NumOutputFPs; ++i) {
+        gettimeofday(&amp;amptp, NULL);
+        cvtTm = localtime(&amp;amptp.tv_sec);
+	fprintf(OutputFPs[i], "%02d:%02d.%02d-%s",
+            cvtTm-&amp;gttm_min, cvtTm-&amp;gttm_sec,
+	    tp.tv_usec / 10000, msg);
+    }
+
+    return;
+}
+
+/********************************************************
+ *   ==&gt; POSSIBLE PORTABILITY PROBLEMS BEGIN HERE &lt;==   *
+ ********************************************************/
+
+/********************************************************
+ *	SetRawMode - Set tty device into raw (char	*
+ *	    by char, no translation) mode.		*
+ *	RestoreTTYmode - Restore saved device state.	*
+ ********************************************************/
+
+void SetRawMode(
+int fd,			/* File descripter of serial port */
+DeviceState *attrSave)	/* Attribute save area */
+{
+    tcgetattr(fd, attrSave);
+    attrSave-&amp;gtc_oflag &amp;= ~(OPOST|ONLCR|OCRNL);
+    attrSave-&amp;gtc_iflag &amp;=
+	~(IXON|ICRNL|INLCR|ISTRIP|IGNPAR|IUCLC);
+    attrSave-&amp;gtc_iflag |= IGNBRK;
+    attrSave-&amp;gtc_lflag &amp;= ~(ISIG|ECHO|ICANON);
+    attrSave-&amp;gtc_cc[VEOF] = 1;
+    attrSave-&amp;gtc_cc[VEOL] = 1;
+    tcsetattr(fd, TCSANOW, attrSave);
+    return;
+}
+
+void RestoreTTYmode(
+int fd,			/* FD of serial port */
+DeviceState *attr)	/* Saved tty state information */
+{
+    tcsetattr(fd, TCSANOW, attr);
+    return;
+}
+
+/********************************************************/
+/*	SetDaemon - Put process into a daemon mode	*/
+/*	SYS/V compatible only?				*/
+/********************************************************/
+
+void SetDaemon()
+{
+    if (fork())
+	exit(0);
+
+    setpgrp();
+
+    close(0);
+    close(1);
+    close(2);
+
+    open("/", O_RDONLY);
+    dup2(0, 1);
+    dup2(0, 2);
+    return;
+}
+</PRE>
+     </BODY>
+</HTML>

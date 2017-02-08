@@ -1,0 +1,138 @@
+<HTML>   
+     <HEAD>
+<TITLE>July 1999/Restricted Pointers are Coming</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocjul.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Restricted Pointers are Coming</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Arch D. Robison</FONT></H3>
+
+<BLOCKQUOTE>
+<p>C9X introduces the new type qualifier restrict. Why it's there and where it pays off takes a bit of explaining.</p>
+</BLOCKQUOTE>
+
+<hr>
+<BLOCKQUOTE>
+<p>You often hear the statement, "FORTRAN is faster than C." Alas, this is even true sometimes. I'll explain why, and how the new C Standard (C9X) introduces the keyword <B>restrict</B> to help narrow the performance gap. The keyword is already implemented in some C and C++ compilers. I'll summarize the motivation for <B>restrict</B>, how to use it, and where to set your expectations for compilers. I'll also show a way to check how well your compiler exploits the possibilities of <B>restrict</B>.</p>
+
+<h4><FONT COLOR="#000080">FORTRAN Envy</FONT></H4>
+
+<p>An lvalue in C/C++ is an expression that designates an object. For instance, <B>((*p)[i]-&gt;foo)</B> is an lvalue. It has more lvalues as subexpressions: <B>p</B>, <B>*p</B>, and <B>(*p)[i]</B>. Two lvalues that refer to the same object or function are said to alias one another. C and C++ permit forms of aliasing that can hamper compiler optimizations.</p>
+<p>FORTRAN has a rule that within a subroutine no two identifiers may be aliases unless they appear in an <B>EQUIVALENCE</B> declaration. This restriction gives a compiler substantial liberty to restructure a program to fit a target machine's capabilities. The language definition lets the compiler do so despite the fact that many FORTRAN programmers unknowingly violate the rule.</p>
+<p>In the past, the big gains from restructuring were mostly limited to specialized vector hardware, but microprocessors have now advanced to the point where they benefit too. For example, modern compilers perform an optimization called software pipelining, which restructures loops in a way to run multiple iterations simultaneously. Software pipelining is frequently prohibited when the compiler is in doubt about aliasing. Though C's low-level features often allow optimization by hand, software pipelining by hand tends to be impractical because it depends upon obscure details of each particular target machine, and doing it wrong can hurt performance.</p>
+<p>Ironically, the change in microprocessors has occurred just when seeking ultimate performance has become a secondary issue. People say that performance is important, but let's face it: delivering slow software on schedule will always take precedence over delivering fast software late. Consequently, the aliasing problems of C (and C++) have taken a back seat to language features that battle complexity. But the issues are still dear to a few, including myself.</p>
+<p>Vendors tried to solve the problem with pragmas. As usual, pragmas increased misery by not being portable. Worse yet, the pragmas failed to address the full richness of C's type system, such as structure fields that are pointers.</p>
+<p>A qualifier, <B>noalias</B>, was proposed for C89. It was rejected as unsound, and came too late in the standards process to be fixed. The fatal flaw was that <B>noalias</B> was a property of objects, not pointers to them. The Numerical C Extensions Group (NCEG) invented the new qualifier <B>restrict</B> with quite different semantics, and proposed it to both the C++ and C9X committees. The C++ committee rejected it, largely from the perception that it was a fringe issue peculiar to numerical programming on unusual hardware <a href="#1">[1]</a>. My belief is that this impression arises mistakenly from the association with FORTRAN (compounded by this article!) For example, the Standard Template Library (STL) has loops over sequences that could benefit from <B>restrict</B>, and there are important optimizations peculiar to objects that require good alias information.</p>
+<p>There was also the well founded fear that C++ and C would end up disagreeing on what <B>restrict</B> means, because details of the C9X version were changing. The committee for C9X did adopt <B>restrict</B>. It is already implemented in some compilers, though as I'll soon explain, "implement" is inherently fuzzy. Despite the precise definition of the semantics of <B>restrict</B>, exploiting those semantics fully can be quite difficult.</p>
+
+<h4><FONT COLOR="#000080">Restrict Qualifies Pointers</FONT></H4>
+
+<p>The keyword <B>restrict</B> is a qualifier, like <B>const</B> or <B>volatile</B>. Here's an example declaration:</p>
+
+<pre>
+void *
+memcpy( void * restrict p, const void * restrict q, size_t n );
+</pre>
+
+<p>Note that it qualifies the type of the pointer, not the type of the pointer's target. Non-pointer types may not be qualified with <B>restrict</B>. And as with other type qualifiers, it is meaningless on rvalues. The C9X draft <a href="#3">[3]</a> gives the language lawyer's meaning of <B>restrict</B>. For practical purposes, declaring a pointer as <B>restrict</B> says that in its scope its target will not be accessed through any pointer that was not copied from the restricted pointer. Furthermore, the rules dictate that two restricted pointers cannot be used to access the same object while they are both within scope. Thus for the <B>memcpy</B> example, the <B>restrict</B> qualifiers say that the source and destination objects cannot overlap.</p>
+<p>Here is an example contrived to show various uses of restrict, albeit uglier than typical usage:</p>
+
+<pre>
+void
+foo( T * restrict r0, T * p1, T * p2, int j ) {
+    for( int k=0; k&lt;1000; ++k ) {
+        T * restrict r3 = p1;
+        *r0++ = *p2++;
+        p1[k] = ++r3[k+j];
+    }
+}
+</pre>
+
+<p>The compiler can presume that all pairs of lvalues in the routine, except the pair <B>*p2</B> and <B>p1[k]</B>, do not overlap. Notice that if <B>j==0</B>, then <B>p1[k]</B> and <B>r3[k+j]</B> are aliased, and the programmer is guilty of an error that may cause unexpected results.</p>
+<p>Restrict requires careful attention to scope. In the example, the scope of <B>r3</B> is for a single iteration, hence the programmer is asserting that <B>p1[k]</B> and <B>r3[k+j]</B> are disjoint for the same iteration only. Consider moving the declaration of <B>r3</B> outside the loop:</p>
+
+<pre>
+    T * restrict r3;
+    for( int k=0; k&lt;1000; ++k ) {
+        r3 = p1;
+        *r0++ = *p2++;
+        p1[k] = r3[k+j];
+    }
+}
+</pre>
+
+<p>This makes the much stronger assertion that no value of <B>p1[k]</B> in any iteration overlaps any value of <B>r3[k+j]</B> for <I>any</I> iteration, whereas previously the assertion was only that <B>p1[k]</B> and <B>r3[k+j]</B> were disjoint for the same iteration. Moving the assignment <B>r3=p1</B> outside the loop makes no difference; it's the scope of the declaration that matters.</p>
+<p>Since <B>restrict</B> is not yet implemented by all compilers (and is non-standard in C++), the issue of portability arises. Fortunately, the definition of <B>restrict</B> allows it to be omitted as a token, so using:</p>
+
+<pre>
+#define restrict
+</pre>
+
+<p>suffices to make code amenable to strict C89 and C++ compilers.</p>
+<p>The proposed <B>restrict</B> extension for C++ permits restricting reference types and restricting the <B>this</B> pointer. Kuck and Associates (KAI) implemented this proposal in the Edison Design Group (EDG) front end and gave the changes back to EDG. So some compilers based on the EDG front end may at least implement the C++ syntax extensions, even if they do not exploit the extra alias information. The User Guide for KAI C++ <a href="#5">[5]</a> describes these syntax extensions in more detail.</p>
+
+<h4><FONT COLOR="#000080">A Simple Test for Restrict</FONT></H4>
+
+<p>Most compiler features can be tested by writing a test case that uses the feature. However, <B>restrict</B> is special, because its definition permits a compiler to ignore it. So when used correctly, the only way to test whether the compiler really exploits it would be to tediously examine assembly code, or run timing tests, which are subject to extraneous effects such as cache quirks.</p>
+<p>There is a better test. Use <B>restrict</B> incorrectly, and check whether the compiler gets the wrong answer. Indeed, the degree of wrongness can indicate which optimizations exploit <B>restrict</B>. <a href="list1.htm">Listing 1</a>, <B>restrict.c</B>, shows exactly such a test. The test is a C/C++ program with <B>restrict</B> added. It consists of a series of functions that each compute:</p>
+
+<pre>
+a[i] = (b[j+N/4]+b[j-N/4])*0.5f;
+</pre>
+
+<p>where <B>i</B> runs from <B>0</B> to <B>N-1</B>. The secret of the test is that identifiers <B>a</B> and <B>b</B> point to exactly the same storage. Except for the baseline function <B>simple</B>, each function abuses <B>restrict</B> in a way that permits a clever compiler to presume that pointers <B>a</B> and <B>b</B> point to different storage. Each test function abuses <B>restrict</B> in a different way, to see if the compiler can exploits it that way.</p>
+<p>The test makes some effort to thwart optimizations that we do not want to measure. Notably, the functions are called through tables sufficiently complex that current compilers should not be able to figure out the secret.</p>
+<p>The output from the program is a series of lines that name the test, and which values of <B>a[i]</B> were "wrong." If all values of <B>a[i]</B> are right, the compiler ignored <B>restrict</B>. If a few values of <B>a[i]</B> are wrong, then the compiler probably used <B>restrict</B> for software pipelining. If many values of <B>a[i]</B> are wrong, the compiler probably hoisted <B>(b[j+N/4]+b[j-N/4])*0.5f</B> outside of the loop. <a href="fig1.htm">Figure 1</a> shows what each of these transforms might look like if done by hand. Your compiler might do other transforms not shown. Remarkably, one compiler that I tested used it for advanced software pipelining, but not for elementary hoisting.</p>
+<p>If you are reading this article more than a year after it was published, view the results with suspicion, since some vendors tune their optimizers to recognize published tests. In that case, you may want to foil cheaters by changing the body of the test to something different.</p>
+
+<h4><FONT COLOR="#000080">Recommendations and Predictions</FONT></H4>
+
+<p>There's no point soaking your programs in a tub of <B>restrict</B>s if compilers do not exploit it &#151; unless you think it helps document the program. Much the same is true about <B>const</B>. Contrary to popular opinion, it is of little use to optimizers since it can be cast away <a href="#2">[2]</a>.</p>
+<p>Therefore guidelines on using <B>restrict</B> necessarily depend on predictions of future trends in compiler optimization. Compilers are driven primarily by the market, not by technical limitations. In other words, <B>restrict</B> will be better implemented where programmers are willing to pay for the benefit. Compilers for embedded and DSP processors will make the strongest use of <B>restrict</B>, as that community is willing to pay for squeezing out cycles.</p>
+<p>Uses of <B>restrict</B> range over a spectrum from easy to hard for a compiler to exploit. Below is a rough ordering in ascending difficulty. Keeping your uses to the simpler cases increases the likelihood of improving performance.</p>
+
+<UL><LI>The simplest case is to use <B>restrict</B> on all formal pointer parameters that really are unaliased. For example, see the test <B>with_restrict_formals</B>. I would expect any compiler that makes any effort to exploit <B>restrict</B> to do well in these cases. From a compiler's viewpoint, a restricted pointer formal parameter can be optimized almost like the address of a local variable, so compilers that track addresses of local variables should do as well for this case as for local variables.</LI>
+<LI>Pointers can be used for input (loading from memory) or output (storing into memory). Aliasing of two input pointers is rarely an issue with optimization. It's output/input and output/output pairs that are of interest. Hence, in principle it suffices to restrict only output pointers. (See the test <B>with_restrict_out_formal</B>.) However, that leaves the compiler with the problem of proving that the input pointer is not based on the output pointer. You can also restrict only the input pointers. (See the test <B>with_restrict_in_formal</B>.) But doing so does not solve the problem of output/output pairs, if there are any.</LI>
+<LI>To avoid cluttering prototypes with <B>restrict</B>, declare some local restricted pointers inside a function, initialize them, and use them to do the work. (See the test <B>with_restrict_local</B>, but with <B>wash</B> removed.) You'll do best declaring the local restricted pointers in the outermost block. If declared in an inner block, alas, there are some subtle issues that require the compiler to work much harder than in the first case, because when local variables go out of scope, they become undefined, but when restricted pointers go out of scope, their targets may live on.</LI>
+<LI>If your compiler cannot exploit <B>restrict</B> on local pointers in inner blocks, it probably won't do much for parameters in inline functions. Inlining turns the latter case into the former. The effect surprises FORTRAN programmers: optimizers sometimes do worse on FORTRAN code that has been inlined by hand, when the aliasing information provided by the formal parameters is lost. So be warned that making functions with restricted parameters inline (another C9X feature) may actually hurt performance.</LI>
+<LI>Pointer chains should have <B>restrict</B> "all the way down" to benefit. For instance, writing:</LI>
+<pre>
+float * restrict * p;   /* probably useless */
+</pre>
+
+<p>says that <B>p</B> points to a pointer lvalue that points to a restricted pointer to a <B>float</B> lvalue. Since there may be other pointers to the pointer lvalue, the declaration does not help much. Write this instead:</p>
+
+<pre>
+float * restrict * restrict p;
+</pre>
+
+<p>That way, the compiler knows that the object <B>**p</B> can be reached only through <B>*p</B>, and that <B>*p</B> can be reached only through <B>p</B>.</p>
+<LI><B>restrict</B> can be used on any pointer lvalue, including fields of structures. However, very few compilers make much effort to track fields, and this is unlikely to change much for run-of-the-mill compilers. Remember too that <B>operator-&gt;</B> constitutes part of a pointer chain.</LI>
+<LI>Restricted pointers, just like addresses of local variables, can be assigned to entities so complicated that the compiler considers the pointer "lost." For example, most compilers consider the following sorts of pointers to be lost: addresses of global variables, pointers passed to or from another function, and (recursively) pointers assigned to objects whose address is lost. Even compilers that are more aggressive eventually lose pointers in some contexts. In general, a compiler will have to pessimistically assume that two lost pointers may point to the same object unless both are qualified with <B>restrict</B>. The work around to lost pointers is simply to make restricted copies of the unrestricted pointers in question.</LI></UL>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>The keyword <B>restrict</B> helps close a major performance problem in C/C++. Market forces will dictate how well optimizers exploit it. My experience is that it works best on simple inner loops that operate directly on restricted pointers passed as formal parameters. This will probably remain true for run-of-the-mill compilers. In specialized markets for high-performance compilers, <B>restrict</B> will be exploited more, to the point where C++ is competitive with FORTRAN.</p>
+
+<h4><FONT COLOR="#000080">Acknowledgement</FONT></H4>
+
+<p>Bill Homer of SGI provided extensive commentary and corrections to an earlier draft.</p>
+
+<h4><FONT COLOR="#000080">References</FONT></H4>
+
+<p><a name="1"></a>[1]  Bjarne Stroustrup. <I>The Design and Evolution of C++</I> (Addison-Wesley, 1994), pp. 157-158.</p>
+<p><a name="2"></a>[2]  Andrew Koenig. "How much does <B>const</B> promise?," <I>C++ Report,</I> May 1997, 9(5), pp.7-8.</p>
+<p><a name="3"></a>[3]  Section 6.7.3 of C9X draft. URL is http://osiris.dkuug.dk/jtc1/sc22/wg14.</p>
+<p><a name="4"></a>[4]  C9X Rationale. Same URL as C9X draft.</p>
+<p><a name="5"></a>[5]  User Guide for KAI C++. URL is http://www.kai.com/C_plus_plus/online_doc/UserGuide/chapter_4.html#restrict_keyword.</p>
+
+<p><i>Arch D. Robison designed the C++ optimizer inside KAI C++. He previously worked at Shell's Bellaire Research Center on parallel processing for seismic imaging. He mingled with the FORTRAN crowd there. His goal is to push the state of the art for C++ performance to the point where FORTRAN users are envious. You can reach him at <B>robison@kai.com</B>.</i></p>
+
+<h4><a href="../../../source/1999/jul99/robison.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

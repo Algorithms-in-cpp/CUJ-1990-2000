@@ -1,0 +1,140 @@
+<HTML><HEAD>
+<TITLE>March 1999/A Signal Command and Control Class for Unix/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2: Implementation of class CmdControl</A></h4>
+<pre>
+#include &lt;iostream.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;sys/types.h&gt;
+#include &lt;sys/ipc.h&gt;
+#include &lt;std/csignal.h&gt;
+#include "CmdQMgr.h"
+#include "CmdControl.h"
+
+// define the static member cmd_sigobjref
+map &lt; int, CmdControl *, less&lt;int&gt; &gt; CmdControl::cmd_sigobjref;
+
+// constructor for CmdControl class
+CmdControl::CmdControl(int in_signal): cmd_signal(in_signal){
+
+    int success_flag = 1;
+    string err_msg;
+
+    //initiate the class signal handling routine
+    signal(cmd_signal, CmdControl::cmd_handler);
+
+    // associate the object with the signal
+    cmd_sigobjref[cmd_signal] = this;
+
+    // instantiate the queue object
+    try{ cmd_msg_object = new CmdQMgr(cmd_signal); }
+
+    // if there was a failure creating the queue throw the
+    // exception back to the application.
+    catch (string err_msg) { success_flag = 0; }
+    if ( success_flag ==  0 ){ throw string ("Error"); }
+}
+
+//destructor for CmdControl class.
+CmdControl::~CmdControl(){
+
+    //release the queue management resource for this signal
+    delete cmd_msg_object;
+}
+
+// run_cmd pulls the message of the queue and determines
+// the function pointer associated with it
+void CmdControl::run_cmd(int ci_signal){
+
+    string cmd_run_msg;
+    void (* run_function)();
+    rsI func_p;
+        
+    // go to the queue to get the message
+    cmd_msg_object-&gt;receive_msg(cmd_run_msg);
+        
+    // determine if there is an entry in the
+    // map run_string for this message
+    func_p = run_string.find(cmd_run_msg);
+
+    // if there was a listing for this function then run it
+    // otherwise issue an error message
+    if ( func_p != run_string.end()){
+        run_function = run_string[cmd_run_msg];
+        (*run_function)();
+    }
+    else cerr &lt;&lt; "Error on signal: " &lt;&lt; ci_signal 
+              &lt;&lt; " - No function exists for '" &lt;&lt; cmd_run_msg
+              &lt;&lt; "'" &lt;&lt; endl;
+}
+
+//set_action associates the function pointer to a unique string
+void
+CmdControl::set_action ( string cmd_desc, void (*action_func)()){
+
+    // set up the association of the function 
+    // and a string identifier 
+    run_string[cmd_desc] = action_func;
+}
+
+//unset_action disassociates a description with a function
+void CmdControl::unset_action( string cmd_desc ) {
+
+    run_string.erase(cmd_desc);
+}
+
+//is_used returns non-zero if the the message string is
+//associated with a function pointer
+int CmdControl::is_used( string cmd_desc){
+
+    rsI func_p;
+
+    // determine if there is already an association
+    func_p = run_string.find(cmd_desc);
+
+    // return true if an association exists
+    if ( func_p != run_string.end())
+        return 1;
+    else
+        return 0;
+}
+
+// cmd_handler determines which instance of the object to use
+// based on the signal received.
+void CmdControl::cmd_handler(int ci_signal){
+
+    CmdControl *cmd_objhandle;
+
+    // set the signal handler to ignore this signal until we
+    // finish processing the current request
+    signal(ci_signal, SIG_IGN);
+
+    if( cmd_sigobjref.find(ci_signal) != cmd_sigobjref.end() ){
+        // get the pointer to the instance associated with
+        // the signal provided
+        cmd_objhandle = cmd_sigobjref[ci_signal];
+  
+        // invoke the member function for the instance pointed
+        // to to process this signal
+        cmd_objhandle-&gt;run_cmd(ci_signal);
+    } 
+    else
+        cerr &lt;&lt; "CmdControl::cmd_handler error: "
+             &lt;&lt; "No object for signal: " 
+             &lt;&lt; ci_signal &lt;&lt; endl
+             &lt;&lt; "This member function being used "
+             &lt;&lt; "without an object.\n";
+
+    // reset the signal so the cmd_handler.
+    // if this isn't done, the OS will assume 
+    // that the intention is to go back to the
+    // default behaviour
+    signal(ci_signal, cmd_handler);
+}
+
+- End of Listing -
+</pre>
+</BODY>
+</HTML>

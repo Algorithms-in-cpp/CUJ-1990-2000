@@ -1,0 +1,260 @@
+<HTML><HEAD>
+<TITLE>September 2000/HTML Document Templates for CGI Applications/Listing 4</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 4: Implementation of CGI utility functions</A></h4>
+<pre>
+#include "cgi.h"
+
+#include &lt;iostream&gt;
+#include &lt;cstdio&gt;
+#include &lt;cstdlib&gt;
+#include &lt;cctype&gt;
+#include &lt;ctime&gt;
+#include &lt;stdexcept&gt;
+#include &lt;algorithm&gt;
+using namespace std;
+
+#include "HTMLstream.h"
+
+
+string get_cgi_string (const string &amp; allowed_method)
+{
+    string method = request_method ();
+
+    if (allowed_method == any || method == allowed_method)
+    {
+        if (method == get)
+        {
+            return getenv ("QUERY_STRING");
+        }
+        else if (method == post)
+        {
+            string query;
+            getline (cin, query);
+            return query;
+        }
+        else
+        {
+            throw runtime_error
+                ("Unable to handle request method `" +
+                    method + "'");
+        }
+    }
+    else
+    {
+        throw runtime_error ("Method " + method + " not allowed");
+    }
+}
+
+
+string request_method ()
+{
+    const char * method = getenv ("REQUEST_METHOD");
+
+    if (method != NULL)
+    {
+        return method;
+    }
+    else
+    {
+        return "";
+    }
+}
+
+
+string content_length ()
+{
+    const char * len = getenv ("CONTENT_LENGTH");
+
+    if (len != NULL)
+    {
+        return len;
+    }
+    else
+    {
+        return "";
+    }
+}
+
+
+const string &amp; decode_cgi_string (string &amp; s)
+{
+    for (int i = 0; i &lt; s.length(); i++)
+    {
+        if (s[i] == '+') s[i] = ' ';
+
+        if (s.substr (i, 6) == "%0D%0A")
+        {
+            s.replace (i, 6, "\n");
+        }
+        else if (s[i] == '%')
+        {
+            string hex_code = s.substr (i+1,2);
+            int code;
+            sscanf (hex_code.c_str(), "%X", &amp;code);
+
+            // Don't process the CR character
+            // (replace it by a newline)
+            if (code == '\r')   
+            {
+                code = '\n';
+            }
+            string str_code = "";
+            str_code += static_cast&lt;char&gt;(code);
+            s.replace (i, 3, str_code);
+        }
+    }
+    return s;
+}
+
+string encode_cgi_string (const string &amp; s)
+{
+    string result = "";
+
+    for (int i = 0; i &lt; s.length(); i++)
+    {
+        switch (s[i])
+        {
+            case ' ':
+                result += '+';
+                break;
+
+            case '\n':
+            case '\r':
+                result += "%0D";
+                break;
+
+            default:
+                if (isalnum (s[i]))
+                {
+                    result += s[i];
+                }
+                else    // special character -- replace with % 
+                {       // followed by the ASCII value in HEX
+                    char hex_code[20];
+
+                    sprintf (hex_code, "%%%02X", s[i]);
+                    result += hex_code;
+                }
+                break;
+        }
+    }
+
+    return result;
+}
+
+map&lt;string, string&gt; cgi_parameters (const string &amp; allowed_method)
+{
+    string cgi_string = get_cgi_string (allowed_method);
+    vector&lt;string&gt; cgi_tokens = tokens (cgi_string, "&amp;");
+
+    map&lt;string, string&gt; result;
+
+    for (int i = 0; i &lt; cgi_tokens.size(); i++)
+    {
+        vector&lt;string&gt; cgi_parameter = tokens (cgi_tokens[i], "=");
+        for_each (cgi_parameter.begin(), cgi_parameter.end(),
+           decode_cgi_string);
+
+        switch (cgi_parameter.size())
+        {
+            case 2:
+                result[cgi_parameter[0]] = cgi_parameter[1];
+                break;
+
+            case 1:
+                result[cgi_parameter[0]] = "";
+                break;
+
+            default:
+                throw invalid_argument
+                   ("Incorrect CGI parameter: `" +
+                       cgi_tokens[i] + "'");
+        }
+    }
+
+    return result;
+}
+
+vector&lt;string&gt;
+tokens (const string &amp; s, const string &amp; separators)
+{
+    vector&lt;string&gt; result;
+
+    int pos_start, pos_end;
+
+    pos_start = s.find_first_not_of (separators);
+    if (pos_start == string::npos)
+    {
+        return result;
+    }
+
+    pos_end = s.find_first_of (separators, pos_start);
+    if (pos_end == string::npos)
+    {
+        result.push_back (s);
+        return result;
+    }
+
+    result.push_back (s.substr (pos_start, pos_end - pos_start));
+
+    while ((pos_start =
+                s.find_first_not_of (separators, pos_end)) !=
+                    string::npos)
+    {
+        pos_end = s.find_first_of (separators, pos_start);
+        if (pos_end == string::npos)
+        {
+            result.push_back (s.substr (pos_start));
+            return result;
+        }
+
+        result.push_back
+            (s.substr (pos_start, pos_end - pos_start));
+    }
+
+    return result;
+}
+
+
+void send_error_page (const string &amp; error_message)
+{
+    HTMLstream error_page;
+
+    error_page &lt;&lt; "The application reported a critical error "
+               &lt;&lt; "with message: &lt;br&gt;&lt;b&gt;"
+               &lt;&lt; error_message &lt;&lt; ".&lt;/b&gt;&lt;p&gt;"
+               &lt;&lt; "Please take note of the above message and "
+               &lt;&lt; "contact this site's administrator.\n";
+
+    error_page.send();
+}
+
+string lcase (const string &amp; s)
+{
+    string result = s;
+    transform (result.begin(), result.end(),
+        result.begin(), tolower);
+
+    return result;
+}
+
+
+string removed_separators (const string &amp; s)
+{
+    string result;
+
+    for (string::const_iterator i = s.begin(); i != s.end(); ++i)
+    {
+        if (!isspace(*i))
+        {
+            result += *i;
+        }
+    }
+
+    return result;
+}
+
+</pre></body></html>

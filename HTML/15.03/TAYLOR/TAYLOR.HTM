@@ -1,0 +1,440 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>March 1997/Interrupt Thunking</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><A href="../tocmar.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          <FONT COLOR="#FF0000">Features</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">Interrupt Thunking</FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">David G. Taylor</FONT></H3>
+          <BLOCKQUOTE>
+          <P>A hardware interrupt strongly resembles a function call in C or
+               C++. A small chunk of magic code is all that's needed to make the
+               resemblance exact.</P></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <h4><FONT COLOR="#000080">Why We Must Thunk</FONT></H4>
+               
+               <P>An interrupt handling function is a form of
+                    hardware-activated callback function. A program configures
+                    itself to catch an interrupt by specifying an interrupt
+                    handling function as an argument to the C library setvect
+                    function:</P>
+
+<PRE>
+void setvect(int InterruptNumber,
+        void interrupt (*isr)());
+</PRE>
+               
+               <p>When a hardware or software interrupt
+                    occurs, the processor executes the function pointed to by
+                    the isr argument.</p>
+               
+               <p>So far so good, but complications
+                    arise when we try to use interrupts with objects. An object
+                    groups data and the functions that will use that data. A
+                    callback function is typically associated with a particular
+                    object, so it must have a pointer to that object. How to
+                    provide a callback function with an object pointer has been
+                    a topic of considerable interest. Numerous magazine articles
+                     have addressed this problem, (see references [<A href="#REF1">1</a>]
+,
+                    [<A href="#REF2">2</a>]
+, and [<A href="#REF3">3</a>]
+) but
+                    they do not show what to do when the callback is an
+                    interrupt function. </p>
+               
+               <p> The simplest and crudest method is to
+                    create a static pointer, or static variables, which the
+                    interrupt function can access. However, this technique
+                    becomes messy when a hardware device can have one of a few
+                    choices of interrupt number. A make-believe solution would
+                    be to extend a microprocessor's interrupt subroutine table
+                    so that it contained not only a function pointer but also a 
+                    data pointer for each interrupt. When the interrupt fired,
+                    the processor would push the data pointer on the stack,
+                    before the interrupt handling function executed. However,
+                    real world micros do not have such luxuries. </p>
+               
+               <p> Enter the thunk. A thunk is a
+                    dynamically created executable fragment of code and data. A
+                    thunk must be able to reside anywhere in memory, without the
+                    need for relocation and linking. This live-anywhere
+                    capability requires that the data in the thunk be addressed
+                    relative to the current program counter value. In the
+                    Motorola 68000 architecture such addressing is referred to 
+                    as program counter relative addressing. In the segmented
+                    architecture of the 8086 family, addressing relative to the
+                    code segment achieves the same end. </p>
+               
+               <p> The code portion of the thunk is a
+                    block of machine code, which has been preassembled and saved
+                    in a static array. When a program creates the thunk it
+                    copies the machine-code array into the allocated thunk
+                    memory. The program also initializes the data when it
+                    creates the thunk. The data portion can save the object
+                    pointer needed for an interrupt function, and it also saves 
+                    a pointer to the interrupt handling function. </p>
+               
+               <p> The code portion of the thunk
+                    occupies the first part of the thunk, so it has the same
+                    address as the thunk itself. When an interrupt fires, the
+                    code portion must be executed before the interrupt handler,
+                    so this thunk address is what gets passed to the setvect
+                    function. The setvect function, being none the wiser, treats
+                    this address as the actual interrupt function pointer. When 
+                    the interrupt fires, the thunk code executes, pushes the
+                    saved object pointer for the interrupt onto the stack, and
+                    calls the saved interrupt handler. Voila! The interrupt
+                    handler has now been passed an object pointer from which it
+                    can access the variables relevant to the interrupt.</p>
+               
+               <h4><FONT COLOR="#000080">Stack Considerations</FONT></H4>
+               
+               <p>The above paragraph talks of pushing
+                    the object pointer onto the stack, but doesn't say what
+                    stack. Even in an MS-DOS environment, the operating system
+                    might be executing at the time the interrupt fires, or even
+                    some other program. It is not safe to assume that the stack
+                    being used will have enough room for everything &#151; the
+                    parameters pushed onto it, the local variables in the 
+                    interrupt function, and whatever other functions the
+                    interrupt function might call. Despite this uncertainty, I
+                    am amazed by how many programs I have seen that simply
+                    ignore the possible stack overflow problem! </p>
+               
+               <p> To be sure of having stack space
+                    available it is necessary to switch stacks. You should be
+                    able to assess how much stack space your interrupt function
+                    and its subfunctions will use; this assessment must include
+                    room for saving the processor registers and other parameters
+                    pushed onto the stack. Once again, the thunk provides a
+                    nearly ideal place to do the magic &#151; in this case, the 
+                    stack switch. The thunk data portion can store the address
+                    of an interrupt stack and of the stack pointer at the time
+                    of the interrupt. When the interrupt occurs, the thunk code
+                    switches stacks, before pushing the saved object pointer for
+                    the interrupt subroutine. The interrupt function and its
+                    function hierarchy have their own stack, which has been
+                    previously allocated. When the interrupt function returns to
+                    the thunk code, the thunk code restores the previous stack.
+                    The following snippet is psuedo code for the executable and
+                    data portion of the thunk:</p>
+
+<PRE>
+void ThunkCode
+{
+Save current stack;
+Install new stack;
+Push object pointer;
+call the interrupt function;
+Restore previous stack;
+return from interrupt;
+}
+// Thunk Data
+CurrentStackPointer;
+InterruptStackPointer;
+InterruptFunctionPointer;
+ObjectPointer;
+</PRE>
+               
+               <p>The corresponding 8086 machine code
+                    appears in <A href="list1.htm">Listing 1</a>,
+ in the
+                    initialization list for the static array ISRThunkCode. The
+                    equivalent processor instructions appear in the comments to
+                    the right of the initialization list. (I preassembled this
+                    code before I wrote the C program.) Each time a new thunk is
+                    created the contents of this array is copied into the thunk
+                    code block.</p>
+               
+               <h4><FONT COLOR="#000080">Thunked Interrupt
+               Functions</FONT></H4>
+               
+               <p>On a 16-bit 8086 system, the entry
+                    code of a void interrupt function will save the current
+                    processor state on the current stack, and restore it again
+                    upon exit. The processor registers become arguments passed
+                    to the interrupt function. </p>
+               
+               <p> Now consider an interrupt function
+                    called from a thunk. When the interrupt occurs the processor
+                    pushes the flags, CS, and IP registers onto whatever is the
+                    current stack, and jumps to the thunk code. Hence, each
+                    interrupt will inevitably consume six bytes of the current
+                    stack. When the thunk executes it switches the stacks. Any
+                    further pushes go onto the thunk stack. The thunk then 
+                    pushes the saved object pointer onto the thunk stack and
+                    calls the client's interrupt function. The entry code of the
+                    client's interrupt function pushes the processor registers
+                    on the thunk stack, making them arguments passed to the
+                    interrupt function. However, the thunk has already pushed
+                    the object pointer onto the thunk stack. Consequently, the
+                    object pointer becomes an additional argument to the
+                    interrupt function. The interrupt function can use this
+                    object pointer to access the methods and data of the object
+                    to which the interrupt is relevant. This achieves the
+                    desired goal. </p>
+               
+               <p> For Borland C/C++, the arguments to a
+                    void interrupt function invoked by the thunk become:</p>
+
+<PRE>
+typedef unsigned UINT;
+#define  THUNKARGS  \
+UINT bp,UINT di,UINT si,\
+UINT ds,UINT es,UINT dx,\
+UINT cx,UINT bx,UINT ax,\
+UINT ip,UINT cs,UINT flags,\
+void *pvObject
+
+void interrupt
+MyFunction(THUNKARGS);
+</PRE>
+               
+               <p>Unfortunately, pvObject is of type
+                    pointer-to-void, which means that the above approach is not
+                    type-safe. If this is unacceptable, pvObject can be modified
+                    to suit the specific object relevant to the interrupt.</p>
+               
+               <h4><FONT COLOR="#000080">Interface and
+               Implementation</FONT></H4>
+               
+               <p>Thunks should neatly encapsulated, so
+                    that they can be easily created and destroyed as required. A
+                    clean way to encapsulate thunks is to make their interface
+                    take the place of the C library setvect, getvect interface.
+                    </p>
+               
+               <p> The following describes my C
+                    interface, which can also be linked with C++ programs.
+                    </p>
+               
+               <p> These parameters are required to
+                    create a thunk:</p>
+               
+               <p>1. The interrupt number <BR>
+                     2. The interrupt function pointer <BR>
+                     3. The object pointer <BR>
+                     4. The stack size required</p>
+               
+               <p>The term "interrupt number"
+                    is somewhat ambiguous in a PC environment, since it might
+                    refer to the hardware interrupt number (between 0 and 15),
+                    or to the index to the interrupt subroutine table (between
+                    0-255). Thunking works with any interrupt, so the interrupt
+                    number in this case refers to the table. The interrupt
+                    number should really be called the interrupt index number.
+                    It can be any value from 0 to 255.</p>
+               
+               <h4><FONT COLOR="#000080">Memory Allocation</FONT></H4>
+               
+               <p>Rather than blindly accepting malloc's
+                    habit of returning a null pointer when memory allocation
+                    fails, I have adopted the approach of the book Writing Solid
+                    Code, by Steve Macquire [<A href="#REF4">4</a>]
+. Macquire
+                    advocates clearly separating the success or failure of a
+                    memory allocation from the value of the returned memory
+                    pointer. My wrapper function for malloc has the prototype:</p>
+
+<PRE>
+typedef unsigned BOOL;
+#define TRUE  1
+#define FALSE 0
+
+BOOL HeapAlloc(void **ppv,
+    size_t size);
+</PRE>
+               
+               <p>It is used as follows:</p>
+
+<PRE>
+{
+char *NewMemory;
+
+if ( HeapAlloc(&amp;NewMemory,100)
+    == FALSE )
+
+// Allocation error
+else
+// NewMemory points to a 100 byte block.
+}
+</PRE>
+               
+               <p>Using the above approach the function
+                    to create a thunk has the prototype:</p>
+
+<PRE>
+BOOL
+ ISRThunkCreate(ISRTHUNK **ppThunk,
+ unsigned uIntno,
+ void interrupt (*pfi)(),
+ void *pObject,
+ unsigned uStacksize);
+</PRE>
+               
+               <p>The other prototypes can be found in
+                    isrthunk.h shown in <A href="list2.htm">Listing 2</a>.
+ The
+                    complete code for isrthunk.c is shown in
+                    <A href="list1.htm">Listing 1</a>.
+</p>
+               
+               <p>ISRThunkCreate allocates two blocks of
+                    memory:</p>
+               
+               <UL><LI>a pointer to an ISRTHUNK object, which is returned to the
+                    client </FONT></LI>
+                   <LI>a block containing the thunk code, data, and stack.
+                    </FONT></LI></UL>
+
+
+               <p>This
+                    second block is the thunk itself. Addressing the thunk data
+                    relative to the CS register is easiest when the thunk code
+                    is segment aligned. Since malloc does not necessarily return
+                    segment aligned memory, ISRThunkCreate can waste up to 15
+                    bytes of memory (see <a href="fig1c.htm">Figure 1</a>).</p>
+               
+               <p>The ISRTHUNK object stores the
+                    interrupt number, the interrupt function pointers, and a
+                    pointer to the thunk itself. It is passed as the first
+                    argument to all thunk interface functions.</p>
+               
+               <h4><FONT COLOR="#000080">Activation and
+               Suspension</FONT></H4>
+               
+               <p>The tasks of allocating and creating
+                    an object often must be kept separate from those that
+                    activate the object or call its methods. In the case of the
+                    interrupt handling program, the interrupt vectors are
+                    switched after all the other preparatory work has been done.
+                    To facilitate this with thunks, I provide two functions:</p>
+
+<PRE>
+void ISRThunkActivate(
+       ISRTHUNK *pThunk);
+void ISRThunkSuspend(
+               ISRTHUNK *pThunk);
+</PRE>
+               
+               <p>The ISRThunkActivate function saves
+                    the current interrupt function, and installs the thunk. The
+                    ISRThunkSuspend reinstalls the saved interrupt function.</p>
+               
+               <h4><FONT COLOR="#000080">Chaining</FONT></H4>
+               
+               <p>It is sometimes necessary to either
+                    call the currently installed interrupt function, or chain to
+                    it after the current handler has returned. A call returns to
+                    the current function, whereas a chain does not return. This
+                    functionality is provided by the functions:</p>
+
+<PRE>
+void ISRCallOldISR(ISRTHUNK *pThunk);
+void ISRChainOldISR(ISRTHUNK *pThunk);
+</PRE>
+               
+               <p>The chaining that occurs when using
+                    thunks is not complete, as it would be if thunks were not
+                    used. In a chain the thunk stack is unwound by the size of
+                    the processor registers. The previous interrupt function
+                    address is pushed onto the stack and is invoked by using a
+                    return from interrupt instruction. The difference between
+                    this process and non-thunked chaining is that when the 
+                    previous interrupt function returns, it returns to the
+                    thunk, which then switches stacks and returns to the
+                    currently running program.</p>
+               
+               <P><B><FONT COLOR="#000080">Destruction</FONT></h4>
+               
+               <p>After interrupt processing is
+                    complete, a thunk is suspended and deallocated using:</p>
+
+<PRE>
+void ISRThunkDestroy(ISRTHUNK *pThunk);
+</PRE>
+               
+               <h4><FONT COLOR="#000080">Example Program</FONT></H4>
+               
+               <p>I use the timer hook, interrupt number
+                    0x1C, as a simple example. Each time a PC timer tick occurs,
+                    the timer hook interrupt fires. Any program that intercepts
+                    this interrupt can listen to the PC's heartbeat at 18.2
+                    times per second. </p>
+               
+               <p> To compile the program, define the
+                    macro THUNKTEST, and then compile the code in
+                    <A href="list1.htm">Listing 1</a>.
+ The program creates a
+                    structure called TICKINFO which contains information about
+                    the current tick count and whether a second has elapsed. The
+                    thunk interrupt function is called Ticker. The all-important
+                    line that the thunk makes possible within the interrupt
+                    function is:</p>
+
+<PRE>
+//access to object within handler!
+TICKINFO *ptick
+    = (TICKINFO *)pObject;
+</PRE>
+               
+               <p>The code has been tested with five
+                    memory models: small, medium, compact, large, and huge.</p>
+               
+               <h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+               
+               <p>Thunking is a general technique for
+                    stack switching and providing interrupt subroutines with
+                    relevant object pointers. I have presented a simple example
+                    that uses the PC timer tick. I have used this technique to
+                    write interrupt-driven asynchronous serial communications
+                    software.</p>
+               
+               <h4><FONT COLOR="#000080">References</FONT></H4>
+               
+               <p>[<A name="REF1">1]</a>
+Craig Arnush. "C++
+                    member function callbacks," Windows/DOS Developer's
+                    Journal, March 1994. </p>
+               
+               <p> [<A name="REF2">2</a>]
+ Ron Burk. "Member
+                    function pointers," Windows/DOS Developer's Journal,
+                    March 1994. </p>
+               
+               <p> [<A name="REF3">3</a>]
+ Rich Hickey. "Callbacks
+                    in C++ Using Template Functors," C++ Report, February
+                    1995. </p>
+               
+               <p> [<A name="REF4">4</a>]
+ Steve
+                    Macquire. Writing Solid Code (Microsoft Press, 1993).
+                    </p></BLOCKQUOTE>
+<P><I>David G. Taylor is the software officer for the Electrotechnology Department at the Auckland Institute of Technology, New Zealand. He holds a BE (Mechanical Engineering) and an NZCE in Computer and Electronic Technology. He can be reached at David.Taylor@ait.ac.nz.</FONT></I></P> 
+     
+<h4><a href="../../../source/1997/mar97/taylor.zip">Get Article Source Code</a></h4>
+
+     </BODY>
+</HTML>

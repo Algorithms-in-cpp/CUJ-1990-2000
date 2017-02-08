@@ -1,0 +1,245 @@
+<HTML><HEAD>
+<TITLE>April 1995/An Error Manager With Message Text Replacement/Listing 9</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 9 <I>Member functions of class</I> complaint_dict</A></h4>
+<pre>/* complain.cpp - message dictionary manager */
+
+#include &lt;stdio.h&gt;
+#ifdef __ZTC__
+#include &lt;io.h&gt;                 /* fseek() */
+#endif
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include "utils.hpp"
+#include "errmgr.hpp"
+#include "complain.hpp"
+
+/* a singly linked list of keys - should use hash */
+/* table for speed */
+class complain_ptr {
+   public:
+      complain_ptr(char *name,long offset,
+                 complain_ptr *head);
+      ~complain_ptr(void);
+      const char *errname(void) const
+         { return_errname; }
+      int complaint_text(const char *filename,
+                      char *line,int linelen);
+      complain_ptr *next;
+   private:
+      char * _errname;
+      long foffset;
+};
+
+/************** class complaint_dict ***************/
+
+static complain_ptr *read_complaint_file(
+                     const char *filename);
+
+complaint_dict::complaint_dict(const char *filename)
+{
+   /* constructor - remember file name, read all */
+   /* messages and store offsets */
+   _filename= newstring(filename);
+   complain_table = read_complaint_file(_filename);
+}
+
+complaint_dict: :~complaint_dict (void)
+{
+   /* cleanup - delete all of the offset records */
+   /* in the table. */
+   complain_ptr *keyptr;
+
+   free(_filename);
+   while ((keyptr= complain_table) != 0) {
+      complain_table = complain_table-&gt;next;
+      delete keyptr;
+   }
+}
+
+static complain_ptr *key(complain_ptr *complain_table,
+                     const char *name)
+{
+   /* look for the key in the list of complain_ptr */
+   /* objects. returns 0 if not found. */
+   while (complain_table != 0 &amp;&amp;
+         strcmp(name,complain_table-&gt;errname()))
+      complain_table= complain_table-&gt;next;
+   return complain_table;
+}
+
+int complaint_dict::key_defined(const char *name) const
+{
+   /* return 1 if the key is defined here. */
+   return key(complain_table,name) != 0;
+}
+
+int complaint_dict::complaint_text(const char *name,
+                             char *line,
+                             int linelen) const
+{
+   /* retrieve the text for the named message and */
+   /* store it in the buffer. returns 0 on failure. */
+   complain_ptr *fmt;
+
+   fmt = key(complain_table,name);
+   if (fmt == 0) {
+      sprintf(line,"Error key \"%s\" not found\n",
+             key);
+      return 0;               /* failed */
+   }
+   if (fmt-&gt;complaint_text(_filename,line,linelen)) {
+      sprintf(line,"Unable to re-read text for"
+             "error key \"%s\"\n",key);
+      return 0;               /* failed */
+   }
+
+   return 1;                   /* all OK */
+
+} /* end of complaint_dict::complaint_text() */
+
+/************* local utility routines **************/
+
+static complain_ptr *read_complaint_file(
+                      const char *filename)
+{
+   /* read all of the error keys in the complaint */
+   /* file. */
+   FILE *complaintfile;
+   char line[512];
+   long thisoffset;
+   char *keyname,*p,*name;
+   int all_ok = 1;
+   complain_ptr *keyptr,*complain_table = 0;
+
+   if ((complaintfile = fopen(filename,"r")) == 0) {
+      err_mgr.error("Unable to read error text"
+                  "file %s\n",filename);
+      return 0;               /* OK to continue */
+   }
+
+   for (;;) {                  /* exit from within */
+      /* remember the start of each line. */
+      thisoffset = ftell(complaintfile);
+      read_continued_line(complaintfile,line,
+                       sizeof(line));
+      if (strlen(line) == 0)  /* EOF? done*/
+
+         break;
+
+      /* skip blank lines and comments. */
+      keyname = p = line + skipblanks(line);
+      if (!*p || *p == '\n' || *P == '#')
+         continue;
+      p += skip_ident(p);     /* get key name */
+      if (p == keyname) {
+         err_mgr.warn("Missing error key in error"
+                    text file \"%s\":\n%s",
+                    filename,line);
+         all_ok = 0;
+         continue;
+      }
+
+      name = newstring(keyname,p - keyname);
+      if (key(complain_table,name) != 0) {
+         err_mgr.warn("Duplicate error key in"
+                    "error text file \"%s\":\n%s",
+                    filename,line);
+         free(name);
+         all_ok = 0;
+         continue;
+      }
+      p += skipblanks(p);
+      if (*p != ':') {
+         err_mgr.warn("Missing ':' in error text"
+                    "file \"%s\":\n%s",
+                    filename,line);
+         free(name);
+
+         all_ok = 0;
+         continue;
+      }
+      
+      /* everything looks good - remember key. */
+      keyptr = new complain_ptr(name,thisoffset,
+                            complain_table);
+      complain_table = keyptr;
+   }
+
+   /* if problems were found ignore entire file. */
+   fclose(complaintfile);
+   if (!all_ok) {
+      while ((keyptr = complain_table) != 0) {
+         complain table = complain_table-&gt;next;
+         delete keyptr;
+      }
+      return 0;
+   }
+   return complain_table;
+}
+
+/**************** class complain_ptr ****************/
+
+complain_ptr:: complain_ptr(char *name, long offset,
+                       complain_ptr *head)
+{                                /* constructor */
+   /* add the new complain_ptr to the front of */
+   /* the list. name is allocated for us; the */
+   /* destructor must free it. */
+   _errname = name;
+   foffset = offset;
+   next = head;
+}
+
+complain_ptr::~complain_ptr(void)  /* destructor */
+{
+   /* our caller cleans up the chain in next. */
+   free(_errname);
+}
+
+int complain_ptr::complaint text(
+                  const char *filename,
+                  char *line,int linelen)
+{
+   /* re-read the message text for the key. */
+   /* returns 1 on error (file has disappeared or */
+   /* been edited). */
+   FILE *complaintfile;
+   char *keyname,*p;
+   int newlen;
+
+   line[0] = '\0';             /* clear old text */
+   if ((complaintfile = fopen(filename,"r")) == 0)
+      return 1;
+   if (fseek(complaintfile,foffset,SEEK_SET)) {
+      fclose(complaintfile);
+      return 1;
+   }
+   read_continued_line(complaintfile,line,linelen);
+   fclose(complaintfile);
+
+   /* make sure we still have the same key! (file */
+   /* may have been edited) */
+   keyname = p = line + skipblanks(line);
+   p += skip_ident(p);
+   if (p == keyname ||
+      strncmp(keyname, errname,strlen(_errname)))
+      return 1;
+   p += skipblanks(p);
+
+   if (*p != ':')
+      return 1;
+   ++p;                        /* skip ':', */
+   p += skipblanks(p);         /* leading blanks */
+
+   /* shift everything over to cover the key. */
+   newlen = strlen(p);
+   memmove(line,p,newlen + 1);
+   return 0;                   /* all OK */
+}
+// End of File</pre>
+
+</BODY>
+</HTML>

@@ -1,0 +1,77 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>December 1998/Optimized GIFs from Windows DIBs</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocdec.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Graphics/Imaging</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Optimized GIFs from Windows DIBs</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Lukas Knutsson</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>Much of the "World Wide Wait" is spent downloading poorly encoded images. Anything that helps make images smaller is a boon.</p>
+</BLOCKQUOTE>
+<HR>
+<BLOCKQUOTE>
+<p>GIF (Graphics Interchange Format) files are very popular on the Internet for the transmission of raster graphic web images. GIF images are independent of the hardware used in their creation or display. Also, the GIF format specification has LZW compression built in, allowing for very compact images. These features make GIFs ideal for transmitting over the Internet.</p>
+<p>Windows DIBs (Device Independent Bitmaps) are also a commonly used image format, not so much on the Internet, but definitely on Windows platforms. What makes DIB files unique is the ease with which they can be created and drawn on using the Win32 GDI (Graphics Device Interface) calls. Since Windows machines are being increasingly used to run web servers (and significantly, Microsoft's own web server) it seems prudent to examine methods to create GIF files from Windows palette-indexed DIB files. That is the subject of this article.</p>
+<p>For those who are interested, I also present code that can be used from Microsoft's web server in the form of a scriptable COM object (see the <A HREF="sidebar.htm">sidebar</A>.) This object can then be used directly from Microsoft's Active Server Pages, which are much like HTML with embedded Visual Basic scripting. You can also use the COM object from Windows Scripting Host, the new COM-based command shell language for the Windows platform.</p>
+
+<h4><FONT COLOR="#000080">GIF and DIB Formats</FONT></H4>
+
+<p>A GIF file consists of several parts, but the two most important are the color table and the image data. The color table, also known as a palette, is a sequence of bytes representing red-green-blue color triplets. The color table can have at most 256 entries, thus limiting the number of different colors that can be displayed in a GIF file. The image data for palette-based files consists of indexes into the color table, one index for each pixel in the image. In GIF files this image data is arranged as a sequence of sub-blocks, the maximum size of each sub-block being 255 bytes, or indexes. Pixel indexes within each sub-block are arranged in order from left to right, then top to bottom. (Each sub-block in a GIF can contain more than one row.) Each index must be within a range, starting at zero, that conforms to the size of the color table.</p>
+<p>The sequence of indexes is encoded using the LZW compression algorithm. It is this combination of a color table and compressed image pixels that can make GIF files quite small. GIF files also provide support for interlacing, which allows for the progressive display of pictures over low bandwidths; and for transparency information. More information on the GIF specification can be found at http://members.aol.com/royalef/gif89a.txt.</p>
+<p>DIB files can also be palette-indexed raster images, but without the image data compression. (Strictly speaking, DIB files can be run-length encoded, but that is beyond the scope of this article.) Like GIFs, DIB files also contain a color table and image data, but the layouts are of course different. Since the Windows DIB structure has been fairly well documented, I do not focus on the specifics here. Readers wishing to know more can consult <a href="#1">[1]</a>.</p>
+
+<h4><FONT COLOR="#000080">A Windows DIB Class</FONT></H4>
+
+<p>I have created a class <B>CImage</B> (<A HREF="fig1.htm">Figure 1</A>), which is basically a wrapper class around a handle (an <B>HBITMAP</B>) to a Win32 DIB. <B>CImage</B> contains this handle as a private data member. I avoided using MFC because of the run-time overhead and memory footprint of the MFC DLLs. Besides, MFC has no DIB class. <B>CImage</B> offers several fairly straightforward methods to create, load, or save a DIB, and to get information regarding its width and height. The class includes a conversion operator to an <B>HBITMAP</B> so that it can be easily used in Win32 GDI calls. For example,</p>
+
+<pre>
+...
+HDC hdc;
+Cimage im;
+If (!im.Create(32,32,8))
+    Return;
+hdc = CreateCompatibleDC(NULL);
+HBITMAP hOldBmp =
+    SelectObject(hdc, im);
+...
+</pre>
+
+<p>The really interesting methods in this class are the member functions that manipulate and alter the color table, such as <B>SetColorTable</B> (<A HREF="fig2.htm">Figure 2</A>.). These functions work with the help of two more utility classes, <B>CImageColorTable</B> and <B>CImagePalette</B> (not shown). Class <B>CImageColorTable</B> is a wrapper around an array of Win32 <B>RGBQUAD</B> structures, while <B>CImagePalette</B> is a wrapper around a handle to a Win32 palette (an <B>HPALETTE</B>).</p>
+<p><B>CImage</B> contains a method called <B>OptimizeForSize</B>, which will prepare the DIB to be converted to the smallest possible GIF file. The smallest possible GIF is achieved when the palette contains the fewest colors required to represent all the colors in the image. For instance, an image containing two colors can represent the color of each pixel with one bit, whereas an image with 117 colors would require seven bits per pixel. But suppose the image has 117 colors in its color table but uses only two of them. Not only is each pixel stored as an unnecessarily large number of bits; the overhead of all the unused colors in the color table becomes quite significant. Eliminating unused colors can save a lot of space. Quite often simple images produced by script commands can be optimized this way.</p>
+
+<p><B>OptimizeForSize</B> thus performs the following operations:</p>
+
+<p>1) It iterates through all the DIB image pixels and constructs a set of the actual palette indexes used and the actual RGB colors of these palette indexes. The latter is necessary because an image's palette may contain the same color at two different locations. Iterating through an image's pixels is an expensive operation, especially if, for each pixel, the RGB colors must be looked up in the set of colors used. However, if the pictures are relatively simple, and pixels usually occur in runs of similar color, the process can be sped up by using a simple cache of the last RGB color found.</p>
+<p>2) There are two conditions that require remapping of the image pixels to a new, smaller set of RGB colors:<p>
+<UL><LI>if the number of palette indexes used within the image data is less than the number of colors in the image's palette</LI>
+    <LI>if the number of RGB colors used is less than the number of palette indexes used</LI></UL>
+
+<p>This remapping process occurs in the method <B>SetColorTable</B>. (Note that remapping the pixels in this way should cause no loss in picture quality. <B>SetColorTable</B> can force a new palette into a picture, but it does not implement dithering, a process which inherently affects image quality.) <B>SetColorTable</B> then looks up each color in the new palette with the Win32 API <B>GetNearestPaletteIndex</B>.</p>
+<p><A HREF="list1.htm">Listing 1</A>, <B>test.cpp</B>, shows how the <B>CImage</B> class may be used to write fairly simple programs to manipulate DIB files.</p>
+
+<h4><FONT COLOR="#000080">A Simple GIF File Class</FONT></H4>
+
+<p>I have also created a class <B>CImageGif</B> for GIF files. This class is not shown here, but it, as well as all the other source code, is available on the <I>CUJ</I> ftp site (see p. 3 for downloading instructions). <B>CImageGif</B> contains just enough methods to create and save GIF files. It is intended simply for use in converting images to GIF files. The implementation is based on the gd library by Thomas Boutell, which can be obtained at http://www.boutell.com/gd. This library is based on code drawn from part of the pbmplus package.</p>
+
+<h4><FONT COLOR="#000080">Future Improvements</FONT></H4>
+
+<p>Not all DIBs are palette based, especially those of a photographic nature. To work with these DIBs, the <B>CImage</B> class would need the ability to perform color reduction, also known as color quantization. Color quantization would be necessary to reduce the number of colors in the image to 256 or fewer, so the image could be saved as a GIF file. Such a feature would make the control much more useful.</p>
+
+<h4><FONT COLOR="#000080">Reference</FONT></H4>
+
+<p><a name="1"></a>[1] Win32 SDK. Search for DIBSECTION.</p>
+
+<p><i>Lukas Knutsson has been using C++ since 1992 and now works for Spray Interactive Media Agency in Stockholm, Sweden, as the in-house C++ programmer on many different web sites that the company has created. Try <B>www.electrolux.se</B> for example and you'll see images that have all gone through the code of this article. When not hacking on Linux or Win32 Lukas enjoys going skydiving and has made over 4000 jumps. He can be contacted at <B>lukas@spray.se</B>.</i></p>
+
+<h4><a href="../../../source/1998/dec98/knutsson.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

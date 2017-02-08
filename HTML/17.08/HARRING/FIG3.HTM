@@ -1,0 +1,436 @@
+<HTML><HEAD>
+<TITLE>August 1999/Win32 Multithreading Made Easy/Figure 3</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Figure 3: Classes MultiThreadState and MultiThread</A></h4>
+<pre>
+/* ============================================================
+MultiThread.h
+============================================================ */
+
+#ifndef MULTITHREAD_H
+#define MULTITHREAD_H
+
+#include &lt;windows.h&gt;
+
+class ThreadableObject;
+
+DWORD WINAPI MultiThreadImpl( LPVOID lpParam );
+
+
+class MultiThreadState 
+{
+public:
+    enum {  UNINITIALIZED, INITIALIZED, 
+            WORKING, SLEEPING, DONE,
+            SUSPENDED, RESUMED };
+
+    MultiThreadState();
+    ~MultiThreadState();
+    void Reset();
+
+private:
+    // not implemented
+    MultiThreadState( const MultiThreadState&amp; copyMe );
+    MultiThreadState&amp; operator=( const MultiThreadState&amp; rhs );
+
+    friend class MultiThread;
+    friend DWORD WINAPI MultiThreadImpl( LPVOID lpParam );
+
+    // Closing handle twice is an error.
+    void CloseThreadHandle();
+    HANDLE  m_hThread;
+
+    HANDLE  m_hRunEvent;
+    HANDLE  m_hWorkEvent;
+    HANDLE  m_hDoneEvent;
+
+    // Controls access to following data.
+    HANDLE  m_hMutex;
+    DWORD   m_dwCycleTime;
+    bool    m_bStopThread;
+    int     m_eState;
+    DWORD   m_dwSuspendCount;
+
+    ThreadableObject* m_pObject;
+};
+
+
+class MultiThread
+{
+public:
+    MultiThread();
+    ~MultiThread();
+
+    bool Initialize(
+                ThreadableObject* ptrClass,
+                DWORD dwMilliSecs,
+                DWORD dwStackSize = 0 );
+
+    void Run();
+
+    void RequestStop();
+    bool IsStopping() const;
+
+    void DoWork();
+
+    DWORD CycleTime() const;
+    void CycleTime( DWORD dwCycleTime );
+
+    // Similar to Win32 functions, except they return the
+    // threads current suspend count, not the previous count.
+
+    DWORD Suspend();
+    DWORD Resume();
+    bool IsSuspended( DWORD* dwSuspendCount = NULL ) const;
+
+    // Same as Win32 functions GetExitCodeThread and 
+    // SetThreadPriority.
+
+    BOOL ExitCode( LPDWORD lpExitCode );
+
+    BOOL Priority( int nPriority );
+
+    // Suspends caller until DoneEvent is signalled.
+
+    void WaitUntilDone();
+
+    // See enum in MultiThreadState for return values.
+
+    int ThreadState() const;
+
+private:
+    // not implemented
+    MultiThread( const MultiThread&amp; copyMe );
+    MultiThread&amp; operator=( const MultiThread&amp; rhs );
+
+    MultiThreadState m_td;
+};
+#endif
+
+/* ==============================================
+MultiThread.cpp
+============================================== */
+
+#include "multithread.h"
+#include "threadableobject.h"
+#include "mutexlock.h"
+
+#include &lt;assert.h&gt;
+
+// Error code for SuspendThread, ResumeThread.
+static const DWORD SR_ERROR = 0xFFFFFFFF;
+
+
+DWORD WINAPI MultiThreadImpl(LPVOID lpParam)
+{
+    MultiThreadState* ptrState = (MultiThreadState*) lpParam;
+
+    // Synch on the Run Event
+    WaitForSingleObject( ptrState-&gt;m_hRunEvent, INFINITE );
+
+    bool bStopThread = false;
+    bool bWorkInProgress = true;
+
+    DWORD dwCycleTime = 0;
+    DWORD dwReturn = 0;
+    ThreadableObject *pObj = 0;
+
+    // Latch values once to start loop
+    {
+        MutexLock( ptrState-&gt;m_hMutex );
+        dwCycleTime = ptrState-&gt;m_dwCycleTime;
+        ptrState-&gt;m_eState = MultiThreadState::SLEEPING;
+        pObj = ptrState-&gt;m_pObject;
+    }
+
+    do
+    {
+        // Wait for a Work event, or a timeout.
+        WaitForSingleObject( ptrState-&gt;m_hWorkEvent, 
+            dwCycleTime );
+
+        { 
+            MutexLock( ptrState-&gt;m_hMutex );
+            ptrState-&gt;m_eState = MultiThreadState::WORKING;
+        }
+
+        bWorkInProgress = pObj-&gt;ThreadableTask( &amp;dwReturn );
+
+        if ( bWorkInProgress )
+        {
+            // Latch values for next repitition.
+            MutexLock( ptrState-&gt;m_hMutex );
+            dwCycleTime = ptrState-&gt;m_dwCycleTime;
+            bStopThread = ptrState-&gt;m_bStopThread;
+            ptrState-&gt;m_eState = MultiThreadState::SLEEPING;
+        }
+    } while ( !bStopThread &amp;&amp; bWorkInProgress );
+
+    // Thread finished.
+    {
+        MutexLock( ptrState-&gt;m_hMutex );
+        ptrState-&gt;m_bStopThread = true;
+        ptrState-&gt;m_eState = MultiThreadState::DONE;
+    }
+
+    SetEvent(ptrState-&gt;m_hDoneEvent);
+    return dwReturn;
+}
+
+
+MultiThreadState::MultiThreadState()
+{
+    m_hThread = 0;
+
+    // lpEventAttributes, bManualReset, bInitialState, lpName
+    m_hRunEvent  = CreateEvent( NULL, false, false, NULL );
+    assert( m_hRunEvent );
+
+    m_hWorkEvent = CreateEvent( NULL, false, false, NULL );
+    assert( m_hWorkEvent );
+
+    // Manual reset since multiple threads can wait on this 
+    // event.
+    m_hDoneEvent = CreateEvent( NULL, true,  false, NULL );
+    assert( m_hDoneEvent );
+
+    // Security Attr., bInitialOwner, lpName
+    m_hMutex = CreateMutex( NULL, false, NULL );
+    assert( m_hMutex );
+
+    // Should be consistent with code in Reset.
+    m_dwCycleTime = 0;
+    m_bStopThread = false;
+    m_eState = UNINITIALIZED;
+    m_dwSuspendCount = 0;
+    m_pObject = 0;
+}
+
+
+MultiThreadState::~MultiThreadState()
+{
+    CloseThreadHandle();
+
+    CloseHandle( m_hRunEvent );
+    CloseHandle( m_hWorkEvent );
+    CloseHandle( m_hDoneEvent );
+    CloseHandle( m_hMutex );
+}
+
+
+void MultiThreadState::Reset()
+{
+    CloseThreadHandle();
+
+    // This code should be consistent with
+    // code in the constructor.
+
+    ResetEvent( m_hRunEvent );
+    ResetEvent( m_hWorkEvent );
+    ResetEvent( m_hDoneEvent );
+
+    m_dwCycleTime = 0;
+    m_bStopThread = false;
+    m_eState = UNINITIALIZED;
+    m_dwSuspendCount = 0;
+    m_pObject = 0;    
+}
+
+
+void MultiThreadState::CloseThreadHandle()
+{
+    // Closing a HANDLE twice is an error.
+    // Allowing multiple calls to Initialize
+    // requires this.
+    if ( m_hThread != 0 )
+    {
+        CloseHandle( m_hThread );
+        m_hThread = 0;
+    }
+}
+
+
+MultiThread::MultiThread()
+:m_td( MultiThreadState() )
+{}
+
+
+MultiThread::~MultiThread()
+{
+    // Do what we can to end thread, 
+    // but ThreadableTask must still cooperate!
+
+    if ( m_td.m_hThread != 0 )
+    {
+        while ( IsSuspended() )
+        {
+            Resume();
+        }
+
+        Run();
+        DoWork();
+
+        RequestStop();
+        WaitUntilDone();
+    }
+}
+
+
+bool MultiThread::Initialize
+(
+    ThreadableObject* ptrClass,
+    DWORD dwMilliSecs,
+    DWORD dwStackSize
+)
+{
+    MutexLock( m_td.m_hMutex );
+
+    // User must cleanly exit previous thread, if any.
+    assert( m_td.m_eState == MultiThreadState::DONE ||
+            m_td.m_eState == MultiThreadState::UNINITIALIZED );
+            
+    bool bRetVal = false;
+
+    // Initialize can be called multiple times.
+    m_td.Reset();
+
+    if ( m_td.m_hThread == 0 )
+    {
+        DWORD dwThreadId = 0;
+        m_td.m_hThread = CreateThread( NULL, dwStackSize, 
+                             &amp;MultiThreadImpl, (LPVOID) &amp;m_td,
+                             0, &amp;dwThreadId);
+        if ( m_td.m_hThread )
+        {
+            m_td.m_dwCycleTime = dwMilliSecs;
+            m_td.m_eState = MultiThreadState::INITIALIZED;
+            m_td.m_pObject = ptrClass;
+            bRetVal = true;
+        } else 
+        {
+            // Explicitly set just in case.
+            m_td.m_hThread = 0;
+        }
+    }
+    return bRetVal;
+}
+
+
+void MultiThread::Run()
+{
+    MutexLock( m_td.m_hMutex );
+    if ( m_td.m_eState == MultiThreadState::INITIALIZED )
+    {
+        SetEvent( m_td.m_hRunEvent );
+    }
+}
+
+
+void MultiThread::RequestStop()
+{
+    MutexLock( m_td.m_hMutex );
+    m_td.m_bStopThread = true;
+}
+
+
+bool MultiThread::IsStopping() const
+{
+    MutexLock( m_td.m_hMutex );
+    return m_td.m_bStopThread;
+}
+
+
+void MultiThread::DoWork()
+{
+    MutexLock( m_td.m_hMutex );
+    if ( m_td.m_eState == MultiThreadState::SLEEPING )
+    {
+        SetEvent( m_td.m_hWorkEvent );
+    }
+}
+
+
+DWORD MultiThread::CycleTime() const
+{
+    MutexLock( m_td.m_hMutex );
+    return m_td.m_dwCycleTime;
+}
+
+
+void MultiThread::CycleTime( DWORD dwCycleTime )
+{
+    MutexLock( m_td.m_hMutex );
+    m_td.m_dwCycleTime = dwCycleTime;
+}
+
+
+DWORD MultiThread::Suspend()
+{
+    MutexLock( m_td.m_hMutex );
+    if ( ::SuspendThread( m_td.m_hThread ) != SR_ERROR )
+    {
+        ++m_td.m_dwSuspendCount;
+        if ( m_td.m_dwSuspendCount &gt; 0 ) 
+        {
+            m_td.m_eState = MultiThreadState::SUSPENDED;
+        }
+    }
+    return m_td.m_dwSuspendCount;
+}
+
+
+DWORD MultiThread::Resume()
+{
+    MutexLock( m_td.m_hMutex );
+    if ( ::ResumeThread( m_td.m_hThread ) != SR_ERROR )
+    {
+        --m_td.m_dwSuspendCount;
+        if ( m_td.m_dwSuspendCount == 0 )
+        {
+            m_td.m_eState = MultiThreadState::RESUMED;
+        }
+    }
+    return m_td.m_dwSuspendCount;
+}
+
+
+bool MultiThread::IsSuspended( DWORD* dwSuspendCount ) const
+{
+    MutexLock( m_td.m_hMutex );
+    if ( dwSuspendCount != NULL )
+    {
+        *dwSuspendCount = m_td.m_dwSuspendCount;
+    }
+    return ( m_td.m_dwSuspendCount != 0 ? true : false );
+}
+
+
+BOOL MultiThread::ExitCode( LPDWORD lpExitCode )
+{
+    return ::GetExitCodeThread(m_td.m_hThread, lpExitCode);
+}
+
+
+BOOL MultiThread::Priority( int nPriority )
+{
+    return ::SetThreadPriority( m_td.m_hThread, nPriority );
+}
+
+
+void MultiThread::WaitUntilDone()
+{
+    WaitForSingleObject( m_td.m_hDoneEvent, INFINITE );
+}
+
+
+int MultiThread::ThreadState() const
+{
+    MutexLock( m_td.m_hMutex );
+    return m_td.m_eState;
+}
+
+</pre>
+</BODY>
+</HTML>

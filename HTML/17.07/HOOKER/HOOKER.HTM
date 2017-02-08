@@ -1,0 +1,63 @@
+<HTML>   
+     <HEAD>
+<TITLE>July 1999/A Logging Routine for Windows NT Events</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocjul.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">A Logging Routine for Windows NT Events</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">David Hooker</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Logging errors is an important but tedious task. It helps to stylize how you do it.</p>
+</BLOCKQUOTE>
+
+<hr>
+<BLOCKQUOTE>
+
+<p>As a programmer who provides technical support and administration for his own programs, I am especially motivated to provide the clearest possible error messages in my code. Within Windows NT, the event log &#151; with its built-in tools, utilities, and third-party support &#151; is the standard for logging application errors. I found myself needing a single subroutine for writing to the event log that was both simple and reusable. I was able to accomplish this by using a subset of the event logging API and by borrowing an idea from <B>printf</B>.</p>
+
+<h4><FONT COLOR="#000080">Event Log Sources</FONT></H4>
+
+<p>An event log source contains message templates, which are the localized text of error messages. <a href="list1.htm">Listing 1</a>, <B>msg.mc</B>, shows a message control file, which contains message templates. This file is compiled by the Microsoft message compiler (<B>mc.exe</B>) into a resource script, which in turn is compiled and bound to executable code, typically a resource DLL or a message DLL. The message compiler also produces a header file (not shown) containing one event identifer per message template.</p>
+<p><a href="list2.htm">Listing 2</a>, <B>Instsrc.cpp</B>, shows the <B>InstallEventLogSource</B> routine for entering a message DLL into the registry. The first parameter to the routine is a registry entry, which is used to refer to the event log source. The second parameter is the path to the message DLL. This path may contain environment strings consistent with the <B>REG_EXPAND_SZ</B> registry data type. Note that what <B>InstallEventLogSource</B> writes to the registry is only a subset of the options available for message DLLs.</p>
+
+<h4><FONT COLOR="#000080">Emulating printf</FONT></H4>
+
+<p>Some of the message templates in <a href="list1.htm">Listing 1</a> contain replaceable parameters, such as <B>%1</B>, <B>%2</B>, and so on. These parameters are written to the event log as strings. Having a variable number of replaceable parameters that need to be formatted from a variety of data types suggests the idea of a <B>printf</B> analog for the event log. The function I developed has the following prototype:</p>
+
+<pre>
+DWORD
+LogEvent(LPCSTR pszEventSource,
+    DWORD dwEventID,
+    LPCSTR pszFormat=NULL, ...);
+</pre>
+
+<p>The first three parameters of <B>LogEvent</B> correspond to the first parameter of <B>printf</B>. The ellipses in the parameter list indicate that <B>LogEvent</B> uses a variable argument list, which is managed by the C <B>va_list</B> feature. The first parameter is the event log source, which is also the first parameter to <B>InstallEventLogSource</B>. The second parameter is an event id in the header file emitted by <B>mc.exe</B>. If there are no replaceable parameters in a message template for the event id, then the third parameter, <B>pszFormat</B>, should be <B>NULL</B>. Otherwise, given that my formatting needs were more modest than those provided by <B>printf</B>, I allow one character in <B>pszFormat</B> per format specification per <B>va_list</B> parameter. These format specifications are as follows (they're case-insensitive):</p>
+<p><B>d</B> &#151;  The <B>va_list</B> parameter is a 32-bit integer and is formatted as such.</p>
+<p><B>x</B> &#151;  The <B>va_list</B> parameter is a 32-bit integer, and is formatted as a hexadecimal number, preceeded by <B>"0x"</B>.</p>
+<p><B>s</B> &#151;  The <B>va_list</B> parameter is a pointer to a nul-terminated string, and is written to the event log as is.</p>
+<p><B>m</B> &#151;  The <B>va_list</B> parameter is an error number for which system error text, defaulting to an empty string, is retrieved.</p>
+<p>See <a href="list3.htm">Listing 3</a>, <B>CopyFile.cpp</B>, for concrete examples of how <B>LogEvent</B> is called.</p>
+
+<h4><FONT COLOR="#000080">Inside LogEvent</FONT></H4>
+
+<p><a href="list4.htm">Listing 4</a>, <B>LogEvent.cpp</B>, shows the implementation of function <B>LogEvent</B>. Step (1) converts <B>LogEvent</B>'s <B>va_list</B> parameter to an array of pointers to strings based on the <B>pszFormat</B> parameter, as described above. This array is prepared as input for the Windows <B>ReportEvent</B> API (called under step (3)). As a matter of convenience, the Windows <B>LocalAlloc</B> call is used to allocate strings, since using the <B>m</B> specifier causes memory to be allocated using <B>LocalAlloc</B> indirectly via <B>FormatMessage</B>. Step (2) calculates the error type based on the two highest bits in the message id. The header file emitted by <B>mc.exe</B> documents these bits. Step (3) actually writes the event to the event log using the Windows NT APIs for writing to the the event log: <B>RegisterEventSource</B>, <B>ReportEvent</B>, and <B>DeregisterEventSource</B>.</p>
+
+<h4><FONT COLOR="#000080">Assumptions for Use</FONT></H4>
+<p>The <B>LogEvent</B> routine was written with the assumption that it would be called only occasionally, as Microsoft recommends for event logging. Furthermore, when creating a message control file, the first two bits of message identifiers should be kept to the default, as is recommended in <I>Windows NT Event Logging,</I> by James T. Murray (O'Reilly and Associates, Inc, 1998).</p>
+
+<h4><FONT COLOR="#000080">Avoiding Errors</FONT></H4>
+
+<p>Like <B>printf</B>, the <B>LogEvent</B> routine will crash or produce improper data if the parameters following the format parameter do not correspond to the format parameter. To avoid errors I find it helpful to specify strings first in message templates, followed by numerics. Furthermore, I try to account for the <B>m</B> format specifier possibly resulting in an empty string being substituted for a replaceable parameter, usually by placing such parameters last in message templates.</p>
+
+<p><i>David Hooker was elected to Phi Beta Kappa in 1987 and received his BA in mathematics from the George Washington University in 1988. He has designed and written systems for mainframes and minicomputers in a variety of languages, with a concentration on Windows NT, Exchange Server, and MAPI in the last four years. He also has a strong interest in programming language implementation. He can be reached at <B>DvdHkr@AOL.COM</B>.</i></p>
+
+<h4><a href="../../../source/1999/jul99/hooker.zip">Get Article Source Code</a></h4>
+
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

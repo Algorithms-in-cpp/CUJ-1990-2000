@@ -1,0 +1,121 @@
+
+
+
+
+<HTML><HEAD>
+
+<TITLE>December 1996/Cross-Platform/Embedded Thread Design/Listing 6</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4>Listing 6:	NetThread.h</h4>
+
+<pre>
+
+#ifndef _NETTHREAD_
+#define _NETTHREAD_
+
+#include &lt;iostream.h&gt;
+#include "target.h"
+
+#if TARGET_PLATFORM == WIN32
+#include "WinThread.h"
+#include &lt;winsock.h&gt;
+typedef AWinThread ThreadBase;
+
+#elif TARGET_PLATFORM == UNIX
+#include "UNIXThread.h"
+#include &lt;sys/socket.h&gt;
+typedef AUNIXThread ThreadBase;
+
+#else
+#error TARGET_PLATFORM not recognized
+#endif
+
+class ANetThread : public ThreadBase {
+public:
+   ANetThread(const char* addr = NULL);
+   virtual ~ANetThread() {closesocket(mSocket);}
+
+   void Write(const char* ch);
+   void WritePendingData();
+
+   virtual void Run();
+protected:
+   const char* mAddr;
+   char        mBufIn[100], mBufOut[100];
+   SOCKET      mSocket;
+
+   void ReadNewData();
+};
+
+ANetThread::ANetThread(const char* addr) {
+   mAddr = addr;
+   mBufIn[0] =mBufOut[0] = 0;
+}
+
+void ANetThread::Run() {
+   sockaddr_in saddr;
+   int size = sizeof(saddr);
+
+   mSocket = socket(PF_INET, SOCK_STREAM, 0);
+   saddr.sin_family = AF_INET;
+   saddr.sin_port = htons(3000);
+   if (mAddr) {
+      saddr.sin_addr.s_addr = inet_addr(mAddr);
+      connect(mSocket, (sockaddr*)&amp;saddr, size);
+      cout &lt;&lt; "Connected! Begin typing." &lt;&lt; endl;
+   }
+   else {
+      saddr.sin_addr.s_addr = 0;
+      bind(mSocket, (sockaddr*)&amp;saddr, size);
+      listen(mSocket, 1);
+      mSocket = accept(mSocket, NULL, NULL);
+      cout &lt;&lt; "Accepted connection!" &lt;&lt; endl;
+   }
+
+   while(1) {
+      CheckStatus();
+      ReadNewData();
+      WritePendingData();
+   }
+}
+
+void ANetThread::Write(const char* str) {
+   LockHandle();
+   strcat(mBufOut, str);
+   UnlockHandle();
+}
+
+void ANetThread::ReadNewData() {
+   fd_set fd;
+   struct timeval tv;
+   int size;
+
+   FD_ZERO(&amp;fd);
+   FD_SET(mSocket, &amp;fd);
+   tv.tv_sec = tv.tv_usec = 0;
+   if (select(mSocket + 1, &amp;fd,
+              NULL, NULL, &amp;tv) &gt; 0) {
+      size = recv(mSocket, mBufIn, 99, 0);
+      mBufIn[size] = 0;
+      if (mBufIn[0] == 'q' &amp;&amp; mBufIn[1] == 0) {
+         cout &lt;&lt; "Connection closed." &lt;&lt; endl;
+         closesocket(mSocket);
+         mSocket = 0;
+      }
+      else cout &lt;&lt; mBufIn &lt;&lt; endl;
+   }
+}
+
+void ANetThread::WritePendingData() {
+   LockHandle();
+   if (mBufOut[0] != 0) {
+      send(mSocket, mBufOut, strlen(mBufOut), 0);
+      mBufOut[0] = 0;
+   }
+   UnlockHandle();
+}
+
+#endif
+/* End of File */
+</pre>
+</body></html>

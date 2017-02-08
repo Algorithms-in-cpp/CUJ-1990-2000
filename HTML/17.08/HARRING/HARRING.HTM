@@ -1,0 +1,100 @@
+<HTML>   
+     <HEAD>
+<TITLE>August 1999/Win32 Multithreading Made Easy</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocaug.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Windows</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Win32 Multithreading Made Easy</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">John Harrington</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Multithreading logic is hard to write and hard to maintain. So keep it simple and separate.</p>
+</BLOCKQUOTE>
+
+<hr>
+<BLOCKQUOTE>
+
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>This article describes a multithreading framework suitable for C++ Win32 programming. The code does not require MFC (Microsoft Foundation Classes) to run. It is written directly to the Win32 API. The code is based on an article by Russell Weisz, titled "First Aid for the Thread-Impaired: Using Multiple Threads with MFC." <a href="#1">[1]</a></p>
+<p>A multithreading base class is described in Weisz's article. The implementation requires MFC. I was working on a heavily threaded application that made using Weisz's implementation difficult because my application was not MFC based. I knew it was possible to use MFC from a console interface <a href="#2">[2]</a>, but that did not appear to be an easy solution. Using MFC would require too many modifications. I thought a better approach was to take the idea presented by Weisz and port it to the Win32 API.</p>
+
+<h4><FONT COLOR="#000080">The Framework</FONT></H4>
+
+<p>The framework consists of three classes broken out into two header files, <B>ThreadableObject.h</B> and <B>MultiThread.h</B>.</p>
+<p><B>ThreadableObject</B> is a lightweight base class that ties user code to the framework. Use of <B>ThreadableObject</B> keeps user objects small and draws a clean distinction between application code and the threading framework.</p>
+<p><B>Multithread.h</B> defines two classes, <B>MultiThread</B> and <B>MultiThreadState</B>, and global function <B>MultiThreadImpl</B>. Users interact with the thread through class <B>MultiThread</B>. <B>MultiThreadState</B> and <B>MultiThreadImpl</B> are declared at file scope only out of necessity. They are implementation details of the framework.</p>
+<p>Creating a separate thread is a two-step process. First, derive your class from <B>ThreadableObject</B> and provide an implementation for the pure virtual function <B>ThreadableTask</B>. Second, create a <B>MultiThread</B> object and pass it a pointer to your derived class.</p>
+<p>Once the thread is created <B>MultiThreadState</B> acts as repository for the thread's status. Users change the repository by making function calls on class <B>MultiThread</B>. The thread function, <B>MultiThreadImpl</B>, periodically retrieves information from the repository and responds accordingly.</p>
+
+<h4><FONT COLOR="#000080">An Example</FONT></H4>
+
+<p>I've created an example to demonstrate the framework. I describe the code in reverse order, from what it looks like on the outside to how it is implemented.</p>
+<p><a href="fig1.htm">Figure 1</a> shows a multithreaded application. Class <B>Derived</B> inherits from the multithreading base class. The first loop creates <B>nSize</B> number of objects, in this case one for each letter of the alphabet.</p>
+<p>The second loop creates a thread for each object and starts it. The <B>Initialize</B> method requires two parameters, a pointer to the <B>ThreadableObject</B> and the thread's cycle time, given in milliseconds. The cycle time is approximately equal to the time between successive calls to the <B>ThreadableTask</B> function. The thread model is described in more detail below.</p>
+<p>There are two other parameters that could be passed to <B>Initialize</B>. They are the thread's stack size and a security attributes parameter. I implemented the stack size as an optional parameter. I choose not to implement a security attributes parameter because the C++ code provides access control for me. Outside objects do not have direct access to the thread's state. Some applications may require this parameter. For those that do, it can be passed through the <B>Initialize</B> method and to the underlying call to <B>CreateThread</B>.</p>
+<p>The last loop prevents the program from exiting until all threads have completed. This code was originally required, but statements added later to <B>MultiThread</B>'s destructor make it optional. I've left the code in for clarity.</p>
+<p><a href="fig2.htm">Figure 2</a> shows the code for class <B>Derived</B>. It inherits from <B>ThreadableObject</B> and implements <B>ThreadableTask</B>, the one virtual function it declares. In this case, the function prints a character to <B>cout</B>. The function terminates when 100 characters have been printed. Variable <B>dwReturnCode</B> becomes the thread's exit code and can be set before returning from <B>ThreadableTask</B> for the last time. See the section "The <B>ThreadableTask</B> Function'' for more details.</p>
+<p><a href="fig3.htm">Figure 3</a> shows the code for classes <B>MultiThreadState</B> and <B>MultiThread</B>. <B>MultiThreadState</B> encapsulates the data for a thread. It has a limited public interface but declares <B>MultiThread</B> and <B>MultiThreadImpl</B> as friends so they can conveniently access it. Users of class <B>MultiThread</B> do not need to know about <B>MultiThreadState</B>. It is declared at file scope so <B>MulitThreadImpl</B> can use it. See <B>MultiThread::Initialize</B>.</p>
+<p>Run the example and you will see the output looks something like</p>
+
+<pre>
+aaaabbbccccccddeeeeee....
+</pre>
+
+<p>Each thread runs until it is preempted by the operating system. The number of successive letters that are identical is arbitrary. For a more even distribution of letters, uncomment the second return statement in <B>Derived::ThreadableTask</B> and run the example again.</p>
+
+<h4><FONT COLOR="#000080">The Threading Model</FONT></H4>
+
+<p>The thread model is summarized by the enumeration that appears in <B>MultiThreadState</B>. A thread created by this framework can be in one of the following states: <B>UNINITIALIZED</B>, <B>INITIALIZED</B>, <B>WORKING</B>, <B>SLEEPING</B>, <B>DONE</B>, <B>SUSPENDED</B>, and <B>RESUMED</B>.</p>
+<p><B>MultiThread</B> objects are <B>UNINITIALIZED</B> immediately after construction. The <B>Initialize</B> method creates the thread, changes its state to <B>INITIALIZED</B> and suspends it until the user calls <B>Run</B>. At this point, <B>CreateThread</B> has been called, but the first thing the thread does is wait for an object that is signaled when the user calls <B>Run</B>.</p>
+<p>Once <B>Run</B> is called, the thread state changes to <B>SLEEPING</B>. It remains there for at least <B>dwCyleTime</B> milliseconds. If your thread must start working immediately, follow the call to <B>Run</B> with a call to <B>DoWork</B>. This will signal the event the thread requires to continue.</p>
+<p>The thread state alternates between <B>SLEEPING</B> and <B>WORKING</B> (approximately) every <B>dwCycleTime</B> milliseconds until the <B>ThreadableTask</B> function returns false. When this occurs the thread, and the task to perform, are finished. The thread's state is changed to <B>DONE</B>.</p>
+<p>Two additional states listed in the enumeration are <B>SUSPENDED</B> and <B>RESUMED</B>. They are implemented in terms of the Win32 functions <B>SuspendThread</B> and <B>ResumeThread</B>. In this implementation, I return the thread's current suspend count instead of the pervious suspend count. In addition, a resumed thread will stay in the <B>RESUMED</B> state until the <I>next</I> transition occurs, however long that may be. The thread stays <B>RESUMED</B> for the remainder of the state it was suspended in, whatever state that may be. The Win32 documentation lists other thread function calls that can be implemented (or changed) in a similar fashion.</p>
+
+<h4><FONT COLOR="#000080">The ThreadableTask Function</FONT></H4>
+
+<p>ThreadableTask</B> represents the work to be done. <B>ThreadableTask</B>'s pure virtual function is what brings the framework together. <B>MultiThreadImpl</B> calls this function through a <B>ThreadableObject</B> pointer, so the correct function is always called. Since <B>ThreadableTask</B> is implemented in the derived classes, the code can access all of the derived classes member functions and data. In effect, you take the work you want done and whatever data it requires, wrap it up in an object, and execute it inside another thread.</p>
+<p><B>ThreadableTask</B> takes a <B>DWORD</B> pointer as a parameter and returns a <B>bool</B>. The function returns <B>true</B> while there is work to do, and <B>false</B> when the task is completed. The parameter becomes the thread's exit code. Its use is optional. If no return code is given, the default value is zero.</p>
+<p>The most important thing to keep in mind when implementing <B>ThreadableTask</B> is, "How responsive to the outside world do I want my thread to be?'' In the simplest cases, a thread runs "unattended'' until it is finished. In practice, this rarely happens. At a minimum, someone will want to cancel a thread if it is doing work that is no longer necessary.</p>
+<p>Threads created with this framework can respond only to certain events, such as cancellations and changes in cycle time, between transitions from <B>WORKING</B> to <B>SLEEPING</B>. This is the point where <B>MultiThreadImpl</B> updates its state information. The more calls made to <B>ThreadableTask</B>, the more in tune your thread will be with the outside world.</p>
+<p>The original example was not responsive at all. Each thread made <I>one</I> call to <B>ThreadableTask</B>. It was up to the operating system to preempt a thread and schedule another one for CPU time. The modified example was extremely responsive. It could adapt to new state information after each letter was printed. The level of granularity is entirely up to you.</p>
+<p>Two other points to keep in mind:</p>
+<p>1.  <B>ThreadableTask</B> will always be called at least once. This is true even if you issue a <B>Run</B> command and immediately follow it with a <B>RequestStop</B> statement.</p>
+<p>2.  <B>ThreadableTask</B> must return at least once. Code in <B>MultiThread</B>'s destructor explicitly waits for the thread to finish.</p>
+
+<h4><FONT COLOR="#000080">Stopping a Thread</FONT></H4>
+
+<p>Stopping a thread in this framework is a joint venture. <B>RequestStop</B> simply sets a flag inside <B>MultiThreadState</B>. The thread will not act on this information until there is a transition from <B>WORKING</B> to <B>SLEEPING</B>. The frequency and distribution of these transitions is controlled by the structure of <B>ThreadableTask</B>.</p>
+
+<h4><FONT COLOR="#000080">Synchronization</FONT></H4>
+
+<p>The execution of other threads can be postponed until a given thread terminates by calling <B>WaitUntilDone</B>. Each thread has an event that is signaled when the thread terminates. The event is manually reset so multiple threads can wait on a single thread to finish. Be careful to avoid situations where a <B>MultiThread</B> object is destroyed before all of the threads that are waiting on it can be notified. Make sure the <B>MultiThread</B> object stays in scope long enough to activate all the waiting threads.</p>
+<p>Each thread in the example was an independent entity. There was no interaction between or among threads. In practice this is rare. Synchronization code must be added to either the derived class or the <B>ThreadableTask</B> function to coordinate the activity of cooperating threads.</p>
+
+<h4><FONT COLOR="#000080">Other Issues</FONT></H4>
+
+<p>One class that is used but not shown in the listings is <B>MutexLock</B>. This class is a simple wrapper for a mutex handle <a href="#3">[3]</a>. The timeout on the <B>WaitForSingleObject</B> is <B>INFINITE</B>.</p>
+<p><B>MultiThread::Initialize</B> uses the Win32 function <B>CreateThread</B>. I could instead have used functions <B>BeginThread</B> or <B>BeginThreadEx</B>. An advantage of these functions over <B>CreateThread</B> is that they are less prone to memory leaks when certain C runtime functions are used. My next version of this code will probably use one these functions.</p>
+<p>While I am discussing future versions, I want to point out the biggest advantage of this framework. It separates the task you want done from the threading code that calls it. <B>MultiThreadImpl</B> represents one possible thread model. You could easily create another model for a specific situation and tie a <B>ThreadableObject</B> derived class to it.</p>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>This article described an object-oriented framework for Win32 that encapsulates threads. The code was based on an article presenting a similar framework for MFC. The framework cleanly separates thread specific code from the task the thread is performing.</p>
+
+<h4><FONT COLOR="#000080">References</FONT></H4>
+
+<p><a name="1"></a>[1]  Russell Weisz. "First Aid for the Thread-Impaired: Using Multiple Threads with MFC." <I>Microsoft Systems Journal</I>, December 1996.</p>
+<p><a name="2"></a>[2]  Mike Blaszczak. <I>Professional MFC with Visual C++ 5</I> (Wrox Press, 1997).</p>
+<p><a name="3"></a>[3]  Bjarne Stroustrup. <I>Design and Evolution of C++</I> (Addison-Wesley, 1994), Section 8.3.2.2</p>
+
+<p><i>John Harrington has a B.S.E.E. from MIT and an M.S. in Computer Engineering from the UCSD. He works for Nuera Communications in San Diego, a provider of high-quality packet voice communications systems and technology for voice/fax/data/video networking over IP, frame relay, and circuit-switched networks. He can be reached at <B>jharrington@neura.com</B>.</i></p>
+
+<h4><a href="../../../source/1999/aug99/harringt.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

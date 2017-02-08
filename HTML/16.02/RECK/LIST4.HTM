@@ -1,0 +1,111 @@
+
+
+
+<HTML><HEAD>
+
+<TITLE>February 1998/Thread Synchronization with Reference-Counting Handles/Listing 4</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4>
+<A name="HEADING1">Listing 4: Handle class with synchronization</A></h4>
+
+
+<pre>
+// Copyright (c) 1997 by Bill Reck &lt;breck@magna.com.au&gt;
+// This code may be used royalty-free as long as
+// this notice appears in the product.
+
+#include &lt;windows.h&gt;
+#include &lt;stdio.h&gt;
+#include "Handle.h"
+#include "AddressRep.h"
+
+class SyncRep {
+public:
+    SyncRep() : count_(0)
+        { ::InitializeCriticalSection(&amp;sync_); }
+    ~SyncRep() { ::DeleteCriticalSection(&amp;sync_); }
+    void incrRefCount()
+        { ::InterlockedIncrement(&amp;count_); }
+    void decrRefCount()
+        {if (::InterlockedDecrement(&amp;count_) &lt;= 0) delete this;}
+    void acquireAccess() { ::EnterCriticalSection(&amp;sync_); }
+    void releaseAccess()  { ::LeaveCriticalSection(&amp;sync_); }
+private:
+    CRITICAL_SECTION sync_;
+    LONG count_;
+};
+
+template &lt;class REP&gt;
+class Access {
+public:
+    Access(REP *rep) : rep_(rep), acquired_(false) {}
+    Access(const  Access&lt;REP&gt; &amp;that)
+            : rep_(that.rep_), acquired_(false) {}
+    ~Access() { if ( acquired_ ) rep_-&gt;releaseAccess(); }
+    REP *operator-&gt;() {
+        if (!acquired_)
+            { rep_-&gt;acquireAccess(); acquired_ = true; }
+        return(rep_);
+    }
+private:
+    REP *rep_;
+    bool acquired_;
+};
+template &lt;class FUNCTOR, class ARG&gt;
+class Thread {
+public:    
+    static HANDLE start(ARG arg) {
+        DWORD notUsed;
+        ARG *freeStoreArg = new ARG(arg);
+        const HANDLE result =
+            ::CreateThread(0, 0, base,
+                (void*)freeStoreArg, 0, &amp;notUsed);
+        if (result == NULL) delete freeStoreArg;
+        return(result);
+    }
+private:    
+    static DWORD WINAPI base(void *threadArg) {
+        if (threadArg != 0) {
+            ARG *freeStoreArg = (ARG*)threadArg;
+            ARG stackArg = *freeStoreArg;
+            delete freeStoreArg;
+            FUNCTOR()(stackArg);
+        }
+        return(0);
+    }
+};
+
+template &lt;class H&gt; struct FaxFunctor {
+    void operator()(H a) const
+        { if (!a.isNull()) a-&gt;fax(); }
+};
+
+void main(int argc, char *argv[]) {
+    // Define the address representation and handle types
+    typedef AddressRep&lt; SyncRep &gt; AddrRep;
+    typedef Handle&lt; AddrRep, Access&lt;AddrRep&gt; &gt; Address;
+    // A quick-n-dirty thread HANDLE collection
+    static const maxThreads = MAXIMUM_WAIT_OBJECTS;
+    HANDLE threadHandles[maxThreads];
+    unsigned threadCount = 0;
+
+    for (int i = 1; i &lt; argc; ++i) {
+        // Create a new representation and handle
+        Address addr = new AddrRep;
+        // Reference a member of the representation
+        addr-&gt;firstName(argv[i]);
+        // Launch several threads for each address
+        for (int j = 0; j &lt; 5 &amp;&amp; threadCount &lt; maxThreads; ++j)
+            threadHandles[threadCount++] =
+                Thread&lt;
+                    FaxFunctor&lt;Address&gt;, Address&gt;::start(addr);
+    }
+    ::printf("Waiting for the threads to finish...\n");
+    ::WaitForMultipleObjects(
+        threadCount, threadHandles, true, INFINITE);
+    ::printf("All done\n");
+}
+//End of File
+</pre>
+</body></html>

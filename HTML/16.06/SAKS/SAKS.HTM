@@ -1,0 +1,370 @@
+
+
+
+
+
+<HTML><HEAD>
+
+<TITLE>June 1998/C++ Theory and Practice</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A href="../tocjun.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">C++ Theory and Practice: Partitioning with Namespaces, Part 3</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Dan Saks</FONT></H3>
+
+<BLOCKQUOTE>
+<p>What's in a name? Anonymity, for one thing if you know how to use unnamed namespaces
+[sic].</p></BLOCKQUOTE>
+<hr>
+<BLOCKQUOTE>
+<p><B><I>Copyright &#169; 1998 by Dan Saks</I></B></p>
+<p>For the past couple of months I've been discussing ways to decompose large
+C++ programs into simpler components. My current focus is on techniques using
+separate compilation, incomplete types, and namespaces. I've been using a
+cross-reference generator called xr as a concrete example for illustrating
+these techniques.<p>
+As a brief reminder, xr reads text from standard input and writes a
+cross-reference to standard output. The cross-reference output is an
+alphabetized list of the words (identifiers as in C++) that appeared in the
+input. Each line in the output contains one word followed by the sequence of
+unique line numbers on which that word appeared in the input.<p>
+xr implements the cross-reference table as a binary tree. In addition to
+pointers to its left and right subtrees, each tree node contains three more
+pointers:</p>
+
+<UL><LI>word points to the first character in a null-terminated array that holds
+        the spelling of a word.</LI>
+    <LI>first and last point to the first and last node in a singly linked list of
+        line numbers.</LI>
+</UL>
+As of last month, the program spanned two source files:<p>
+<UL><LI>xr.cpp: the main part of the application, including the input processing</LI>
+    <LI>cross_reference.cpp: the function and data definitions that constitute the
+        cross-reference table implementation and one header file:</LI>
+    <LI>cross_reference.h: the declarations that constitute the cross-reference
+        table interface</LI>
+</UL>
+<p>cross_reference.h (shown in <A href="list1.htm">Listing 1</a>)
+ declares several names, all as
+members of namespace cross_reference. Of those names, only add and put are
+truly parts of the cross-reference interface. The other names are merely
+implementation details.<p>
+Last month, I managed to remove some implementation details from the header.
+Specifically, I moved the definitions for list_node and tree_node to
+cross_reference.cpp (sketched in <A href="list2.htm">Listing 2</a>)
+ leaving only an incomplete
+declaration for tree_node in the header. Unfortunately, I cannot remove the
+declarations for xr, add_tree, and put_tree from the header without
+reintroducing the small run-time performance penalty that comes from turning
+add and put into non-inline functions.<p>
+As it stands now, the only mention of list_node in the entire program is in
+cross_reference.cpp. Thus it appears that the rest of the program (in this case
+just xr.cpp) cannot tell that type list_node even exists. This would be true if
+this were just a C program, but it's not entirely true in a C++ program. This
+is what I was alluding to in my closing remarks last month when I wrote
+"list_node is not as well hidden as you might think."</p>
+
+<h4><FONT COLOR="#000080">Linkage for Types</FONT></H4>
+
+<p>In
+C, a struct declaration is strictly a compile-time entity. As it parses a
+struct definition, a compiler builds an entry in its symbol table describing
+the layout of the struct. The compiler uses this entry to generate code that
+manipulates objects of the struct type. Since objects of a struct type may have
+external linkage, the names of struct objects may appear as external symbols in
+the resulting object file. However, the struct type itself has no linkage. (See
+"C++ Theory and Practice: Storage Classes and Linkage," CUJ, November 1997 for
+a refresher on the concept of linkage.) Unless the compiler embeds symbolic
+debugging information into the object module, all traces of the struct
+definition vanish after the compilation. This is true for C, but not
+necessarily for C++.<p>
+In C++, a struct is a class. The only difference between a class declared with
+the keyword struct and a class declared with the keyword class is that bases
+and members are public by default when using the keyword struct, and private by
+default when using the keyword class. (See "C++ Theory and Practice: Maybe It
+Wasn't Such a Good Idea After All," CUJ, August 1997.) Thus a struct in C++ can
+have member functions, access specifiers, and other class-like properties
+because it is a class.<p>
+Whereas structs in C always have no linkage, structs in C++ can have external
+linkage. This is because structs are classes, and classes can have linkage.
+Local classes (those at block scope) have no linkage, but classes at namespace
+scope or nested in a class at namespace scope have external linkage.<p>
+Forgetting about local classes for the moment, let's look at why classes have
+external linkage. Classes can have member functions. All member functions, be
+they static or non-static, have external linkage. This is so that, everywhere
+in a program, all references to a particular member function can refer to a
+single copy of the code for that function. Classes can also have static data
+members. As with member functions, static data members have external linkage so
+that all references to a particular static data member can refer to a single
+instance of that member.<p>
+Although there was a time when they had internal linkage, even inline member
+functions now have external linkage. Since the inline keyword is only a hint,
+compilers may ignore it. Sometimes they have no choice but to ignore it. (Item
+33 in Meyers <a href="#1">[1]</a> explains why this is so.) For whatever reasons, C++ compilers
+may generate non-inline copies of inline functions. When inline member
+functions had internal linkage, programs sometimes wound up with duplicate
+non-inline copies of inline functions. Now that inline member functions have
+external linkage, C++ compilers can eliminate the duplicates.<p>
+Each class T with virtual functions generates a data structure called a vtbl
+(pronounced "VEE-table"). At run time, a call to a virtual function applied to
+a T object uses T's vtbl to locate the function. In an effort to avoid
+dictating a particular implementation technique, the C++ Standard takes pains
+to never mention vtbls. However, every C++ compiler I've ever used uses
+vtbls.<p>
+In effect, a vtbl is a static data member visible to the compiler but not the
+programmer. As with other static data members, vtbls have external linkage so
+that one copy of the vtbl for each class type will suffice for each program.<p>
+Anyway, enough specifics. I think you get the idea: non-local classes can spawn
+functions and data with external linkage. (Again, this is only for non-local
+classes. C++ severely restricts local classes so that they, and everything in
+them, have no linkage.) Since two or more non-local classes can each have a
+member with the same name, the external name of each member must include its
+class name. C++ compilers traditionally use a technique called name mangling to
+splice each member name together with its class and namespace names to produce
+a unique external symbol for each member. ("Mangled" function names also
+include parameter types to support overloading.)<p>
+For example, given the class definition</p>
+
+<pre>
+class XYZ
+    {
+public:
+    static int sdm;
+    };
+</pre>
+<p>Microsoft
+Visual C++ generates ?sdm@XYZ@@2HA as the external symbol for XYZ::sdm. Edison
+Design Group's C++ front-end generates _sdm__3XYZ. Others compilers use
+variations on this theme.</p>
+<p>Thus, class names show up as external symbols, if not by themselves then as
+part of the names of their members with external linkage. Again, to avoid
+precluding alternative implementation techniques, the C++ Standard does not
+speak in terms of mangled names. It simply says that classes have external
+linkage.<p>
+The net effect of all this discussion is that type list_node in
+cross_reference.cpp (<A href="list2.htm">Listing 2</a>)
+ has external linkage. At least it does in
+theory if not always in practice. In this particular instance, list_node is
+just a C struct. It has no explicitly defined members with external linkage,
+such as member functions or static data members. Thus, after compiling and
+linking the program, you probably won't see any external symbols in the link
+map with list_node mangled into their names. I didn't.<p>
+On the other hand, if you add a non-inline constructor to list_node, as in</p>
+
+<pre>
+struct list_node
+    {
+    list_node(unsigned, listnode *);
+    unsigned number;
+    list_node *next;
+    };
+list_node::
+list_node(unsigned n, listnode *p)
+:   number(n), next(p)
+    {
+    }
+</pre>
+<p>then,
+after you compile and link, you should see an external symbol for the list_node
+constructor in the link map.</p>
+
+<h4><FONT COLOR="#000080">Unnamed Namespaces</FONT></H4>
+
+<p>As
+a practical matter, some class (including struct and union) names actually have
+external linkage in the sense that they actually appear as external symbols (or
+parts thereof). Other class names, such as list_node in <A href="list2.htm">Listing 2</a>,
+ do not
+appear in external symbols, and so they have external linkage only in theory.
+However, I'm not sure you want to rely on your ability to tell which is which.
+I'd recommend programming as if all class names truly have external linkage.<p>
+list_node is a name that should be known only to the cross-reference
+implementation. If it truly has external linkage (it actually appears in
+external symbols), then the name might conflict with the same name used for
+other purposes in other parts of the program. Wrapping the name list_node
+inside namespace cross_reference reduces the chances of such conflicts, but
+doesn't eliminate them entirely.<p>
+As I mentioned last month, namespaces are open. Different modules can dump
+different names into a given namespace. Some programmer down the hall might
+define additional members for namespace cross_reference and one of them might
+just be named list_node. These different types named list_node in different
+parts of the namespace might cause link errors.<p>
+When dealing with non-member functions and data, you can completely eliminate
+linkage conflicts by declaring them with the keyword static, as I did in an
+earlier version of xr. When applied at namespace scope, static specifies
+internal linkage. I used this technique in my first revision of xr. (See "C++
+Theory and Practice: Partitioning with Namespaces, Part 1, CUJ, April 1998.)<p>
+However, storage-class specifiers, such as static or extern, apply only to
+functions and objects. C++ doesn't allow a storage-class specifier in a
+declaration that declares only a type. For example</p>
+
+<pre>
+static struct list_node // error
+    {
+    ...
+    };
+</pre>
+<p>is
+an error. (I'm not sure if C considers this declaration an error; it may just
+ignore the storage-class specifier after issuing a warning.)</p>
+<p>Instead of declaring list_node static, you should declare it inside an
+unnamed namespace, as in</p>
+
+<pre>
+namespace
+    {
+    struct list_node
+        {
+        ...
+        };
+    }
+</pre>
+<p>This
+unnamed namespace definition behaves as if it were replaced by</p>
+
+<pre>
+namespace _unique_
+    {
+    struct list_node
+        {
+        ...
+        };
+    }
+using namespace _unique_;
+</pre>
+<p>Here,
+_unique_ represents some compiler-generated name that differs from every other
+name in the program. Each unnamed namespace has a unique name.</p>
+<p>An unnamed namespace definition can occur at global scope, as in <A href="list3.htm">Listing 3</a>.
+
+In this case, the name list_node appears to the rest of compilation as if it
+were global. list_node still has external linkage, so you may see it in names
+in the link map. However, as a member of an unnamed namespace, list_node is
+always mangled with a unique namespace name. Thus, the name list_node in
+<A href="list3.htm">Listing 3</a>
+cannot conflict with the name list_node in any other compilation.<p>
+An unnamed namespace definition can appear inside another namespace. In
+<A href="list4.htm">Listing 4</a>,
+the definition for list_node is in an unnamed namespace defined inside
+namespace cross_reference. In this case, list_node appears to the rest of the
+compilation as if it were a member of namespace cross_reference. Again,
+list_node has external linkage. If you see it in the link map, it will be
+mangled with cross_reference as well as some unique namespace name.<p>
+Instead of declaring functions and objects at namespace scope as static, you
+can declare them inside an unnamed namespace. A function or object declared
+static in namespace scope has internal linkage, so the compiler does not
+produce any external symbol for it. A function or object declared in an unnamed
+namespace has external linkage, but the compiler produces an external symbol to
+which no other compilation can refer. Although the underlying mechanics are
+different, the ultimate effect is the same.<p>
+You can declare anything in an unnamed namespace, but you can only declare
+functions and objects as static. Therefore, using unnamed namespaces fosters a
+more uniform programming style for hiding names inside modules. To encourage
+this style, the C++ Standard now says:</p>
+<p><i><blockquote>The use of the static keyword is deprecated when declaring
+objects in a namespace scope; the unnamed-namespace provides a superior
+alternative.</i></blockquote></p>
+<p>A deprecated feature is part of the current standard, but not guaranteed to
+be part of a future revision of the standard.</p>
+<p>As I write this, I just noticed that the excerpt above does not deprecate
+using static to declare functions at namespace scope. I believe that is an
+inadvertent omission.</p>
+
+<h4><FONT COLOR="#000080">Stay Tuned</FONT></H4>
+
+<p>Admittedly, using an unnamed namespace in this application is just a marginal improvement.
+In the coming months, I'll extend this example to show where unnamed namespaces
+have a more substantive impact on the program.<p>
+In the meantime, I'm still bothered by the presence of publicly accessible
+declarations in cross_reference.h that are artifacts of a particular
+implementation. I'll attack them next time.</p>
+
+<h4><FONT COLOR="#000080">Reflecting Back</FONT></H4>
+
+<p>I
+introduced this series on "Partitioning with Namespaces" with some general
+remarks on programming style and design ("C++ Theory and Practice: Basing Style
+on Design Principles," CUJ, March 1998). In that article, I wrote:</p>
+<p><i><blockquote>My Editor-in-Chief doesn't like me to use the phrase
+"programming style." I guess he's concerned that that "programming style"
+conjures up images of heated debates over the more superficial aspects of
+programming, such as where to place curly braces and whether to use spaces or
+tabs for indenting. Indeed, people often use the word "style" in contrast to
+"substance." Maybe he has a legitimate concern.</i></blockquote></p>
+<p>That prompted this response:</p>
+<p><i><blockquote>Hi Dan,<p>
+I was amused that you mentioned the tabs vs. spaces argument as an example of
+superficiality vs. substance. I rise to the bait because I've had quite a bit
+of occasion to do maintenance on code with tabs. The problem is a tab is not a
+character like a space is; it merely is a hint to be interpreted by the output
+device, whether editor or printer. Since many editors allow you to set the
+number of spaces a tab represents, and since people have different tastes, and
+since editors were not all implemented consistently, etc., you end up with code
+that is unreadable. I detest working on code that looks like
+this:</i></p>
+
+<pre>
+if(blah) {
+do_something();
+if(blahblah) {
+do_some_more();
+}
+}
+</pre>
+<p><I>but I've seen quite a bit of it (and of course this is a very simplified example).
+It probably looked just fine to the editor that originally wrote it, but not to
+me. I can take the tabs out, but the trouble is my editor (emacs) does so in
+such a manner that the text retains the same appearance...no help. I could do a
+global search-and-replace, but if I do, what number of spaces should I choose?
+It is quite possible the code has been edited by different people who used 2,
+3, and 4 spaces per tab. Furthermore, removing the tabs in any way means that
+now version differencing is rendered meaningless (assuming a lot of tabs in the
+file). Even if you do a version just to remove the tabs, sooner or later you
+will want to know the big picture between v21 and v32.</I></p>
+<p><i>I will not argue about the space before the condition, or
+whether the brace should be on a new line and so forth, but I demand that the
+code be readable, therefore "NO TABS!" says I. Compromised readability means
+more expensive maintenance.<p>
+Dave Callaway<br>
+dxc@mitron.com</i></blockquote></p>
+<p>I'm sympathetic. Really, I am. But I disagree with your recommended solution
+to the problem. I don't think the problem is using spaces vs. using tabs, it's
+using spaces and tabs together. If the code used only tabs for indenting, or
+only spaces for indenting, switching between editors would cause less of a
+problem.<p>
+Well, maybe. In my experience, code written that uses only tabs for indenting
+is easy to convert to readable code that uses only spaces, but the reverse is
+rarely true. Using tabs makes you indent in uniform steps. You simply convert
+each tab to a fixed number of spaces and you get code that looks just as good.
+Code that uses spaces almost always contains lines indented with a prime number
+of spaces. Thus, you can't convert the spaces to an integral number of tabs.
+That is, when you convert code indented with spaces into code indented with
+tabs, some lines wind up with tabs followed by spaces.<p>
+This leads me to a conclusion just the opposite of yours: use tabs, not spaces,
+for indenting.<p>
+Having said that, I still think that, with respect to overall software quality,
+spaces vs. tabs is one of the lesser issues. Badly indented source code may be
+a pain for the programmer who has to clean it up, but a badly designed library
+with poorly chosen names and complicated parameter lists is an ongoing burden
+for every programmer who must interact with it.</p>
+
+<h4><FONT COLOR="#000080">Reference</FONT></H4>
+
+<p><a name="1"></a>[1]
+Scott Meyers. Effective C++, 2nd. ed. (Addison-Wesley, 1997).
+</p>
+<p><i>Dan Saks is the president of Saks &amp; Associates, which offers training
+and consulting in C++ and C. He is active in C++ standards, having served
+nearly seven years as secretary of the ANSI and ISO C++ standards committees.
+Dan is coauthor of C++ Programming Guidelines, and codeveloper of the Plum Hall
+Validation Suite for C++ (both with Thomas Plum). You can reach him at 393
+Leander Dr., Springfield, OH 45504-4906 USA, by phone at +1-937-324-3601, or
+electronically at dsaks@wittenberg.edu.
+</i></p>
+
+<h4><a href="../../../source/1998/jun98/saks.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</body></html>

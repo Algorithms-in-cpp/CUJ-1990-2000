@@ -1,0 +1,883 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>February 1996/The Column that Needs a Name: Parsing C++ Declarations, Part 1</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><A href="../tocfeb.htm"><IMG src="../../toc.gif" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#ff0000">
+          Columns</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">The Column that Needs a
+          Name: Parsing C++ Declarations, Part 1</FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">by Dan Saks</FONT></H3>
+          
+          <HR>
+          <BLOCKQUOTE>
+               
+               <P>For the past two months, I've been
+                    discussing the structure of C++ declarations. (See "Understanding
+                    C++ Declarations," CUJ December, 1995 and January,
+                    1996.) I continue this month by presenting a C++ program
+                    that parses (reads and verifies) C++ declarations. This
+                    program should help solidify your understanding of both the
+                    grammatical structure of C++ declarations and their
+                    corresponding semantics.</P>
+               
+               <P> Actually, presenting the entire
+                    program touches so many issues that I won't be able to cover
+                    the entire program in one article. So this month's column
+                    focuses on the overall behavior of the program and the
+                    design of the character scanning functions.</P>
+               
+               <h4><FONT COLOR="#000080">What It Does</FONT></H4>
+               
+               <P>I call my declaration parsing program
+                    decl. I figured decl should do more than just read a
+                    declaration and say "yea" or "nay," so
+                    decl translates correct declarations into English. For
+                    example, given the input:</P>
+
+<PRE>
+const char *a[10];
+</PRE>
+               
+               <P></P>
+               
+               <P>decl responds with:</P>
+               
+               <P></P>
+
+<PRE>
+a is ...
+array with 10 elements of type...
+pointer to ...
+const char
+</PRE>
+               
+               <P>Many of you have probably seen similar programs in popular
+                    C books such as [<A href="#REF1">1</a>], [<A href="#REF2">2</a>],
+                    and [<A href="#REF3">3</a>]. My decl program differs from
+                    these in that it handles not only C declarations, but also
+                    C++ declarations involving references and pointers to
+                    members. For example, given the input:</P>
+
+<PRE>
+int T::*pm;
+</PRE>
+               
+               <P></P>
+               
+               <P>decl responds with:</P>
+               
+               <P></P>
+
+<PRE>
+pm is ...
+pointer to member of T with type ...
+int
+</PRE>
+               
+               <P>Unlike the other programs, decl produces an English
+                    translation only if the input declaration is syntactically
+                    correct. decl is pretty thorough, but some errors still slip
+                    through its grasp. It checks rigorously for syntax errors;
+                    however, it does not maintain a symbol table, so it can't
+                    really check for semantic errors.</P>
+               
+               <P> For example, decl can detect that</P>
+
+<PRE>
+const char const *p;
+</PRE>
+               
+               <P></P>
+               
+               <P>has a duplicate const qualifier, or
+                    that</P>
+               
+               <P></P>
+
+<PRE>
+int *;
+</PRE>
+               
+               <P></P>
+               
+               <P>does not declare anything (the
+                    declarator-id is missing). However, decl does not reject</P>
+               
+               <P></P>
+
+<PRE>
+int f[10]();
+</PRE>
+               
+               <P></P>
+               
+               <P>even though C++ does not allow arrays
+                    of functions. I'll elaborate the distinction between
+                    syntactic and semantic errors next month.</P>
+               
+               <h4><FONT COLOR="#000080">The Grammar for decl</FONT></H4>
+               
+               <P>decl accepts object and function
+                    declarations that satisfy the form known in the draft C++
+                    Standard as a simple-declaration.<A href="table1.htm">
+                         Table 1</a>
+shows an EBNF grammar for a
+                    simple-declaration. This grammar is a further simplification
+                    of the already simplified grammar appearing in Tables 2 and
+                    3 of my previous column ("Understanding C++
+                    Declarators," CUJ January, 1996). I'm using this decl
+                    program to illustrate how declarator operators combine with
+                    the type specifiers to yield the type of a declaration.
+                    Therefore, the grammar in <A href="table1.htm">Table 1</A>
+                    omits details, such as initializers,
+                    storage-class-specifiers, and function-specifiers, which do
+                    not contribute to the type of a declaration.</P>
+               
+               <P> I've also exercised some editorial
+                    discretion and just omitted details from the grammar because
+                    I did not want to contend with the complications they would
+                    add to the program. For example, the grammar does not
+                    provide for either declarator-ids or type-names that are
+                    more complicated than a single identifier. It also restricts
+                    the constant-expression in an array-suffix to a single 
+                    identifier or integer literal.</P>
+               
+               <P> The grammar in <A href="table1.htm">Table
+                         1</a>
+contains several non-terminals, such as
+                    identifier and integer-literal, that never appear on the
+                    left-hand-side of a production in <A href="table1.htm">Table
+                         1</a>.
+ These symbols represent tokens, and they are
+                    defined (by appearing on left-hand-side of a production) in
+                    the separate grammar in <A href="table2.htm">Table 2</a>.
+</P>
+               
+               <P> Not all the productions in
+                    <A href="table2.htm">Table 2</a>
+represent complete
+                    tokens. A production in <A href="table2.htm">Table 2</A>
+                    represents a token only if its left-hand-side also appears
+                    on the right-hand-side of some production in
+                    <A href="table1.htm">Table 1</a>.
+</P>
+               
+               <P> Thus, integer-literal, identifier,
+                    name, type-keyword, and cv-qualifier are tokens. The other
+                    productions, digit, letter, lowercase-letter, and
+                    uppercase-letter, define sets of characters used in
+                    composing tokens.</P>
+               
+               <h4><FONT COLOR="#000080">Flavors of
+               Identifiers</FONT></H4>
+               
+               <P>The grammar for decl (<A href="table1.htm">Table
+                         1</a>)
+, defines the non-terminal type-name as simply:</P>
+
+<PRE>
+type-name =
+    name .
+</PRE>
+               
+               <P></P>
+               
+               <P>This is a bit different from the draft
+                    C++ Standard, which defines:</P>
+               
+               <P></P>
+
+<PRE>
+type-name =
+    class-name | enum-name | typedef-name .
+</PRE>
+               
+               <P>The short explanation is that I made this change to keep my
+                    decl program reasonably simple. But there's more you should
+                    know.</P>
+               
+               <P> The draft C++ Standard refers to
+                    non-terminals such as class-name, enum-names and
+                    typedef-name as context-dependent keywords. The draft C++
+                    Standard's grammar uses the different context-dependent
+                    keywords as if they were different kinds of tokens, but
+                    grammatically, they're usually just identifiers. That is, a
+                    class-name is usually just an identifier that's been
+                    previously declared in the current context as the name of a
+                    class. An enum-name is merely an identifier that's been
+                    previously declared in the current context as the name of an
+                    enumeration. And of course, a typedef-name is an identifier
+                    that's been declared in the current context as the name of a
+                    typedef. However, a typedef-name that names a class is also
+                    a class-name, and a typedef-name that names an enumeration
+                    is also an enum-name.</P>
+               
+               <P> Even though they all look just like
+                    identifiers, the grammar must distinguish the
+                    context-dependent names from each other and from identifiers
+                    because C++ is not a context-free language. That is, a
+                    compiler can't parse a C++ program based solely on its
+                    syntactic structure; the compiler needs semantic information
+                    (such as whether an identifier already names a type) to make
+                     parsing decisions. The "maximal munch" rule is a
+                    case in point.</P>
+               
+               <P> Recall that the decl-specifier-seq
+                    that begins a simple-declaration may contain keywords and/or
+                    a type-specifier, and they may appear in any order. The
+                    type-specifier might be a keyword, such as int, or it might
+                    be a context-dependent keyword such as a class-name which
+                    might, in turn, be an identifier. Then again, the
+                    type-specifier might be absent altogether, in which case it 
+                    defaults to int (by the "implicit int" rule).</P>
+               
+               <P> In short, the decl-specifier-seq is a
+                    variable number of keywords, identifiers, and possibly other
+                    stuff, all jumbled together. Since the declarator that
+                    follows the decl-specifiers might begin with an identifier,
+                    finding the end of the decl-specifier-seq can be a problem.
+                    C++ simplifies the problem somewhat by applying the "maximal
+                    munch" rule, which states that:</P>
+               
+               <P> "The longest sequence of
+                    decl-specifiers that could possibly be a type name is taken
+                    as the decl-specifiers of a declaration."</P>
+               
+               <P> That is, a C++ compiler will "munch"
+                    as many symbols as it can in an attempt to include them in
+                    the decl-specifier-seq. As soon as it finds something that
+                    can't be part of the decl-specifier-seq, the compiler shifts
+                    gears and starts parsing the first declarator.</P>
+               
+               <P> Sometimes, a compiler can apply the
+                    maximal munch rule without using any semantic information.
+                    For example, given</P>
+
+<PRE>
+int const N = 10;
+</PRE>
+               
+               <P></P>
+               
+               <P>a compiler can easily tell that N is
+                    not a decl-specifier because the decl-specifier-seq already
+                    has a type-specifier, namely int, and it can have at most
+                    one. (A multi-word combination such as unsigned int is still
+                    considered to be only one type-specifier.) After it stops
+                    munching the decl-specifiers, the compiler must look up N to
+                    make sure it's not already declared in the current scope,
+                    but the compiler doesn't need that semantic information from
+                    the lookup to know when to stop munching.</P>
+               
+               <P>On the other hand, there are times
+                    when a compiler can apply the maximal munch rule only if it
+                    has semantic information from previous declarations to
+                    distinguish type-names from other identifiers. For example,
+                    given</P>
+
+<PRE>
+const T = 10;
+</PRE>
+               
+               <P></P>
+               
+               <P>the compiler must look up T to
+                    determine if it can be part of the decl-specifier-seq. If
+                    the compiler finds that T is a type-name, then T is a
+                    decl-specifier. This leads to a syntax error, because the
+                    declarator is then missing. On the other hand, if the
+                    compiler finds that T is not declared in the current
+                    context, then it stops munching. The decl-specifier-seq is
+                    just const (with an implied int), and the declarator is T.</P>
+               
+               <P>Now I can really explain why I reduced
+                    the production for type-name to just</P>
+
+<PRE>
+type-name =
+    name .
+</PRE>
+               
+               <P></P>
+               
+               <P>decl needs a way to distinguish
+                    type-names from other identifiers. However, I did not want
+                    to build a symbol table to collect semantic information. So
+                    I faked the missing semantic information using a simple
+                    lexical rule: names and identifiers have the same
+                    appearance, except that a name always begins with an
+                    uppercase letter, and an identifier always begins with a
+                    lowercase letter. For example, N, Name, and Type are names,
+                    but n, name, t, and type are identifiers. See the grammar in
+                    <A href="table2.htm">Table 2</a>
+for the formal
+                    description of this rule.</P>
+               
+               <P>As it parses declarations, decl
+                    assumes that each name has already been declared with
+                    suitable semantics, and each identifier has not yet been
+                    declared. Thus, for example, decl thinks</P>
+
+<PRE>
+const T;
+</PRE>
+               
+               <P></P>
+               
+               <P>is an error, because it sees T as a
+                    name, which it assumes is a type-name, and thus a
+                    decl-specifier. decl includes T in the decl-specifier-seq
+                    and then finds the declarator missing. However, decl accepts</P>
+               
+               <P></P>
+
+<PRE>
+const t;
+</PRE>
+               
+               <P></P>
+               
+               <P>because it regards t as an undeclared
+                    identifier. It stops munching the decl-specifiers, and
+                    interprets t as the declarator-id.</P>
+               
+               <h4><FONT COLOR="#000080">Designing the Scanner
+               Interface</FONT></H4>
+               
+               <P>decl is implemented as two primary
+                    components, a scanner and a parser. The scanner reads
+                    characters from the input stream, filters out the whitespace
+                    characters, and partitions the remaining characters into
+                    tokens. The parser acquires tokens from the scanner, pieces
+                    them into declarations, and translates them into English.</P>
+               
+               <P>decl is a typical filter, in the sense
+                    defined by Kernighan and Plauger[<A href="#REF4">4</a>]
+. A
+                    filter program has one input, one output, and performs a
+                    useful transformation on the data as it passes through. decl
+                    reads from standard input, writes to standard output, and
+                    turns C++ declarations into English as they pass through.</P>
+               
+               <P> C++ filter programs can use either
+                    FILEs (from the standard header &lt;stdio.h&gt;) or streams
+                    (from &lt;iostream&gt;). FILEs tend to produce smaller and
+                    faster executables, but streams are safer and more
+                    extensible. I opted for the latter in this program.</P>
+               
+               <P> The parser is essentially the main
+                    part of the program; it reads the input, translates it, and
+                    writes the output. Although the parser writes strings
+                    directly to an ostream (an output stream), it should not
+                    read directly from an istream (an input stream). Reading
+                    from an istream delivers characters one at a time, but the
+                    parser wants to see tokens. Therefore, the parser hands the 
+                    istream to the scanner; and lets the scanner get the
+                    characters one at a time. The scanner turns the characters
+                    into tokens and delivers them to the parser. From the
+                    parser's perspective, the scanner is the input stream.
+                    Therefore, I designed the scanner as a class with a
+                    rudimentary, stream-like interface.</P>
+               
+               <P> The scanner has a constructor</P>
+
+<PRE>
+scanner(istream &amp;);
+</PRE>
+               
+               <P></P>
+               
+               <P>which attaches a scanner to an
+                    istream. It also has a function</P>
+               
+               <P></P>
+
+<PRE>
+token get();
+</PRE>
+               
+               <P></P>
+               
+               <P>which returns the next token from the
+                    input stream as an object of type token. In addition, the
+                    scanner "remembers" the current token. The parser
+                    can get another copy of the current token without changing
+                    the state of the scanner by calling</P>
+               
+               <P></P>
+
+<PRE>
+token current() const;
+</PRE>
+               
+               <P>A token object is simply a pair of values. Aside from the
+                    default constructor, the token class has only two
+                    explicitly-defined public member functions, for querying
+                    those values:</P>
+
+<PRE>
+string text() const;
+</PRE>
+               
+               <P></P>
+               
+               <P>returns the token as a string object,
+                    and</P>
+               
+               <P></P>
+
+<PRE>
+category kind() const;
+</PRE>
+               
+               <P></P>
+               
+               <P>returns an enumeration that
+                    categorizes the token. This categorization requires some
+                    elaboration.</P>
+               
+               <P>Typically, when a parser is analyzing
+                    a phrase, it doesn't care about the particular characters
+                    that make up a token, only that the token is member of some
+                    category of tokens. For example, when the parser is munching
+                    a decl-specifier-seq, it wants to know if the next token is
+                    a type-keyword (such as int or float), a cv-qualifier (such
+                    as const), or a name. The textual image of the token is
+                    immaterial as this point. Therefore, as it gets a token, the
+                    scanner classifies that token into a category so that the
+                    category is readily available to the parser.</P>
+               
+               <P> The scanner represents categories as
+                    an enumeration:</P>
+
+<PRE>
+enum category
+    {
+    ...
+    INT_LITERAL,
+    IDENTIFIER,
+    NAME,
+    TYPE_KEYWORD,
+    ...
+    };
+</PRE>
+               
+               <P></P>
+               
+               <P>In addition to these categories, each
+                    operator gets its own category. Thus, there are categories
+                    for AMPERSAND, COMMA, LEFT_BRACKET, STAR (asterisk), and
+                    others. There is also a category, NO_MORE, for the end of
+                    input, and another category, NO_SUCH, for an unrecognizable
+                    token. ("Unrecognizable" is the politically
+                    correct way to say "erroneous.")</P>
+               
+               <P>The function token::kind returns one
+                    of these enumeration values. A typical interaction between
+                    the parser and scanner looks something like:</P>
+
+<PRE>
+token t = input.get();
+if (t.kind() == NAME ||
+    t.kind() == INT_LITERAL)
+    ...
+</PRE>
+               
+               <P></P>
+               
+               <P>or</P>
+               
+               <P></P>
+
+<PRE>
+category c = input.current().kind();
+if (c == AMPERSAND || c == STAR)
+    ...
+</PRE>
+               
+               <P></P>
+               
+               <P>(input is the scanner object.)</P>
+               
+               <P>My experience has been that the
+                    identifiers that name token categories often show up in
+                    other parts of a compiler as the names of other entities.
+                    For example, the scanner might use the identifier CONST for
+                    the token category of the const keyword, and the symbol
+                    table might use CONST as the encoding of a type attribute in
+                    a table entry. To avoid such name conflicts, I defined the 
+                    enumeration type category as a public member of class token,
+                    so that all references to the type name or to a category
+                    value must have token:: as a qualifier. Thus, the "typical"
+                    interactions that I showed before actually look like:</P>
+
+<PRE>
+token t = input.get();
+if (t.kind() == token::NAME ||
+    t.kind() == token::INT_LITERAL)
+    ...
+</PRE>
+               
+               <P></P>
+               
+               <P>or</P>
+               
+               <P></P>
+
+<PRE>
+token::category tc =
+    input.current().kind();
+if (tc == token::AMPERSAND ||
+    tc == token::STAR)
+    ...
+</PRE>
+               
+               <P>The class definitions for scanner and token appear together
+                    in the header scanner.h (<A href="listing1.htm">Listing 1</a>)
+.
+                    The header shows a few other details I haven't yet
+                    discussed, so I'll discuss them now.</P>
+               
+               <P> The first eight enumeration constants
+                    of type token::category have explicitly defined values. For
+                    example,</P>
+
+<PRE>
+class token
+    {
+    ...
+    enum category
+        {
+        AMPERSAND = '&amp;',
+        ...
+</PRE>
+               
+               <P></P>
+               
+               <P>defines token::AMPERSAND with the
+                    value of the character code for '&amp;'. This is an old C
+                    language idiom (the p.c. way to say "hack") that
+                    makes it very easy for the scanner to convert a
+                    single-character operator into its corresponding token
+                    category. All you need to do is cast the character to type
+                    category. The final category, NO_VALUE, is for a token
+                    that's none of the above.</P>
+               
+               <P>This mapping works only for tokens
+                    that are single-character operators. The scanner must use
+                    other means to map other tokens into categories. However the
+                    scanner does that mapping, it must insure that the other
+                    token categories do not conflict with the single-character
+                    operator categories. Therefore, the enumeration definition
+                    defines the first non-operator category to have a value 
+                    outside the range of character codes. I've seen many
+                    programs do this by defining</P>
+
+<PRE>
+enum category
+    {
+    AMPERSAND = '&amp;',
+    ...
+    NO_MORE = 256,
+    ...
+</PRE>
+               
+               <P>I prefer to use the expression CHAR_MAX+1 instead of 256.
+                    CHAR_MAX is the maximum value of type char, as defined in &lt;limits.h&gt;.
+                    I believe this expresses the design more clearly.</P>
+               
+               <P> The remaining enumeration constants
+                    do not have explicitly- defined values, so the compiler
+                    simply assigns them values in ascending order starting with
+                    NO_MORE+1.</P>
+               
+               <P> The token class has two
+                    explicitly-declared constructors: a public default
+                    constructor</P>
+
+<PRE>
+token();
+</PRE>
+               
+               <P></P>
+               
+               <P>and a private constructor</P>
+               
+               <P></P>
+
+<PRE>
+token(category, const string &amp;);
+</PRE>
+               
+               <P></P>
+               
+               <P>The definitions for these two
+                    constructors appear as inlines in scanner.h (<A href="listing1.htm">Listing
+                         1</a>)
+.</P>
+               
+               <P>I provided the public default
+                    constructor so that the parser could declare token objects
+                    for use as in</P>
+               
+               <P></P>
+
+<PRE>
+token t;
+...
+t = input.get();
+</PRE>
+               
+               <P></P>
+               
+               <P>I also allowed the compiler to
+                    generate a public copy constructor and copy assignment
+                    operator, so the parser could copy tokens back and forth. (I
+                    "allowed" the compiler to generate the functions
+                    by not declaring them myself.)</P>
+               
+               <P>I provided the other token constructor</P>
+
+<PRE>
+token(category, const string &amp;);
+</PRE>
+               
+               <P></P>
+               
+               <P>so the scanner could manufacture new
+                    token objects. For example, scanner::get can use</P>
+               
+               <P></P>
+
+<PRE>
+return token(token::NAME, text);
+</PRE>
+               
+               <P></P>
+               
+               <P>to return a token that represents a
+                    name.</P>
+               
+               <P>In the previous example, text is
+                    presumably a string that holds the characters that compose
+                    the name. I did not think it was appropriate to bog down
+                    this constructor with internal checks to verify that the
+                    characters in the text string do indeed spell out a token
+                    that belongs in the category. After all, insuring that the
+                    category matches the text is the scanner's job.</P>
+               
+               <P> Since this constructor (the "general"
+                    constructor) has no consistency checks, it's not really safe
+                    for widespread use. In particular, I don't want the parser
+                    using it to generate arbitrary tokens. Thus, I declared the
+                    general constructor private to keep it away from the parser,
+                    but granted friendship to the scanner so it could still
+                    access the general constructor. The net effect is that the
+                    parser can create token objects, but only with the default
+                    category NO_VALUE, or it can copy tokens returned by the
+                    scanner.</P>
+               
+               <P> In addition to classes scanner and
+                    token, scanner.h defines one global function:</P>
+
+<PRE>
+const char *image(token::category);
+</PRE>
+               
+               <P></P>
+               
+               <P>which converts a value of type
+                    token::category to a null-terminated character string. In
+                    C++, enumeration constants do not automatically convert to
+                    some mnemonic representation when you write them to a
+                    stream. For example, using the definitions for operator&lt;&lt;
+                    in &lt;iostream&gt;</P>
+               
+               <P></P>
+
+<PRE>
+cout &lt;&lt; token::AMPERSAND;
+</PRE>
+               
+               <P></P>
+               
+               <P>does not display token::AMPERSAND as &amp;.
+                    Rather, the enumeration value promotes to int, and the
+                    decimal value of the character code for '&amp;' appears in
+                    the output.</P>
+               
+               <P>I often find a need to display
+                    enumeration values in some mnemonic form. Rather than
+                    overload operator&lt;&lt; to do the job, I prefer a more
+                    general approach inspired by the Ada language. In Ada, the
+                    expression e'image returns the string representation of
+                    enumeration value e. The image function declared above
+                    provides a similar capability for token::category. To
+                    display tc of type token::category in a readable form on
+                    cout, you simply write</P>
+
+<PRE>
+cout &lt;&lt; image(tc);
+</PRE>
+               
+               <P>Though slightly less convenient for output than an operator&lt;&lt;
+                    specifically for token::category, the image function is much
+                    more flexible. You can use the result of image(tc) for many
+                    other operations besides output.</P>
+               
+               <P> The final detail in the scanner's
+                    public interface is the function</P>
+
+<PRE>
+token scanner::unget();
+</PRE>
+               
+               <P></P>
+               
+               <P>which puts the current token back in
+                    the input so that it will be returned by the next call to
+                    scanner::get. Parsers for really well-designed languages do
+                    not need unget, but C++ is not such a language. I'll
+                    elaborate on unget next month when I show you the parser for
+                    decl.</P>
+               
+               <P><A href="listing2.htm">Listing 2</A>
+                    shows scanner.cpp, which defines the non-inline member
+                    functions and static data members for the scanner class. I
+                    will explain the implementation details next month.</P>
+               
+               <P> <A href="listing3.htm">Listing 3</A>
+                    presents scantest.cpp, a simple program that exercises parts
+                    of the scanner. (It does not test scanner::unget.) Simply
+                    compile and link scantest.cpp (<A href="listing3.htm">Listing
+                         3</a>)
+ with scanner.cpp (<A href="listing2.htm">Listing
+                         2</a>)
+ to produce an executable.</P>
+               
+               <h4><FONT COLOR="#000080">Life on the Bleeding
+               Edge</FONT></H4>
+               
+               <P>All of the listings refer to C++
+                    header files without using the .h extension, as prescribed
+                    by the C++ draft standard. For example, the listings use</P>
+               
+               <P></P>
+
+<PRE>
+#include &lt;iostream&gt;
+</PRE>
+               
+               <P></P>
+               
+               <P>rather than</P>
+               
+               <P></P>
+
+<PRE>
+#include &lt;iostream.h&gt;
+</PRE>
+               
+               <P>Unfortunately, most current (early 1996 vintage) compilers
+                    and libraries still require the latter. If you want to
+                    compile my code on your compiler(s), you have two choices:
+                    (1) put the .h extensions back in the code, or (2) write you
+                    own headers with names that leave off the .h. I recommend
+                    (2). That's what I did.</P>
+               
+               <P> For example, I wrote a file called "iostream"
+                    containing just</P>
+
+<PRE>
+#include &lt;iostream.h&gt;
+</PRE>
+               
+               <P></P>
+               
+               <P>I placed the file in a directory, and
+                    altered my compiler configuration to look for headers in
+                    that directory as well as all the other usual places. My
+                    fervent hope is that I will not need to change my code when
+                    the .h extension goes out of vogue.</P>
+               
+               <P>Writing the header for &lt;string&gt;
+                    can be a bit trickier. The standard string class is newer
+                    than the iostream headers, and so some compilers don't even
+                    supply a string class yet. If that's the case, you might try
+                    using Plauger's string class[<A href="#REF5">5</a>].</P>
+               
+               <P> Those libraries that provide a string
+                    class certainly can't put the class in &lt;string.h&gt;. The
+                    C++ library already has a &lt;string.h&gt; that has the C
+                    library's str and mem functions in it. You may have to hunt
+                    for the string class header. For example, in Borland C++
+                    4.5, the string class is in &lt;cstring.h&gt;. In Watcom
+                    C/C++ 10.5, it's in &lt;string.hpp&gt;.</P>
+               
+               <P> Another problem is that the spelling
+                    of the string class name varies across libraries. In the
+                    Draft Standard, and in the Borland 4.5 library, the name is
+                    spelled string (all in lower case). However, the Watcom 10.5
+                    library spells it String (with the leading S in upper case).
+                    In that case, you should define string as a typedef alias
+                    for String. <A href="listing4.htm">Listing 4 </A>shows a
+                    string header that makes Watcom's string class look more
+                    like the Draft Standard's string class.</P>
+               
+               <P> I'll show you the rest of the decl
+                    program next month.</p>
+               
+               <h4><FONT COLOR="#000080">References</FONT></H4>
+               
+               <P>[<A name="REF1">1</a>] Brian W.
+                    Kernighan and Dennis M. Ritchie. The C Programming Language,
+                    2nd. ed. (Prentice Hall, 1988).</P>
+               
+               <P> [<A name="REF2">2</a>] Clovis L.
+                    Tondo and Scott E. Gimpel. The C Answer Book, 2nd. ed.
+                    (Prentice Hall, 1989).</P>
+               
+               <P> [<A name="REF3">3</a>] Peter Van der
+                    Linden, Expert C Programming (SunSoft Press, 1994).</P>
+               
+               <P> [<A name="REF4">4</a>] Brian W.
+                    Kernighan and P.J. Plauger. Software Tools (Addison-Wesley,
+                    1976).</P>
+               
+               <P> [<A name="REF5">5</a>] P.J. Plauger.
+                    The Draft Standard C++ Library (Prentice Hall, 1995).</P>
+               
+               <P><I>Dan Saks is the president of Saks &amp;Associates,
+                    which offers consulting and training in C++ and C. He is
+                    secretary of the ANSI and ISO C++ committees. Dan is
+                    coauthor of C++ Programming Guidelines, and codeveloper of
+                    the Plum Hall Validation Suite for C++ (both with Thomas
+                    Plum). You can reach him at 393 Leander Dr., Springfield OH,
+                    45504-4906, by phone at (513)324-3601, or electronically at
+                    dsaks@wittenberg.edu.</I></P>
+               
+               <P></P>
+
+<h4><a href="../../../source/1996/feb96/saks.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+     </BODY>
+</HTML>

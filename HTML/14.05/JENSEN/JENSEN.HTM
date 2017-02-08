@@ -1,0 +1,491 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+          <TITLE>May 1996/32-bit Memory Management in OS/2</TITLE>
+     </HEAD>
+     
+     <BODY BGCOLOR="#FFFFFF">
+
+          
+          <H2><A href="../tocmay.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          <FONT COLOR="#FF0000">Features</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="CENTER"><FONT COLOR="#800000">32-bit Memory Management in
+          OS/2</FONT></H2>
+          
+          <H3 ALIGN="CENTER"><FONT COLOR="#800000">Jens A. Jensen</FONT></H3>
+          
+          <p><BLOCKQUOTE>OS/2 gives you a lot of control over memory
+               allocation, but it also harbors a few surprises for the unwary.</BLOCKQUOTE></p>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <p>If you are new to programming for
+                    OS/2, or if you never worried about the inner workings of
+                    the OS/2 memory management, you may be in for a couple of
+                    surprises. Although the 32-bit flat memory model has done
+                    away with the blessings of segment handling, IBMs desire for
+                    strict backward compatibility with legacy 16-bit OS/2 code
+                    has created some pitfalls that should be avoided. This 
+                    article addresses these challenges and gives you some memory
+                    handling examples, advice, and utilities, which I hope will
+                    make your everyday programming easier.</p>
+               </FONT>
+               
+               <p>This article does not pretend to be a
+                    complete tutorial on OS/2 memory management. Rather, it
+                    concentrates on various little-known aspects of memory
+                    handling. The text and the examples primarily describe the
+                    use of memory private to a process. The handling of shared
+                    memory is a large enough topic that it deserves an article
+                    for itself.</p>
+               
+               <p>For space reasons I do not show most
+                    of the source code for demos and sample programs here.
+                    Instead I include them on this months code disk and online
+                    sources (see page 3). However, the main example the
+                    HeapManager accompanies the text in <A href="listing1.htm">Listings
+                         1</a>,
+ <A href="listing2.htm">2</a>,
+ and
+                    <A href="listing3.htm">3</a>,
+ and is also included on the
+                    code disk.</p>
+               
+               <h4><FONT COLOR="#000080">The OS/2 32-bit
+               memory model</FONT></H4>
+                </FONT>
+               
+               <p>Seen from the application programmers
+                    standpoint, OS/2 arranges memory as one virtual address
+                    space from 0 to 4 GB, addressable with a 32-bit pointer. No
+                    segments or selectors are visible it works much like the
+                    small memory model in MS-DOS programming. Far from all of
+                    this memory is available to the programmer, though. First,
+                    the operating system reserves the range from 2 GB to 4 GB 
+                    for its own use. Second, of the remaining 2 GB, only the
+                    lower 512 MB, known as the compatibility region, is
+                    available to the programmer. IBM imposed this limitation
+                    because it wanted out-of-the-box 16-bit OS/2 1.x programs to
+                    run unmodified under the 32-bit OS/2 2.0 and later versions.</p>
+               </FONT>
+               
+               <p>The compatibility region (see
+                    <A href="jenf1.htm">Figure 1</a>)
+ consists of the
+                    following, from bottom to top: The application program,
+                    consisting of code, data, and stack; the applications
+                    private heap; the shared heap; and loaded dynamic link
+                    libraries (DLLs). So you can see that an application does
+                    not even have the entire 512 MB region for its exclusive
+                    use. The memory available depends on the number and size of
+                    loaded DLLs and the shared memory allocated by other
+                    processes. However, each of the sharable and private regions
+                    is guaranteed a minimum size of 64 MB.</p>
+               </FONT>
+               
+               <p>So, of the 4 GB of memory addressable
+                    through a 32-bit pointer, only between 64 MB and 448 MB is
+                    available to the application process. Naive programming,
+                    however, may reduce this available memory dramatically. I
+                    demonstrate this with some experiments, which you will be
+                    able to try yourself when you obtain the source code. This
+                    months code disk contains the program ALL1BYTE.C, which 
+                    allocates one byte at a time until available memory is
+                    exhausted, i.e., until DosAllocMem no longer returns 0. When
+                    I used this program, it could only allocate 3,944 bytes.
+                    According to the documentation this is because the system
+                    always allocates a minimum of one 4 KB memory page. 3,944
+                    pages, however, only accounts for 15.4 MB something else
+                    must be going on. It turns out that the system allocates
+                    memory on 64 KB boundaries rather than on 4 KB boundaries.
+                    Again, this has been done to maintain backward compatibility
+                    with 16-bit code.</p> </FONT>
+               
+               <p>This memory arrangement is called
+                    tiled memory. Tiled memory does not prevent DosAllocMem from
+                    allocating chunks greater than 64 KB, but on an average a
+                    program will waste 32 KB on every allocation. To understand
+                    this you may run the code disk program TILEDMEM.C, which
+                    shows that allocations are placed on 64 KB boundaries. The
+                    code disk program ALL1INT.C shows that even if you allocate 
+                    just one int, 64 KB becomes accessible and usable once
+                    committed with the DosSetMem API call. Note that you have
+                    access to no more than 64 KB; if you try to commit just one
+                    more byte with DosSetMem youll get a protection violation.
+                    This is true no matter how big the initial allocation is.
+                    If, for example, you initially allocate 130 KB you can
+                    commit and use up to 192 KB.</p>
+               </FONT>
+               
+               <p>Tiled memory is not an option. As the
+                    documentation implies, you get it whether you want it or
+                    not. Tiled memory is not necessarily a bad thing. It allows
+                    me to call my old 16-bit code, especially DLLs, from newly
+                    developed 32-bit code. Also, tiled memory allows the porting
+                    from 16- to 32-bit code to be done incrementally.
+                    (Translation between 16- and 32-bit memory management is 
+                    achieved via a thunk layer. The thunking mechanism is beyond
+                    the scope of this article if you need further information
+                    you may find reference <A href="#REF1">[1]</a>
+useful.)</p>
+               </FONT>
+               
+               <h4><FONT COLOR="#000080">More Efficient Memory
+               Management</FONT></H4>
+                </FONT>
+               
+               <p>The API consists of a number of
+                    function calls, which may be divided into four groups:</p>
+               </FONT>
+               <UL><LI> main allocation calls </FONT></LI>
+                    <LI> suballocation calls </FONT></LI>
+                    <LI> a single query call </FONT></LI>
+                    <LI> a set of thread instance memory
+                         allocation calls </FONT></LI>
+               </UL> </FONT>
+               
+               <p>The API calls are equivalent to the
+                    DOS interrupt 21h interface, although they take the form of
+                    function calls rather than software interrupts. Thus, the
+                    API calls operate at a lower level than malloc and friends,
+                    giving the programmer substantially more control over how
+                    allocations should take place. The down side is that the API
+                    calls are not very portable. However, wrapping them up in a
+                    library such as the HeapManager (presented later) should
+                    help relieve the burden if porting is ever necessary.</p>
+               </FONT>
+               
+               <p>The main set of calls consists of
+                    DosAllocMem for private memory, DosAllocSharedMem for memory
+                    shared among two or more processes, and their corresponding
+                    DosFreeMem call. Also, this group include some calls for
+                    getting and giving away shared memory. DosSetMem is
+                    primarily used for committing and decommitting ranges of
+                    pages within an already allocated memory object.</p>
+               </FONT>
+               
+               <p>Allocated pages have attributes,
+                    represented by read, write, execute, and commit bits. You
+                    can set these attributes either via DosAlloc(Shared)Mem or
+                    DosSetMem. The only attribute requiring explanation is the
+                    commit bit, defined as PAG_COMMIT. A non-committed page
+                    cannot be used. Hence, it does not participate in the
+                    swapping to disk of virtual memory pages. This prevents 
+                    excessive growth of the swap file, and explains why
+                    ALL1BYTE.C will work even if your swap partition is smaller
+                    than the allocated virtual address space.</p>
+               </FONT>
+               
+               <p>As seen above, DosAlloc(Shared)Mem on
+                    average wastes 32 KB per allocation. To address this problem
+                    IBM provided the suballocation calls DosSub.... Not only do
+                    these calls preserve address space, they also perform
+                    considerably faster since they are burdened with less
+                    overhead. Also, the suballocation calls guarantee that you
+                    will have the memory you need throughout program execution 
+                    (except for lack of disk swap space, of course). You use
+                    them in this order:</p>
+               </FONT>
+
+<PRE>DosAllocMem                   Allocate, but do not commit,
+                              what you think you are going
+                              to need. This will be your heap
+                              (or pool, if you prefer that term).
+
+DosSubSetMem                  Initialize the heap.
+
+DosSubAllocMem/DosSubFreeMem  Allocate/free to your hearts desire.
+
+DosSubUnsetMem                Destroy heap.
+
+DosFreeMem                    Free the heap memory.</PRE>
+               
+               <p>The HeapManager presented below
+                    illustrates detailed use of these API calls.</p>
+               </FONT>
+               
+               <p>The third group of memory management
+                    API calls provides only the function DosQueryMem. You use
+                    this call to obtain information on the processs virtual
+                    address space. Note that, contrary to the documentation, the
+                    call will fail if you ask about memory regions that have not
+                    been allocated. The code disk program MEMMAP.C shows how the
+                    call may be used to map the virtual memory address space.</p>
+               </FONT>
+               
+               <p>The remaining API calls,
+                    DosAllocThreadLocalMemory and DosFreeThreadLocalMemory,
+                    concern themselves with thread instance data. If a function
+                    needs to access static data, that function cannot safely be
+                    called from two or more threads. The static data renders the
+                    function non-reentrant. The two API calls shown above allow
+                    you to overcome this limitation by letting you allocate a 
+                    few 32-bit words mapped to the same logical address but
+                    placed in different memory for each thread. This allows each
+                    function to keep thread instance data but still be
+                    reentrant.</p> </FONT>
+               
+               <h4><FONT COLOR="#000080">An OS/2 32-bit Heap
+               Manager</FONT></H4>
+                </FONT>
+               
+               <p>As seen above, using the DosSub...
+                    calls can be cumbersome. Then why not just use good old
+                    malloc and friends? Well, you can use the malloc family
+                    whenever you want, but only for private memory. If you need
+                    shared memory, malloc cannot help you. If, on the other
+                    hand, you wrap the suballocation API calls into some more
+                    manageable functions like the HeapManager presented here you
+                     will get some advantages while still maintaining a certain
+                    degree of portability. Once the heap is created, memory is
+                    guaranteed to be available (but disk swap space may, of
+                    course, be exhausted). The HeapManager provides low memory
+                    overhead (64 bytes for the heap, 4 bytes for each
+                    allocation, plus the extra bytes required by the system to
+                    round each allocation up to a four-byte boundary). Last but
+                    not least, you will be able to implement some small utility
+                    functions that can tell the state of the heap.</p>
+               </FONT>
+               
+               <p>With the HeapManager (shown in<A href="listing1.htm">
+                         Listings 1</a>
+and<A href="listing2.htm"> 2</a>)
+ you
+                    may create as many heaps as you want, each heap having a
+                    different size. Using the HeapManager is simple.
+                    <A href="listing3.htm">Listing 3</a>
+shows the conceptual
+                    use of the HeapManager calls, while the code disk file
+                    HEAPDEMO.C shows a more elaborate program that excercises a
+                    number of heaps with repeated alloc and free calls.</p>
+               </FONT>
+               
+               <p>The HeapManager implements two
+                    functions, createHeap and destroyHeap, for heap creation and
+                    destruction; two functions, allocMem and freeMem, for memory
+                    allocation and freeing within a heap previously created with
+                    createHeap; and five utility functions, queryHeapSize,
+                    queryHeapFree, queryHeapBlocks, queryHeapBase, and
+                    queryBlockSize, for querying the heap state. The query... 
+                    functions provide information not easily available when
+                    using malloc, or when using the native DosQueryMem.</p>
+               </FONT>
+               
+               <p>Once created, the heap will honor
+                    dynamic allocation and free calls with allocMem and freeMem.
+                    Each allocMem call results in the allocation of a block of
+                    memory within the heap. The internal representation of such
+                    a block is four bytes (size_t) larger than the
+                    user-requested size. The HeapManager uses these four bytes
+                    to hold the user block size and places them in front of the
+                    user area (see <A href="jenf2.htm">Figure 2</a>)
+. The
+                    HeapManager needs this information because the OS/2 API call
+                    for freeing the block requires it as a parameter.</p>
+               </FONT>
+               
+               <p>The header file HEAPMGR.H in
+                    <A href="listing1.htm">Listing 1</a>
+contains the function
+                    prototypes as well an incomplete struct _heap declaration.
+                    The macro HEAP makes this name more manageable. Ive made
+                    this structure incomplete so as to hide the implementation
+                    from a client programmer, should the HeapManager be packed
+                    in a static library or DLL for use by fellow programmers.</p>
+               </FONT>
+               
+               <p>The implementation file HEAPMGR.C (<A href="listing2.htm">Listing
+                         2</a>)
+ first completes the incomplete struct _heap,
+                    a.k.a. HEAP. The structure holds information on heap size,
+                    total free space in the heap, the number of allocated blocks
+                    within the heap, and a pointer to the start of the heap. The
+                    ROUNDUP macro (defined next) will round addresses up to
+                    four-byte and 64 KB boundaries. ROUNDUP will round upward
+                    any positive number including 0 to any positive boundary.
+                    Notice that it does not round negative numbers correctly.</p>
+               </FONT>
+               
+               <p>The createHeap function takes the
+                    requested heap size as an argument, which is then rounded to
+                    a 64 KB boundary since DosAllocMem reserves this address
+                    space anyway. createHeap then initializes the HEAP
+                    structure, adjusting the free member for overhead. Next,
+                    createHeap allocates and initializes memory by calling
+                    DosAllocMem without the PAG_COMMIT flag, and calling
+                    DosSubSetMem with the DOSSUB_SPARSE_OBJ flag. Also, with the
+                    DosSubSetMem call, createHeap requests system serialization.
+                    Since the only place to put the HEAP structure is within the
+                    heap itself, createHeap calls DosSubAllocMem to allocate the
+                    space, rather than using my own allocMem function. This is
+                    because I do not want the HEAP structure to appear as a
+                    normal user allocation in the heap. Following the
+                    allocation, createHeap copies the structure content to the
+                    heap. Last, createHeap returns the pointer to the HEAP
+                    structure to the user as heap identification.</p>
+               </FONT>
+               
+               <p>destroyHeap takes a HEAP pointer as
+                    its only argument. It then copies the heap base pointer and
+                    the block count, deallocates the HEAP structure, unsets the
+                    heap, and finally calls DosFreeMem to free the heap space.
+                    It is necessary to copy the heap base pointer and the block
+                    count because once the HEAP structure is freed its content
+                    can no longer be trusted. destroyHeap provides a crude leak
+                    checking mechanism in that it normally returns the number of
+                    still unfreed blocks in the heap being destroyed. On
+                    failure, destroyHeap returns the OS/2 API return code as a
+                    negative number.</p> </FONT>
+               
+               <p>The memory allocation function
+                    allocMem takes two arguments, a HEAP pointer as heap
+                    identification and the size of the requested block. It
+                    actually allocates four bytes more than the requested size
+                    because DosSubFreeMem will need the size-to-free as a
+                    parameter allocMem places this size information in front of
+                    the user area. allocMem also updates the HEAP structure in a
+                     thread-safe manner by using the DosEnterCritSec and
+                    DosExitCritSec serialization calls. These are low-overhead
+                    calls that do not allow the scheduling of other threads in
+                    the process while in the critical section.</p>
+               </FONT>
+               
+               <p>Notice that lack of disk swap space
+                    will not cause an allocMem call to fail. Rather, the user
+                    will get a full-screen operating system message indicating
+                    that the situation is serious and that some open
+                    applications should be closed.</p>
+               </FONT>
+               
+               <p>freeMem deallocates a block of memory
+                    in the heap. It takes two arguments, a HEAP pointer as heap
+                    identification and the pointer allocMem returned when the
+                    block was allocated. freeMem first defines some local
+                    variables for convenience. It then frees the block with
+                    DosSubFreeMem and adjusts the HEAP structure members. As in
+                    allocMem, this adjustment takes place within a critical 
+                    section frame.</p> </FONT>
+               
+               <p>The utility functions queryHeapSize,
+                    queryHeapFree, queryHeapBlocks, queryHeapBase, and
+                    queryBlockSize are trivial one-liners that need no
+                    explanation.</p> </FONT>
+               
+               <p>createHeap will fail only if the
+                    remaining virtual address space cannot accomodate the
+                    requested heap size. Likewise, allocMem will fail only if
+                    the requested block size do not fit into an empty area of
+                    the heap. The most likely reason for freeMem and destroyHeap
+                    to fail is heap corruption, for example, by writing beyond
+                    the bounds of an allocated block.</p>
+               </FONT>
+               
+               <h4><FONT COLOR="#000080">The HeapDemo program</FONT></H4>
+                </FONT>
+               
+               <p>The code disk program HEAPDEMO.C
+                    performs an intensive test of the HeapManager. It creates
+                    HEAPNUM heaps of a size up to MAXHEAPSIZE, and can make up
+                    to ALLOCNUM allocations in each heap. HEAPDEMO keeps the
+                    various HEAP pointers in heapArr[HEAPNUM]. After heap
+                    creation, it initializes all cells of the two-dimensional
+                    array allocMtx[HEAPNUM][ALLOCNUM] to 0. (heapArr and
+                    allocMtx have been declared as global variables just to
+                    avoid unpleasant surprises should you forget to tell the
+                    linker to provide sufficient stack space.)</p>
+               </FONT>
+               
+               <p>HEAPDEMO performs allocations and/or
+                    frees at random: it calculates the coordinates for a random
+                    matrix cell via the rand function and then performs an
+                    allocation or free depending on whether cell content is 0 or
+                    not. (Notice that RAND_MAX with the IBM icc compiler is only
+                    defined to 32,767. This is the reason for the scaling rand()
+                    * rand() found in a couple of places in the program.) When
+                    HEAPDEMO performs an allocation, it fills the block with
+                    data by means of the memset function. Having done ITERATIONS
+                    allocations and/or frees, HEAPDEMO deallocates everything
+                    and destroys the heaps.</p>
+               </FONT>
+               
+               <p>The helper function printHeaps is used
+                    throughout the program to display the state of the heap.
+                    printHeaps demonstrates the use of the heap manager utility
+                    functions.</p> </FONT>
+               
+               <h4><FONT COLOR="#000080">Possible Improvements
+               to HeapManager</FONT></H4>
+                </FONT>
+               
+               <p>Though fairly complete, the
+                    HeapManager could be enhanced in various ways, for example:</p>
+               </FONT>
+               <UL><LI> It could provide dynamic
+                         extension of the heap, i.e., automatic creation of a
+                         new heap, when exhausted. Also, in this case, the
+                         HeapManager should destroy heaps automatcally when they
+                         become empty. </FONT></LI>
+                    <LI> HeapManager could be enhanced
+                         to support shared memory, including semaphore handling
+                         to serialize different processes access to the heap.
+                         </FONT></LI>
+                    <LI> More utility functions, such as
+                         queryLargestFreeBlock, or even a heap walker could be
+                         added. </FONT></LI>
+                    <LI> Bounds checking could be added.
+                         </FONT></LI>
+                    <LI> HeapManager could employ more
+                         sophisticated leak checking machinery to supplement the
+                         rather crude measure of returning the number of blocks
+                         still allocated in destroyHeap. </FONT></LI>
+                    <LI> The HeapManager could be
+                         converted to a C++ class. </FONT></LI>
+               </UL> </FONT>
+               
+               <h4><FONT COLOR="#000080">Summary</FONT></H4>
+                </FONT>
+               
+               <p>Due to the desire for backward
+                    compatibility to legacy 16-bit programs, the 32-bit OS/2
+                    memory management API has some peculiarities and side
+                    effects that you must take into consideration. The
+                    HeapManager is a set of functions that effectively creates a
+                    more manageable abstraction by wrapping the OS/2 memory
+                    management API calls. Use of the HeapManager provides memory
+                    that is guaranteed to exist and helps avoid the pitfalls of
+                    using tiled memory in 64 KB chunks. HeapManager has low
+                    overhead, fast performance, provides information on the heap
+                    state, performs a (rather crude) sort of leak checking, and
+                    eases porting should the need arise.</p>
+               </FONT>
+               
+               <h4><FONT COLOR="#000080">Reference</FONT></H4>
+                </FONT>
+               
+               <p>[<A name="REF1">1</a>]
+ John Calcote. "Thunking:
+                    Using 16-Bit Libraries in OS/2 2.0," OS/2 Developer
+                    Magazine, vol. 7, no. 3, May/June 1995.</p>
+               </FONT>
+               
+               <p><I>Jens A. Jensen has been
+                    programming for 27 years and is the owner and operator of
+                    Sunway Software ApS, which specializes in systems
+                    programming for PC-based operating systems. He can be
+                    reached at the Internet address jaj@login.dknet.dk.</I></p>
+
+<h4><a href="../../../source/1996/may96/jensen.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+     </BODY>
+</HTML>

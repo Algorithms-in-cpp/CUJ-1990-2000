@@ -1,0 +1,179 @@
+<HTML><HEAD>
+<TITLE>August 1998/A Wrapper Class for NT Services/Listing 7</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 7: Implementation file for TAppLog class</A></h4>
+
+<pre>
+#include &lt;windows.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdarg.h&gt;
+
+#include "tapplog.h"
+#include "mcmsg.h"
+
+static const char szRegBasePath[] = 
+    "SYSTEM\\CurrentControlSet\\Services\\EventLog\\Application\\";
+
+TAppLog::TAppLog( char *src_name, LOG_LEVEL loglevel ) 
+    : m_loglevel( loglevel )
+    , m_hEventLog( 0 )
+{
+    memset( m_srcname, 0, sizeof( m_srcname ) );
+    strncpy( m_srcname, src_name, sizeof(m_srcname)-1);
+    //== do not register the service here because it may have 
+    //== never been installed!
+}
+
+TAppLog::~TAppLog()
+{
+    if( m_hEventLog )
+        DeregisterEventSource( m_hEventLog );
+}
+
+bool    TAppLog::IsInstalled( void )
+{
+    HKEY hKey = NULL;
+    char szRegKey[1024];
+
+    sprintf( szRegKey, "%s%s", szRegBasePath, m_srcname );
+
+    if (::RegOpenKey(HKEY_LOCAL_MACHINE, szRegKey, &amp;hKey) == 
+              ERROR_SUCCESS)
+    {
+        RegCloseKey( hKey );
+        return true;
+    }
+    return false;
+}
+
+bool    TAppLog::Install( void )
+{
+    if( IsInstalled() )
+        return true;
+    
+    char szRegKey[1024];
+    char szFilePath[ _MAX_PATH ];
+    HKEY hKey            = NULL;
+    DWORD dwMsgTypes    = EVENTLOG_ERROR_TYPE 
+                        | EVENTLOG_WARNING_TYPE 
+                        | EVENTLOG_INFORMATION_TYPE;
+
+
+    // Get the executable file path
+    ::GetModuleFileName(NULL, szFilePath, sizeof(szFilePath));
+
+    sprintf( szRegKey, "%s%s", szRegBasePath, m_srcname );
+
+    int err = 0;
+    if ((err = ::RegCreateKey(HKEY_LOCAL_MACHINE, szRegKey, &amp;hKey)) 
+           != ERROR_SUCCESS)
+    {
+        //== write error to console here!
+        fprintf( stderr, 
+           "TAppLog reports error %d creating registery key: %s\n",
+           err, szRegKey );
+//      fprintf( stderr, "%s\n", szRegKey );
+        return false;
+    }
+
+    ::RegSetValueEx(hKey,"EventMessageFile", 0,REG_SZ, 
+        (CONST BYTE*)szFilePath, sizeof( szFilePath ));
+    ::RegSetValueEx(hKey,"TypesSupported", 0, REG_DWORD, 
+        (CONST BYTE*)&amp;dwMsgTypes, sizeof( DWORD ));
+
+    RegCloseKey( hKey );
+    return true;
+}
+
+bool    TAppLog::Uninstall( void )
+{
+    return true;
+}
+
+bool    TAppLog::LogEvent( LOG_LEVEL level, char* argstr, ...)
+{
+    va_list vl;
+    va_start( vl, argstr );
+    
+    return LogEventVL( level, argstr, vl );
+}
+
+bool TAppLog::LogEventVL( LOG_LEVEL level, char* argstr, 
+         va_list vl )
+{
+    char msgbuff[1024];
+
+    //== only log the messages asked for
+    if( level &gt; m_loglevel )
+        return false;
+    
+    //== make sure we are installed
+    if( !IsInstalled() )
+        Install();
+    
+    //== have we registered the event source?
+    if( !m_hEventLog )
+    {
+        if( (m_hEventLog =
+                  ::RegisterEventSource( NULL, m_srcname )) == 0)
+            return false;
+    }
+
+    //== build the message
+    vsprintf( msgbuff, argstr, vl);
+
+    //== determine ReportError type from msglevel
+    //== get the base message from the resource file
+    DWORD dwEventID = 0;
+    WORD wType = 0;
+    switch( level )
+    {
+    case LOG_ERROR:
+        wType = EVENTLOG_ERROR_TYPE;
+        dwEventID = NTSRV_ERROR;
+        break;
+
+    case LOG_WARNING:
+        dwEventID = NTSRV_WARN;
+        wType = EVENTLOG_WARNING_TYPE;
+        break;
+
+    case LOG_INFORM:
+        dwEventID = NTSRV_INFO;
+        wType = EVENTLOG_INFORMATION_TYPE;
+        break;
+
+    default:
+        dwEventID = NTSRV_NOTE;
+        wType = EVENTLOG_INFORMATION_TYPE;
+    }
+    const char *pp_msgs[1];
+    pp_msgs[0] = msgbuff;
+    
+    //== Report the event
+    BOOL bRetval =
+        ReportEvent(  
+            m_hEventLog, // handle returned by RegisterEventSource
+            wType,       // event type to log
+            0,           // event category
+            dwEventID,   // event identifier
+            NULL,        // user security identifier (optional)
+            1,           // number of strings to merge with message
+            0,           // size of binary data, in bytes
+            pp_msgs,     // array of strings to merge with message
+            NULL         // address of binary data
+        );
+    
+    //== if we are debugging echo everything to the debugger
+    if( m_loglevel == LOG_DEBUG )
+    {
+        ::OutputDebugString( msgbuff );
+    }
+
+    return (bRetval != FALSE);
+}
+//End of File</PRE>
+</BODY>
+</HTML>

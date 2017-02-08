@@ -1,0 +1,98 @@
+
+
+<HTML>
+<HEAD>
+
+<TITLE>December 1995/Smart Pointers for C++ Garbage Collection</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocdec.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Memory Management</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Smart Pointers for C++ Garbage Collection<A name="01CA_00FE"><A name="01CA_00FE"></font></h2><P>
+<h3 align="center"><font color="#800000"><A name="01CA_0000"><A name="01CA_0000">Gregory Colvin</font></h3><hr><blockquote><P>
+<P><i><A name="01CA_0000"><A name="01CA_0000">Dr. Colvin has been squeezing large programs into small computers for over twenty years. He is a Senior Scientist at Information Management Resources, in Englewood Colorado. He may be reached at gregor@netcom.com.</i></P><P>
+<h4><FONT COLOR="#000080"><A name="01CA_00FF">Introduction<A name="01CA_00FF"></FONT></h4></P>
+Creating objects in C++ is easy: just say new. Destroying objects is equally easy: just say delete. Nonetheless, memory management in C++ is a difficult problem. The problem is clearly expressed by Bjarne Stroustrup in <I>The C++ Programming Language,</I> Second Edition:<P>
+"The fundamental question about memory management can be stated in this way: If f() passes or returns a pointer to an object to g(), who is responsible for the object's destruction? A secondary question must also be answered: When can it be destroyed? ... From the point of view of a library provider, the ideal answers are 'the system, and 'whenever nobody is using the object any longer.'"<P>
+Many other languages provide built-in "garbage collection" that comes very close to this ideal. Using a garbage collector means never having to say delete: the garbage collection system itself figures out which objects are no longer in use and deletes them automatically. The draft C++ Standard has no garbage collection, so if you need it you must borrow it, buy it, or build it. Below I present one approach to building a garbage collector.<P>
+Many implementations of garbage collection are possible, most too complex to present in a short article. I have chosen to present a very simple "mark and sweep" collector. Fortunately, the performance of a well implemented mark and sweep collector can be excellent for programs not requiring bounded real-time response.<P>
+A mark and sweep collector operates in two phases:<P>
+<UL><li>In the mark phase it starts from the root pointers and marks every garbage collected object which can be reached from those pointers.</li>
+<li>In the sweep phase it destroys all the unmarked objects.</li></UL>
+A root pointer is any pointer located in memory that is not garbage collected. When garbage collection is part of the language, the compiler can help in tracking root pointers and traversing objects, but writing a new compiler is beyond my skill and interests. Instead, I have chosen to replace critical raw pointers with "smart pointers" that behave much like pointers, but that also implement the necessary bookkeeping for tracing the roots.<P>
+<h4><FONT COLOR="#000080"><A name="01CA_0100">Smart Pointer Interface and Usage<A name="01CA_0100"></FONT></h4></P>
+Before tackling the implementation, let's look at the interface and intended usage. The interface is as follows:<P>
+<pre>template &lt;class alloc&gt;
+void*
+operator new(size_t n,alloc&amp; a) {
+    return a.allocate(n);
+}
+template &lt;class X&gt;
+struct gc {
+    X* allocate(size_t);
+};
+
+template&lt;class X&gt;
+struct gc_ptr {
+    gc_ptr(X* p=0);
+    ~gc_ptr();
+    gc_ptr&amp; operator=(const
+gc_ptr&amp;);
+    gc_ptr&amp; operator=(X*);
+    operator X*() const;
+    X* operator-&gt;() const;
+    X operator[](size_t) const;
+    X&amp; operator[](size_t);
+};</pre>
+The template operator new is a recent addition to the draft C++ Standard.<P>
+The template gc is an allocator for garbage collected objects. To be garbage collected, an object must be allocated with a gc allocator using the template operator new.<P>
+The gc_ptr template declares classes of "smart pointers." Objects allocated with the gc allocator will be destroyed by the garbage collector when they are no longer reachable through any root gc_ptr. A root is a gc_ptr that is not itself in a garbage-collected object.<P>
+The usage of a gc_ptr is much the same as for an ordinary pointer. The gc_ptr template provides conversions to and from ordinary pointers, so that a gc_ptr can be used in most all places a pointer can be, with the added convenience of not needing to call delete. This convenience is not without costs. One obvious cost is that implementing an efficient garbage collector is a non-trivial task. Another cost is that the overloaded pointer operations may require function calls and other overhead, and the actual garbage collection can take enough time to cause noticeable pauses in program execution.<P>
+A more subtle cost is the uncertainty of when, and in what order, the destructors for garbage collected objects will be called. This can cause difficulties in multi-threaded systems, or if the destructor for a garbage-collected object tries to access another object that has already been destroyed by the garbage collector.<P>
+To get maximum efficiency and safety from gc_ptr, follow these simple rules:<P>
+1.     Always wrap pointers to newly allocated garbage collected objects with a gc_ptr.<P>
+2.     Avoid unnecessary construction and assignment of gc_ptr objects. In particular, do not define gc_ptr variables as function parameters. Use raw pointers instead.<P>
+3.     Always use gc_ptr variables for class members that may point at collected objects.<P>
+4.     Do not access any gc_ptr in the destructor for a garbage-collected object.<P>
+Note that the following statements, though allowable, do not create garbage-collected objects:<P>
+<pre>gc_ptr&lt;T&gt; p(new T);
+gc_ptr&lt;T&gt; q(&amp;t);</pre>
+To create a garbage-collected object you must instead use:<P>
+<pre>gc_ptr&lt;T&gt; p(new(gc&lt;T&gt;())T);</pre>
+Also, beware of mistakes like:<P>
+<pre>T* p = new(gc&lt;T&gt;())T;</pre>
+which will compile just fine, but will not register the new object with the garbage collector. A similar, but more subtle, mistake would be:<P>
+<pre>void f(T*);
+f (new(gc&lt;T&gt;()) T;</pre>
+which should instead be written with a gc_ptr temporary:<P>
+<pre>f (gc_ptr&lt;T&gt;(new(gc&lt;T&gt;()) T));</pre>
+<h4><FONT COLOR="#000080"><A name="01CA_0101">MS-DOS Implementation<A name="01CA_0101"></FONT></h4></P>
+Over the years I have become convinced that efficient memory management requires non-portable code. Memory is a precious resource on all systems, and systems vary widely in all aspects of its implementation and use. So rather than present portable code, I present code fine-tuned for the Borland compiler, targeting real-mode MS-DOS on 16-bit 80x86 processors. However, I have also isolated system-dependent code as much as possible, so that my code should be reasonably easy to reimplement on other systems.<P>
+The source code is organized into five files. GC.H (<A href="list1.htm">Listing 1</a>)
+ provides the portable interface specified above, using the non-portable gc_link class, gc_data class, and gc_value template specified in GC_IMP.H (<A href="list2.htm">Listing 2</a>)
+. GC.CPP (<A href="list3.htm">Listing 3</a>)
+ contains the non-portable implementation of these classes. RUNTIME.H (<A href="list4.htm">Listing 4</a>)
+ and RUNTIME.CPP (<A href="list5.htm">Listing 5</a>)
+ provide access to the portions of the runtime library I need, as well as patches to track the relevant portions of the draft C++ Standard.<P>
+MS-DOS runs only in real mode on the Intel 8086 and compatible processors. Two facts about this processor in this mode dominate my code: memory is segmented, and memory is scarce. A real-mode pointer consists of a 16-bit segment and a 16-bit offset. Segments are indexes to 16-byte paragraphs, thus limiting the effective address space to one megabyte. The design of MS-DOS further limits easily usable memory to less than 640 kilobytes.<P>
+I take advantage of the segmented architecture by aligning all object allocations on paragraph boundaries, so that the address of each allocated object has a unique segment. Thus, in much of the code I can compute with 16-bit segments, which will fit in a single 8086 register, rather than 32-bit pointers, which require two registers. I take advantage of the scarce memory by organizing the free store as a contiguous sequence of allocated and free paragraphs, accessed through a simple rover algorithm. Larger, virtual memories would require a more sophisticated page-management approach.<P>
+Before the first allocation, the gc_statics constructor grabs all but 4 Kb of the memory provided by MS-DOS, then builds an empty heap by zero filling each free paragraph. The allocate function simply walks the heap, skipping over allocated segments and gathering up contiguous empty paragraphs until it satisfies the request or runs out of heap. Allocated segments begin with a 32-bit gc_hdr structure which stores the size and state of the allocation. Also stored in the gc_hdr is a count of the number of root pointers pointing to that segment.<P>
+When the allocate function fails, the operator new functions call the current new-handler. The gc_handler function is installed as a new-handler that performs garbage collection. If portions of your code must run uninterrupted, you can disable garbage collection by removing this new_hander with set_new_handler(0). Collection is re-enabled by calling set_new_handler(gc_handler).<P>
+The gc_data::Mark function performs the mark phase of collection. It turns on a static IsMarking flag and proceeds to walk the heap, calling the gc_data::mark_all function for each allocated, unmarked segment with a non-zero root count. The mark_all function causes all gc_ptr objects within a segment to recursively mark the segments they point to. Thus, at the end of the mark phase, all and only objects reachable from root gc_ptr objects are marked. The gc_data::Sweep function then performs the sweep phase of collection. It simply walks the heap, calling gc_data::destroy_all for each marked object, which in turn causes the appropriate destructor to be called.<P>
+How does gc_data::mark_all accomplish such magic? All garbage collected objects are allocated as sub-objects of a class derived via the gc_value template from the gc_data class. The mark_all function is a virtual function generated by the gc_value template which invokes the gc_data::mark_loop(size_t) function. This mark_loop function loops over the possibly multiple elements in a segment, invoking the virtual mark(void*) function also generated by the gc_value template.<P>
+The mark function appears to accomplish nothing. It simply casts its argument and assigns an object to itself. But looks are deceiving. The assignment operator for gc_link checks the IsMarking flag, and when it is set it calls the mark_all function for the gc_data it points at. Since the default assignment operators for a class will invoke the assignment operator for each of its members, including any gc_link members, and since all gc_ptr classes are derived from gc_link, we have effectively tricked all reachable objects into marking themselves.<P>
+Given the gc_link assignment trick, all that remains is to keep track of the root pointers. The copy constructor, assignment operator, and destructor for gc_link accomplish this by incrementing and decrementing gc_hdr:: root counters according to whether the gc_link itself is stored in a garbage collected object.<P>
+<h4><FONT COLOR="#000080"><A name="01CA_0102">Alternatives<A name="01CA_0102"></FONT></h4></P>
+A more sophisticated commercial implementation of garbage collected smart pointers is available from Geodesic Systems (support@geodesic.com). An alternative approach to C++ garbage collection, which does not require smart pointers and which better handles the timing of object destruction, is the Ellis interface to the Boehm collector. C/C++ source is available on the Internet via anonymous FTP from Xerox PARC (parcftp.xerox.com: pub/gc/gc.tar.Z).<P>
+<h4>References</FONT></h4></P>
+[1]     J.O. Coplien. <I>Advanced C</I>++ <I>Programming Styles and Idioms</I> (Addison-Wesley, 1992).<P>
+[2]     D.R. Edelson and I. Pohl. "Smart Pointers: They're smart but they're not pointers." In <I>Proceedings of the 1991 Usenix C</I>++ <I>Conference</I>.<P>
+[3]     J.R. Ellis and D.L. Detlefs. "Safe, efficient garbage collection for C++." In <I>Proceedings of the 1994 Usenix C</I>++ Conference.<P>
+[4]     B.S. Stroustrup. <I>The C</I>++ <I>Programming Language</I>, Second Edition (Addison-Wesley, 1991).<P>
+[5]     B.S. Stroustrup. <I>The Design and Evolution of C</I>++ (Addison-Wesley, 1994).<P>
+[6]     P.R. Wilson. "Uniprocessor Garbage Collection Techniques." In <I>Proceedings of the 1992 International Workshop on Memory Management</I>.<P>
+
+<h4><a href="../../../source/1995/dec95/colvin.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

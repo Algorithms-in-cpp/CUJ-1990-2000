@@ -1,0 +1,458 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>July 1998/The Learning C/C++urve</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocjul.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">The Learning C/C++urve: C9X VLAs</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Bobby Schmidt</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>Many languages support variable-length arrays. Soon Standard C will too.</p></BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+<p><B><I>Copyright &copy; 1998 Robert H. Schmidt</I></B></p>
+
+<p>I had hoped to cover the new C variable-length arrays (a.k.a. VLAs) plus a few other topics this month. But as I dug into VLAs, I found enough material to occupy more than a single column. As a result, I'll devote this month entirely to VLAs; next month will feature whatever I can't fit this time, plus the aforementioned other topics. Scott Meyers' ennui will have to wait.</p>
+<h4><FONT COLOR="#000080">Traditional Arrays, Briefly</FONT></H4>
+
+<p>In Standard C, arrays are defined as having a constant integral length, either explicitly:</p>
+
+<pre>
+int a[10];    /* length 10 */
+</pre>
+
+<p>or implicitly:</p>
+
+<pre>
+char const s[] = "G'day"; /* length 6 */
+</pre>
+
+<p>Arrays can also be declared (but not defined) with an unspecified length:</p>
+
+<pre>
+extern int x[]; /* unspecified length */
+</pre>
+
+<p>Here <B>x</B> is of an incomplete type. Wherever <B>x</B>'s storage is actually defined, <B>x</B>'s type must be made complete:</p>
+
+<pre>extern int x[5]; /* defines x with length 5 */
+</pre>
+
+<p>Regardless of how an array's length is defined, that length is typically lost once the array is passed to a function:</p>
+
+<pre>
+void f(int a[])
+    {
+    /* a is a pointer, not an array. */
+    /* Original length is lost. */
+    }
+</pre>
+
+<p>As I wrote last month, adding a dimension doesn't help:</p>
+
+<pre>void f(int a[10])
+    {
+    /* a is still a pointer, not an array. */
+    }
+</pre>
+
+<p>And of course, solutions like references to array objects, and array templates, are available in C++ only.</p>
+
+<p>C programmers typically get around this problem by passing the array length as an extra argument:</p>
+
+<pre>
+void f(int a[], size_t n)
+    {
+    /* Assume that a is of length n. */
+    }
+     
+int a[10];
+f(a, 10);
+</pre>
+
+<p>From <B>f</B>'s perspective, <B>a</B>'s length is known at run time. However, from the perspective of <B>f</B>'s caller, <B>a</B>'s length is fixed at translation time. To make <B>a</B>'s length fixed at run time instead, we must use dynamic allocation:</p>
+
+<pre>
+int *a = malloc(sizeof(int) * 10);
+f(a, 10);
+</pre>
+
+<p>But this means we are no longer really manipulating arrays; rather, <B>f</B> is passed in a pointer that it treats as if it were really an array. The language does not enforce this convention - only programmer discipline does.</p>
+<h4><FONT COLOR="#000080">VLAs to the Rescue</FONT></H4>
+
+<p>Variable-length arrays offer another approach: real arrays (not pointers) with lengths set at run time <a href="#1">[1]</a>. VLAs are new to C9X, the next proposed version of Standard C. They do not exist in the original C Standard, nor are they part of the C++ Standard (although C++ container classes can mimic VLAs). Your C compiler most likely does not yet support them.</p>
+
+<p>In their simplest form, variable-length arrays look like normal arrays:</p>
+
+<pre>int a[n]</pre>
+
+<p>The difference is that the array length <B>n</B> is evaluated at run time instead of compile time:</p>
+
+<pre>
+extern size_t n; /* n's value is unknown at compile time. */
+int a[n]; /* OK, n is evaluated at run time. */
+</pre>
+
+<p>Because their sizes are not reckoned at compile time, VLAs cannot have static duration:</p>
+
+<pre>
+extern size_t n;
+static int a[n]; /* Error, n must be known at compile time. */
+</pre>
+
+<p>This implies that VLAs can never appear at file scope. In fact, they can appear only at block scope:</p>
+
+<pre>
+void f(size_t n)
+    {
+    int a[n]; /* OK, at block scope. */
+    }
+</pre>
+
+<p>or at prototype scope:</p>
+
+<pre>
+extern size_t n;
+     
+void f(int a[n]) /* OK, at prototype scope. */
+    {
+    /* ... */
+    }
+</pre>
+
+<p>(Yes, you masochists, this means VLAs cannot be members of structures or unions.)</p>
+
+<p>Within the block or prototype declaring them, variable-length arrays act like normal arrays:</p>
+
+<pre>
+size_t n;
+     
+void f(char const param[n])
+    {
+    char const local[n];
+    printf("n == %lu\n",
+  (unsigned long) n);
+    printf("sizeof(param) == %lu\n",
+        (unsigned long) sizeof(param));
+    printf("sizeof(local) == %lu\n",
+        (unsigned long) sizeof(local));
+    }
+     
+int main(void)
+    {
+    char const message[] = "VLAs Rule!";
+    n = sizeof(message);
+    f(message);
+    return 0;
+    }
+</pre>
+
+<p>When run with Tenon MachTen and GNU C++ 2.7.2.F.1 on my Mac, the above produces</p>
+
+<pre>
+n == 11
+sizeof(param) == 4
+sizeof(local) == 11
+</pre>
+
+<p>On your system, <B>sizeof(param)</B> may be different. Because of typical array-to-pointer decay, <B>param</B> is really seen by <B>f</B> as a pointer, and its size is therefore that of a pointer. <B>local</B>, on the other hand, is known to <B>f</B> as an array, so its size stays <B>n</B>.</p>
+<h4><FONT COLOR="#000080">Unspecified Lengths</FONT></H4>
+
+<p>In the above example, <B>n</B> must be declared before <B>f</B>, so that the prototype</p>
+
+<pre>
+void f(char const param[n])
+</pre>
+
+<p>knows what <B>n</B> to reference. But what if you want to forward declare <B>f</B> first, then declare <B>n</B> later:</p>
+
+<pre>
+void f(char const param[n]);
+     
+/* ... */
+     
+size_t n;
+     
+/* ... */
+     
+void f(char const param[n])
+    {
+    /* ... */
+    }
+</pre>
+
+<p>As written, this won't compile. The first <B>f</B> declaration fails, since its parameter <B>n</B> is unknown. And if you leave <B>n</B> out altogether:</p>
+
+<pre>
+void f(char const param[]);
+</pre>
+
+<p>the compiler considers <B>param</B> a pointer instead of a VLA.</p>
+
+<p>To get around this problem, the Standard C committee invented new usage for everyone's favorite token <a href="#2">[2]</a>:</p>
+
+<pre>
+void f(char const param);
+</pre>
+
+<p>The <B>*</B> is a place holder, implying the parameter has no compile-time length. Within the definition (body) of <B>f</B>, the compiler substitutes an actual length expression for <B>*</B>:</p>
+
+<pre>
+void f(char const [*]);
+     
+/* ... */
+     
+void f(char const param[n])
+    {
+    /* ... */
+    }
+</pre>
+
+<p>You may wonder why the committee chose <B>*</B>, which is already overused in declaration syntax. From what I can tell, the answer is "prior art." While VLAs are new to Standard C, they have been an extension to conforming C compilers for years. Different vendors have come up with different ways of implementing them. While there was sentiment for alternatives like <B>[?]</B> and <B>[:]</B>, the weight of existing code using the <B>[*]</B> syntax seems to have been the trump card <a href="#3">[3]</a>.</p>
+<h4><FONT COLOR="#000080">Length Parameters</FONT></H4>
+
+<p><B>f</B> references an array length <B>n</B> declared at file scope. You can also provide the length as a parameter:</p>
+
+<pre>
+void f(size_t n)
+    {
+    char const local[n]; /* OK */
+    /* ... */
+    }
+</pre>
+
+<p>The quirk comes when using <B>n</B> to define another parameter's length. The obvious solution</p>
+
+<pre>/* Error */
+void f(char const param[n], size_t n)
+    {
+    /* ... */
+    }
+</pre>
+
+<p>fails to compile! According to the C lookup rules, the declaration of <B>n</B> must come before any reference to <B>n</B>:</p>
+
+<pre>
+/* OK */
+void f(size_t n, char const param[n])
+    {
+    /* ... */
+    }
+</pre>
+
+<p>even though this ordering (first length, then array) is counter-intuitive to many C programmers. Certainly the Standard C library has ample precedent for array-first ordering:</p>
+
+<pre>
+fwrite(void const *, size_t, ...);
+memcpy(void *, void const *, size_t);
+strftime(char *, size_t, ...);
+strncat(char *, char const *, size_t);
+</pre>
+
+<p>Nonetheless, if you want to use VLA parameters and pass in their lengths, adopt the idiom of length first, array second. I guess this is a case where prior art - so compelling for <B>[*]</B> - yields to other considerations.</p>
+
+<p>Actually, to be fair, I can't imagine doing it any other way. If the array could come first, how would the compiler interpret</p>
+
+<pre>
+size_t n;
+     
+void f(int a[n], size_t n)
+    {
+    /* ... */
+    }
+</pre>
+
+<p>Would the <B>n</B> in <B>a[n]</B> be the <B>n</B> in the prototype list, even though it appears after <B>a[n]</B>? Or the <B>n</B> from global scope, even though the other <B>n</B> is more local? Thanks to the above-cited rule, we are spared such wonderment. (However, if the ambiguity silently thrills you, please consider moving to C++, a veritable smorgasbord of name-lookup delights.)</p>
+<h4><FONT COLOR="#000080">Bad Karma</FONT></H4>
+
+<p>Joyfully, this length-first ordering leads to an Unintended Consequence. Remember back to the Good Ol' Days of K&amp;R C, which had no true function protoypes. Instead, function definitions listed out their parameters as quasi-local variables:</p>
+
+<pre>void f(n, a)
+    unsigned n;
+    int a[n];
+    {
+    /* ... */
+    }
+</pre>
+
+<p>To maintain compatibility with older K&amp;R code, the ISO C committee allowed these sorts of parameter definitions. According to the Standard C rules, the ordering of these definitions doesn't matter. The above should be equivalent to</p>
+
+<pre>
+void f(n, a)  /* Same calling sequence... */
+    int a[n]; /* ...but different definition order. */
+    unsigned n;
+    {
+    /* ... */
+    }
+</pre>
+
+<p>For K&amp;R C and Standard C, this equivalence is true - but in those languages, the parameters don't reference each other this way. With variable-length arrays, the ordering of these definitions does matter, and the latter example will fail to compile.</p>
+
+<p>While considering VLA parameters, committee members explored the notion of relaxing the scoping rules so that <B>a[n]</B> could come before <B>n</B>. However, the members finally decided such relaxation was not consistent with the venerated "Spirit of C." In actual practice, I'm hard-pressed to believe anyone would add such new features to K&amp;R-style code, so I think the committee made the right choice.</p>
+
+<h4><FONT COLOR="#000080">But I Want the Array First!</FONT></H4>
+
+<p>If you absolutely must have your calling sequence be array first, then length, you can use an intermediate explicit pointer:</p>
+
+<pre>
+void f(int *a, size_t n)
+    {
+    int (*p)[n] = (void *) a;
+    }
+</pre>
+
+<p>Salient points:</p>
+
+<UL><LI>Since <B>n</B> is not referenced in the parameter list, it can appear anywhere in that list.</LI>
+    <LI>Within <B>f</B>, <B>p</B> acts as if it had been declared <B>int p[n]</B> in the parameter list. <B>a</B> is simply an intermediary to make the parameter ordering work.</LI>
+    <LI>The <B>(void *)</B> cast is necessary to bridge the type gap; otherwise we'd be assigning incompatible pointer types. This cast works  because C, unlike C++, is happy to convert from <B>void</B> *.</LI></UL>
+
+<p>Here <B>p</B> points to a variable-length array. Compare this to a pointer to a normal array, as shown last month:</p>
+
+<pre>
+/* compile-time constant length */
+size_t const n1 = 10; 
+/* run-time variable length */
+extern size_t n2;     
+     
+/* ptr to array of constant length */
+char const (*p1)[n1]; 
+/* ptr to array of variable length */
+char const (*p2)[n2]; 
+</pre>
+
+<p>The syntax is identical; the difference lies in the semantics. In Standerdese, pointers to variable-length arrays have variably modified or VM types. At the run-time point of their definition, VM pointers evaluate the length argument (<B>n2</B> here), just as VLAs do. Thus, the actual dynamic type of a given VM pointer can vary over the program's lifetime.</p>
+
+<p>Like the VLAs they reference, VM pointers must appear at block or prototype scope, and cannot be struct/union members. However, unlike VLAs, such pointers can have static duration (since the pointer's size is the same regardless of what it references, and thus can be reckoned at compile time).</p>
+
+<h4><FONT COLOR="#000080">sizeof VLAs</FONT></H4>
+
+<p>In the case of a normal array:</p>
+
+<pre>
+void f(void)
+    {
+    char a[10];
+    size_t n = sizeof(a); /* OK, n = 10 */
+    }
+</pre>
+
+<p>the array size exists in the compiler's internal symbol table, and is substituted for the expression <B>sizeof(a)</B> at compile time. The <B>sizeof</B> operator does not actually evaluate its operand (<B>a</B>) at run time. Even though <B>sizeof(a)</B> may look like a function call, it really acts more like a symbolic constant.</p>
+
+<p>If we change the array to be variable-length:</p>
+
+<pre>
+void f(size_t x)
+    {
+    char a[x];
+    size_t n = sizeof(a); /* OK, n = x */
+    }
+</pre>
+
+<p>the array size is completely unknown to the compiler. <B>sizeof(a)</B> must actually evaluate <B>a</B> to discover its length. Further, each time <B>f</B> is called, <B>x</B> may be different, implying <B>a</B> may have a different length. Thus, <B>f</B> cannot cache away <B>sizeof(a)</B>, but must reevaluate it each time.</p>
+
+<p>Here comes the interesting fallout:</p>
+
+<pre>
+int main(void)
+    {
+    size_t n = 10;
+    int a[n];
+    printf("sizeof(a) == %lu\n",
+      (unsigned long) sizeof(a));
+    ++n;
+    printf("sizeof(a) == %lu\n",
+      (unsigned long) sizeof(a));
+    return 0;
+    }
+</pre>
+
+<p>What do you expect the result of this to be? Clearly the first <B>printf</B> should show <B>sizeof(a)</B> as 10. But what about the second <B>printf</B>? I'm guessing you'll interpret the code one of two ways:</p>
+
+<UL><LI>When the second <B>printf</B> evalutes <B>sizeof(a)</B>, it really looks at <B>n</B>, since <B>n</B> was declared as <B>a</B>'s length. Now that <B>n</B> is 11, <B>sizeof(a)</B> is also 11.</LI>
+    <LI>When the second <B>printf</B> evaluates <B>sizeof(a)</B>, it really looks at <B>a</B>'s original length. Thus, <B>sizeof(a)</B> stays 10.</LI></UL>
+
+<p>The correct answer depends on the semantics of <B>n</B>, and how it relates to <B>a</B>.</p>
+
+<p>If you consider <B>a</B> and <B>n</B> to be somehow linked or bundled together, the first interpretation makes sense. Following a C++ analogy, <B>a</B> could be a container object, with <B>n</B> a property (data member) of that object; by changing <B>n</B>, you change the value and behavior of <B>a</B>.</p>
+
+<p>However, there is no such linkage between <B>a</B> and <B>n</B>. The expression defining the array's length is evaluated exactly once, at the point of <B>a</B>'s definition. Once <B>a</B> is defined, it acts just like a normal array. Thus, the second bullet point above is correct.</p>
+
+<p>Finally, I offer the perverse variation</p>
+
+<pre>
+int main()
+    {
+    size_t n = 10;
+    int a[++n];
+    /* What is n?  And what is sizeof(a)? */
+    return 0;
+    }
+</pre>
+
+<p>which I leave as a thought problem for the student (to be answered next month).</p>
+
+<h4><FONT COLOR="#000080">Shades of C++</FONT></H4>
+
+<p>A VLA's length may be evaluated every time it's encountered, even within declarations. If yours is a resource-constrained system where every cycle counts, VLAs can have hidden costs:</p>
+
+<pre>
+extern size_t n;
+int i;
+for (i = 0; i &lt; 10000; ++i)
+    {
+    int a[n];
+    /* ... */
+    }
+</pre>
+
+<p>In this example, the expression <B>n</B> in the declaration <B>int a[n]</B> may be evaluated every time through the loop. The compiler's optimizer may be able to figure out that <B>n</B> is unchanged during the loop, and thus may act as if the code were really</p>
+
+<pre>
+/* evaluated only once */
+size_t const _constant_n = n; 
+for (...)
+    {
+    /* a is no longer a VLA */
+    int a[_constant_n]; 
+    /* ... */
+    }
+</pre>
+
+<p>but you cannot rely on this optimization. Certainly if the loop is too complex, or references functions outside the current translation unit, the compiler cannot make such an optimization.</p>
+
+<p>As we've seen earlier, this silent run-time evaluation is not limited just to the VLAs themselves. The modified example</p>
+
+<pre>
+for (i = 0; i &lt; 10000; ++i)
+    {
+    int a[n];
+    int (*p)[n] = a;
+    size_t x = sizeof(a);
+    /* ... */
+    }
+</pre>
+
+<p>may end up evaluating <B>a</B> and/or <B>n</B> 30,000 times! (This problem is exacerbated by C9X's support for mixed code and declarations, a topic I'll cover next month.)</p>
+
+<p>So what looks like a static compile-time evaluation with no run-time overhead could in fact incur significant run-time cost. Novice C++ programmers learn this the hard way with constructor calls, where a class object definition may call many functions behind the scenes. Until now, C programmers have been spared such stealth cost - but that innocence is now lost.</p>
+
+<p>Nonetheless, I think variable-length arrays are an attractive alternative to more prosaic pointer-based solutions. But to use them effectively, you must stay aware of their underlying run-time properties. I've shown you only some of those properties here. Next month I'll show the rest, including a couple of very subtle surprises. o<p>
+
+<h4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1]  The concept of variable-length arrays is not new to programming. From the little I recall of ISO Pascal, VLAs match some  properties of Pascal's conformant arrays. And from comments on the ISO C committee's email reflector, I've deduced that VLAs mimic behavior of languages like FORTRAN and Algol. They certainly honor the intent of Standard C++ containers like <B>vector</B> and <B>list</B>.<p>
+<a name="2"></a>[2]  For you language lawyers out there: none of my compilers supports this syntax yet, so these examples are guesswork, based on my reading of the C9X Draft and its Rationale. I freely admit these examples might not work exactly as advertised.<p>
+<a name="3"></a>[3]  I'm guessing that the <B>[*]</B> is intentionally reminiscent of the Unix regular expression wildcard character <B>*</B>, which matches any number of characters. This suggests that an array declared <B>[*]</B> can match any number of elements.</p>
+
+<p><i>Bobby Schmidt is a freelance writer, teacher, consultant, and programmer. He is also a member of the ANSI/ISO C standards committee, an alumnus of Microsoft, and an original "associate" of (Dan) Saks &amp; Associates. In other career incarnations, Bobby has been a pool hall operator, radio DJ, private investigator, and astronomer. You may summon him at 14518 104th Ave NE, Bothell, WA 98011; by phone at +1-425-488-7696, or via Internet e-mail as <B>rschmidt@netcom.com</B>.</i></p>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

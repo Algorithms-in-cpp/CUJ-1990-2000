@@ -1,0 +1,511 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>June 1996/Standard C/C++</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><A href="../tocjun.htm"><IMG src="../../toc.gif" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#ff0000">
+          Departments</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">Standard C/C++</FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000"> P. J. Plauger</FONT></H3>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">Allocators </FONT></H2>
+          
+          <BLOCKQUOTE>
+               
+               <p>Following the evolving C++ Standard
+                    has been difficult for implementors, and unsettling for
+                    users. The Standard's spec for STL allocators has been a
+                    particularly unstable target. Here's one way to cope with
+                    the changes.</p></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <h4><FONT COLOR="#000080">Introduction</FONT></H4>
+               
+               <p>For several months now, I've been
+                    describing the underpinnings of the Standard Template
+                    Library (or STL). It is an ambitious collection of templates
+                    added as a block to the draft C++ Standard about two years
+                    ago. Books are now in the stores that describe STL as it was
+                    made freely available by Hewlett Packard Labs. By contrast,
+                    what I am presenting here is the standard-conforming version
+                    of STL. Between changes made for the original proposal, and
+                    two years of tinkering within the standards committees,
+                    quite a few changes have crept in.</p>
+               
+               <p> I continue this month with the header
+                    &lt;memory&gt;. Of the thirteen STL headers in the draft
+                    Standard C++ library, this one is by far the hardest to
+                    describe. Its purpose was abstruse to begin with. Then its
+                    flagship component, the template class allocator, was
+                    replaced with a more ambitious version. The new version had
+                    one significant drawback (to me, at least) &#151; it was
+                    unimplementable, given current C++ compiler technology. Not
+                    to worry. That version was quickly replaced with yet another
+                    ambitious version &#151; which, unfortunately, was equally
+                    unimplementable.</p>
+               
+               <p> Last fall, still another version of
+                    template class allocator was proposed at the Tokyo meeting
+                    &#151; one just as unimplementable as its precursors. It was
+                    mercifully rejected, or so I thought. Halfway through the
+                    writing of this article, however, I went off to the spring
+                    1996 C++ standards meeting in Santa Cruz. The Tokyo proposal
+                    for allocator resurfaced and was accepted. Back to the
+                    drawing board. I had even written a few encouraging words
+                    about the increased stability of the draft C++ Standard.
+                    They ended up on the cutting room floor along with my
+                    obsoleted description of the older allocator.</p>
+               
+               <p> Normally, I wouldn't mind that the
+                    draft Standard C++ library contains something too avant
+                    garde for current compilers. Lord knows, there are plenty of
+                    other places where a similar problem exists. Mostly, we
+                    implementors handle the problem with Yet Another #ifdef.
+                    Just conditionally replace the offending construct with a
+                    reasonable approximatation that happens to work right now.
+                    When you get a new improved compiler, all you have to do is
+                    change one macro definition, and the fancy code gets
+                    included instead.</p>
+               
+               <p> The problem with template class
+                    allocator, however, is that it is ubiquitous. You can't
+                    declare a character string or an STL container without
+                    talking about allocators. Well, you can avoid doing so in
+                    principle, but that requires default template arguments. As
+                    of this writing, compilers that support default template
+                    arguments are just coming on stream. So an implementor has
+                    to resort to some pretty fancy footwork to hide the
+                    problems. Typically, that means using macros, and lots of
+                    'em.</p>
+               
+               <p> I find it ironic, by the way, that
+                    the C++ community has such an open disdain for any use of
+                    the preprocessor in writing serious production code. Yet the
+                    changes wrought in "standardizing" C++ have been so
+                    numerous, rapid, and widespread that only an ambitious use
+                    of macros and preprocessor directives can save the day. But
+                    that's another sermon.</p>
+               
+               <p> Even macros have their limitations.
+                    If you have to write something ugly to get the job done,
+                    macros can save the day. They let you write something more
+                    or less readable, which then expands to the required
+                    underlying ugliness. But sometimes you simply can't say what
+                    needs to be said. That's particularly likely if some new,
+                    not yet implemented, language feature provides the essential
+                    functionality for some equally essential feature. And that's
+                    the current state of allocators in the draft Standard C++
+                    library.</p>
+               
+               <p> My goal in this installment is to
+                    justify the need for template class allocator in writing STL
+                    code. I then show you how allocators are supposed to work,
+                    along with their supporting template functions. Finally, I
+                    show you one way to actually implement a reasonable version
+                    of the latest flavor of allocator, one that works today.</p>
+               
+               <h4><FONT COLOR="#000080">Why Allocators</FONT></H4>
+               
+               <p>One of the important services provided
+                    by the template container classes is storage management. A
+                    container object allocates and frees storage for the
+                    elements of the sequence it manages. Some containers must
+                    also allocate additional storage. A list, for example, needs
+                    to store the pointers that link elements together, as well
+                    as the elements themselves. The container thus encapsulates
+                    two important services:</p>
+               <UL><LI> It hides the details of how storage allocation and
+                         freeing actually occur.</LI>
+                    <LI> It ensures that all allocated storage is eventually
+                         freed.</LI>
+               </UL>
+               
+               <p>An allocator object handles the first
+                    job, on behalf of the container object. It has member
+                    functions that allocate and deallocate objects of a given
+                    type. It can also construct and destroy such objects in the
+                    storage provided. It can even give you some idea about how
+                    many objects of a given type can be simultaneously
+                    allocated.</p>
+               
+               <p> You associate an allocator with a
+                    container in two stages. When you specialize the template
+                    container type, you specify the allocator type as well as
+                    the type of elements the container maintains. For example,
+                    to define a class Mylist that maintains a list of float
+                    elements with an allocator of class Myalloc, you write:</p>
+
+<PRE>
+
+#include &lt;list&gt;
+.....
+typedef list&lt;float, Myalloc&gt; Mylist;
+</PRE>
+               
+               <p></p>
+               
+               <p>Then when you construct an object of
+                    class Mylist, you specify the actual allocator object, as
+                    in:</p>
+
+<PRE>
+
+Myalloc an_allocator;
+Mylist a_list(an_allocator);
+</PRE>
+               
+               <p>Since an allocator is an object, it
+                    can store data. You could, for example, define an allocator
+                    class that maintains separate pools of storage in different
+                    groups of allocator objects. Perhaps you know that one group
+                    of list objects will be merging and splicing elements
+                    repeatedly among the group. It might then make sense to
+                    construct all lists in that group of lists with allocator
+                    objects from the same group of allocators.</p>
+               
+               <p>You could even optimize the particular
+                    allocator type, knowing its intended use. A classic
+                    optimization is to maintain a pool of freed list elements.
+                    It is much faster, on average, to recycle list elements from
+                    such a pool than to rely on the more general new and delete
+                    machinery.</p>
+               
+               <p> But allocators do more than support
+                    separate heaps. They also specify the various types
+                    connected with accessing the objects they allocate and free.
+                    Here is where things get abstruse. In a typical C++ program,
+                    you know several things about an object x of type T:</p>
+               <UL><LI> The expression &amp;x has type T *, or const T *.</LI>
+                    <LI> A reference to x has type T&amp;, or const T&amp;.</LI>
+                    <LI> For p a pointer to x, the expression *p has type T.</LI>
+                    <LI> The number of elements in the largest possible array
+                         of T can be represented as type size_t.</LI>
+                    <LI> The difference between two pointers to T has type
+                         ptrdiff_t.</LI>
+               </UL>
+               
+               <p>All this is too obvious for words, if
+                    you understand the underpinnings of C and C++. It is just
+                    not necessarily true.</p>
+               
+               <p> Consider, for example, a PC-based
+                    implementation that supports a far heap. This may not be
+                    standard C++, but it is certainly a widely supported
+                    dialect. It might make sense to allocate all your list
+                    elements on the far heap, even though the rest of the
+                    program is compiled using near (16-bit) data pointers. In
+                    such a situation:</p>
+               <UL><LI> The expression &amp;x has type T far *, or const T far
+                         *.</LI>
+                    <LI> A reference to x has type T far &amp;, or const T far &amp;.</LI>
+                    <LI> For p a far pointer to x, the expression *p has type
+                         T.</LI>
+                    <LI> The number of elements in the largest possible array
+                         of T can be represented as type unsigned long.</LI>
+                    <LI> The difference between two pointers to T has type
+                         long.</LI>
+               </UL>
+               
+               <p>Template class allocator defines all
+                    the necessary types to enforce this alternate discipline, or
+                    the more conventional one I described initially. You can
+                    probably contrive even more exotic situations, and the types
+                    needed to pull them off, but I'll stick with this most
+                    obvious example.</p>
+               
+               <p> Of course, this is only part of the
+                    battle. It is up to the container class to make proper use
+                    of the information supplied by an allocator. The container
+                    code must be sure to use the allocator types and member
+                    functions religiously when manipulating allocated elements.
+                    Otherwise, it will end up mixing pointer types, or trying to
+                    store huge sizes in small integers. You will be lucky if
+                    such botches merely result in compiler diagnostics. Quiet
+                    failures of this sort are extremely hard to track down.</p>
+               
+               <p> That's why I say that allocators are
+                    abstruse creatures at best. Few programmers devote much
+                    thought to non-standard methods for addressing objects. PC
+                    programmers may declare an occasional far pointer, but they
+                    seldom have to think through the design of an elaborate data
+                    structure whose components are addressed in different ways.
+                    STL containers do just that. They even generate iterators
+                    that help user code reach into exotic places to find the
+                    elements stored in a container.</p>
+               
+               <p> In the end, you should be grateful
+                    that allocators encapsulate so much storage-management
+                    esoterica for you. You should be equally grateful that the
+                    container classes in STL know how to use allocators to
+                    advantage on your behalf.</p>
+               
+               <h4><FONT COLOR="#000080">How Allocators Work</FONT></H4>
+               
+               <p><A href="listing1.htm">Listing 1</A>
+                    shows one way to implement template class allocator. It is
+                    actually the first part of my version of the standard header
+                    &lt;memory&gt;. You'll see the rest of this header next
+                    month.</p>
+               
+               <p> Let me remind you of the meaning
+                    behind those curious triple slash comments (///). Lines
+                    beginning with such a mark comment out code that can't be
+                    compiled by a typical compiler today. The code shows what
+                    the draft C++ Standard actually calls for, on that glorious
+                    day when commercial compilers catch up with the Standard.
+                    Lines ending with such a mark indicate replacement code that
+                    can be compiled today. The code does its best to approximate
+                    the intent of the draft C++ Standard given current
+                    technology.</p>
+               
+               <p> So the code shown here compiles and
+                    runs reasonably well just as it stands (modulo any
+                    transcription errors or other transient bugs). To generate
+                    the theoretical ideal, simply delete everything on a line up
+                    to and including a triple slash. What's left is the code of
+                    the future.</p>
+               
+               <p> I've added one other bit of trickery.
+                    Near the top of the file is a small group of macro
+                    definitions:</p>
+
+<PRE>
+
+#ifndef_FARQ
+ #define_FARQ
+ #define_PDFTptrdiff_t
+ #define_SIZTsize_t
+#endif
+</PRE>
+               
+               <p>These are designed to help you produce
+                    a far heap allocator, if the mood strikes you. Simply change
+                    the usual header include directive from:</p>
+               
+               <p></p>
+
+<PRE>
+#include &lt;memory&gt;
+</PRE>
+               
+               <p></p>
+               
+               <p>to:</p>
+
+<PRE>
+
+#define_FARQ    far
+#define_PDFT    long
+#define_SIZT    unsignedlong
+#include &lt;memory&gt;
+</PRE>
+               
+               <p></p>
+               
+               <p>and the resulting template class
+                    allocator manages a far heap for you. (You may have to tweak
+                    the code a bit for the peculiarities of a given
+                    implementation, but I have used this trick successfully with
+                    at least one compiler.)</p>
+               
+               <p>The secret template functions
+                    _Allocate, _Construct, and _Destroy each perform the obvious
+                    function suggested by their names. The first two exist in
+                    this form because they're used in more than one place among
+                    the STL headers. The last one solves a nuisancy problem.
+                    Many compilers today issue warning messages when asked to
+                    generate a destructor for a scalar type, such as char or
+                    wchar_t. I supply explicit specializations for these two
+                    types because practically every program tries to destroy
+                    them, as a result of library template specializations.
+                    Earlier versions of STL provide dummy destructors for even
+                    more of the scalar types. But the list is endless, given all
+                    the pointer types you can write, so I decided to stop at
+                    two.</p>
+               
+               <p> Template class allocator is the star
+                    of this show, however. By now, you should recognize the need
+                    for all those type definitions at the beginning of the
+                    class. These provide the types a container class needs in
+                    order to address the creatures allocated by an allocator
+                    object. The member function address, in both const and
+                    non-const versions, is essentially a smart version of the
+                    unary address-of operator (&amp;x). It ensures that the
+                    address of an allocated object has the proper pointer
+                    representation.</p>
+               
+               <p> Most of the remaining member
+                    functions behave as their names imply:</p>
+               <UL><LI> allocate allocates an array of elements of type T.</LI>
+                    <LI> deallocate frees an array earlier allocated by the
+                         same allocator (or one that compares equal to it, as I
+                         describe later).</LI>
+                    <LI> construct constructs an object of type T in the raw
+                         storage indicated.</LI>
+                    <LI> destroy destroys an object in place, without
+                         deallocating its storage.</LI>
+                    <LI> max_size tells how many elements you can address in an
+                         array of T elements.</LI>
+               </UL>
+               
+               <p> Where the real magic comes in is with
+                    the member template rebind. You might study it for a minute
+                    before reading on, to see if you can puzzle out its meaning.
+                    I'll wait.</p>
+               
+               <p>Had enough? What it does is let the
+                    program generate a name for the type allocator&lt;U&gt;
+                    given just the type allocator&lt;T&gt;. Here's how. Say
+                    you've specialized a list container, along the lines
+                    described earlier. Only this time, I'll write the type
+                    definition in terms of template class allocator:</p>
+
+<PRE>
+
+typedef list&lt;float, allocator&lt;float&gt; &gt; Mylist;
+</PRE>
+               
+               <p></p>
+               
+               <p>So you've supplied template class list
+                    with a recipe for allocating float objects. Every list
+                    object comes complete with a protected member object called
+                    allocator that is fully prepared to carry out this recipe on
+                    demand. (Yes, the name of the object causes unfortunate
+                    confusion.)</p>
+               
+               <p>Only problem is, that's not what list
+                    cares about. It wants to allocate elements that contain
+                    forward and backward pointers that link the list together.
+                    In this particular case, the elements look something like:</p>
+
+<PRE>
+
+struct Myelement {
+    allocator&lt;float&gt;::pointer *next, *prev;
+    float item;
+    };
+</PRE>
+               
+               <p></p>
+               
+               <p>But an allocator&lt;float&gt; object
+                    only knows how to allocate arrays of one or more float
+                    objects. What the container really needs is an object of
+                    class allocator&lt;Myelement&gt;. To declare such an object,
+                    the container says something like:</p>
+
+<PRE>
+
+allocator&lt;float&gt;::rebind&lt;Myelement&gt;::other
+Myalloc(allocator);
+</PRE>
+               
+               <p></p>
+               
+               <p>The template member struct rebind
+                    supplies a way to name the needed allocator type. And the
+                    template constructor promises that Myalloc can be
+                    constructed from the object allocator, even though the two
+                    types have only a family relationship. The net result is
+                    that the container can whomp up whatever flavor allocator it
+                    needs, given the one you're told to supply for it.</p>
+               
+               <p>Cute, huh? The only problem is that
+                    you need a compiler that supports member templates to pull
+                    off all this trickery. I know of one that's in development,
+                    but none on the market yet. That probably means such
+                    creatures are a year or two away from widespread
+                    availability. Meanwhile, we library implementers have to
+                    wrestle with rewriting STL to handle these new allocator
+                    objects. Finding a suitable interim form that avoids member
+                    templates is a real challenge.</p>
+               
+               <p> I won't spell out all the details of
+                    the compromise I settled on. I simply direct your attention
+                    to the added member function Charalloc. It allocates an
+                    object of the size you specify in bytes. Thus, any allocator
+                    object with this extension can allocate an object of
+                    arbitrary size, if pressed to do so.</p>
+               
+               <h4><FONT COLOR="#000080">Trappings</FONT></H4>
+               
+               <p>Now that you have the basic story on
+                    template class allocator, here are a few remaining details.
+                    Following the template definition is an explicit
+                    specialization for class allocator&lt;void&gt;. It actually
+                    makes sense sometimes to write this type, if only to declare
+                    generic pointers of the appropriate flavor. But many of the
+                    member types and functions are nonsensical for void. The
+                    explicit specialization supplies only the members that make
+                    sense.</p>
+               
+               <p> <A href="listing1.htm">Listing 1</A>
+                    also shows two template operators. The first lets you
+                    compare for equality any two allocator objects, regardless
+                    of their template parameters. And they always compare equal.
+                    The second simply defines the inequality operator
+                    consistently. Equality among allocator objects has a special
+                    meaning. If two such objects compare equal, they presumably
+                    work from the same storage pool. An object you allocate with
+                    one such allocator object can be deallocated with the other.
+                    Containers perform this sort of check before shuttling
+                    allocated elements between different container objects.</p>
+               
+               <p> I speak of allocators in the general
+                    sense for a good reason. Nothing prevents you from defining
+                    a whole new class and using it as an allocator. You don't
+                    even have to derive such a class from template class
+                    allocator. You must, however, provide all the functionality
+                    supplied by allocator. Otherwise, the compiler will complain
+                    or the resulting code will misbehave.</p>
+               
+               <p> Part of that functionality includes
+                    the member template struct rebind. Given the way it works,
+                    you're pretty much constrained to write an allocator as a
+                    template class in its own right. Nevertheless, you still
+                    have considerable latitude in how you write such creatures.</p>
+               
+               <p> Having said all that, my advice is to
+                    avoid messing with allocators, at least for the foreseeable
+                    future. Only the most sophisticated of programs is likely to
+                    find a need to play allocator games. And only the most
+                    sophisticated of programmers is likely to write code that
+                    survives the next couple of years of uncertainty.</p>
+               
+               <p> I've described allocators in some
+                    detail here so that you can respect what they do for you.
+                    Now leave them alone and let them do it behind your back.</p>
+               
+               <p><I>P.J. Plauger is senior editor of
+                    C/C++ Users Journal. He is convener of the ISO C standards
+                    committee, WG14, and active on the C++ committee, WG21. He
+                    developed LibSuite ++, the Plum-Hall validation suite for
+                    the Standard C++ library. His latest books are The Draft
+                    Standard C++ Library, Programming on Purpose (three
+                    volumes), and Standard C (with Jim Brodie), all published by
+                    Prentice-Hall. You can reach him at pjp@plauger.com.</I></p>
+
+<h4><a href="../../../source/1996/jun96/plauger.zip">Get Article Source Code</a></h4>
+
+          </BLOCKQUOTE>
+     </BODY>
+</HTML>

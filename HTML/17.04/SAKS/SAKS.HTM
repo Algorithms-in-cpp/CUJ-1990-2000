@@ -1,0 +1,334 @@
+<HTML>   
+     <HEAD>
+<TITLE>April 1999/C++ Theory and Practice</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocapr.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">C++ Theory and Practice: Thinking Deeply</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Dan Saks</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>Constness isn't always as pervasive as you might like. Sometimes you have to work to hold onto it.</p>
+</BLOCKQUOTE>
+<HR>
+<BLOCKQUOTE>
+<p><I>Copyright &copy; 1999 by Dan Saks</I></p>
+
+<p>One common use for the const qualifier is to constrain the effects of functions. Specifically, any function that has a parameter of pointer or reference type can use that parameter to alter as well as inspect the actual argument passed as that parameter. Declaring the parameter with type "pointer to const" or "reference to const" prevents the function from using that parameter to alter the actual argument.</p>
+<p>The keyword <B>const</B> in a declaration such as:</p>
+
+<pre>
+T const *p;</p>
+</pre>
+
+<p>is, in a sense, a promise by the program that it won't use any values obtained directly or indirectly from <B>p</B> to alter the value of any <B>T</B> objects. That is, the program promises that it won't store into <B>*p</B>, nor copy <B>p</B> to any other pointer <B>q</B> and then store into <B>*q</B>.</p>
+<p>The const qualifier usually follows through on its promise. For example, the declaration of the standard <B>strcmp</B> function:</p>
+
+<pre>
+int strcmp
+    (char const *s1, char const *s2);
+</pre>
+
+<p>carries with it a promise that <B>strcmp</B> won't alter any of the characters pointed to by either <B>s1</B> or <B>s2</B>. The compiler backs up this promise by checking every use of <B>s1</B> and <B>s2</B> in the body of <B>strcmp</B> to make sure they comply.</p>
+<p>Unfortunately, the const qualifier sometimes falls short of expectations. For example, the cross-reference program that I've been working on has a class called <B>cross_reference_table</B> with a member function called <B>put_tree</B> declared as:</p>
+
+<pre>
+void put_tree(tree_node const *t);
+</pre>
+
+<p><B>put_tree</B> displays the contents of a binary tree representing a cross-reference table. The const qualifier in the function declaration seems to suggest that <B>put_tree</B> doesn't modify the tree. However, it doesn't really promise that much.</p>
+<p><B>put_tree</B>'s declaration promises only that <B>put_tree</B> won't modify the root node of the tree, leaving <B>put_tree</B> the right to alter all other nodes in the tree. I wrote <B>put_tree</B> so that it never exercises that right, but it retains that right nonetheless. Had I inadvertently written <B>put_tree</B> so that it altered tree nodes other than the root node, the compiler would have been unable to detect the error.</p>
+<p>I described this problem several months ago. (See "C++ Theory and Practice: <B>const</B> in Parameter Lists," <I>CUJ,</I> September 1998.) At the time, I didn't have any constructive suggestions to make other than to suggest by example that you should program around this carefully. (That, of course, is the cure to all programming problems.)</p>
+<p>Now I think I have a concrete solution to this problem. I have not tested this approach very thoroughly, but I thought I'd share it with you anyway because I think it's pretty neat. My hope is that you will provide feedback that will either improve the technique or show why it isn't very viable.</p>
+
+<h4><FONT COLOR="#000080">const is Shallow</FONT></H4>
+
+<p>Before I show you the solution, let's make sure you understand the problem. The problem originates with the meaning of const-qualified class objects.</p>
+<p>Suppose <B>T</B> is a class type defined as:</p>
+
+<pre>
+struct T
+    {
+    int m;
+    int n;
+    };
+</pre>
+
+<p>(C++ considers structs and unions to be classes.) An object of type "const T" behaves as if every one of its members is itself const. Thus, when you declare an object <B>v</B> as:</p>
+
+<pre>
+T const v;
+</pre>
+
+<p>the compiler treats each member of <B>v</B> as a const object. In other words, <B>v</B> acts very much as if it you had defined another type:</p>
+
+<pre>
+struct const_T
+    {
+    int const m
+    int const n;
+    };
+</pre>
+
+<p>and then defined <B>v</B> as:</p>
+
+<pre>
+const_T v;
+</pre>
+
+<p>Thus, <B>v.m</B> and <B>v.n</B> both have type "const int," and the compiler will reject any attempt to store into <B>v.m</B> or <B>v.n</B>, as in:</p>
+
+<pre>
+v.m = 0;            // error
+++v.n;              // error
+</pre>
+
+<p>The compiler will even reject any attempt to refer to <B>v.m</B> or <B>v.n</B> as if they were non-const <B>int</B>, such as:</p>
+
+<pre>
+int *p = &amp;v.m;      // error
+</pre>
+
+<p>So far, this is all well and good. The problem sets in when the class has data members that are pointers, as in the case of <B>tree_node</B> in my cross-reference example.</p>
+<p>The relevant code from the cross-reference program appears in <A HREF="list1.htm">Listings 1</A> and <A HREF="list2.htm">2</A>. The <B>cross_reference_table</B> class and inline member function definitions appear in <B>table.h</B> (<A HREF="list1.htm">Listing 1</A>), and the corresponding non-inline member definitions appear in <B>table.cpp</B> (<A HREF="list2.htm">Listing 2</A>). (See "C++ Theory and Practice: Trimming Excess Fat," <I>CUJ,</I> March 1999 for background on these listings.)</p>
+<p>Let's look again at member <B>put_tree</B> of the <B>cross_reference_table</B> class, declared in <A HREF="list1.htm">Listing 1</A> as:</p>
+
+<pre>
+void put_tree(tree_node const *t);
+</pre>
+
+<p>Parameter <B>t</B> points to the root node of a binary tree representing a cross-reference table, which <B>put_tree</B> writes to standard output. <B>put_tree</B> shouldn't alter the tree in the process of writing it out. Therefore I added a const qualifier so that <B>t</B> has type "pointer to const tree_node." I was hoping to enlist the compiler's support in assuring that <B>put_tree</B> doesn't alter the tree. Unfortunately, the compiler can't be much help here because <B>tree_node</B> has pointer members, which poke holes in the armor.</p>
+<p><B>tree_node</B> is a member of class <B>cross_reference_table</B> defined in <A HREF="list2.htm">Listing 2</A> as:</p>
+
+<pre>
+struct
+cross_reference_table::tree_node
+    {
+    char *word;
+    list_node *first, *last;
+    tree_node *left, *right;
+    };
+</pre>
+
+<p>I think the following discussion will be a little clearer if we ignore the class name for the time being (writing <B>cross_reference_table::tree_node</B> as just <B>tree_node</B>), and rewrite <B>tree_node</B> with each member defined on a separate line:</p>
+
+<pre>
+struct tree_node
+    {
+    char *word;
+    list_node *first;
+    list_node *last;
+    tree_node *left;
+    tree_node *right;
+    };
+</pre>
+
+<p>put_tree</B>'s parameter <B>t</B> has type "pointer to const <B>tree_node</B>" so that, inside <B>put_tree</B>, <B>*t</B> has type "const <B>tree_node</B>." Once again, an object of a const class type behaves as if every one of its members is in turn const. In other words, <B>t</B> behaves much as if you had declared another type:</p>
+
+<pre>
+struct const_tree_node
+    {
+    char *const word;
+    list_node *const first;
+    list_node *const last;
+    tree_node *const left;
+    tree_node *const right;
+    };
+</pre>
+
+<p>and then declared <B>t</B> as:</p>
+
+<pre>
+const_tree_node *t
+</pre>
+
+<p>In an object of type "const tree_node," the declaration for member <B>word</B> is:</p>
+
+<pre>
+char *const word;
+</pre>
+
+<p>so that <B>word</B> has type "const pointer to char." Although the pointer is const, it points to a <B>char</B> that is non-const (or to the first element in an array of <B>char</B>s that are non-const). Each of the other pointer members has a similar interpretation. In short, each pointer member of a const class object is a "const pointer," not a "pointer to const."</p>
+<p>Inside the body of <B>put_tree</B>, you can't change the value of <B>t-&gt;word</B>. For example,</p>
+
+<pre>
+t-&gt;word = NULL;     // error
+</pre>
+
+<p>is an error because <B>t-&gt;word</B> is const. This much is good. However, you can change the value of the object that <B>t-&gt;word</B> points to. For example, the compiler will accept expressions such as:</p>
+
+<pre>
+*(t-&gt;word) = '\0';
+</pre>
+
+<p>or:</p>
+
+<pre>
+strcpy(t-&gt;word, "gotcha!");
+</pre>
+
+<p>This isn't the behavior I was hoping for. I would prefer that the compiler flag these as errors.</p>
+<p>The other pointer members of a const <B>tree_node</B> are equally capable of wreaking havoc. For example, although <B>put_tree</B> cannot change the value of <B>t-&gt;first</B>, it can use <B>t-&gt;first</B> to modify any <B>list_node</B> that it points to.</p>
+<p>To avoid such mishaps, I wrote <B>put_tree</B> so that it copies <B>t-&gt;first</B> into local variable <B>p</B> declared as:</p>
+
+<pre>
+list_node const *p;
+</pre>
+
+<p>and uses <B>p</B> to visit the <B>list_nodes</B>. Since <B>p</B> has type "pointer to const <B>list_node</B>," <B>put_tree</B> cannot use <B>p</B> to modify any <B>list_node</B>s. C++ left me on my own to get this right. Had I declared <B>p</B> without the const qualifier, the code would still compile, leaving a greater potential for mishaps.</p>
+<p>Here then is the crux of the problem. When I declared <B>put_tree</B>'s parameter <B>t</B> as "pointer to const <B>tree_node</B>," I wanted to assert that <B>put_tree</B> wouldn't change <I>any</I> part of the tree whose root is <B>t</B>. Unfortunately, <B>put_tree</B>'s declaration asserts only that it won't change the members of <B>*t</B>. <B>put_tree</B> can still change the characters in the array that <B>t-&gt;word</B> points to, as well as the nodes in the list that <B>t-&gt;first</B> and <B>t-&gt;last</B> point to. It can also modify anything in the sub-trees that <B>t-&gt;left</B> and <B>t-&gt;right</B> point to. Not much is const after all.</p>
+<p>In effect, <B>const</B> is shallow. When you apply the const qualifier to a pointer type, the pointer becomes const, but what it points to does not. This saddens me &#151; deeply. In this, and many other similar situations, I want <B>const</B> to be deep. I want <B>put_tree</B>'s parameter <B>t</B> to behave much as if it pointed to an object of type <B>const_tree_node</B>, defined as:</p>
+
+<pre>
+struct const_tree_node
+    {
+    char const *const word;
+    list_node const *const first;
+    list_node const *const last;
+    tree_node const *const left;
+    tree_node const *const right;
+    };
+</pre>
+
+<p>A tree composed of these nodes is const from top to bottom.</p>
+<p>By the way, <B>const</B> is shallow with respect to reference types as well. For example, given:</p>
+
+<pre>
+typedef T &amp;reference;
+</pre>
+
+<p>then declaring either:</p>
+
+<pre>
+reference const r = v;
+</pre>
+
+<p>is equivalent to declaring:</p>
+
+<pre>
+T &amp;r = v;
+</pre>
+
+<p>Where did the <B>const</B> go? A reference acts like a "const pointer" (not a "pointer to const") in that, once you bind a reference to an object, you cannot change that binding. Since a reference is already const in a sense, you cannot write declarations such as:</p>
+
+<pre>
+T &amp;const r = v;     // error
+</pre>
+
+<p>The syntax of C++ does not allow <B>const</B> to the right of an <B>&amp;</B> operator in a declarator.</p>
+<p>A declaration such as</p>
+
+<pre>
+reference const r = v;
+</pre>
+
+<p>is not a syntax error. The <B>const</B> is simply redundant, so the compiler ignores it.</p>
+<p>In short, applying <B>const</B> to a reference type yields a "const reference," but since a reference is already const, it yields just a reference. It does not yield a "reference to const." Again, <B>const</B> is shallow.</p>
+
+<h4><FONT COLOR="#000080">Enforcing Deep Constness</FONT></H4>
+
+<p>Until recently, I thought I had no choice but to accept that <B>const</B> is shallow and program as carefully as I could around it. Then I realized I could enforce the semantics I want by using member functions.</p>
+<p>For example, <B>tree_node</B> has a data member:</p>
+
+<pre>
+char *word;
+</pre>
+
+<p>As a member of a non-const <B>tree_node</B>, <B>word</B> acts just as it's declared, and that's just fine by me. However, in a const <B>tree_node</B>, <B>word</B> acts as if it were declared as:</p>
+
+<pre>
+char *const word;
+</pre>
+
+<p>but I want it to act as if it were:</p>
+
+<pre>
+char const *const word;
+</pre>
+
+<p>I can approximate this behavior for data member <B>word</B> by using a pair of overloaded member functions named <B>word</B> instead. One is a const member function, and the other is a non-const member function. Everywhere that I wrote <B>t-&gt;word</B>, I can just write <B>t-&gt;word()</B> instead. For example, <B>put_tree</B> in <A HREF="list2.htm">Listing 2</A> contains the statement:</p>
+
+<pre>
+printf("%12s:", t-&gt;word);
+</pre>
+
+<p>which becomes:</p>
+
+<pre>
+printf("%12s:", t-&gt;word());
+</pre>
+
+<p>The details are as follows. I can rewrite:</p>
+
+<pre>
+struct tree_node
+    {
+    char *word;
+    ...
+    };
+</pre>
+
+<p>as:</p>
+
+<pre>
+struct tree_node
+    {
+public:
+    char const *const &amp;word() const;
+    char *&amp;word();
+    ...
+private:
+    char *_word;
+    };
+</pre>
+
+<p>Since a class can't have both a data member and a member function with the same name, I renamed the data member as <B>_word</B> (with a leading underscore <a href="#1">[1]</a>). And, as a reminder, <B>tree_node</B> is really a member of class <B>cross_reference_table</B>, but I'm leaving that detail out of the code to keep things more concise.</p>
+<p>The definition for the const member function is:</p>
+
+<pre>
+char const *const &amp;
+tree_node::word() const
+    {
+    return _word;
+    }
+</pre>
+
+<p>Since this is a const member function, its implied <B>this</B> parameter has type "const pointer to const tree_node" and so the pointer member (now called <B>_word</B>) has type "const pointer to <B>char</B>." Again, I want the pointer to behave as if it has type "const pointer to const char." That is exactly the way the return value of this function behaves.</p>
+<p>In general, an expression of type "reference to T" behaves just like an object of type <B>T</B>. The function above returns a reference to the type I want. Therefore, a call to that function acts like an object of the type I want.</p>
+<p>For instance, <B>put_tree</B>'s parameter <B>t</B> has type "pointer to const <B>tree_node</B>." In this context, the call expression <B>t-&gt;word()</B> invokes the const member function <B>word</B>, which returns a "reference to const pointer to const char." Therefore, the expression <B>t-&gt;word()</B> acts just like an object of type "const pointer to const <B>char</B>." Bingo.</p>
+<p>The definitions for the non-const member is simply:</p>
+
+<pre>
+char *&amp;tree_node::word()
+    {
+    return _word;
+    }
+</pre>
+
+<p>Since this is a non-const member function, its implied <B>this</B> parameter has type "const pointer to <B>tree_node</B>" and so <B>_word</B> has type "pointer to <B>char</B>." The function returns a "reference to pointer to <B>char</B>," and so an expression that calls this function acts just the pointer itself.</p>
+<p>For example, <B>add_tree</B>'s parameter <B>t</B> has type "pointer to <B>tree_node</B>." In this context, <B>t-&gt;word()</B> invokes the non-const member function, which returns a "reference to pointer to <B>char</B>." Once again, <B>t-&gt;word()</B> acts just like an object of the desired type, which in this case is "pointer to char."</p>
+<p>Why did I bother writing a non-const version of this member function? Why not just make <B>_word</B> public? The problem is that, for functions such as <B>put_tree</B> that deal with const <B>tree_node</B> objects, the data member <B>_word</B> acts like a shallow const pointer. I want const <B>tree_node</B>s to be deeply const. Therefore, I don't want <B>put_tree</B> to accidentally use <B>_word</B> instead of calling the const member function <B>word</B>, and therefore I declared <B>_word</B> private.</p>
+<p>For functions such as <B>add_tree</B> that deal with non-const <B>tree_node</B> objects, <B>_word</B> has the appropriate type. There's no real harm in letting <B>add_tree</B> access <B>_word</B> directly, except that <B>_word</B> is private for the reason just given. Therefore, I provided the non-const member function <B>word</B> so that functions such as <B>add_tree</B> can access the pointer. This non-const member presents no danger to functions such as <B>put_tree</B>, because you cannot apply a non-const member to a const object.</p>
+
+<h4><FONT COLOR="#000080">Connecting All the Dots</FONT></H4>
+
+<p>The <B>tree_node</B> struct in <A HREF="list2.htm">Listing 2</A> has five pointers altogether: <B>word</B>, <B>first</B>, <B>last</B>, <B>lef</B>t, and <B>right</B>. Since I want const <B>tree_node</B> objects to be deeply const, I really must rewrite all of these pointers as pairs of overloaded functions. Then I must rewrite every reference to the data member word as the function call <B>word()</B>. <B>first</B> becomes <B>first()</B>, last becomes <B>last()</B>, and so on.</p>
+<p><B>first</B> and <B>last</B> point to <B>list_node</B> objects, which in turn, have pointer members named <B>next</B>. I think const <B>list_node</B> objects should also be deeply const. Therefore I must rewrite <B>list_node::next</B> as a pair of overloaded functions, and change every reference to next into a call to <B>next()</B>.</p>
+<p>The result of all this rewriting appears in a new version of <B>table.cpp</B> in <A HREF="list3.htm">Listing 3</A>. This coding style works in that it correctly enforces the deep constness of const <B>tree_node</B> objects, but boy oh boy is it tedious and obtrusive. It was an interesting first attempt, but I can't imagine doing this on any scale.</p>
+<p>Well, C++ has a pretty good cure for tedium &#151; templates. Next time around, I'll show you how you can dramatically simplify the definition of deeply const obects by using a template for deeply const pointers.</p>
+
+<h4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1]  Elsewhere in this issue, Bobby Schmidt recommends against use of a single leading underscore with variable names. That's because in C and C++, names that begin with an underscore and have external linkage are reserved for use by the translator. However, class data members have no linkage, so the use of a single leading underscore for class data member names is valid. &#151;mb</p>
+
+<p><i>Dan Saks is the president of Saks &amp; Associates, which offers training and consulting in C++ and C. He is active in C++ standards, having served nearly seven years as secretary of the ANSI and ISO C++ standards committees. Dan is coauthor of <I>C++ Programming Guidelines</I>, and codeveloper of the Plum Hall Validation Suite for C++ (both with Thomas Plum). You can reach him at 393 Leander Dr., Springfield, OH 45504-4906 USA, by phone at +1-937-324-3601, or electronically at <B>dsaks@wittenberg.edu</B>.</i></p>
+
+<h4><a href="../../../source/1999/apr99/saks.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

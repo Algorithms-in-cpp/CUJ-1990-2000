@@ -1,0 +1,299 @@
+<HTML>   
+     <HEAD>
+<TITLE>January 2000/The Journeyman's Shop</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocjan.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">The Journeyman's Shop: Common Design Mistakes, Part 1</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Pete Becker</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Pete provides several cautionary tales from the volatile world of Java libraries. Rapid development is not always compatible with good design.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<p>I'm writing this column on the balcony of my hotel room in Kona, Hawaii. I'm here for the ISO C++ standards meeting, which began last Wednesday and runs through Tuesday. We have the weekend off, of course, and many of us spent part of the day yesterday watching the Ironman Triathlon. That's a 2.5 mile ocean swim followed by a 112 mile bicycle ride followed by a 26.2 mile run. The race started at 7:00 a.m., and the winner finished in about eight hours, at around 3:00 p.m. Stragglers finished as late as midnight.</p>
+<p>The hotel is about three miles from the turnaround point where the participants changed over from bicycling to running, so we'd see someone go by in one direction on a bicycle, and half an hour later we'd see them go by in the other direction on foot. As bicyclists they looked pretty strong &#151; they were feeling the psychological lift of being near the end of that leg of the race. When they came back as runners they more clearly showed the debilitation and, in some cases, the exhaustion that was beginning to overcome them after so many hours of continuous exertion. Although I have doubts about the wisdom of people who put themselves through such torture, I admire their endurance and their willpower.</p>
+<p>In our work as programmers we sometimes have to rely on our endurance and willpower to get through a difficult task, and we are justly proud when we successfully finish something that raised a new challenge each time we thought we had the problems all solved. It's easy to forget, though, in the heat of a late-night debugging session, that our goal is not to demonstrate our proficiency at debugging, but to produce working code. Unlike Rosie Ruiz, who won the Boston Marathon several years ago by skipping part of the run and taking the subway instead, we won't be disqualified for finding a better way to get to the finish line.</p>
+<p>Often the biggest obstacle to our success in a programming task is that we don't understand what we're doing. There's no easy solution here &#151; we have to learn more about our task. Sometimes, though, the biggest obstacle is that we made a bad design decision early on, and the solution is to change that design decision. That may mean throwing out code that we've sweated over, which can make it harder for us to accept that we made a mistake. But part of being a professional programmer is recognizing that we make mistakes, correcting those mistakes, and learning from them.</p>
+<p>This month we'll look at half a dozen examples of design mistakes. We'll see how these mistakes affect programmers who have to work with these flawed designs, and we'll see how to fix them. These examples are all taken from the Java standard libraries, but they are not peculiar to Java. Java is fertile ground for design mistakes because Sun is in too much of a hurry to push out new versions. That makes it easy to find the sort of mistakes that hurried programmers often make. But don't make the mistake of thinking that these things occur only in Java. I've chosen these examples because they are typical of the sort of design mistakes we all must be careful not to make.</p>
+
+<H4><FONT COLOR="#000080">Inheriting Instead of Delegating</FONT></H4>
+
+<p>The Java standard library has a class, <B>java.util.Date,</B> which encapsulates both a calendar date and the time of day. In itself that's fine. We often work with both of these items together. The <B>Date</B> class, in conjunction with the <B>Calendar</B> class, allows setting and extracting the various components of a calendar date and the time of day.</p>
+<p>The JDBC (Java Database Connectivity) library provides a set of abstractions for dealing with databases through SQL (Structured Query Language). SQL has two distinct data types, <B>DATE</B> and <B>TIME,</B> for describing a calendar date and a time of day. So JDBC provides corresponding classes, <B>java.sql.Date</B> and <B>java.sql.Time,</B> to encapsulate a calendar date and a time of day for use with SQL. One obvious problem here is the reuse of the name <B>Date.</B> Code that uses both <B>java.util.Date</B> and <B>java.sql.Date</B> will have to use fully qualified names so that the compiler can tell which is which. But that's not the biggest problem that these classes present.</p>
+<p>The real problem with <B>java.sql.Date</B> and <B>java.sql.Time</B> is that they are both derived from <B>java.util.Date,</B> and they throw exceptions if you call methods that are not appropriate for the particular derived type. Here's an abbreviated definition of <B>java.util.Date:</B></p>
+
+<pre>
+package java.util;
+public class Date
+{
+public Date(long time)
+   { /* ... */ }
+public int getHours()
+   { /* ... */ }
+public int getYear()
+  { /* ... */ }
+}
+</pre>
+
+<p>And here's an abbreviated definition of <B>java.sql.Date:</B></p>
+
+<pre>
+package java.sql;
+public class Date
+   extends java.util.Date
+{
+public Date(long time)
+   { super(time); }
+public int getHours()
+   { throw new
+        IllegalArgumentException(); }
+}
+</pre>
+
+<p>The danger with classes like this is that methods that take arguments of the base type will typically not be written so that they can safely deal with objects of the derived type. For example:</p>
+
+<pre>
+public class DateDemo
+{
+static void
+showHour(java.util.Date date)
+   {
+   System.out.println
+      (date.getHours());
+   }
+static void main(String args[])
+   {
+   long time =
+      System.currentTimeMillis();
+   showHour
+      (new java.util.Date(time));
+   showHour
+      (new java.sql.Date(time));
+   }
+}
+</pre>
+
+<p>The first call to <B>showHour</B> works as expected: it displays the hour of the time when the program is run. The second call aborts program execution with an exception, thrown by the function <B>java.sql.Date.getHours,</B> because <B>java.sql.Date</B> does not support extracting an hour.</p>
+<p>This creates a problem because one of the fundamental principles for designing inheritance hierarchies is that you ought to be able to supply a derived class <a href="#1">[1]</a> in any place where a base class is expected and still have a working program. This is known as the "Liskov Substitution Principle," and it is a handy guide for deciding whether inheritance is appropriate. In this case, <B>java.sql.Date</B> does not do everything that <B>java.util.Date</B> does, so it should not be derived from <B>java.util.Date.</B> This appears to be a case where the designer used inheritance because it saved having to write half a dozen functions. That convenience comes at a high price, though: it prevents the compiler from detecting that an object of type <B>java.sql.Date</B> is being passed to a function that will call invalid methods on it. Rather than expose users to this danger, the class should have been written to use an object of type <B>java.util.Date</B> as its implementation, but have its own distinct interface:</p>
+
+<pre>
+package java.sql;
+public class Date
+{
+public Date(long time)
+   { date = new Date(time); }
+public int getYear()
+   { return date.getYear(); }
+private java.util.Date date;
+}
+</pre>
+
+<p>With this definition, the run-time error in the example program above becomes a compile-time error, making it much easier to find.</p>
+<p>If you find yourself tempted to write a derived class that doesn't support all of the operations of its base, you should probably delegate to an object of that base type instead.</p>
+
+<H4><FONT COLOR="#000080">Factoring Bases Badly</FONT></H4>
+
+<p>The class <B>java.io.Reader</B> is a base class for character-oriented input streams. It has two methods, <B>mark</B> and <B>reset,</B> that can be used to mark the current position in a stream and to return to that position later. Derived classes, however, are not required to support <B>mark</B> and <B>reset</B> &#151; they can throw an exception if either of these methods is called. The class does give you a little help, though: there's also a method, <B>markSupported,</B> which will tell you whether you can call <B>mark</B> and <B>reset.</B> If you religiously call <B>markSupported</B> before trying to call <B>mark</B> or <B>reset</B> on an object whose type is derived from <B>Reader</B> you can avoid exceptions. If you're writing a method that needs to be able to mark a position and return to it, though, that doesn't help much. Your method can't do its job, and there's nothing you can do about it. For example:</p>
+
+<pre>
+public class ReaderDemo
+{
+static boolean maybeRead(Reader r)
+   {
+   if (!r.markSupported())
+      return false;
+   // code that relies on
+   // mark and reset ...
+   return true;
+   }
+}
+</pre>
+
+<p>Here we've used the return value to indicate whether the method was able to perform any processing, rather than letting <B>mark</B> or <B>reset</B> throw an exception. That doesn't really accomplish anything, though: if the programmer whose function calls <B>maybeRead</B> doesn't know that it requires a <B>Reader</B> that supports <B>mark</B> and <B>reset,</B> why would he check the return value for success?</p>
+<p>Just as in our previous example, we face the possibility of calling a method on an object that does not support all the methods its type indicates it should. This, too, violates the Liskov substitution principle, but the violation here is the result of a decision by the designer of the base class rather than the designer of the derived class. The solution is to recognize that there are really two different classes here, one that simply performs input from streams, and one that also provides <B>mark</B> and <B>reset.</B> By writing two classes instead of one we eliminate the problem:</p>
+
+<pre>
+public class Reader
+{
+// various methods for reading
+}
+
+public class ReaderM extends Reader
+{
+public void mark()
+   { /* ... */ }
+public void reset()
+   { /* ... */ }
+}
+</pre>
+
+<p>Classes that support <B>mark</B> and <B>reset</B> should be derived from <B>ReaderM.</B> Classes that do not support them should be derived from <B>Reader.</B> With these definitions of <B>Reader</B> and <B>ReaderM,</B> we can rewrite our example code like this:</p>
+
+<pre>
+public class ReaderDemo
+{
+static void maybeRead(ReaderM r)
+   {
+   // code that relies on
+   // mark and reset ...
+   }
+}
+</pre>
+
+<p>Now we don't have to test whether <B>mark</B> and <B>reset</B> are supported. The compiler won't let us call <B>maybeRead</B> with a class that doesn't support these methods.</p>
+<p>If you find yourself tempted to write a base class with optional methods, you should probably write two base classes instead.</p>
+
+<H4><FONT COLOR="#000080">Overburdening a Class</FONT></H4>
+
+<p>The class <B>java.util.TimeZone</B> is an abstract class for dealing with a time zone. The derived class <B>java.util.SimpleTimeZone</B> was originally written to support the form of time zone used throughout the United States. In such time zones, daylight savings time begins and ends on some particular day of the week in some particular week of some particular month. For example, in the U.S., daylight savings time begins on the first Sunday in April. In addition, <B>java.util.SimpleTimeZone</B> supports time zones that do not have daylight savings time. To accomplish this <B>java.util.SimpleTimeZone</B> has two flavors of constructor, one that takes no information about daylight savings time and one that takes arguments to specify the month, week, and day of the week when daylight savings time begins and ends. For example, the following code produces a time zone object for Eastern Time:</p>
+
+<pre>
+import java.util;
+
+public class TZDemo
+{
+public static void main(String args[])
+   {
+   TimeZone tz =
+      new SimpleTimeZone
+         (
+         -5*60*60*1000L,   // offset in msec
+         "EST",            // name
+
+         Calendar.APRIL,   // start month
+         1,                // first week
+         Calendar.SUNDAY,  // Sunday
+         2*60*60*1000L,    // starting time in msec
+                           // (2 AM)
+
+         Calendar.OCTOBER, // end month
+         -1,               // last week
+         Calendar.SUNDAY,  // Sunday
+         2*60*60*1000L     // ending time in msec (2 AM)
+         )
+   }
+}
+</pre>
+
+<p>This program creates an object of type <B>SimpleTimeZone,</B> with a time that's ordinarily five hours ahead of GMT, and daylight savings time starting on the first Sunday of April and ending on the last Sunday of October, at 2:00 a.m.</p>
+<p>There's a problem with this approach, though: there are time zones in the world that don't follow either of the two schemes supported by this version of <B>SimpleTimeZone.</B> Some use fixed dates for the start and end, and some use a particular day of the week following some fixed date. So beginning with JDK 1.2, <B>SimpleTimeZone</B> became much more complex. Now if the day of the week (<B>Calendar.SUNDAY</B> in both the start and end dates above) is zero, then the month and date don't specify which week in the month, but which date in the month. If the day of the week is negative then its absolute value specifies the day of the week following the date given by the month and day. If you have trouble following that, you see why it's a design mistake. This constructor is being asked to do too many things. It would have been much better to have added a new class, say, <B>FixedDateTimeZone,</B> to handle these forms of rules.  </p>
+<p>If you find yourself tempted to use magic flags to change the interpretation of arguments to a function, think about writing a separate function or perhaps a separate class.</p>
+
+<H4><FONT COLOR="#000080">Exposing Implementation Details</FONT></H4>
+
+<p>An object of the class <B>java.io.PipedInputStream</B> can be used to read data written to an object of the class <B>java.io.PipedOutputStream.</B> Most of the work is done in <B>PipedInputStream.</B> It contains a buffer that holds bytes that have been written into the pipe but not yet read. The buffer is a circular buffer; that is, the index of the current write position is incremented each time a character is written, until it reaches the end of the buffer. Then the index is wrapped around to point to the beginning of the buffer. The index of the current read position wraps around in similar fashion. As long as the read and write indexes have different values, the characters from the read index up to the write index are characters that have been written into the buffer but not yet read.</p>
+<p>The major design decision in implementing a circular buffer is deciding how to indicate that the buffer is empty and how to indicate that it is full. There are two possible approaches. In the first, the buffer is empty when the read index and the write index are equal, and it is full when the write index is just before the read index. In the second, the buffer is empty when the read index holds an invalid value, and full when the read index and the write index are equal. With the first approach, the read and write methods look like this:</p>
+
+<pre>
+public int read()
+{
+if (readIndex == writeIndex)
+   {
+   // buffer empty, block until
+   // someone writes to the buffer
+   }
+int val = buffer[readIndex++];
+if (readIndex == bufSize)
+   readIndex = 0;
+return val;
+}
+
+public void write(int val)
+{
+if ((writeIndex == bufSize-1 &amp;&amp;
+     readIndex == 0)
+   || writeIndex == readIndex-1)
+   {
+   // buffer full, block until
+   // someone reads from the buffer
+   }
+buffer[writeIndex++] = val;
+if (writeIndex == bufSize)
+   writeIndex = 0;
+}
+</pre>
+
+<p>With the second approach, they look like this:</p>
+
+<pre>
+public int read()
+{
+if (readIndex == -1)
+   {
+   // buffer empty, block until
+   // someone writes to the buffer
+   }
+int val = buffer[readIndex++];
+if (readIndex == bufSize)
+   readIndex = 0;
+return val;
+}
+
+public void write(int val)
+{
+if (writeIndex == readIndex)
+   {
+   // buffer full, block until
+   // someone reads from the buffer
+   }
+else if (readIndex == -1)
+   {
+   readIndex = 0;
+   writeIndex = 0;
+   }
+buffer[writeIndex++] = val;
+if (writeIndex == bufSize)
+   writeIndex = 0;
+}
+</pre>
+
+<p>The two read methods are pretty much the same. They differ only in the test that is used to determine whether there is data in the buffer waiting to be read. The two write methods have less in common. The test for a full buffer in the first version is more complex. The second version modifies the value of the read index in the course of writing to an empty buffer. Now, personally, I find it disturbing for the write method to have to change the value of the read index. For that reason, I'd choose the first approach. However, there's a cost associated with that approach: when the buffer is full there is actually one byte position in the buffer that isn't used. So I wouldn't argue too strenuously with someone who chose the second approach, choosing more complex code over a small amount of wasted space. There's a legitimate engineering choice to be made there.</p>
+<p>In the Java library, though, there's no choice allowed. The specification for <B>java.io.PipedInputStream</B> includes two protected integer values named <B>in</B> and <B>out,</B> indicating the current write position and read position. The specification also says that <B>in</B> has a value that is less than zero when the buffer is empty, and that <B>in</B> and <B>out</B> are equal when the buffer is full. That is, the Java library specification requires the second approach. The only possible reason for making the data members protected instead of private is to permit derived classes to modify the contents of the buffer. However, that cannot be done safely because such changes can't be properly synchronized with reads and writes by other threads. Exposing these internal data members imposes a particular algorithm on the implementer of this class.</p>
+<p>If you find yourself tempted to make data members protected, ask yourself whether there is anything sensible that derived classes could do with that data. If there isn't a clear and compelling need to make data members available, don't.</p>
+
+<H4><FONT COLOR="#000080">Underestimating the Costs of Thread Safety</FONT></H4>
+
+<p>One of the interesting features of Java is its emphasis on thread safety. In the early versions most classes were thread safe, either because, like <B>String,</B> objects of those types could not be modified once created; or because, like <B>StringBuffer,</B> all of their methods were <B>synchronized</B> [<a href="#2">2</a>, <a href="#3">3</a>]. The biggest problem with using <B>synchronized</B> is that it imposes the costs of thread safety on every object in every program, whether those costs are necessary or not.</p>
+<p>For example, the class <B>java.util.BitSet</B> stores a sequence of bits, which can be accessed through an index and individually set, cleared, and queried. The decision to use a <B>BitSet</B> rather than an array of <B>boolean</B> values involves a tradeoff between speed and space: packing and unpacking the bits in a <B>BitSet</B> takes time, but makes it possible to use a great deal less space when storing a collection of bits. Most application designers understand that tradeoff well enough to make a reasonable choice.</p>
+<p>Imposing synchronization on all <B>BitSet</B> objects shifts the balance, though, by making them significantly slower &#151; in some implementations by a factor of nearly thirty. If an application doesn't share a <B>BitSet</B> object between threads this overhead is wasted, and a <B>BitSet</B> will usually be prohibitively slow. The decision to synchronize an object's methods should be made by the application developer, not the library designer <a href="#4">[4]</a>.</p>
+<p>If you find yourself tempted to add expensive features to your classes, think about ways to make using those features optional.</p>
+
+<H4><FONT COLOR="#000080">Underestimating the Complexity of Thread Safety</FONT></H4>
+
+<p>The class <B>java.util.Vector</B> encapsulates an array of objects, increasing the size of the array as necessary when objects are added. It provides a method named <B>elements</B>, which returns an object of type <B>Enumeration</B>, which lets you examine the contents of the <B>Vector</B> without having to access individual elements through an index. An object of type <B>Enumeration</B> provides two methods, <B>hasMoreElements</B> and <B>nextElement,</B> to support these operations. These are typically used by first calling <B>hasMoreElements</B> to determine whether any unvisited objects remain in the <B>Vector</B>, and if so, calling <B>nextElement</B> to get the next object. Like this:</p>
+
+<pre>
+void showAll(Enumeration e)
+{
+while (e.hasMoreElements())
+   System.out.println(e.nextElement());
+}
+</pre>
+
+<p>An <B>Enumeration</B> produced by a <B>Vector</B> tracks changes in the <B>Vector.</B> That is, if we had added an object to the underlying <B>Vector</B> object in the middle of our loop, that object would affect the behavior of the <B>Enumeration</B> object. If we add an object in a position the <B>Enumeration</B> object has yet to visit, then that new object will show up when we reach its position in the <B>Vector.</B> If we add an object to a position the <B>Enumeration</B> object has already visited, then we'll see the <B>Enumeration's</B> current object for a second time the next time through the loop shown above. That's all understandable if you think about how a <B>Vector</B> is represented internally. But it can cause problems.</p>
+<p>The danger here is that if the <B>Enumeration</B> object was created from a <B>Vector</B> that is shared between threads, changes to the underlying <B>Vector</B> can disrupt our control loop in rather drastic ways. A thread switch can occur between the call to <B>hasMoreElements</B> and the call to <B>nextElement,</B> and the intervening thread can remove an object from the <B>Vector.</B> If <B>e</B> happens to be pointing to the last element in the <B>Vector,</B> removing an element leaves <B>e</B> with nothing to point to, and the call to <B>nextElement</B> will throw an exception instead of returning a valid object. This behavior is not obvious from looking at the loop itself, and it is not documented. <B>Enumeration</B>s that refer to <B>Vector</B>s are not thread safe <a href="#5">[5]</a>.</p>
+<p>When you're programming in a multi-threaded environment, think carefully about the implications of threads for your data structures. Make sure you understand and document the ways in which threads can affect the behavior of your code.</p>
+
+<H4><FONT COLOR="#000080">Continuation</FONT></H4>
+
+<p>We'll continue this discussion next month. Aloha!</p>
+
+<H4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1]  In C++, a publicly derived class. Protected and private inheritance are subject to a different set of principles. Since neither of these is supported by Java, I simply refer to "inheritance" rather than cluttering the text with qualifiers.</p>
+<p><a name="2"></a>[2]  Not quite all. Reading and writing values of integral types are atomic operations in Java, so methods that only set or examine such values do not need to be synchronized to be thread safe.</p>
+<p><a name="3"></a>[3]  Having thread-safe objects is neither necessary nor sufficient for creating thread-safe programs. But that's a topic for another column.</p>
+<p><a name="4"></a>[4]  In JDK 1.2 the synchronization has been removed from <B>BitSet.</B></p>
+<p><a name="5"></a>[5]  This has been improved somewhat in JDK 1.2.</p>
+
+<p><i><B>Pete Becker</B> is Technical Project Leader for Dinkumware, Ltd. He spent eight years in the C++ group at Borland International, both as a developer and manager. He is a member of the ANSI/ISO C++ standardization committee. He can be reached by email at <B>petebecker@acm.org</B>.</i></p>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

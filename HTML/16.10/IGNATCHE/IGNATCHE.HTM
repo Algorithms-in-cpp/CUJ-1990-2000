@@ -1,0 +1,220 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>October 1998/An Algorithm for Online Data Compression</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tococt.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">An Algorithm for Online Data Compression</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Sergey Ignatchenko</FONT></H3>
+<BLOCKQUOTE>
+<p>Compressing data on the fly involves different tradeoffs than when you have all the time and space in the world.</p></BLOCKQUOTE>
+<HR>
+<BLOCKQUOTE>
+<p>Lossless data compression algorithms have a wide range of applications. The most common, file compression, is nearly unrestricted in terms of memory usage and operation time. The most essential algorithm metric for file compression is the compression ratio. But in the case of online data compression, the situation is quite different. For the purpose of this article, I define online data compression as the compression of stream-based material where the compressor/decompressor pair must be able to process data at a rate equivalent to the input rate. Moreover, in some cases there must be a constant upper bound on the delay between compressor input and decompressor output.</p>
+<p>Online data compression imposes a number of restrictions on compression algorithms. First, these compression algorithms should meet strict requirements, for low memory usage and high processing speed. Second, data flow in interactive systems usually consists of small data packets (several hundred bytes), and each of these data packets should be delivered as quickly as possible. For the compression algorithm described in this article, this second requirement means that the packets must be self-contained. That is, if packet sequence {A, B} is compressed into packet sequence {A', B'}, then the information contained in packet A' should be sufficient to decompress packet A. Thus, at the end of compression of packet A, all information needed for decompression of packet A must be placed in packet A'. This procedure is usually referred to as <B>flush</B>. Frequent flushes reduce the compression ratio for all compression algorithms, but some algorithms are more vulnerable than others to frequent flushes. For online compression, flush frequency depends on the size of the data packet.</p>
+<p>In this article I describe the stream-based algorithm LZH-Light. LZH-Light is similar to the well-known Deflate <a href="#1">[1]</a>, but has significant advantages over Deflate in terms of online data compression. I will outline those advantages shortly, then explain how the LZH-Light algorithm works.</p>
+
+<h4><FONT COLOR="#000080">Why LZH-Light?</FONT></H4>
+
+<p>At present, a large number of different lossless compression algorithms exist. Deflate is one of the most popular algorithms, and zlib <a href="#2">[2]</a> (<B>http://www.cdrom.com/pub/infozip/zlib/</B>) is one of its most popular implementations. The Deflate algorithm is some combination of the LZ77 algorithm and Huffman-like encoding, and it is very popular for offline compression. However, its usefulness for online compression is limited by the following drawbacks. (The figures given in parentheses are for <B>zlib</B>.)</p>
+
+<UL><LI>Deflate suffers a considerable degradation of compression ratio (up to 30-40 percent) and compression speed (down to 50 percent) for small packets.</LI>
+    <LI>Deflate requires a relatively large amount of memory (260 Kb for the compressor and 43 Kb for the decompressor) by default. Although memory usage can be reduced to 10 Kb for the compressor and 13 Kb for the decompressor, the compression ratio in this case is decreased by as much as 55 percent.</LI>
+    <LI>Deflate's compression speed is relatively low by default (150 Kb/sec on the Pentium-100 processor). Although compression speed can be increased to 900 Kb/sec, the compression ratio in this case is reduced by as much as 25 percent.</LI></UL>
+
+<p>The LZH-Light algorithm was developed to overcome problems concerning online data compression. Similar to the Deflate algorithm, it is a combination of the LZ77 algorithm and Huffman-like encoding. The advantages of LZH-Light are:</p>
+
+<UL><LI>LZH-Light's compression ratio depends only slightly upon flush frequency.</LI>
+    <LI>LZH-Light uses a very small, fixed amount of memory (16 Kb for the compressor and 8 Kb for the decompressor by default; minimum values are 3.7 Kb and 2.3 Kb, respectively).</LI>
+    <LI>LZH-Light has been optimized to achieve maximum speed (where the compression speed exceeds 1 Mb/sec on the Pentium-100 processor) with a satisfactory compression ratio.</LI>
+    <LI>Like Deflate, LZH-Light (both in its data format and in its current implementation) is independent of the CPU type, the operating system, and the character set. Thus, it can be used for data transfer between different platforms.</LI></UL>
+
+<p>Although the LZH-Light algorithm yields lower offline compression ratios than the Deflate algorithm, LZH-Light can be more suitable for online compression.</p>
+
+<h4><FONT COLOR="#000080">LZH-Light Description</FONT></H4>
+
+<p>My description of the LZH-Light technique consists of two parts: data formats, and algorithms that support the data formats. This description is not complete; it presents basic principles, not a detailed specification. The full source code for the current LZH-Light implementation is available on the <I>CUJ</I> ftp site (see page 3 for downloading instructions), which can be used as reference material.</p>
+
+<h4><FONT COLOR="#000080">Data Formats</FONT></H4>
+
+<p>The LZH-Light algorithm compresses data in two stages: the LZ77 stage and the Huffman-like stage. At the first (LZ77) stage, raw source data, interpreted as a byte stream, is converted into an intermediate stream of symbols. Each symbol in this stream belongs to the range 0-273. In addition, some symbols may have one or two attached suffixes, each suffix consisting of one or several bits. In the second (Huffman-like) stage, the intermediate stream is converted into a compressed output bit stream. This bit stream is LZH-Light's compression output. The compression/decompression process is depicted in <A HREF="fig1.htm">Figure 1</A>.</p>
+<p>The LZH-Light algorithm contains a parameter that affects the data format. This parameter is <B>LZBUFSIZE</B>, the size of the sliding window for LZ77's compressor and decompressor. On one hand, the ability to change <B>LZBUFSIZE</B> allows the programmer to control memory usage. On the other hand, the existence of such parameter means that LZH-Light is actually not a single algorithm, but instead is a family of algorithms with incompatible data formats.</p>
+
+<h4><FONT COLOR="#000080">The Intermediate Data Format</FONT></H4>
+
+<p>The intermediate stream of symbols produced by LZ77's compression (S in <A HREF="fig1.htm">Figure 1</A>) will be reproduced on the output side (S' in <A HREF="fig1.htm">Figure 1</A>) of the Huffman-like decompressor, and fed as input into the LZ77 decompressor. This intermediate stream of symbols consists of simple instructions for the LZ77 decompressor.</p>
+
+<UL><LI>A <B>ch</B> symbol within the range 0-255 means that the symbol <B>ch</B> will be placed in the decompressor's output byte stream.</LI>
+    <LI>A <B>ch</B> symbol within the range 256-271 means that a certain string, previously placed in the output stream, will again be written to the output stream. This <B>ch</B> symbol has two attached bit suffixes. The first bit suffix (in conjunction with the <B>ch</B> code) represents the string length. The second bit suffix represents the backward distance from the current position in the output stream to the beginning of this string.</LI></UL>
+
+<p>The length of such string may range from 4 to 521, and the backward distance may range from 0 to <B>LZBUFSIZE</B>. (If the backward distance is less than the string's length, then the referenced string overlaps the current position.) <A HREF="tab1.htm">Tables 1</A> and <A HREF="tab2.htm">2</A> show how the <B>ch</B> code, first bit suffix, and second suffix are combined to represent the length and the backward distance.</p>
+
+<UL><LI>A <B>ch</B> symbol equal to 272 (<B>HUFFRECALC</B>) is used for synchronizing the compressor's and the decompressor's coding tables (more on this later). This symbol also has a bit suffix.</LI>
+    <LI>A <B>ch</B> symbol equal to 273 (<B>END_BLOCK</B>) indicates the end of the current compressed data block.</LI></UL>
+
+<p>Thus, the LZ77 compressor's task is to build an intermediate stream S, such that the LZ77 decompressor, which applies the previously described instructions to S' (identical to S), will output a raw byte stream identical to the input raw byte stream of the compressor.</p>
+<p>The LZ77 compressor tries to encode (using symbols 256-271) every substring from the input raw stream that occurred earlier. This substring must have a length of at least four bytes, and its previous occurrence must be not earlier than <B>LZBUFSIZE</B> symbols from the current position.</p>
+
+<h4><FONT COLOR="#000080">Huffman-Like Encoding Format</FONT></H4>
+
+<p>The second stage of LZH-Light compression is similar to Huffman coding. At every given point during compression, a Huffman-like coding table exists. This table defines how many and which bits are used for encoding each symbol of the intermediate stream. (Recall that these symbols of may range from 0 to 273.) If a symbol of the intermediate stream has bit suffixes, these bit suffixes do not undergo Huffman-like encoding. They are placed into the output stream following the bits representing the symbol. The decompressor maintains its own copy of this table. At intervals, the compressor updates the table and places information about these updates in its output stream. The decompressor responds to this information, so that the decompressor's table is maintained identical to the compressor's table at every corresponding point in the decompression process.</p>
+<p>The Huffman-like encoding table used in LZH-Light differs from the classic Huffman coding table. All symbols of the intermediate stream (0-273) are divided into 16 groups. With each group, indicated by group number <B>grp</B> (0-15), is associated a number of bits <B>nGroupBit(grp)</B> ranging from 0 to 8. Each group contains not more than <B>2</B>nGroupBit(grp) symbols. A symbol <B>ch</B> of group <B>grp</B> is encoded by first placing the four bits of <B>grp</B> into the output stream, followed by the <B>nGroupBit</B> bits of the number representing the symbol's position within its assigned group. For example, if <B>ch</B> is the third symbol in group 1, and <B>nGroupBit</B> for group 1 is 2, the Huffman-like encoder would send the binary sequence <B>000110</B> to the output stream. The first four bits (<B>0001</B>) are the group number and the last two bits (<B>10</B>, equivalent to 2 in decimal) represent that <B>ch</B> is the third symbol in its group.</p>
+<p>This approach has both advantages and disadvantages compared to classic Huffman coding:</p>
+
+<UL><LI>LZH-Light coding allows symbol extraction in exactly two reading operations (unlike bit-by-bit in Huffman coding). This improves decompression speed.</LI>
+    <LI>Worst-case encoding for LZH-Light is 12 bits/symbol, which is much better than the worst-case for classic Huffman coding (theoretically up to 272 bit/symbol; in practice up to 25-35 bit/symbol).</LI>
+    <LI>Since classic Huffman coding is the best possible coding method of this type, the LZH-Light coding yields a worse compression ratio. However, the difference is small enough (less than 1 percent in the average case), provided symbols are correctly divided into groups.</LI></UL>
+
+<h4><FONT COLOR="#000080">Huffman-Like Table Synchronization</FONT></H4>
+
+<p>For correct operation of Huffman-like coding, it is necessary to synchronize the coding tables of both the compressor and the decompressor. The LZH-Light algorithm achieves this as follows.</p>
+
+<UL><LI>The coding tables for the compressor and the decompressor are initialized to identical values, according to <A HREF="tab3.htm">Table 3</A>.</LI>
+    <LI>Both the compressor and the decompressor maintain a table of statistics, <B>stat</B>. This table holds a running count of every symbol <B>SYM</B> encountered, where <B>SYM</B> ranges from 0 to 273. Table entry <B>stat(SYM)</B> is incremented every time the character equal to <B>SYM</B> appears in the intermediate stream. The statistics tables in the compressor and the decompressor are identical at corresponding points of the compression and decompression process.</LI>
+    <LI>To change the coding table, the compressor does the following:</LI>
+    <UL><p>1. The compressor places bits corresponding to the <B>HUFFRECALC</B> symbol (272) into the output stream.<br>
+           2. The compressor forms a symbol table (<B>symbolTable</B>) containing symbols 0-273, which are sorted by the key <B>{stat(SYM), SYM}</B> in descending order. Using <B>SYM</B> as a part of the key ensures that the key is unique.<br>
+           3. The compressor divides the symbol table into 16 groups so that group 0 contains the first 2nBits(0) symbols from <B>symbolTable</B>, group 1 contains next 2nBits(1) symbols, and so on. It is the compressor that actually defines the values <B>nBits(0)</B>, <B>nBits(1)</B>, ... , taking into account the following restrictions: the number of symbols in each group shall not exceed 256, and each successive group contains at least as many symbols as the previous group.<br>
+           4. For every group <B>grp</B> (grp &gt;= 0, grp &lt;= 15) the compressor computes the difference in the number of symbols between this group and the previous group:</p>
+<pre>
+d(grp) = grp ? nBits(grp) - nBits(grp-1) : nBits(grp)
+</pre>
+           <p>The compressor places the bits corresponding to <B>d(grp)</B> into the output stream in accordance with <A HREF="tab4.htm">Table 4</A>.</p>
+           5. For every symbol <B>SYM</B>, the compressor performs the operation <B>stat(SYM) /= 2 </B>to reduce the influence of older symbols compared to the newer symbols.</p></UL>
+    <LI>When the decompressor encounters the symbol <B>HUFFRECALC</B> in the intermediate stream, it forms its own <B>symbolTable</B> by sorting its own copy of <B>stat(SYM)</B>. (Both the compressor and decompressor keep track of the statistics of symbols encountered in the stream.) The decompressor then divides the <B>symbolTable</B> into groups as specified by the bits following the symbol <B>HUFFRECALC</B>. Next, the decompressor performs the operation <B>stat(SYM) /= 2</B> for each symbol <B>SYM</B>.</LI></UL>
+
+<h4><FONT COLOR="#000080">The LZH-Light Algorithms</FONT></H4>
+
+<p>Strictly speaking, a description of the LZH-Light data format provides sufficient information for implementing a compressor and a decompressor that are LZH-Light-compliant. Nevertheless, studying the algorithms used in the current implementation may be helpful. I describe some of these algorithms in this section.</p>
+
+<h4><FONT COLOR="#000080">Searching for Duplicate Strings</FONT></H4>
+
+<p>The LZ77 compression stage relies on detecting duplicate strings in the input stream. The LZ77 compressor uses a hash table to find such strings. This table (<B>hashTable</B>) is constructed with a hash function that operates on substrings of length <B>LZMATCH</B>. Each cell <B>hashTable[hashValue]</B> contains a position index, indicating where a substring of length <B>LZMATCH</B> with a hash value of <B>hashValue</B> was recently encountered.</p>
+<p>For each input byte, the compressor calculates the hash value for the string composed of the previous <B>LZMATCH-1</B> symbols from the input stream plus the input byte. In other words, the hash function operates as a sliding window of length <B>LZMATCH</B> over the input stream. If the hash table contains an entry for this hash value and this entry was encountered no earlier than <B>LZBUFSIZE</B> symbols before, then the compressor calculates the match length between the current string and the previously encountered string (a match length less than <B>LZMATCH</B> can occur as a result of a hash table collision).</p>
+<p>Obviously, the data model being used is less accurate than tree-like data models (and less accurate than Deflate's data model), and yields a worse compression ratio. Nevertheless, this effect can be considerably reduced. One of the biggest contributors to LZH-Light's lower accuracy is hash-table collisions. Consider the input stream <B>ABCDEFGH...ABCDEFGH</B>. Suppose that while analyzing the second substring <B>"ABCDEFGH"</B> the compressor was prevented from finding a match due to a hash-table collision. In this case the probability of finding a match for any of the substrings <B>"BCDEFGH"</B>, <B>"CDEFGH"</B>, or <B>"DEFGH"</B> is still very high. Thus, to increase the compression ratio the compressor tries to match not only in the forward direction &#151; starting with the symbols at the position indicated by the hash table &#151; but also in the reverse direction to match as many symbols as possible preceding this position. (In the current implementation this algorithm is found in the section enclosed in <B>#ifdef LZBACKWARDMATCH ... #endif</B>.)</p>
+<p>Another way to increase the compression ratio is by using the so-called <I>lazy match</I> (see <a href="#1">[1]</a>). After a match of length <B>N</B> beginning with the symbol <B>ch</B> is found, the compressor repeats the entire search process (including hashing) starting at the next input byte after <B>ch</B>. If the compressor finds a new match with length <B>M</B> that is longer than <B>N</B>, it abandons the match found at <B>ch</B>. It then places <B>ch</B> into the intermediate stream without modification, followed by the code indicating the match of length <B>M</B>. Otherwise, the compressor places the code indicating the match of length <B>N</B> into the intermediate stream.</p>
+<p>I obtained interesting results from studying different methods of hash-value calculation. The classical method of hash-value calculation for a given string <B>s</B> of length <B>LEN</B> can be expressed as follows:</p>
+
+<pre>
+unsigned hash = 0;
+for( int i=0; i &lt; LEN ; ++i )
+    //ROTL( x, shift ) rotates bits
+    //of x to shift positions left
+    hash = ROTL(hash, SHIFT) ^ s[i];
+hash %= TABLE_SIZE;
+</pre>
+
+<p>(<B>SHIFT</B> is chosen more or less arbitrarily, and the best results are obtained when <B>TABLE_SIZE</B> is 9 prime number.)</p>
+<p><B>zlib</B> uses an alternative method:</p>
+
+<pre>
+#define SHIFT \
+    ((TABLE_BITS+LEN-1)/LEN)
+unsigned hash = 0;
+for( int i=0; i &lt; LEN ; ++i )
+    hash = (hash &lt;&lt; SHIFT) ^ s[i];
+//TABLE_SIZE is 1 &lt;&lt; TABLE_BITS
+hash &amp;= (TABLE_SIZE - 1);
+</pre>
+
+<p>Using the classical method ensures a smaller number of hash-table collisions (and, therefore, a higher compression ratio), but it is much slower than <B>zlib</B>'s method. This speed reduction is caused in fact by the <B>%</B> operation. Analysis reveals a third method, which is similar to the classical method but much faster:</p>
+
+<pre>
+unsigned hash = 0;
+for( int i=0; i &lt; LEN ; ++i )
+    hash = ROTL(hash, SHIFT) ^ s[i];
+//TABLE_SIZE is 1 &lt;&lt; TABLE_BITS
+hash = (hash * A + B) &gt;&gt;
+    (sizeof(unsigned) - TABLE_BITS);
+</pre>
+
+<p>Here the last calculation represents a formula for a linear congruential pseudo random-number generator, where <B>A</B> and <B>B</B> are specially selected constants. This method ensures that the number of hash-table collisions is a bit lower than that of the classical method, and is a much faster operation. (This is at least true on x86 processors. On x86 processors the <B>*</B> operation is up to three times faster than the <B>%</B> operation.)</p>
+
+<h4><FONT COLOR="#000080">Group Selection for Huffman-Like Encoding</FONT></H4>
+
+<p>To achieve the highest possible compression ratio using groups of symbols, the sum of <B>stat(SYM)</B> for symbols belonging to group 0 must be equal to the sum of <B>stat(SYM)</B> belonging to group 1, and so on. In practice strict equality is not possible, but using the following algorithm achieves a rather accurate approximation:</p>
+
+<UL><p>1. Calculate total number of symbols in <B>stat</B>:</p>
+<pre>
+total = 0;
+for(SYM = 0; SYM &lt;= 273; ++SYM)
+    total += stat(SYM);
+</pre>
+    <p>2. Set <B>used</B> = 0; <B>pos</B> = 0;<br>
+       3. For each group <B>grp</B> from 0 to 14:<br>
+    <UL>a. Calculate the desired size of <B>grp</B>:</p>
+
+<pre>
+  desiredGroup =
+      (total-totalUsed)/(16-group);
+</pre>
+
+     <p>b.  For <B>nBits</B> from 0 to 8, calculate the number of symbols that would be contained in group <B>grp</B>:</p>
+
+<pre>
+  nSym[nBits] = 0;
+  for(i = 0; i &lt; (1 &lt;&lt; nBits); ++i)
+    nSym[nBits] += stat(pos+i);
+</pre>
+
+    <p>c.  Choose the value of <B>nBits</B> such that <B>abs(nSym[nBits] -desiredGroup)</B> is a minimum.<br>
+       d.  Set the size of <B>grp</B> to that value of <B>nBits</B>.<br>
+       e.  Update <B>used</B> and <B>pos</B>:</p>
+
+<pre>
+  used += nSym[nBits];
+  pos += 1 &lt;&lt; nBits;
+</pre>
+</UL></UL>
+
+<p>In a practical implementation, the algorithm is more complex due to restrictions imposed on groups (see the section "Huffman-Like Table Synchronization" above) and optimizations.</p>
+
+<h4><FONT COLOR="#000080">Frequency of Changes to Coding Table</FONT></H4>
+
+<p>In accordance with the described data format, the LZH-Light compressor chooses when to change the tables used in Huffman-like encoding. At present this algorithm is one of the least developed algorithms of the current LZH-Light implementation: tables are automatically changed after <B>HUFFRECALCLEN</B> (by default 4096) symbols have passed through the intermediate stream.</p>
+
+<h4><FONT COLOR="#000080">Current Implementation of LZH-Light</FONT></H4>
+
+<p>Although the current implementation of the LZH-Light algorithm is written in C++, it has a C interface, which is defined in <B>lzhl.h</B> (see <A HREF="list1.htm">Listing 1</A>). This allows use of this implementation with both C and C++ programs.</p>
+<p>To increase the algorithm's operation speed, all algorithm customizations are performed at compile time with the help of macro definitions (see the <B>_lshl.h</B> file in the source archives). As mentioned previously, the only parameter that affects the LZH-Light data format is <B>LZBUFSIZE</B>. All other parameters affect only compressor operation and are used for achieving appropriate balance of compression speed, compression ratio, and amount of memory used. Since a large number of LZH-Light algorithm configurations can be obtained using macro definitions from <B>_lzhl.h</B>, comprehensive testing and benchmarking were performed only for several recommended configurations (see <A HREF="tab5.htm">Table 5</A>).</p>
+<p>The program in <A HREF="list2.htm">Listing 2</A> can be used for testing various configurations of the LZH-Light algorithm. This program provides sample compression/decompression of a single file. It is not optimal; its only purpose is to verify proper operation for the chosen configuration.</p>
+
+<h4><FONT COLOR="#000080">Efficiency and Performance</FONT></H4>
+
+<p>The measurements of algorithm efficiency for LZH-Light and the <B>zlib</B> implementation of Deflate were carried out under the following conditions:</p>
+
+<UL><LI>data: I used the so-called Calgary Corpus, which is a standard set of files typically used in compression tests. I concatenated these files into one 3,175 Kb file.</LI>
+    <LI>computer: Pentium 100 with 32 Mb RAM, running under Windows 95</LI>
+    <LI>compiler: Microsoft Visual C++ v5.0.</LI></UL>
+
+<p>Results of the measurements are shown in <A HREF="fig2.htm">Figure 2</A>, <A HREF="fig3.htm">Figure 3</A>, and <A HREF="fig4.htm">Figure 4</A>.</p>
+<p>The most interesting results of testing are:</p>
+
+<UL><LI>The LZH-Light algorithm is much more efficient (with both a higher speed and a higher compression ratio) than Deflate when low memory usage (less than 64 Kb for the compressor and the decompressor combined) is required.</LI>
+    <LI>The LZH-Light algorithm can work efficiently with very low memory usage (as little as 6 Kb for the compressor and the decompressor combined), achieving a high compression speed (up to 1 Mb/sec on the Pentium-100 processor) and a relatively high compression ratio (up to 2.1 on standard Calgary Corpus data).</LI>
+    <LI>LZH-Light is much more efficient (has a lower memory usage, a higher speed, and a higher compression ratio) than Deflate when using small packets (with the average packet size 512 bytes or less).</LI>
+    <LI>LZH-Light is more efficient (has a lower memory usage and a higher compression ratio) than Deflate when high compression speed is required.</LI>
+    <LI>Although LZH-Light lacks an escape mechanism for uncompressable data (making it too expensive for small data packets), it adds very little to the size of uncompressable data blocks (1.0-1.5 percent).</LI></UL>
+
+<h4><FONT COLOR="#000080">Uses for LZH-Light</FONT></H4>
+
+<p>The basic field for LZH-Light application is online compression of reliable data streams. At present, one earlier modification of this algorithm is used in a prominent Russian electronic stock market system named RTS (<B>http://www.rtsnet.ru</B>). Data in this system is transferred over a Wide Area Network and can be efficiently compressed. On the other hand, security requirements require encryption, which must be performed after compression. Applying the LZH-Light algorithm by itself reduced the network traffic by a factor of 4-4.5. Since LZH-Light is five to six times faster than the encryption algorithm (DES), and provides a compression ratio of 4-4.5, the total processing time for a data block is reduced by a factor to 2-2.5. Thus, in this particular case, applying the compressor reduced both network traffic and CPU usage.</p>
+<p>As an example of an LZH-Light application, <A HREF="list3.htm">Listing 3</A> shows the interface to a <B>lzhl_tcp</B> library. This library wraps TCP with a compression/decompression layer, based on the LZH-Light algorithm. Using this library is identical to using standard TCP. The only (and obvious) limitation is the requirement of using this wrapper on both sides of the TCP connection.</p>
+<p>The LZH-Light algorithm can be applied to more than  communication channel compression. It is potentially useful for any application for which high compression speed and low memory usage are essential.</p>
+
+<h4><FONT COLOR="#000080">References</FONT></H4>
+
+<p><a name="1"></a>[1]  P. Deutsch. RFC1951: DEFLATE Compressed Data Format Specification version 1.3.</p>
+<p><a name="2"></a>[2]  P. Deutsch, J.L. Gailly. RFC1950: ZLIB Compressed Data Format Specification version 3.3.</p>
+
+<p><i>Sergey Ignatchenko is a senior software developer working on a major Russian electronic stock trading system named RTS (http://www.rtsnet.ru). He specializes in Object-Oriented design and development of distributed systems, and can be reached at <B>ignatch@rtsnet.ru</B>.</i></p>
+
+<h4><a href="../../../source/1998/oct98/ignatch.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

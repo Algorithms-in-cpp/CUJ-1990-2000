@@ -1,0 +1,110 @@
+
+
+
+<HTML><HEAD>
+
+<TITLE>March 1998/A Pseudo-Terminal Class for Unix/Listing 2</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4>
+<A name="HEADING1">Listing 2: Sample mediator program</A></h4>
+
+
+<pre>
+#include &lt;iostream.h&gt;
+#include &lt;errno.h&gt; 
+#include &lt;sys/time.h&gt; 
+#include &lt;sys/types.h&gt; 
+#include &lt;unistd.h&gt;
+#include "PseudoTerminal.h"
+
+int main(int argc, char* argv[])
+{
+  char* args[4];
+
+  ////
+  // start xterm (doesn't have to be started by the pty but
+  // it is convenient)
+  PseudoTerminal xterm_pty;
+
+  // build the command line for xterm
+  args[0] = "xterm";
+    char Sxxd[6];      // setup the -Sxxd argument for xterm
+    Sxxd[0] = '\0';
+    strcpy(Sxxd, "-S");
+    Sxxd[2] = xterm_pty.getPtyX();
+    Sxxd[3] = xterm_pty.getPtyY();
+    Sxxd[4] = '1';     // number of the inherited File descriptor
+    Sxxd[5] = 0;       // last argument -- NULL
+  args[1] = Sxxd;
+  args[2] = NULL;
+
+  // start the xterm and wait on it to tell us what its window id is
+  xterm_pty.forkvp(args);
+  xterm_pty.read();
+  cerr &lt;&lt; "xterm is up wid=" &lt;&lt; xterm_pty.getBuffer();
+
+
+  ////
+  // start telnet
+  PseudoTerminal telnet_pty;
+  args[0] = "telnet";
+  args[1] = "localhost";
+  args[2] = NULL;
+  telnet_pty.forkvp(args);
+
+
+  try
+  {
+    // setup the file descriptors for select (using the operator
+    // int() to return the master fd)
+    fd_set fds;
+    int max_fd = (telnet_pty &gt; xterm_pty) ? telnet_pty : xterm_pty;
+    max_fd++;
+    String str;
+
+    // mediator loop (mediates between the xterm and telnet)
+    for (;;)
+    {
+      // build the select fd's so we can mediate between
+      // the xterm and telnet
+      FD_ZERO(&amp;fds);
+      FD_SET(xterm_pty, &amp;fds);
+      FD_SET(telnet_pty, &amp;fds);
+
+      // call select and wait on some data from either the
+      // xterm or telnet
+      int rc = select(max_fd, &amp;fds, NULL, NULL, NULL);
+
+      if (FD_ISSET(xterm_pty, &amp;fds))
+      {
+        // read the users input into a string
+        xterm_pty &gt;&gt; str;
+        // check for accelerator keys (^Q to quit the app for now)
+        if (str == "^Q")
+        {
+          cerr &lt;&lt; "quiting" &lt;&lt; endl;
+          break;
+        }
+        else
+          telnet_pty &lt;&lt; str;  // forward the input on to telnet
+      }
+      else
+        if (FD_ISSET(telnet_pty, &amp;fds))
+        {
+          // forward the telnet output on to the xterm
+          telnet_pty &gt;&gt; xterm_pty;
+        }
+    }
+  }
+  catch (int&amp; pty_errno)
+  {
+    // an exception will be thrown if telnet or the xterm is closed
+    cerr &lt;&lt; "caught an exception " &lt;&lt; strerror(pty_errno) &lt;&lt; endl;
+  }
+  return(0);
+}
+
+//End of File
+</pre>
+</body></html>

@@ -1,0 +1,284 @@
+<HTML><HEAD>
+<TITLE>September 2000/HTML Document Templates for CGI Applications/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2: Implementation of class HTMLstream</A></h4>
+<pre>
+#include "HTMLstream.h"
+
+#include &lt;fstream&gt;
+#include &lt;sstream&gt;
+#include &lt;cctype&gt;
+#include &lt;algorithm&gt;
+#include &lt;stdexcept&gt;
+using namespace std;
+
+#include "cgi.h"
+
+
+HTMLstream::HTMLstream (const string &amp; filename)
+{
+    open (filename);
+}
+
+
+void HTMLstream::open (const string &amp; filename)
+{
+    ifstream html_file (filename.c_str());
+
+    if (!html_file)
+    {
+        throw invalid_argument
+            ("Could not open data file: " + filename);
+    }
+
+    string line = "";
+    while (getline (html_file, line))
+    {
+        html_code += line;
+        html_code += '\n';
+    }
+}
+
+
+void HTMLstream::send (ostream &amp; output) const
+{
+    output &lt;&lt; "Content-type: text/html\n\n\n";
+    output &lt;&lt; html_code &lt;&lt; flush;
+}
+
+
+void
+HTMLstream::set_field (const string &amp; field,
+    const string &amp; content)
+{
+    // position of last partial-tag found (for the loop)
+    int pos_end = 0;        
+    string search_tag = "&lt;a name=\"" + field + "\"&gt;&lt;/a&gt;";
+
+    bool tag_found = false;
+    while (!tag_found)
+    {
+        // Find partial tag
+        int field_position =
+            html_code.find ("\"" + field + "\"", pos_end);
+                
+        if (field_position == string::npos)
+        {
+            throw invalid_argument
+                ("Target not found: `" + field + "'");
+        }
+
+        // find immediately preceding character &lt;
+        // (opening the HTML tag)
+        int pos_start = html_code.rfind ('&lt;', field_position);
+
+        if (pos_start == string::npos)
+        {
+            throw invalid_argument
+                ("Target not found: `" + field + "'");
+        }
+
+        pos_end = html_code.find ('&gt;', field_position);
+        // find the second ocurence of the character &gt;
+        // (closing the /a tag)
+        pos_end = html_code.find ('&gt;', pos_end + 1);
+                
+        if (pos_end == string::npos)
+        {
+            throw invalid_argument
+                ("Target not found: `" + field + "'");
+        }
+
+        string tag_in_html_code =
+            html_code.substr (pos_start, pos_end - pos_start + 1);
+
+        if (html_substrings_equal (tag_in_html_code, search_tag))
+        {
+            tag_found = true;
+            html_code.replace (pos_start,
+                tag_in_html_code.length(), content);
+        }
+        else
+        {
+            // so that next pass starts looking right after the
+            // field, not after the '&gt;' character found somewhere
+            // after the field.
+            pos_end = field_position + field.length() + 2;
+        }
+    }
+}
+
+
+void
+HTMLstream::add_option (const string &amp; select_field,
+    const string &amp; option)
+{
+    int pos = tag_position ("select", select_field);
+
+    if (pos == tag_not_found)
+    {
+        throw invalid_argument
+            ("Select field not found: `" + select_field + "'");
+    }
+
+    // Now look for the &lt;/select&gt; matching tag
+    int pos_end = lcase(html_code).find ("&lt;/select&gt;", pos);
+
+    if (pos_end == string::npos)
+    {
+        throw invalid_argument
+            ("Select field `" + select_field +
+                "' misses matching &amp;lt;/select&amp;gt; tag");
+    }
+
+    html_code.insert (pos_end, "&lt;option&gt; " + option + "\n");
+}
+
+
+void HTMLstream::remove_table_row (const string &amp; table, int row)
+{
+    int table_tag_pos = tag_position ("table", table);
+
+    if (table_tag_pos == tag_not_found)
+    {
+        throw invalid_argument
+            ("Table not found: `" + table + "'");
+    }
+
+    // Now look for the closing tag (&lt;/table&gt;)
+    size_t table_end_pos =
+        lcase(html_code).find ("&lt;/table&gt;", table_tag_pos);
+
+    if (table_end_pos == string::npos)
+    {
+        throw invalid_argument
+            ("Table `" + table + "' doesn't have closing tag");
+    }
+
+    size_t row_pos = table_tag_pos,
+           row_end_pos;
+    bool row_found = false;
+
+    while (!row_found &amp;&amp; row_pos &lt; table_end_pos)
+    {
+        row_pos = lcase(html_code).find ("&lt;tr", row_pos + 1);
+        row_end_pos = lcase(html_code).find ("&lt;/tr&gt;", row_pos);
+
+        if (row_end_pos == string::npos)
+        {
+            throw invalid_argument
+                ("Table row doesn't have closing tag");
+        }
+
+        string row_content =
+            removed_separators
+                 (lcase
+                     (html_code.substr
+                         (row_pos, row_end_pos - row_pos)));
+        ostringstream search_row_id;
+        search_row_id &lt;&lt; "&lt;aname=\"" &lt;&lt; row;
+        if (row_content.find(search_row_id.str())!=string::npos)
+        {
+            row_found = true;
+        }
+    }
+
+    if (! row_found)
+    {
+        ostringstream error_msg;
+        error_msg &lt;&lt; "Table row not found: table `"
+                  &lt;&lt; table &lt;&lt; "', row " &lt;&lt; row;
+        throw invalid_argument (error_msg.str());
+    }
+
+    html_code.erase (row_pos, row_end_pos - row_pos + 5);
+}
+
+
+HTMLstream &amp; HTMLstream::operator&lt;&lt; (const string &amp; s)
+{
+    html_code += s;
+
+    return *this;
+}
+
+
+void HTMLstream::save (const string &amp; filename) const
+{
+    ofstream file (filename.c_str());
+
+    if (!file)
+    {
+        throw runtime_error
+            ("Error saving HTML file `" + filename + "'");
+    }
+
+    file &lt;&lt; html_code;
+}
+
+
+bool
+HTMLstream::html_substrings_equal (const string &amp; s1,
+    const string &amp; s2)
+{
+    return lcase(removed_separators(s1)) ==
+           lcase(removed_separators(s2));
+}
+
+
+int
+HTMLstream::tag_position (const string &amp; tag,
+    const string &amp; name) const
+{
+    int pos_start = tag_not_found;
+    // position of last partial-tag found (for the loop)
+    int pos_end = 0;        
+
+    string search_tag = "&lt;" + tag + " name=\"" + name + "\"";
+
+    bool tag_found = false;
+    while (!tag_found)
+    {
+        // Find partial tag
+        int field_position =
+            lcase(html_code).find ("\"" + lcase(name) + "\"",
+                pos_end);
+                
+        if (field_position == string::npos)
+        {
+            return tag_not_found;
+        }
+
+        // find immediately preceding character &lt;
+        // (opening the HTML tag)
+        pos_start = html_code.rfind ('&lt;', field_position);
+                
+        if (pos_start == string::npos)
+        {
+            return tag_not_found;
+        }
+
+        pos_end = field_position + name.length() + 1;
+
+        string tag_in_html_code =
+            html_code.substr (pos_start,
+                pos_end - pos_start + 1);
+
+        if (html_substrings_equal (tag_in_html_code, search_tag))
+        {
+            tag_found = true;
+        }
+        else
+        {
+            // so that next pass starts looking right after
+            // the field, not after the '&gt;' character found
+            // somewhere after the field.
+            pos_end++;
+        }
+    }
+
+    return pos_start;
+}
+</pre></body></html>

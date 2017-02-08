@@ -1,0 +1,304 @@
+<HTML><HEAD>
+<TITLE>February 1995/Embedding on a Budget/Listing 3</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 3 <I>Startup code</I></A></h4>
+<pre>;======================================================================
+;
+; Start-up code for embedded C programs
+;
+;    intended for use with Microsoft C, but porting it to Borland C
+;    or other similar compilers shouldn't be too difficult.
+;
+; Donated to the public domain by Jeff D. Pipkins, who of course is
+: not liable for damages...
+;
+;
+; This file MUST be linked FIRST. The linker will combine segments
+; with the same class name together, and it will order those combined
+; segments in the order that they first appear in this file. This
+; is extremely important. It is always the first file the linker
+; sees that gets to choose the ordering of the segments.
+;
+;----------------------------------------------------------------------
+ROMSEG      EQU          0F800h       ; beginning of ROM
+STACKSIZE   EQU          14096
+
+;----------------------------------------------------------------------
+; data group (to fit in 64K)
+;
+; For our model, we need the data to appear first in the image,
+; with the code up above it. Unfortunately, we also need for
+; execution to begin at a fixed location known at build time,
+; and exe2bin wants that location to be either at offset 0 or
+; 100h from the beginning of the image. We solve this problem
+; by putting a little code in the front of the data segment that
+; can figure out where to jump.
+;
+;----------------------------------------------------------------------
+
+DGROUP      group       NOTSTACK, NULL/, CONST/, _DATA/, _BSS, STACK
+          assume      cs:DGROUP, ds:DGROUP
+          public      jumpstart
+
+          ;The linker complains if there's no stack, and exe2bin
+          ; complains if there is. This segment is here to fool
+          ; the linker. See also the STACK segment. where exe2bin
+          ; is fooled.
+
+NOTSTACK    segment      byte stack 'NOTSTACK'
+          ; This must remain empty.
+NUTSTACK    ends
+
+
+NULL        segment      para public 'NULL'
+
+          ; The following bytes are the first bytes in the image.
+          ; MSC wants 16 bytes of 0's here.
+          ; We need to begin execution here as well...
+
+jumpstart:
+          dw           8 dup (0)    ; 8 x add [bx+si], al
+
+          ; There's already code in the reset vector to
+          ; do a cli &amp; cld, but it's here again just for
+          ; emphasis, and more importantly, in case somebody
+          ; decides to modify the reset vector in the future.
+
+          cli      ; interrupts off -- no stack yet, no vectors yet.
+          cld      ; initialize direction flag
+
+          ; Compute segment address of "startup" label
+          ; The build process "locates" (provides fix-ups for) the
+          ; image so that it will run properly if it is loaded into
+          ; a particular address in RAM. This is what we want, since
+          ; our data will be copied into RAM. Unfortunately, we
+          ; really need for our code segment to be "located" with
+          ; respect to the beginning of ROM instead. We resolve
+          ; this dilemma in favor of the data, and then we'll set
+          ; the value of CS by hand. This way, the code won't
+          ; know that it's in the wrong place. This illusion will
+          ; all crash if anyone does a far jump, since the value
+          ; for CS will have been fixed-up incorrectly! So, no
+          : far jumps anywhere! The only exception to this follows.
+          ; We get away with it because we compensate for the
+          ; miscalculation in advance. (All of this hokey stuff is
+          ; a consequence of using exe2bin for a locator.)
+
+          mov          dx, _TEXT    ; Segment address of code segment
+          mov          ax, ROMSEG   ; Should be same as CS for right now
+          add           dx, ax      ; Add fix-up for code segment
+          mov           ax, DGROUP  ; Segment address where data will be
+          sub           dx, ax      ; undo fix-up for data segment in RAM
+
+          ; Temporarily use dword at DGROUP:0 to hold vector for jump.
+
+          mov           ds, ax       ; DGROUP
+          xor           ax, ax
+          mov           word ptr ds:[0], ax
+          mov           word ptr ds:[2], dx  ; computed segment for jump
+
+          jmp         dword ptr ds:[0]       ; to "startup"
+
+          ; and now back to your regularly scheduled data...
+
+NULL        ends
+
+          ; Variables declared as "const" will go here.
+
+CONST       segment      word public 'CONST'
+CONST       ends
+
+          ; Initialized global and static variables will go here.
+
+_DATA       segment      word public 'DATA'
+          public       __acrtused, _errno
+__acrtused  dw           0            ; prevents linking in Microsoft's
+_errno      dw           0            ; standard start-up code &amp;libs
+_DATA       ends
+
+          ; Uninitialized global and static variables will go here.
+          ; The C language guarantees that variables in this segment
+          ; will be initialized to 0 at load time. It is up to the
+          ; startup code to make good on this promise. Since we
+          ; are using exe2bin, it will fill in segments like this
+          ; one with zeros, but in many other environments, this
+          ; has to be done explicitly. If you change the build
+          ; process so that this becomes necessary, perhaps the
+          ; easiest way to deal with it is to just begin by filling
+          ; all of RAM with zeros. That way you'll also initialize
+          ; the FAR_BSS and HUGE_BSS at the same time, and you won't
+          ; have to figure out where any of them begin or end.
+
+_BSS        segment      word public 'BSS'
+_BSS        ends
+
+          ; Note: exe2bin doesn't want to see a stack segment because
+          ; it knows the loader won't be able to set up the stack as
+          ; specified. This startup code will set up this stack for us,
+          ; but we need to trick exe2bin so that it won't know this is
+          ; a stack. So we define it as PUBLIC instead of STACK.
+
+STACK       segment      word public 'STACK'
+          public       __stackend
+          db           STACKSIZE/8 dup ("&lt;STACK&gt; ")
+__stackend  label        word
+STACK       ends
+
+;----------------------------------------------------------------------
+; data segments that are not part of dgroup
+;----------------------------------------------------------------------
+
+FAR_DATA_START segment   para public 'FAR_DATA'
+FAR_DATA_START ENDS
+
+FAR_BSS_START segment    para public 'FAR_BSS'
+FAR_BSS_START ends
+
+HUGE_BSS_START segment   para public 'HUGE_BSS'
+HUGE_BSS_START ends
+
+;----------------------------------------------------------------------
+; mark the end of all the data in the image
+;----------------------------------------------------------------------
+
+ENDDATAIMAGE   segment      para public 'ENDDATAIMAGE'
+            public        __enddataimage
+__enddataimage label        byte
+ENDDATAIMAGE   ends
+
+;----------------------------------------------------------------------
+; Tell linker where to put the code segment.
+;----------------------------------------------------------------------
+
+_TEXT       segment      para public 'CODE'
+_TEXT       ends
+
+;----------------------------------------------------------------------
+; mark the end of the entire image
+;----------------------------------------------------------------------
+
+ENDIMAGE    segment     para public 'ENDIMAGE'
+          public      __endimage
+__endimage  label        byte
+ENDIMAGE    ends
+
+;======================================================================
+;
+;  Start-up code
+;
+;----------------------------------------------------------------------
+
+_TEXT       segment
+          assume       CS:_TEXT, DS:DGROUP, SS:DGROUP
+
+          extrn        _main:near
+          public       startup
+startup:
+          ;----------------------------------------------------------
+          ; Initialize interrupt vectors to point to the restart vector.
+          ; This will cause a restart on any unexpected interrupt.
+          ;----------------------------------------------------------
+
+          xor          ax, ax
+          mov          ds, ax
+          xor          bx, bx
+          mov          cx, 256
+init_int_loop:
+          mov          [bx+0],  0FFF0h ; offset
+          mov          [bx+2], 0F00h   ; segment
+          add          bx, 4
+          loop         init_int_loop
+
+          ;----------------------------------------------------------
+          ; Set up a temporary stack
+          ;----------------------------------------------------------
+
+          mov          ax, DGROUP
+          mov          ds, ax
+          mov          bx, offset DGROUP:__stackend
+          and          bx, NOT 1    ; align sp on word boundary
+          mov          ss, ax       ; DGROUP
+          mov          sp, bx       ; __stackend
+
+          ;----------------------------------------------------------
+          ; Copy data image from ROM to RAM
+          ;
+          ; For later processors with protected mode, this code assumes
+          ; that the ROM is reflected down into the top of the first
+          ; 1MB of address space.
+          ;----------------------------------------------------------
+
+          mov          ax, DGROUP
+          mov          es, ax
+          mov          dx, seg __enddataimage
+          sub          dx, ax       ; number of paragraphs to copy
+          mov          ax, ROMSEG
+          mov          ds, ax
+copyloop:
+          xor          si, si
+          xor          di, di
+          mov          cx, 8
+          rep          movsw
+
+          mov          ax, es     ;\
+          inc          ax         ; &gt; inc es
+          mov          es, ax     ;/
+          
+          mov          ax, ds     ;\
+          inc          ax         ; &gt; inc ds
+          mov          ds, ax     ;/
+
+          dec          dx
+          jnz          copyloop
+
+          ;----------------------------------------------------------
+          ; setup segment registers
+          ;----------------------------------------------------------
+
+          mov          ax, DGROUP
+          mov          ds, ax
+          mov          es, ax
+
+          ;----------------------------------------------------------
+          ; setup C stack and first frame
+          ;----------------------------------------------------------
+
+          mov          bx, offset DGROUP:__stackend
+          and          bx, NOT 1   ; align sp on word boundary
+          mov          ss, ax      ; DGROUP
+          mov          sp, bx      ; __stackend
+          xor          bp, bp      ; frame 0
+          push         bp, sp      ;   mark it on the stack
+          move         bp, sp      ; bp always has current frame pointer
+
+          ;----------------------------------------------------------
+          ; Call main()
+          ; note: CLI, CLD on entry.
+          ;----------------------------------------------------------
+
+          call         _main
+
+          ;----------------------------------------------------------
+          ; For embedded apps, main() should never return.
+          ; If for some reason it does, we'll start all over
+          ;----------------------------------------------------------
+
+          ; (for some reason, it's difficult to convince
+          ; the assembler to generate this instruction.)
+          db           0EAh         ; jmp far
+          dd           0F000FFF0h   ; restart vector
+
+_TEXT       ends
+
+;=======================================================================
+;
+;  Set entry point to beginning of image.
+;  (This is done mostly to satisfy the assembler and exe2bin.)
+;
+------------------------------------------------------------------------
+          end          jumpstart</pre>
+
+</BODY>
+</HTML>

@@ -1,0 +1,163 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>December 1998/An OpenGL Wrapper for Win32</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocdec.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Graphics/Imaging</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">An OpenGL Wrapper for Win32</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Giovanni Bavestrelli</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>Mixing OpenGL with Windows is possible, and a good idea. Here's some support code that helps.</p>
+</BLOCKQUOTE>
+<HR>
+<BLOCKQUOTE>
+<p>OpenGL is a hardware-independent software interface for drawing 3-D graphics, complete with shading, lighting, hidden surface removal, texturing, and more. OpenGL is practically the industry standard for high-quality, fast 3-D graphic applications. It was originally developed by Silicon Graphics Inc. and is available on a variety of platforms, including Windows NT (since version 3.5), Windows 95, and Windows 98.</p>
+<p>The two standard references to OpenGL are <a href="#1">[1]</a> and <a href="#2">[2]</a>, but they don't deal with Windows. To use OpenGL in Windows, you must first take care of a few details specific to the Windows implementation of OpenGL, then proceed by writing standard OpenGL code. This is an ideal place to drop in some reusable code, as these details are the same for every OpenGL Windows application. Unfortunately, MFC (the Microsoft Foundation Class Library) does not provide any classes that deal with the connection between Win32 and OpenGL. You will find a reusable <B>CView</B> derived class in <a href="#3">[3]</a>, together with a good explanation of the details specific to OpenGL programming in Windows. Such a class has two shortcomings with respect to reusability:</p>
+
+<UL><LI>It can be used only to render 3-D images inside a <B>CView</B> in MFC applications using the Document-View Architecture.</LI>
+    <LI>You can create only one instance of such a class in your application.</LI></UL>
+
+<p>This effectively reduces the class's usability to SDI (Single Document Interface) applications using MFC's Document-View Architecture and drawing a 3-D image in only one <B>CView</B>.</p>
+<p>This article presents a small set of C++ classes that handle the details of preparing a generic window for drawing with OpenGL. You can then proceed with standard OpenGL programming in the appropriate redefined virtual functions. You can inherit from these classes and use them to draw one or more 3-D graphs in one or more windows in your MFC application, even without using the Document-View Architecture. You can draw 3-D graphs inside controls in dialog boxes, Views, popup windows, etc.</p>
+<p>This article will not go into any detail regarding OpenGL programming, as it is a vast topic and is very well-covered in <a href="#1">[1]</a> and <a href="#2">[2]</a>. I present only some classes that deal with making OpenGL work in an MFC window.</p>
+
+<h4><FONT COLOR="#000080">How OpenGL Works in Win32</FONT></H4>
+
+<p>Before I describe the wrapper classes, I will explain how to make OpenGL work in Windows, though you will not need to know much about that if you use my classes.</p>
+<p>Just as drawing 2-D graphs with the Windows GDI (Graphics Device Interface) in a window requires using a Device Context (DC), drawing 3-D graphs with OpenGL in a window requires using a Rendering Context (RC). You create an RC with a call to <B>wglCreateContext</B> and delete it with a call to <B>wglDeleteContext</B>. Unlike GDI functions, which accept the DC handle as a parameter, OpenGL API functions do not accept handles to RCs as parameters. To make the association between the RC and the OpenGL API functions that will draw with it, you must make the RC current with a call to <B>wglMakeCurrent</B>. In <B>wglMakeCurrent</B>, specify the handle of the RC and the handle of a DC you associate with it. <B>wglMakeCurrent</B> effectively associates an RC and a DC, allowing you to use OpenGL to draw in a window.</p>
+<p>Only one RC can be made current in any thread, and until an RC is made current, OpenGL functions will have no effect in that thread. If the RC is current in your thread, you can retrieve its handle with a call to <B>wglGetCurrentContext</B>. While the RC is current, you must not release the DC associated with it. Call <B>wglGetCurrentDC</B> to retrieve the handle of the DC associated with the current RC.</p>
+<p>The functions just described are some of the main "wiggle" functions (so called because they are prefixed with "wgl") that deal with RCs.</p>
+<p>Before creating the RC, you must set the pixel format in the DC that will be associated with the RC. The pixel format defines the properties of each window that uses OpenGL. Here you specify whether you need to use double buffering or GDI calls together with OpenGL calls, how many color bits per pixel you want to use, how many bits per pixel are in the depth buffer, etc. I will not go into detail about how to set up the pixel format; you can find the necessary information in <a href="#3">[3]</a>, <a href="#4">[4]</a>, and <a href="#5">[5]</a>, or in the online help searching for function <B>SetPixelFormat</B> or structure <B>PIXELFORMATDESCRIPTOR</B>. My classes automatically set up the pixel format in a way that will work for most applications that use double buffering (necessary for smooth animations) in RGBA mode (necessary if you don't want to go crazy with palettes and the like). You can customize the pixel format however you prefer in your derived classes.</p>
+<p>Before setting the pixel format of your window's DC, you must make sure your window is using the styles <B>WS_CLIPCHILDREN</B> and <B>WS_CLIPSIBLINGS</B>, and that your window's window class has been registered without style <B>CS_PARENTDC</B>.</p>
+
+<h4><FONT COLOR="#000080">Drawing Strategies</FONT></H4>
+
+<p>There are two main strategies for creating an RC and making it current during the life of your window, as shown in <A HREF="tab1.htm">Table 1</A>. In the first strategy, you can create the RC and make it current when your window is created, use normal OpenGL calls while processing window messages, then make the RC not current and delete it when the window is destroyed. In the second strategy, you can create the RC when your window is created and then make it current only when you need to call OpenGL functions (typically while handling the <B>WM_PAINT</B> and <B>WM_SIZE</B> messages), then delete it when your window gets destroyed. You should use the first strategy to improve performance in applications that draw on only one window, while you must use the second strategy if you have more than one window that uses OpenGL in your thread.</p>
+<p>My <B>COpenGLCtrl</B> class implements the first strategy, while class <B>COpenGLCtrls</B> implements the second strategy. You can derive your class from <B>COpenGLCtrl</B> or <B>COpenGLCtrls</B> according to which strategy you want to use. The actual interface of these two classes and the way you use them are identical. The main rule for using these classes is this: if you create an instance of a class derived directly from <B>COpenGLCtrl</B>, you cannot create any other instance of a class derived from <B>COpenGLCtrl</B> or <B>COpenGLCtrls</B> in the same thread. If you derive your classes from <B>COpenGLCtrls</B>, you can create any number of them. If you don't obey this rule, my classes will start calling <B>ASSERT</B> wildly.</p>
+
+<h4><FONT COLOR="#000080">Classes COpenGLCtrl and COpenGLCtrls</FONT></H4>
+
+<p>My <B>COpenGLCtrl</B> class is derived from MFC's <B>CWnd</B> class, the base class for all windows in MFC. Class <B>COpenGLCtrls</B> is derived from <B>COpenGLCtrl</B>. The class definitions are shown in <A HREF="fig1.htm">Figure 1</A> and the implementations are shown in <A HREF="fig2.htm">Figure 2</A>. These classes must do the following:</p>
+
+<UL><p>1)  Initialize the window and prepare it for drawing with OpenGL.<br>
+       2)  Handle <B>WM_PAINT</B>, <B>WM_SIZE</B>, and <B>WM_ERASEBACKGROUND</B> messages.<br>
+       3)  Clean up (handle <B>WM_DESTROY</B>).</p></UL>
+
+<p>To handle these tasks, the classes <B>COpenGLCtrl</B> and <B>COpenGLCtrls</B> define a protocol of virtual functions that are called at appropriate times and that you can redefine to render your specific scenes.</p>
+
+<h4><FONT COLOR="#000080">Window Initialization</FONT></H4>
+
+<p>The obvious time to initialize the window is while handling the <B>WM_CREATE</B> message. Unfortunately, this will not work if your OpenGL window is a child control defined in a dialog template or if you want to subclass an existing window. The dialog box will create the child window, and when you subsequently attach your <B>CWnd</B> object to the child window (by calling either <B>DDX_Control</B> or <B>SubclassDlgItem</B>), you will have missed the <B>WM_CREATE</B> message.</p>
+<p>A good place to do the initialization is in function <B>PreSubclassWindow</B>, overridden from the function in base class <B>CWnd</B>. <B>PreSubclassWindow</B> is called both when you create the window and when it is attached to an existing window. My redefined <B>PreSubclassWindow</B> (<A HREF="fig2.htm">Figure 2</A>) first adds the necessary <B>WS_CLIPCHILDREN</B> and <B>WS_CLIPSIBLINGS</B> window styles and checks that class style <B>CS_PARENTDC</B> is not in use, then calls virtual function <B>InitializeOpenGLWindow</B> to do the RC initialization. <B>InitializeOpenGLWindow</B> gets a DC and sets its pixel format; it then creates the RC, makes it current, and calls virtual function <B>OnCreateRC</B>. This last function gives you a place to put code for one-time RC initialization.</p>
+
+<h4><FONT COLOR="#000080">Handling WM_PAINT and WM_SIZE Messages</FONT></H4>
+
+<p>When a <B>WM_SIZE</B> message is received, and when the <B>COpenGLCtrl</B> is attached to an existing control, my classes call <B>ResizeOpenGLWindow</B>, passing it the new size of the window. <B>ResizeOpenGLWindow</B> is an ideal place to set the Viewing, Projection, and Viewport transformations. <B>ResizeOpenGLWindow</B> calls the virtual functions <B>OnViewing</B>, <B>OnProjection</B>, and <B>OnViewport</B>, which you can redefine to set up your transformations. You would normally redefine these and not <B>ResizeOpenGLWindow</B>, but you can redefine <B>ResizeOpenGLWindow</B> to get full control.</p>
+<p>The most important message to handle is <B>WM_PAINT</B>. My framework delegates the job to virtual function <B>RedrawOpenGLWindow</B>, which clears the buffers, handles the modelview matrix, and calls virtual function <B>OnRender</B>, which you will redefine to render your scene. Again, you would normally redefine <B>OnRender</B> and not <B>RedrawOpenGLWindow</B>, but you can redefine <B>RedrawOpenGLWindow</B> to get full control.</p>
+
+<h4><FONT COLOR="#000080">Cleaning Up</FONT></H4>
+
+<p>Handling <B>WM_DESTROY</B> ends the job, so I then call <B>UninitializeOpenGLWindow</B> to do the necessary cleanup. <B>UninitializeOpenGLWindow</B> will call virtual function <B>OnDestroyRC</B>, where you can do your own cleanup.</p>
+
+<h4><FONT COLOR="#000080">Deriving from COpenGLCtrl or COpenGLCtrls</FONT></H4>
+
+<p>Using my classes in your applications is very easy. First, derive a class, say, <B>CMyGraph</B>, from <B>COpenGLCtrl</B> or <B>COpenGLCtrls</B>. The choice of base class depends on the choice of strategy (see <A HREF="tab1.htm">Table 1</A>). Remember that if you use class <B>COpenGLCtrl</B> directly you cannot create other classes derived from <B>COpenGLCtrl</B> or <B>COpenGLCtrls</B>.</p>
+<p>The next step is to redefine some virtual functions to render your scene:</p>
+
+<pre>
+OnCreateRC
+</pre>
+
+<p>Redefine this member function to do one-time RC initialization. Here you can set up lights, material properties, and other options. <B>OnCreateRC</B> is called only once, at initialization time.</p>
+
+<pre>
+OnViewing
+</pre>
+
+<p>Redefine this function to set up the viewing transformation, usually by calling <B>glTranslate</B> and <B>glRotate</B>, or <B>gluLookAt</B>.</p>
+
+<pre>
+OnProjection
+</pre>
+
+<p>This function takes as a parameter the aspect ratio of the window. You can use it to set up your projection transformation using <B>glOrtho</B>, <B>glFrustum</B>, or <B>gluPerspective</B>.</p>
+
+<pre>
+OnViewport
+</pre>
+
+<p>This function takes the window size as a parameter. You can use it to set the viewport transformation by calling <B>glViewport</B>. If your scene should fill the entire window, the default implementation works fine.</p>
+
+<pre>
+OnRender
+</pre>
+
+<p>This is the most important function you must redefine; it must draw the complete scene. You will also set the modeling transformations here.</p>
+
+<pre>
+OnDestroyRC
+</pre>
+
+<p>Use this function to do your own cleanup of OpenGL resources.</p>
+<p>After redefining these functions, you can do whatever you need to implement application-specific functionality, such as handling the mouse, keyboard, timers, etc. Note one very important point: if you derived your class from <B>COpenGLCtrls</B>, you cannot call other OpenGL functions from outside the above six functions. For instance, you cannot call other OpenGL functions from inside the mouse handlers. This is because when using <B>COpenGLCtrls</B>, the RC is made current only during initialization, cleanup, and handling of the <B>WM_SIZE</B> and <B>WM_PAINT</B> messages. If you need to call OpenGL functions in other places, you must bracket them within calls to <B>BeginOpenGLDrawing</B> and <B>EndOpenGLDrawing</B>. Class <B>COpenGLCtrl</B> does not have this problem, as the RC remains current during the entire life of the window.</p>
+<p>As for setting your pixel format, you have three options. You can accept the pixel format I select, in which case you need do nothing. You can modify some items in the <B>PIXELFORMATDESCRIPTOR</B> structure by redefining my <B>CustomizePixelFormat </B>function, or you can redefine my <B>SetupPixelFormat</B> function to take full control.</p>
+
+<h4><FONT COLOR="#000080">Using Your Derived Classes</FONT></H4>
+
+<p>Once you have derived your class <B>CMyGraph</B> from <B>COpenGLCtrl</B> or <B>COpenGLCtrls</B>, there are four basic ways to use it in your applications:</p>
+
+<UL><p>1)  to create a child or popup window that will display your image<br>
+       2)  to subclass an existing window<br>
+       3)  as a child window control in a dialog box or a <B>CFormView</B><br>
+       4)  to show the image in a <B>CView</B></p></UL>
+
+<p>Options 1 and 2 are very simple; just call <B>CWnd::Create</B> or <B>CWnd::SubclassWindow</B>, respectively. Note that if you use <B>SublassWindow</B>, the window you are subclassing must not be attached to another <B>CWnd</B> object, and must not have class style <B>CS_PARENTDC</B>. Sometimes you must also redefine <B>PostNcDestroy</B> to delete the <B>CWnd</B> object.</p>
+<p>Options 3 and 4 take a little more effort. To use an OpenGL control in a dialog box, you can add a custom control to the dialog resource, and specify "MyOpenGL" as the window class (see <A HREF="fig3.htm">Figure 3</A>). Class "MyOpenGL" must have been registered, so call-function <B>COpenGLCtrl::RegisterOpenGLWindowClass</B> in your application object's <B>InitInstance</B>. Then add a <B>CMyGraph</B> data member to your <B>CDialog</B> or <B>CFormView</B> derived class. Add a call to <B>DDX_Control</B> in the <B>DoDataExchange</B> member function of your dialog to link the <B>CMyGraph</B> object to the custom control. Sample Application App3D shows this approach by putting a 3-D control in the About box (<A HREF="fig3.htm">Figure 3</A> and <A HREF="fig4.htm">Figure 4</A>).</p>
+<p>To draw the graph in a <B>CView</B>, you can use my reusable class <B>COpenGLView</B> (<A HREF="fig5.htm">Figure 5</A>) as a base class to, say, <B>CMyView</B>. Then add a <B>CMyGraph</B> data member to <B>CMyView</B>, and pass it to the constructor of the base class, <B>COpenGLView</B>. Done. Now your <B>CMyView</B> is ready for use. Sample application App3D (<A HREF="fig4.htm">Figure 4</A> and <A HREF="fig5.htm">Figure 5</A>) shows this approach also by drawing 3-D graphs inside Views. Note, though, that the graph will not be drawn in the actual View, but in a child control that will cover it. This has an implication; since you actually implemented drawing in the child control (<B>CMyGraph</B>), not in the view (<B>CMyView</B>) that is hooked into the MFC framework, the command messages will be impossible to handle in the class that draws the graph. Never fear. <B>COpenGLView</B> hooks your <B>CMyGraph</B> control into MFC's message dispatching mechanism by giving it first crack at processing the messages in the redefined <B>OnCmdMsg</B> function, so you can use <B>ON_COMMAND</B> and <B>ON_UPDATE_COMMAND_UI</B> in your <B>CMyGraph</B> class.</p>
+
+<h4><FONT COLOR="#000080">Building OpenGL Applications</FONT></H4>
+
+<p>In my implementation, there are many calls to my <B>GetOpenGLError</B> function within <B>ASSERT</B> statements. OpenGL is a state machine, and if you do something wrong with it, it will set an error state. It is useful to test this state often in debugging builds, as otherwise unnoticed errors can create difficult-to-track problems in your applications. So I verify that you did not make an error after calling every virtual function that you can redefine, and in many other places also. I suggest you also test this state often in your rendering code, since finding out you made an error after a 1,000-line <B>OnRender</B> function terminates is not that useful.</p>
+<p>Another thing you must be careful of is using the OpenGL Programming Guide Auxiliary Library (provided in <B>glaux.h</B> and <B>glaux.lib</B>). Some functions (e.g., <B>auxInitDisplayMode</B> and <B>auxInitPosition</B>) won't be needed if you use my classes. Others (e.g., <B>auxWireSphere</B> and <B>auxSolidCube</B>) might not work as expected under Windows. This is because many functions of the Auxiliary Library work only on the first RC created by the application. I added a call to <B>auxWireSphere</B> in the <B>OnRender</B> function of my sample applications (<A HREF="fig4.htm">Figure 4</A> and <A HREF="fig7.htm">Figure 7</A>), so that you can see what the problem is when you run sample App3D. My suggestion is this: don't use the Auxiliary Library unless you create one and only one 3-D graph and it stays alive as long as your application does. Otherwise, use the OpenGL Utility Library directly (see <B>gluSphere</B>, <B>gluNewQuadric</B>, etc.).</p>
+<p>My classes automatically include the headers and library files necessary to compile and link with OpenGL, but you must have them installed with your compiler. To run your app you will need <B>opengl32.dll</B> and <B>glu32.dll</B>. These DLLs come with Windows NT, Windows 98, and recent versions of Windows 95. If you are missing some of these files for Windows 95, you can download them from Microsoft (<B>ftp://ftp.microsoft.com/Softlib/MSLFILES/Opengl95.exe</B>).</p>
+
+<h4><FONT COLOR="#000080">Sample Applications</FONT></H4>
+
+<p>To show my classes at work, I have implemented three sample applications: Simple3D, Sample3D, and App3D.</p>
+<p>Simple3D is (guess what) very simple. The complete application is shown in <A HREF="fig8.htm">Figure 8</A>, and the outcome appears in <A HREF="fig6.htm">Figure 6</A>. It is a complete MFC application that draws a 3-D image in just 20 lines of code. All the application does is inherit class <B>CMainWindow</B> from <B>COpenGLCtrl</B>, and create a window with it. By default, my <B>COpenGLCtrl</B> class draws a simple 3-D color pyramid, so that you can just drop it in your application and see something.</p>
+<p>Sample3D is slightly more complex. In <A HREF="fig9.htm">Figure 9</A>, I have defined and implemented class <B>CMyGraph</B>, derived from <B>COpenGLCtrls</B>. I redefined <B>OnRender</B> and friends to draw a color pyramid plus a sphere drawn with the Auxiliary Library (which will work fine in this app, since I only have one window). Then, just to be fancy, I handle a mouse click and drag to rotate the model. <A HREF="fig7.htm">Figure 7</A> shows the outcome. Note that I could have just as well inherited from <B>COpenGLCtrl</B> instead of <B>COpenGLCtrls</B>, but I wanted to show you how to use the exact same class in an MDI (Multiple Document Interface) application. <A HREF="fig10.htm">Figure 10</A> shows the main application object that creates a window of class <B>CMyGraph</B>.</p>
+<p>The last sample application, App3D (not shown), is a MFC Document-View MDI application, using the same <B>CMyGraph</B> class of the previous sample (<A HREF="fig9.htm">Figure 9</A>) to draw 3-D graphs in Views and Dialog controls. This application is a standard MDI application created with AppWizard; I added only one control to the About box (<A HREF="fig3.htm">Figure 3</A>), and then modified four lines of code and added another eight (I counted them). All I had to do was use <B>COpenGLView</B> as a base class for <B>CMyView</B>, and put a <B>CMyGraph</B> object from Sample3D in it. Then I added another object of class <B>CMyGraph</B> to <B>CAboutDlg</B>, and linked it to a custom control in the About box dialog resource. The application code is available in the <I>CUJ</I> online sources (see p. 3 for downloading instructions). To see the sample at work, open several MDI child windows and the About box. You will see that the sphere appears only in the first view created (<A HREF="fig4.htm">Figure 4</A>) to show you the problem I described previously regarding the auxiliary library.</p>
+<p>By the way, the samples won't look good if you have a 256-color display. If you do, you'll have to work harder to see good 3-D color images (see <a href="#6">[6]</a>).</p>
+
+<h4><FONT COLOR="#000080">Conclusions</FONT></H4>
+
+<p>I did not cover all aspects of using OpenGL in Windows, such as fonts, bitmaps, and palettes. To use fonts in OpenGL windows, you must select a TrueType font in the DC, call <B>wglUseFontBitmaps</B> or <B>wglUseFontOutlines</B> to create the display lists with the font characters (slow operation), then call <B>glCallLists</B> to draw the characters. To use bitmaps as textures, you can use the <B>auxDIBImageLoad</B> function. These topics are very well covered in <a href="#3">[3]</a> and in the online doc. To use palettes, see <a href="#6">[6]</a>. Printing is another big part; you can see the GLBMP sample application in the MSDN CD-ROM. The classes presented here encapsulate the core functionality of making OpenGL work in Windows, and are reusable and extensible. The learning curve for mastering OpenGL remains rather steep, but these classes take away most Windows details and make a good starting point to build great 3-D images using the leading 3-D graphics interface.</p>
+
+<h4><FONT COLOR="#000080">Acknowledgement</FONT></H4>
+
+<p>Thanks to Valeriano Corallo for always pushing for an extra dimension.</p>
+
+<h4><FONT COLOR="#000080">References</FONT></H4>
+
+<p><a name="1"></a>[1]  Neider, Davis, and Woo. <I>OpenGL Programming Guide</I> (Addison-Wesley, 1993).</p>
+<p><a name="2"></a>[2]  OpenGL Architectural Review Board. <I>OpenGL Reference Manual</I> (Addison-Wesley, 1992).</p>
+<p><a name="3"></a>[3]  Ron Fosner. <I>OpenGL Programming for Windows 95 and Windows NT</I> (Addison-Wesley, 1996).</p>
+<p><a name="4"></a>[4]  Dennis Crain. "Windows NT OpenGL: Getting Started." MSDN CD-ROM.</p>
+<p><a name="5"></a>[5]  Dale Rogerson. "OpenGL I: Quick Start." MSDN CD-ROM.</p>
+<p><a name="6"></a>[6]  Dale Rogerson. "OpenGL II: Windows Palettes in RGBA Mode." MSDN CD-ROM.</p>
+<p><a name="7"></a>[7]  Foley, et. al. <I>Computer Graphics: Principles and Practice</I>, 2nd ed. (Addison-Wesley, 1990).</p>
+
+<p><i>Giovanni Bavestrelli lives in Milan and is a software engineer for Techint S.p.A., Castellanza, Italy. He has a degree in Electronic Engineering from the Politecnico di Milano, and writes automation software for Pomini Roll Grinding machines. He has been working in C++ under Windows since 1992, specializing in the design and development of reusable object-oriented libraries. He can be reached at <B>automation@pomini.it</B>.</i></p>
+
+<h4><a href="../../../source/1998/dec98/bavestre.zip">Get Article Source Code</a></h4>
+
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

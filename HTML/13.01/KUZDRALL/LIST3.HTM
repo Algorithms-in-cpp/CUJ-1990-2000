@@ -1,0 +1,179 @@
+<HTML><HEAD>
+<TITLE>January 1995/Transferring Numeric Values Between Computers/Listing 3</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 3 <I>Floating-Point Transfer Functions</I></A></h4>
+<pre>/* Copyright (C) 1994 James A. Kuzdrall
+  Free license to this software is granted only if the above
+  copyright credit is included in the source code */
+
+/* ***&lt; FLTTXF.CEE   &gt;***
+
+   #include  &lt;stdio.h&gt;          /* ANSI C definitions */
+   #define XFER_ERROR -1        /* a non-zero integer */
+
+   static float  pwr2[9]= {
+     1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0 };
+
+   /***&lt; fputf    &gt;*** ++++++++++++++++++++++++++++++++++++++++++++++*
+
+     USE....... Convert host's float to a 4-byte, IEEE-754, MSB-first
+       standard transfer format. Send the 4 bytes to output stream fp.
+     RETURNS... Non-zero if error; otherwise, 0
+       No number sent if error.
+     ERRORS.... Disk errors of putc().
+       Out-of-range for absolute values beyond IEEE 4-byte float range,
+       about 3.402822e+38 to 1.175493e-38.
+   */
+
+   int fputf(np,fp)
+     float  *np;    /* number to be sent */
+     FILE   *fp;    /* stream (file) pointer */
+     {
+     float nr;      /* local copy of number */
+     char  iszero;  /* flag: 1 if nr is 0.0, else 0 */
+     int   expo;    /* build exponent here */
+     int   ix;      /* index for powers of two */
+     long  mant;    /* mantissa */
+     unsigned int  byt[4];   /* build IEEE float here */
+     int   err;
+
+   byt[0]= iszero= 0;         /* preset float sign + and not zero */
+   expo= 127;                 /* preset exponent bias at 2^0 */
+   if( (nr= *np) == 0.0 ) {   /* zero won't scale; just send it */
+     iszero= 1;
+     goto pfout;              /* note: preset expo passes pfout test */
+     }
+
+   /* get magnitude; put sign bit output byte  */
+   if( nr &lt; 0.0 ) {
+     byt[0]= 0x80;
+     nr= -nr;
+     }
+
+   /* scale nr to 2^0 to 2^1 range; build exponent by powers of 2 */
+   while( nr &lt; 1.0 &amp;&amp; expo &gt; 0 ) {     /* make small numbers &gt; 1.0 */
+     nr *= 256.0;
+     expo -= 8;
+     }
+   for( ix= 8; --ix; ) {
+     while( nr &gt;= pwr2[ix] &amp;&amp; expo &lt; 255 ) {
+       nr /= pwr2[ix);
+       expo += ix;
+       }
+     }
+
+   /* scale nr to 2^24 to 2^23 range; convert to long integer */
+   mant= (long )( nr * 8388608.0 );     /* 2^23 */
+   /* get mantissa bytes from the long */
+   byt[3]= mant;
+   byt[2]= (mant &gt;&gt; 8);
+   byt[1]= (mant &gt;&gt; 16);
+
+   /* encode exponent */
+   if( expo &amp; 0x0001 )         /* put lsb of expo in implied bit */
+     byt[1] |= 0x80;
+   else
+     byt[1] &amp;= 0x7f;
+     /* combine rest of exponent and sign */
+     byt[0] |= (unsigned int )expo &gt;&gt; 1;
+
+   pfout:
+   err= XFER_ERROR;                   /* preset */
+   /* look for out-of-range exponent and write errors */
+   if( expo &lt; 255 &amp;&amp; expo &gt; 0 ) {
+     for( ix= 0; ix &lt; 4; ix++ )
+       if( putc( (iszero ? 0 : (byt[ix] &amp; 0xff)),fp) == EOF )
+         goto pfxit;
+     err= 0;
+     }
+   pfxit:
+   return( err );
+   }
+
+   /***&lt; fgetf    &gt;*** +++++++++++++++++++++++++++++++++++++++++ *
+
+     USE....... Read a standard transfer format, 4-byte, IEEE-754, MSB-
+       first float from the stream fp and convert it to the host's
+       float format.
+     RETURNS...  Non-zero if error; otherwise, 0
+       Places answer at pointer if no errors.
+     ERRORS.... From getc().
+       Bad exponent byte (255).
+   */
+
+   int  fgetf(np,fp)
+     float *np;       /* place where answer goes */
+     FILE  *fp;       /* stream (file) pointer*/
+     {
+     int   ix;        /* byte counter */
+     char  nonzero;   /* true if any bits set */
+     int   expo;      /* exponent of IEEE float */
+     long  mant;      /* fractional part */
+     float pwr;       /* scale factor from exponent */
+     float ftemp;
+     unsigned int  byt[4];    /* transferred bytes, byt[0] is MSB */
+     int   err;
+
+     /* read bytes from disk; check error */
+     err= XFER_ERROR;                /* preset true */
+     nonzero= 0;                     /* preset false */
+     for( ix= 0; ix&lt;4; ix++ ) {      /* byte read from MSB to LSB */
+       if( (byt[ix]= getc(fp)) == EOF )
+         goto gfxit;                /* disk error, quit */
+       byt[ix] &amp;= 0xff;             /* strip parity etc, if present */
+       if( byt[ix] )                /* see if any bits set */
+         nonzero++;
+       }
+
+     /* divide IEEE-754 float into parts */
+     expo= ((byt[0] &lt;&lt; 1) | (byt[1] &gt;&gt; 7)) &amp; 0xff;
+     mant= ( ( (long )(byt[1] | 0x88) &lt;&lt; 16)  /* implied bit */
+          + (byt[2] &lt;&lt; 8) + byt[3] );
+
+     /* intercept IEEE-754 Inf, Nan, denormalized or just bad byte */
+     if( expo == 0xff  ||  (!expo &amp;&amp; nonzero) )
+       goto gfxit;
+
+     /* special case: number is zero */
+     if( !nonzero ) {
+       *np= 0.0;
+       err= 0;
+       goto gfxit;
+       }
+
+     /* build float value of exponent in pwr */
+     pwr= 1.0;     /* 2^0 scaling multiplier corresponds to expo=127 */
+     if( expo &gt; 127 ) {
+       while( expo &gt; 135 ) {
+         pwr *= 256.0;
+         expo -= 8;
+         }
+       pwr *= pwr2[expo-127];
+       }
+     else {
+       while( expo &lt; 119 ) {
+         pwr *= .00390625;            /* equiv /= 256.0 */
+         expo += 8;
+         }
+       pwr /= pwr2[127-expo];
+       }
+
+     /* check for over and under flow */
+     if( pwr &gt; 0.0 ) {
+       if( byt[0] &amp; 0x80 )
+         pwr= -pwr;                   /* set right sign */
+       /* convert mantissa to 1.0 to 2.0 range then scale by pwr */
+       ftemp= (float )mant/8388608.0;       /* mant/2^23 */
+       *np= ftemp * pwr; /* separate lines prevent mant*pwr overflow */
+       err= 0;
+       }
+     gfxit:
+     return( err );
+     }
+
+/* End of File */</pre>
+
+</BODY>
+</HTML>

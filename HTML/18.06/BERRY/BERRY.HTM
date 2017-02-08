@@ -1,0 +1,116 @@
+<HTML>   
+     <HEAD>
+<TITLE>June 2000/Combining Boyer-Moore String Search with Regular Expressions</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocjun.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Algorithms</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Combining Boyer-Moore String Search with Regular Expressions</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">David Berry</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Some text searches are fast and some are flexible. This one is both.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<H4><FONT COLOR="#000080">Overview</FONT></H4>
+
+<p>I recently needed code to do fast regular expression searching, so I started looking for articles on that subject. I found articles on regular expression searching, but the search algorithms were not that fast. In most cases they were "brute-force" implementations. Since regular expression searching is really specialized string searching, I thought that I may be able to find a fast text-searching algorithm that addressed regular expressions. I found some excellent text-searching algorithms but none addressed regular expressions. The information I found covering regular expressions was mostly in textbooks and required setting up a non-deterministic finite state machine from a context-free grammar. The information focused more on parsing and building the finite state machine than it did on text searching. The text search performed using regular expressions was done one character at a time.</p>
+<p>I did not need anything that sophisticated, so I developed a regular expression search class that could use some sort of intelligent text-search algorithm. This class is called <B>CRegEx</B>; it employs the Boyer-Moore string-search algorithm. I have compiled and tested <B>CRegEx</B> under Windows using Visual C++ 6.0 and under AIX using xlC. (Note: some of the type names used in this article are artifacts of programming in a Windows environment. For example, an <B>LPTSTR</B> is a macro for a <B>char *</B>, a.k.a. "long pointer to string." However, in the online source listings I provide a Unix makefile that will make all those artifacts defined under Unix.)</p>
+
+<H4><FONT COLOR="#000080">The Boyer-Moore Algorithm</FONT></H4>
+
+<p>Before discussing the class <B>CRegEx</B>, I review the Boyer-Moore algorithm. I chose the Boyer-Moore algorithm because it is significantly faster than other string search algorithms and it is one of the easiest algorithms to implement. It compares characters from right-to-left, starting with the last character in the search pattern. The speed of the Boyer-Moore algorithm is attributed to how well it deals with characters that do not match. When a mismatch is detected, the algorithm checks if the non-matching character is in the search pattern. If it is not in the pattern, then the pattern is shifted over the entire length of the search pattern.</p>
+<p>The example shown in <a href="fig1.htm">Figure 1</a> illustrates the Boyer-Moore algorithm. (The <B>1</B>'s and <B>0</B>'s indicate match and failure to match respectively.) The first comparison in <a href="fig1.htm">Figure 1</a> compares the space following <B>"Mary"</B> to the <B>'e'</B> in the search pattern. Since a space does not exist in the pattern, M characters of the input text can be skipped, where M is equal to the length of the pattern. If the mismatched character exists in the pattern, as it does in the third comparison, where the <B>'e'</B> is compared to the second <B>'t'</B> in <B>"little"</B>, N characters can be skipped, where N is the distance between the mismatched character and the last character in the pattern. In this case, the distance between <B>'t'</B> and the last character of the pattern is 1. If the mismatch were on a <B>'w'</B>, four characters would have been skipped over. If there were multiple <B>'t'</B>s, in the pattern, the number of characters skipped would still be 1 since the skip distance is calculated as the distance from the right-most <B>'t'</B> to the last character in the pattern.</p>
+<p>There is a special case when the skip distance is greater than the distance between the mismatch character and the last character in the pattern. This special case occurs when the mismatch occurs to the left of where the mismatched character appears in the pattern. A good example is the eighth comparison, in which <B>"white"</B> is compared to <B>" flee"</B>. The <B>'e'</B>s match, but the <B>'t'</B> fails when compared to the first <B>'e'</B> in <B>" flee"</B>. Since the <B>'e'</B> has already been passed in the pattern, M-j characters can be skipped over, where j is the index of the character in the pattern that is being compared. In this case j is 3 (using a zero-based index), and the skip distance, M-j, is 2.</p>
+<p>Using the Boyer-Moore algorithm and its ability to skip comparisons, the search in the above example required only 17 comparisons performed before a match was found. A brute force method would have taken 44 comparisons before a match was found.</p>
+<p>The skip values for each character in the pattern are calculated prior to performing any string matching. They are stored in a table, which provides an entry for all possible characters. For single-byte character sets, the size of this table is 256 bytes. The table will need to be expanded for multibyte and Unicode character sets.</p>
+
+<H4><FONT COLOR="#000080">Regular Expression Syntax</FONT></H4>
+
+<p>Before a regular expression can be processed, the regular expression characters must be defined. The syntax supported by <B>CRegEx</B> contains a combination of Unix and DOS/Windows special characters. The following is a list of characters and their meanings:</p>
+<p><B>?</B> &#151; Match zero or one character.</p>
+<p><B>*</B> &#151; Match zero or more characters.</p>
+<p><B>[]</B> &#151; Match any single character included within the brackets.</p>
+<p><B>^</B> &#151; Match must be at the beginning of the input buffer. This character must be the first character in the regular expression.</p>
+<p><B>$</B> &#151; Match must be at the end of the buffer. This character must be the last character in the regular expression.</p>
+<p><B>\</B> &#151; Literal character to match the character immediately following the backslash.</p>
+<p>Any character in the pattern that is not listed above will be used to match exactly the character in the text being searched.</p>
+
+<H4><FONT COLOR="#000080">Implementing CRegEx</FONT></H4>
+
+<p>CRegEx</B> has two constructors, <B>CRegEx()</B> and <B>CRegEx(TCHAR *regex, bool begin=false, bool end=false)</B>. <B>CRegEx()</B> is the default constructor; it just initializes all the member variables. If you use the default constructor, you must call the <B>CRegEx</B> function <B>SetRegEx(LPTSTR regex)</B> to set the regular expression that is to be found in the input text. The other constructor enables you to specify the regular expression when the <B>CRegEx</B> object is created. The parameters <B>begin</B> and <B>end</B> can be used to force a match at the beginning and end of the input text respectively.</p>
+<p><B>SetRegEx</B> is responsible for compiling the regular expression and then initializing the skip table to be used for the Boyer-Moore string search. Compilation is performed by function <B>Compile</B>, which converts the regular expression into an array of type <B>struct REGEX_CH</B>. This struct is defined as follows:</p>
+
+<pre>
+struct REGEX_CH
+{
+   wchar_t ch;
+   wchar_t *multiChar;
+};
+</pre>
+
+<p>The variable <B>ch</B> can be any ASCII character as well as one of the predefined characters <B>RE_EOS</B> or <B>RE_MULTI</B>. <B>RE_EOS</B> is the end-of-string marker for the compiled regular expression. <B>RE_MULTI</B> is used to store the characters that appeared in brackets in the regular expression. The characters are stored in member <B>multiChar</B> with an <B>RE_EOS</B> as the last character.</p>
+<p>In an earlier implementation I had defined two additional <B>REGEX_CH</B> characters, <B>RE_MATCHONE</B> and <B>RE_MATCHANY</B>. These <B>REGEX_CH</B> characters were used to compare wildcards <B>'*'</B> and <B>'?'</B>. I eliminated these characters from the current version because of the problems they created in implementing the search algorithm correctly. Because a wildcard can match any character, its presence in the regular expression would force all the entries in the skip table to be the same. If the wildcard were at the end of the search pattern then all the entries in the skip table would be zero, which turns the Boyer-Moore algorithm into the brute force method.</p>
+<p>While wildcards at the end of the pattern made things difficult, wildcards at the beginning of the pattern are relatively easy to deal with. I handle lead wildcards by counting them and removing them from the regular expression. The rest of the pattern can then be searched for using Boyer-Moore. When a match is found, the number of lead wildcards is then subtracted from the index of the first character of the match to get the starting point for the match of the entire regular expression.</p>
+<p>The following code from the <B>Compile</B> function strips out wildcards:</p>
+
+<pre>
+while (*trePtr == _T('?') || *trePtr == _T('*'))
+{
+   if (lead != -1)
+   {
+      if (*trePtr == _T('*'))
+      {
+         beginMatch = false;
+            lead = -1;              
+      }
+      else
+         lead++;
+   }
+   trePtr++;
+}
+</pre>
+
+<p>Whenever a <B>'*'</B> is encountered, <B>lead</B> is set to <B>-1</B>. This means that a match can occur anywhere in the remaining text, and that the start of the match occurs at the beginning of the input text. The variable <B>beginMatch</B> is set to <B>false</B> because the regular expression is guaranteed to match from the beginning of the input text and it is no longer necessary to test for it. If there are only <B>'?'</B>s leading the pattern then <B>lead</B> will be incremented to keep track of how many were removed.</p>
+<p>It is unrealistic to force the user to use wildcards only at the beginning of a regular expression. Instead, the regular expression that the user types in must be transformed so that all wildcards appear at the start of the regular expression. <B>CRegEx</B> achieves this transformation by breaking the regular expression into multiple subexpressions, such that each subexpression contains wildcards only at the beginning of the expression. For example, the regular expression <B>"A*B*C*D"</B> will be broken into four smaller regular expressions, <B>"A"</B>, <B>"*B"</B>, <B>"*C"</B>, <B>"*D"</B>.</p>
+<p>Regular expressions are broken apart during parsing, via a recursive process. Each time a wild card is encountered a new <B>CregEx</B> is created using the non-default constructor. The current pointer to the regular expression is passed in as a parameter to the constructor. The wildcard becomes a leading wild card for the new regular expression, and the new instance of <B>CRegEx</B> completes the task of parsing and compiling the regular expression. This new <B>CRegEx</B> is attached to the old <B>CRegEx</B> via a pointer; the address of the new <B>CRegEx</B> is stored in the old <B>CRegEx</B>'s member variable <B>nextRegEx</B>. Thus, the recursive parsing process constructs a linked list of <B>CRegEx</B>, which then represents the original regular expression. The regular expression <B>"A*B*C*D"</B> from the above example will be stored as <B>"A"-&gt;"*B"-&gt;"*C"-&gt;"*D"</B>.</p>
+<p>The following code segment from <B>Compile</B> creates the next <B>CRegEx</B> in the linked list and passes it the unparsed remainder of the regular expression.</p>
+
+<pre>
+else if (*trePtr == _T('*'))    // Wildcard zero or more chars
+{
+   nextRegEx = new CRegEx((LPTSTR)trePtr, false, endMatch);
+   endMatch=false; // delegate the end Match
+   break;          // Stop parsing.
+}
+else if (*trePtr == _T('?'))    // wildcard zero or one chars
+{
+   nextRegEx = new CRegEx((LPTSTR)trePtr,true,endMatch);
+   endMatch = false; // delegate the end Match
+   break;          // Stop parsing
+}
+</pre>
+
+<p>When the new <B>CRegEx</B> is created, the remaining regular expression is passed in, along with the begin match and end match flags. The begin flag is set based on the type of wildcard. If a <B>'*'</B> is encountered then <B>begin</B> is set to <B>false</B> because a begin match is guaranteed. If <B>'?'</B> is encountered then the regular expression must match from the beginning, so <B>begin</B> is set to <B>true</B>. The end match is then delegated to the new <B>RegEx</B> and set to <B>false</B>.</p>
+<p>The linked list built here will be used later to recursively search for the regular expression in the input text. When the non-default constructor is used, the parser ignores the <B>'^'</B> and <B>'$'</B> special characters in the regular expression; the <B>begin</B> and <B>end</B> parameters take precedence. This approach is necessary because <B>'^'</B> and <B>'$'</B> can occur only at the beginning and end of the regular expression respectively. Since the parser is processing segments of the original regular expression, it must treat any additional <B>'^'</B> and <B>'$'</B> symbols that occur in the regular expression as literals.</p>
+<p>Once the pattern has been successfully compiled, <B>CRegEx</B>'s <B>InitSkipTable</B> function is called to initialize the member variable <B>skip[TMAXCHAR]</B>. <B>InitSkipTable</B> stores the skip values that are required by the Boyer-Moore algorithm. Each element in <B>skip</B> is initialized to the pattern length. The pattern is scanned and the skip value for each character in the pattern is set to the pattern length minus the index of the character minus 1. The skip values for all the characters that are part of a <B>RE_MULTI</B> character are also set. The skip value for all the characters that are part of <B>RE_MULTI</B> will be the same since they occupy the same logical position in the pattern.</p>
+<p>The only thing left to do now is to actually use the compiled regular expression and see if it can be found in some text. The routine that performs the matching is <B>Match(LPTSTR text, int textLen, int &amp;matchLen)</B>. The text parameter will be searched to find any occurrences of the regular expression. The parameter <B>textlen</B> is the length of the text being passed in. <B>Match</B> returns the length of the actual match in the <B>matchLen</B> parameter. This parameter enables the caller of <B>Match</B> to know how the wildcards expanded. <B>Match</B> returns a pointer to the first character in the string that matches the regular expression.</p>
+<p><B>Match</B> also contains the implementation of the Boyer-Moore string search algorithm. The code segment in <a href="fig2.htm">Figure 2</a> illustrates the Boyer-Moore Algorithm.</p>
+<p>Several modifications to the algorithm were required to support regular expressions. The first change concerns where character comparisons begin. If the match must occur at the end of the text, then comparisons start there. If the input text is large, going directly to the end of the input text will save many comparisons. This differs significantly from the way most regular expression processors work &#151; they still compare the regular expression to the entire input text. If the match does not have to occur at the end, then comparisons start at pattern length - 1.</p>
+<p>To provide support for bracketed character sets, this implementation of the Boyer-Moore algorithm calls function <B>CRegEx::MatchChar</B> to see if a character matches one of the bracketed characters. <B>MatchChar</B> knows how to handle <B>RE_MULTI</B> characters. The match fail criteria has been updated to include passing the end of the text buffer, or passing the length of the pattern plus the number of single-match wildcards, when a match at the beginning of text is required.</p>
+<p><B>Match</B> is also responsible for calling the next <B>CRegEx</B> in the linked list. As explained above, whenever a wildcard character is encountered during compilation, a new <B>CRegEx</B> object is created and linked to the current <B>CRegEx</B> object. If the current match is successful, it calls <B>nextRegEx-&gt;Match</B> to search through the remainder of the text for the next partial pattern. This process will recursively match all the subexpressions to the input text. If any of the subexpressions fail, the match fails. If they all succeed, the match succeeds, and the <B>matchLen</B> variable is set to the cumulative <B>matchLen</B> of all the subexpressions.</p>
+
+<H4><FONT COLOR="#000080">Using CRegEx</FONT></H4>
+
+<p>I have included a test program as part of the online source code (see p. 3 for downloading instructions). If the code is compiled with <B>GREP</B> defined the program will act similar to grep. If <B>GREP</B> is undefined, the program will display the offset where the match occurred in the file. It will also print out the string that was matched. <B>CRegEx</B> supports only a subset of the regular expression syntax that is found on Unix, but can easily be modified to support other metacharacters as well.</p>
+
+<p><i><B>David Berry</B> works for Dendrite International Inc. He is the head of development for one of Dendrite's client teams. He can be reached at <B>daveb@drte.com</B>.</i></p>
+
+<h4><a href="../../../source/2000/jun00/berry.zip">Get Article Source Code</a></h4>
+
+
+</blockquote></body></html>

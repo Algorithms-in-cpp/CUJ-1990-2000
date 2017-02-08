@@ -1,0 +1,174 @@
+<HTML>   
+     <HEAD>
+<TITLE>July 2000/Simple Unit Tests in C++</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocjul.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Software Tools</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Simple Unit Tests in C++</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Marc Briand</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Unit testing is a tedious, but often necessary, adjunct to writing code. A few template classes can eliminate much of the tedium and improve encapsulation in the bargain.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<H4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>Of all the tools available to programmers, I think one of the most important is a good unit-test tool. This is a tool that quickly performs a series of tests on a <I>unit</I> (typically a function or class), to see if it works according to specifications. The concept of unit testing is based on the idea that it is usually best to test a new function or class in isolation before integrating it with other code.</p>
+<p>To be truly useful to programmers, a unit test tool should have the following properties:</p>
+
+<UL><LI>   It is easy to set up and use.
+<LI>   It can apply an arbitrary number of test cases to the unit. Here, a test case is a list of input values, with an associated list of expected outputs. Each test case is a separate instance of the same test, not a new kind of test. After applying input values to the unit, the test tool compares the outputs of the unit against the list of expected outputs.
+<LI>   It provides a simple success/fail indication for each test case. The programmer does not need to study the outputs to see if the unit passed a particular test case.
+<LI>   It allows programmers to add, modify, or delete test cases without triggering a massive recompile.</UL>
+
+<p>I've developed a test framework which I believe meets the above criteria. The test framework consists of C++ template classes, which you must compile along with the test cases and the unit under test. This means of course that you must recompile every time you add or change a test case, so the framework would seem to violate the last criterion above. However, when you add a test case to a test, you need only recompile a single <B>.cpp</B> file and relink. You don't have to recompile the whole project. There are certain advantages to conducting tests such as this in native code, as opposed to the popular alternative of scripting. Given these advantages, which I discuss later, I think that compiling a single file is a small price to pay.</p>
+<p>In this article I first show a sample use of the framework, then I explain how it works. This approach may seem backwards from what you're used to in technical articles. But since ease of use is critical in a testing tool, I want to show you what it's like to use it before dragging you through the implementation.</p>
+
+<H4><FONT COLOR="#000080">A Sample Test Problem</FONT></H4>
+
+<p>Suppose you have written a <B>Triangle</B> class to be used in a graphics program:</p>
+
+<pre>
+class Triangle
+{
+public:
+   Triangle()
+      : length1(1.0), length2(1.0), 
+      length3(1.0) {}
+   bool
+   setLengths(float l1,float l2,float l3);
+   ...
+private:
+   float length1; // lengths of sides 1, 2, and 3
+   float length2; // clockwise around
+   float length3; // the triangle
+};
+</pre>
+
+<p>The default constructor creates an equilateral triangle with sides of length 1.0. The function <B>setLengths</B> inputs three lengths and sets the sides of the triangle in clockwise fashion. That ought to be simple enough &#151; just copy the inputs to the members <B>length1</B>, <B>length2</B>, and <B>length3</B>. But not so fast. A devious or misguided caller could pass in lengths that were not valid for any triangle &#151; for example, (1.0, 3.0, 1.0). If this happens, <B>setLengths</B> is supposed to return <B>false</B> and not touch <B>Triangle</B>'s internal data members. If passed a set of valid lengths, <B>setLengths</B> is supposed to modify the members and return <B>true</B> <a href="#1">[1]</a>. To be sure that <B>setLengths</B> works correctly, you want to throw various sets of lengths at it to see if it properly discriminates valid input from invalid.</p>
+<p>To conduct these tests using my framework, you would take the following steps:</p>
+
+<H4><FONT COLOR="#000080">Step 1</FONT></H4>
+
+<p>In a file named <B>testtriangle.h</B>, create a derived class as shown below:</p>
+
+<pre>
+class TestSetLengths :
+   public BaseTest31&lt;float, float, 
+              float, bool&gt;
+{
+public:
+   TestSetLengths();
+   void
+   apply(const float &amp;l1,
+      const float &amp;l2,
+      const float &amp;l3, bool &amp;result)
+   {
+      Triangle triangle;
+      result =
+        triangle.setLengths(l1, l2, l3);
+   }
+   const char *getName() const
+   {
+      return "Test setLengths";
+   }
+};
+</pre>
+
+<p>Class <B>TestSetLengths</B> derives from a mysterious base class <B>BaseTest31&lt;float, float, float, bool&gt;</B>. I won't say much about this base class for now, except that it is a specialization of the template class <B>BaseTest31</B>, which is provided by the framework.</p>
+<p><B>TestSetLengths</B> contains three member functions. First, there is the default constructor. It must be declared, but not defined, in the body of <B>TestSetLengths</B>. For reasons that will become clear later, you must implement this constructor in <B>testtriangle.cpp</B>.</p>
+<p><B>apply</B> is a member function declared as pure virtual in <B>BaseTest31</B>; therefore, it must be implemented by class <B>TestSetLengths</B>, with the exact signature shown. Member function <B>apply</B> will be called by the test framework to apply a single test case against the unit under test. The test framework will provide the input arguments to <B>l1</B>, <B>l2</B>, and <B>l3</B>, and it will read the output argument <B>result</B>.</p>
+<p>Note that the template arguments in <B>BaseTest31</B> match the types in the signature of <B>apply</B>. That's not a coincidence, it's a requirement. Also in this example, the types in the signature of <B>apply</B> match the inputs and the output, respectively, of function <B>setLengths</B>. This is not a requirement of the framework. The types match in this example because <B>apply</B> acts as a simple forwarding function to <B>setLengths</B>. In more elaborate cases, <B>apply</B> might have to do more setup work &#151; for example, to call a method with many parameters, or to call more than one method on an object. <B>apply</B> serves as an interface between the framework and the unit under test.</p>
+<p>In this example, I implement <B>apply</B> in the body of class <B>TestSetLengths</B> for the sake of illustration. It could just as easily be implemented in the <B>.cpp</B> file.</p>
+<p><B>getName</B> is another function declared as pure virtual in <B>BaseTest31</B>; hence it must also be implemented by class <B>TestSetLengths</B>. It returns the name of the test, for reporting purposes. Again, I've implemented it within the body of <B>TestSetLengths</B> for the sake of illustration.</p>
+
+<H4><FONT COLOR="#000080">Step 2</FONT></H4>
+
+<p>In the file <B>testtriangle.cpp</B>, implement the default constructor for class <B>TestSetLengths</B>:</p>
+
+<pre>
+TestSetLengths::TestSetLengths() 
+{
+// oblique
+   addCase(3.0, 2.0, 4.0, true); 
+// right triangle
+   addCase(3.0, 4.0, 5.0, true); 
+// acute isosceles
+   addCase(10.0, 100.0, 100.0, true); 
+// big equilateral
+   addCase(100.0, 100.0, 100.0, true); 
+// another right triangle
+   addCase(6.0, 10.0, 8.0, true); 
+// another oblique
+   addCase(3.0, 4.0, 2.0, true); 
+   addCase(1.0, 2.0, 4.0, false); // bad
+   addCase(1.0, 3.0, 1.0, false); // bad
+// very thin triangle
+   addCase(2.0, 1.0, 1.0, true); 
+}
+</pre>
+
+<p>The function <B>addCase</B> used in the constructor is inherited from the base class <B>BaseTest31</B>. Each call to <B>addCase</B> adds a test case to the base class. The first three arguments are the input values to be passed to <B>apply</B>, and indirectly, to the function <B>setLengths</B>. The last argument is the output you expect <B>apply</B> to receive from the output of <B>setLengths</B>. Thus, you should pass <B>true</B> as the last argument if the first three arguments represent the sides of a valid triangle; pass <B>false</B> otherwise. These values are stored in STL <B>vector</B>s within the base class.</p>
+
+<H4><FONT COLOR="#000080">Step 3</FONT></H4>
+
+<p>In <B>main.cpp</B>, instantiate an object of class <B>TestSetLengths</B>, and call its <B>run</B> member function, which is also inherited from <B>BaseTest31</B>:</p>
+
+<pre>
+int main()
+{
+
+   // create a file for test report
+   std::fstream fout;
+   fout.open("testout.txt", 
+      std::ios::out);
+
+   // run the test
+   TestSetLengths sltest;
+   sltest.run(0, 100, fout);
+
+   fout.close();
+
+   return 0;
+}
+</pre>
+
+<p>That's it. Running this program results in the output file shown in <a href="fig1.htm">Figure 1</a>.</p>
+<p>Each line of the output file describes the results of a test case. The first part of the line shows the name of the test, followed by the number of the test case, in parentheses (zero-based). If the test case fails, the report shows the output value(s) that were expected and what the unit under test actually returned. In the last test case added, I had specified an infinitesimally thin triangle (2.0, 1.0, 1.0), and expected <B>setLengths</B> to call it valid. As the report shows, <B>setLengths</B> did not work as I expected.</p>
+<p>In the code shown above, the first two arguments to <B>run</B> specify the range of test cases you want to run. If you specify a range that completely overlaps all the available cases, then the framework just runs all of them. This range feature is convenient for debugging. If you examine the report file and determine that a particular test case fails, you can call <B>run</B> for just that case, and step through the test with a single-step debugger.</p>
+<p>The last argument to <B>run</B> is an already opened <B>fstream</B> object. <B>run</B> will write its report to this file. This arrangement enables you to "stack" any number of different unit tests. Each test appends its report to the open file. When you are done testing, you close the file.</p>
+
+<H4><FONT COLOR="#000080">Adding Test Cases</FONT></H4>
+
+<p>To add a test case to the test, just add a call to <B>addCase</B> in the body of the <B>TestSetLengths</B> constructor. Compile the <B>.cpp</B> file and relink. You're done.</p>
+
+<H4><FONT COLOR="#000080">How It Works</FONT></H4>
+
+<p>The test framework consists of a family of template classes named <B>BaseTestXY</B>, where <B>X</B> is a numeral indicating the number of input parameters, and <B>Y</B> is a numeral indicating number of outputs. <a href="fig2.htm">Figure 2</a> shows the definition of template class <B>BaseTest32</B>. This template class is designed to run tests that take three input parameters and return two output parameters.</p>
+<p>The <B>BaseTestXY</B> template classes serve as repositories of test case values. These values are stored in STL <B>vector</B>s, which appear as data members <B>i1s</B> through <B>o2s</B> in <a href="fig2.htm">Figure 2</a>. The template classes also supply a function <B>run</B>, which applies the test case values against the unit under test, compares the results with expected outputs, and writes a report.</p>
+<p>The workhorse of the template classes is the member function <B>run</B>. It is shown in <a href="fig3.htm">Figure 3</a>. This function iterates through the range of requested test case values, and passes the input values as the first three parameters to the function <B>apply</B>. <B>BaseTest32</B> does not implement function <B>apply</B>; it expects a derived class to do it. Thus, the <B>run</B> function calls <B>apply</B> polymorphically &#151; it calls the implementation supplied by the derived class. The derived class <B>apply</B> calls the unit under test, and returns its output values through the last two parameters. Function <B>run</B> compares these two values against the expected values. If they match, it reports success; otherwise it reports failure and terminates execution.</p>
+<p>To create a specific test, you derive a class from one of these template classes (more precisely, from a specialization of one of these classes). Pick the template that matches the number of input and output parameters you want to pass to <B>apply</B>. For example, if you were going to use two inputs and three outputs, you would derive from the template <B>BaseTest23</B>. When you derive from the template, you specialize it with the template arguments that match the input and output types you want to use with <B>apply</B>. You then implement the pure virtual functions <B>apply</B> and <B>getName</B>. You also implement the default constructor of the derived class to add test cases to the repository, by calling the base class function <B>addCase</B>. Since this constructor is implemented in a <B>.cpp</B> file, its definition is not visible to other translation units. It can be modified and recompiled without forcing a recompile of other files.</p>
+<p>In a nutshell, the base class provides the functionality of running the test cases and writing reports; the derived class provides the functionality of calling the unit under test. This arrangement helps keep programmer effort to a minimum.</p>
+
+<H4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>The framework presented here constitutes a fairly simple test tool. It consists of nine template classes: <B>BaseTest11</B>, <B>BaseTest12</B>, <B>BaseTest13</B>, ..., <B>BaseTest33</B>. I have tested this framework under both Visual C++ 6.0 and Borland C++Builder 4.0. The framework, and the source files for the sample test, are available from this month's online archives (<B>www.cuj.com/code</B>).</p>
+<p>If want to test functions with more than three input or output parameters, you'll have to play some special tricks when you implement the function <B>apply</B>. Note that you could conceivably pass <B>vector</B> arguments to <B>apply</B>, and translate them to the parameters required by the unit under test. Alternatively, you can pass string arguments that combine the required parameters as a single string. This can get a little messy, of course.</p>
+<p>As I hinted at earlier, an alternative way to add test cases without lengthy recompilation is to use scripting. In scripting, the programmer writes test cases in an interpreted language, such as TCL or Python; alternatively, she specifies test cases in a text file, which is more or less "interpreted" by the test program. The nice thing about scripting is that you can add or change test cases and just execute the test code on the fly.</p>
+<p>This framework does not use scripting; you write your test cases directly in C++. This approach has two key advantages. First, you can step through any test, and the code being tested, with a single-step debugger. This may be difficult or impossible with scripting. Second, you don't have to maintain a separate file of script code or text. It's a lot easier, using modern IDEs and makefiles, to integrate test code with a project if it's written in the native language.</p>
+<p>The framework presented here actually evolved as I wrote this article. As so often happens, in the course of describing my solution, I came up with a simpler one. I wouldn't be surprised if there's even a simpler way to conduct unit tests than I presented here. If you know of one, or just have an improvement on the technique presented here, I'd love to hear about it.</p>
+
+<H4><FONT COLOR="#000080">Note</FONT></H4>
+
+<p><a name="1"></a>[1]  In a real implementation, I would probably have <B>setLengths</B> call a utility function <B>isTriangle</B> to check for valid inputs, and throw an exception if they were invalid.</p>
+
+<p><i><B>Marc Briand</B> is Editor-in-Chief of </I>C/C++ Users Journal<I>. He loves programming, writing, and too many other things for his own good. However, he hates to work, which is why he is an editor. He may be reached at <B>mbriand@cmp.com</B>.</i></p>
+
+<h4><a href="../../../source/2000/jul00/briand.zip">Get Article Source Code</a></h4>
+
+</blockquote></body></html>

@@ -1,0 +1,120 @@
+<HTML><HEAD>
+<TITLE>October 2000/Classes for Reading and Writing Parameter Blocks/Listing 5</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 5: Implementation of a dynamic dialog box</A></h4>
+<pre>
+// a pseudo SimpleDB class that handles dialog box creation
+const int ROW_HEIGHT=20;
+class DlgDB : public SimpleDB {
+   HWND parent;
+   int row;
+   map&lt;string, HWND&gt; wndMap;
+public:
+   DlgDB(HWND parentDlg) : parent(parentDlg), row(0) {}
+   // this function will create the controls and set 
+   // them to the values in the param block
+   virtual void Write(const char *section, const char *key, 
+                      const char *valStr) {
+      CreateWindow("STATIC", key, WS_VISIBLE|WS_CHILD, 10, 
+         ROW_HEIGHT*row, 300, ROW_HEIGHT-4,parent, 0, 0, 0);
+      wndMap[key] = CreateWindow("EDIT", valStr, 
+         WS_VISIBLE|WS_CHILD|WS_BORDER, 310, ROW_HEIGHT*row,
+         200, ROW_HEIGHT-4, parent, 0, 0, 0);
+      row++;
+   }
+   // this function will read back the values in the controls
+   virtual void Read(const char *section, const char *key, 
+                     char *valStr, int maxBufLen) {
+      HWND editWnd = wndMap[key];
+      if (editWnd)
+         GetWindowText(editWnd, valStr, maxBufLen);
+   }
+};
+
+// DialogProc that handles the dynamic dialog
+BOOL CALLBACK MyDlgProc(HWND hwndDlg, UINT uMsg, 
+                        WPARAM wParam, LPARAM lParam) {
+   IOParamBlock *paramBlock;
+   DlgDB *dlgDB;
+   typedef pair&lt;DlgDB*,IOParamBlock*&gt; DlgProcCBRef;
+   DlgProcCBRef *callBackRef;
+   switch (uMsg)
+   {
+      case WM_INITDIALOG:   {
+         paramBlock = (IOParamBlock *)lParam;
+         int numWnds = paramBlock-&gt;ioVars.size();
+         SetWindowText(hwndDlg, "DynBox");
+         SetWindowPos(hwndDlg,NULL,0,0,500,
+            (numWnds+4)*ROW_HEIGHT,SWP_NOZORDER);
+         dlgDB = new DlgDB(hwndDlg);
+         // create Ok button and store pointer to DlgDB and
+         // IOParamBlock in the user data of the OK button
+         HWND okWnd = CreateWindow("BUTTON", "Ok", 
+            WS_VISIBLE|WS_CHILD|BS_PUSHBUTTON, 10, 
+         ROW_HEIGHT*numWnds+ROW_HEIGHT, 60, 20, 
+            hwndDlg, (HMENU)IDOK, 0, 0);
+         callBackRef = new DlgProcCBRef(dlgDB,paramBlock);
+         SetWindowLong(okWnd, GWL_USERDATA, (long)callBackRef);
+         CreateWindow("BUTTON", "Cancel", 
+            WS_VISIBLE|WS_CHILD|BS_PUSHBUTTON, 100, 
+            ROW_HEIGHT*numWnds+ROW_HEIGHT,
+            60, 20, hwndDlg, (HMENU)IDCANCEL, 0, 0);
+         paramBlock-&gt;WriteAll(*dlgDB, "dummy");
+         return 1;
+         }
+         break;
+      case WM_CLOSE:
+         EndDialog(hwndDlg, 0);
+         break;
+      case WM_COMMAND:
+         switch (LOWORD(wParam)) {
+            case IDOK:
+               callBackRef= (DlgProcCBRef*)GetWindowLong (
+                   (HWND)lParam, GWL_USERDATA);
+               dlgDB      = callBackRef-&gt;first;
+               paramBlock = callBackRef-&gt;second;
+               paramBlock-&gt;ReadAll(*dlgDB, "dummy");
+            case IDCANCEL:
+               EndDialog(hwndDlg, LOWORD(wParam));
+               break;
+         }
+         break;
+   }
+   return 0;
+}
+ 
+class TestBlock : public IOParamBlock , public Subject
+{
+public:
+   DECL_NAMED_VAL(int, autoInt);
+   DECL_NAMED_VAL(double, autoFloat);
+   TestBlock() : 
+      CONSTRUCT_AUTOIO_VAL(autoInt, 22),
+      CONSTRUCT_AUTOIO_VAL(autoFloat, 1122.33) {}
+};
+
+TestBlock tstBlock;
+
+class DummyObserver : public Observer {
+public:
+   void Update(Subject *subject) {
+      MessageBox(NULL, "TestBlock changed!!", "Obs.", MB_OK); }
+};
+
+void Test() {
+   char *dlgTmpl = new char [sizeof DLGTEMPLATE + 6];
+   DLGTEMPLATE *header = (DLGTEMPLATE *)dlgTmpl;
+   memset(header,0,sizeof DLGTEMPLATE+6);
+   header-&gt;style = WS_SYSMENU|WS_CAPTION|WS_VISIBLE;
+   DummyObserver dummy;
+   tstBlock.Attach(&amp;dummy);
+   int dlgRet = DialogBoxIndirectParam(NULL, header, m_hWnd, 
+          MyDlgProc, (LPARAM)(IOParamBlock*)&amp;tstBlock);
+   if (dlgRet == IDOK)  
+      tstBlock.Notify(); // notify observers, tstBlock changed
+   tstBlock.Detach(&amp;dummy);
+   delete [] dlgTmpl;
+}
+</pre></body></html>

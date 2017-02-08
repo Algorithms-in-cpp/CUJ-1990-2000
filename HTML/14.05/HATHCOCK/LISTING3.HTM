@@ -1,0 +1,230 @@
+
+
+
+
+<HTML><HEAD>
+
+<TITLE>May 1996/PopMail! -- A POP3 Mailer for Windows/Listing 3</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4>
+<A name="HEADING1">Listing 3: POP3.C  POP3 window procedure and protocol implementation</A></h4>
+
+
+<pre>
+
+/**********************************************************/
+/* POP3.C - contains the POP3 window procedure and POP3   */
+/*          protocol implementation                       */
+/**********************************************************/
+#include &lt;stdarg.h&gt;
+#include &lt;string.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;mem.h&gt;
+#include &lt;dos.h&gt;
+#include "popmail.rh"
+#include "globals.h"
+#include "winsock.h"
+
+extern HANDLE hInst;
+extern stConfig Config;
+extern char IOBuffer[BUFFERSIZE];
+extern char HostInfo[MAXGETHOSTSTRUCT];
+
+long wBytesRead;
+long wBytesSent;
+long wBytesWritten;
+int State;
+int Bytes;
+int MsgFile;
+int MsgNumber;
+int MsgCount;
+int TotalMsgs;
+
+long far PASCAL _export Pop3Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
+  {
+	  IN_ADDR HostIp;
+	  char WorkBuffer[255];
+	  PHOSTENT pHostInfo;
+
+	  switch (message)
+		 {
+			 case WM_CREATE:
+				MsgCount = 0;
+				wBytesRead = 0;
+				wBytesSent = 0;
+				wBytesWritten = 0;
+            break;
+
+			 case IMSG_HOSTFOUND:
+				if (WSAGETASYNCERROR(lParam) == 0)
+				  {
+					  pHostInfo = (PHOSTENT) HostInfo;
+					  /* here's the hosts primary name and address type */
+					  wsprintf(WorkBuffer, "Found Host  : %s\r\n", pHostInfo-&gt;h_name);
+					  Display(WorkBuffer);
+					  wsprintf(WorkBuffer, "Address Type: %d, length %d\r\n", pHostInfo-&gt;h_addrtype, pHostInfo-&gt;h_length);
+					  Display(WorkBuffer);
+
+					  /* copy the IP address */
+					  memcpy(&amp;HostIp, pHostInfo-&gt;h_addr, 4);
+					  wsprintf(WorkBuffer, "Primary IP  : %s\r\n", inet_ntoa(HostIp));
+					  wsprintf(Config.ServerIp, "%s", inet_ntoa(HostIp));
+					  Display(WorkBuffer);
+
+					  /* now we make a connection */
+					  ConnectToServer(hwnd);
+				  }
+				else Display("An error occurred during host lookup.\r\n");
+				break;
+
+			 case IMSG_NETIO:
+				switch (WSAGETSELECTEVENT(lParam))
+				  {
+					  case FD_CONNECT:
+						 Display("Connection to POP port established.\r\n");
+						 State = POP_LOGIN;
+						 break;
+
+					  case FD_READ:
+						 Bytes = recv((SOCKET) wParam, IOBuffer, 1024, 0);
+						 if (State == POP_XFER)
+							SaveToFile((SOCKET) wParam, Bytes);
+						 else
+							ProcBuffer((SOCKET) wParam, Bytes);
+						 break;
+
+					  case FD_CLOSE:
+						 closesocket((SOCKET) wParam);
+						 break;
+				  }
+				break;
+		 }
+	  return DefWindowProc(hwnd, message, wParam, lParam);
+  }
+
+void SaveToFile(SOCKET Socket, int Bytes)
+  {
+	  BOOL EndOfMessage = FALSE;
+
+	  IOBuffer[Bytes] = '\0';
+	  if (strlen(IOBuffer) &gt;= 5)
+		 {
+			 char* ptr = &amp;IOBuffer[strlen(IOBuffer) - 5];
+			 if (strcmp(ptr, "\r\n.\r\n") == 0)
+				{
+					EndOfMessage = TRUE;
+					strcpy(ptr, "");
+				}
+		 }
+
+	  wBytesWritten += _lwrite(MsgFile, IOBuffer, strlen(IOBuffer));
+
+	  if (EndOfMessage)
+		 {
+			 _lclose(MsgFile);
+			 MsgCount++;
+			 State = POP_DELE;
+			 Send(Socket, POP_DELE, MsgNumber);
+		 }
+  }
+
+void ProcBuffer(SOCKET Socket, int Bytes)
+  {
+	  char Token[5], *ptr;
+	  char WorkBuffer[30], TempFile[144];
+	  struct time t;
+
+	  IOBuffer[Bytes] = '\0';
+	  Display(IOBuffer);
+
+	  strncpy(Token, IOBuffer, 4);
+	  Token[4] = '\0'; /* old habit */
+
+	  switch (State)
+		 {
+			 case POP_LOGIN:
+				Send(Socket, POP_USER, Config.Pop3Name);
+				State = POP_PASS;
+				break;
+
+			 case POP_PASS:
+				Send(Socket, POP_PASS, Config.Pop3Pass);
+				State = POP_VRFY;
+				break;
+
+			 case POP_VRFY:
+				if (strcmpi(Token, "+OK ") == 0)
+				  {
+					  Send(Socket, POP_STAT);
+					  State = POP_STAT;
+				  }
+				else
+				  {
+					  Display("The server refused your name/password.");
+					  closesocket(Socket);
+				  }
+				break;
+
+			 case POP_STAT:
+				strcpy(WorkBuffer, (char*)&amp;IOBuffer[4]);
+				ptr = strstr(WorkBuffer, " ");
+				if (ptr != NULL) strcpy(ptr, "");
+				TotalMsgs = atoi(WorkBuffer);
+
+				if (TotalMsgs &gt;= 1)
+				  {
+					  MsgNumber = 1;
+					  State = POP_RETR;
+                 Send(Socket, POP_RETR, MsgNumber);
+				  }
+				else
+				  {
+					  State = POP_QUIT;
+					  Send(Socket, POP_QUIT);
+				  }
+				break;
+
+			 case POP_DELE:
+				if (++MsgNumber &gt; TotalMsgs)
+				  {
+					  State = POP_QUIT;
+					  Send(Socket, POP_QUIT);
+				  }
+				else
+				  {
+					  State = POP_RETR;
+					  Send(Socket, POP_RETR, MsgNumber);
+				  }
+				break;
+
+			 case POP_RETR:
+				gettime(&amp;t);
+				sprintf(TempFile, "%s%02d%02d%02d.MSG", Config.MailDir, t.ti_hour, t.ti_min, t.ti_sec);
+				MsgFile = _lcreat(TempFile, 0);
+				_
+				State = POP_XFER;
+				break;
+		 }
+  }
+
+void Send(SOCKET Socket, int ResourceId, ...)
+  {
+	  va_list ArgPtr;
+	  char ResourceString[255], WorkBuffer[255];
+
+	  va_start(ArgPtr, ResourceId);
+	  LoadString(hInst, ResourceId, ResourceString, 255);
+	  vsprintf(WorkBuffer, ResourceString, ArgPtr);
+	  va_end(ArgPtr);
+
+	  wBytesSent += send(Socket, WorkBuffer, strlen(WorkBuffer), 0);
+
+	  if (State != POP_PASS)
+		 Display(WorkBuffer);
+	  else
+		 Display("PASS ********\r\n");
+  }
+</pre>
+</body></html>

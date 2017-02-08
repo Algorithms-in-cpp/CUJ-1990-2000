@@ -1,0 +1,180 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>November 1998/A Class Hierarchy for Data Acquisition</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocnov.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Scientific/Numerical</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">A Class Hierarchy for Data Acquisition</FONT></H3>
+<H3 ALIGN="center"><FONT COLOR="#800000">Gualtiero Chiaia and Marco Marcon</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>Acquiring data and controlling devices has never been simpler, thanks to a wide range of off-the-shelf PC control cards. But it can be made more uniform and device independent.</p>
+</BLOCKQUOTE>
+<HR>
+<BLOCKQUOTE>
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>PCs now control practically all the steps in a scientific experiment, not only in the final analysis of the results but also during data acquisition. To acquire data, the PC needs a communication link between the hardware and the outside world. This is commonly achieved by data acquisition boards, which perform actions such as:</p>
+
+<UL><LI>reading a voltage from a physical device (perhaps a thermocouple voltage for temperature monitoring)</LI>
+    <LI>setting voltages for analog peripherals</LI>
+    <LI>synchronizing the process with precise clock signals</LI></UL>
+
+<p>and so on.</p>
+
+<p>More generally, data acquisition programs need a wide pool of devices at the same time. A typical configuration might use, for example, ten analog outputs (AO), four analog inputs (AI), six counters (CNT), one clock (CLK), and two oscillators (OSC).</p>
+<p>From the programming point of view, this traditionally implies the inclusion of card-control functions from commercial libraries, which are delivered together with the PC cards. The large availability of I/O cards on the market, and the lack of commonly adopted standard for their instruction sets, results in a strong coupling between the hardware and the implementation for a given experiment. In other words, the software application (client) and the commercial libraries are so strongly interlinked that code maintenance becomes very demanding. The software usually outlasts the hardware, even though the change of an I/O card requires deep modifications to the original code.</p>
+<p>Given these considerations, our effort has gone into decoupling the interface between the application and the hardware, and making it more portable and user-friendly, in an OOP fashion.</p>
+
+<h4><FONT COLOR="#000080">Wrapper Classes</FONT></H4>
+
+<p>Since the very beginning we had clear in mind that an OO approach had all the answers that we were looking for:</p>
+<p>polymorphism + inheritance +  information hiding = portability + de-coupling +  user-friendliness</p>
+<p>Polymorphism allows us to talk to an I/O device in a language that is not hardware dependent. For example, you can tell a certain AO to produce a voltage with no regard for its low level instructions, thus increasing the software portability. Inheritance permits a natural abstraction of the interface between the application code and the real world, enhancing their de-coupling. User-friendliness is further boosted by hiding all the low-level information.</p>
+<p>To achieve these goals, we have designed a hierarchy of wrapper classes, structured in three levels of decreasing abstraction. The lowest level wraps the instruction set of the specific I/O cards, providing the hardware interface, while the uppermost level forms the software interface to the client application. We believe that this hierarchy constitutes a useful framework for programming portable data-acquisition codes, working on platforms with different acquisition hardware. Our specific hierarchy is based on Burr-Brown data acquisition cards, and on the device drivers purchased from Intelligent-Instrumentation, which is a subsidiary of Burr-Brown Corporation.</p>
+<p>To build this hierarchy, we have tried to outline the differences and similarities of the I/O devices, as shown in <A HREF="fig1.htm">Figure 1</A>. At the base of the class tree (topmost level) lies class <B>Block</B>, which encapsulates the information used to identify and address a single device out of a pool of several. <B>Block</B> acts as the base class for six derived abstract classes, which represent the different types of devices: <B>VAO</B> (Virtual AO), <B>VAI</B> (Virtual AI), <B>VCNT</B> (Virtual CNT), <B>VMCNT</B> (Virtual Multi-CNT), <B>VCLK</B> (Virtual CLK), and <B>VOSC</B> (Virtual OSC). These abstract classes supply the interface to the lowest-level derived classes, which correspond to the real devices. For example, class <B>AO_PCI200006M</B> encapsulates the functionality of a single AO port on a PCI200006M Burr-Brown commercial module.</p>
+<p>From <B>VAO</B> it is furthermore possible to derive other <B>AO</B> classes for other boards on the market. Each pool of devices, which represents all the I/O ports provided by a commercial board, is handled by a Device Container Class (<B>DCC</B>), derived from the abstract class <B>VCard</B> (<A HREF="list1.htm">Listing 1</A>). For example <B>BB_PCI20000</B> is the DCC for the Burr-Brown board. <B>VCard</B> hosts all the common instructions for the DCCs, implementing them as pure virtual functions. In this way it contains all the behaviours that characterise the abstraction of an acquisition card, in an OOP style. For example:</p>
+
+<pre>
+virtual void
+CreateConfig() = 0; //file vcard.h
+
+virtual long
+ReadCounter(int i) = 0;
+
+virtual void
+WriteAO(int i, float f) = 0;
+</pre>
+
+<p>These functions are then overridden in each DCC, where they are differently implemented according to the specific actions of a given card. Polymorphic behaviour is achieved by dynamically allocating a <B>VCard</B> object with a DCC type:</p>
+
+<pre>
+VCard *board1,
+      *board2; //file demo.cpp
+board1 = new BB_PCI20000;
+board2 = new Wave_device;
+</pre>
+
+<p>and accessing the functions dynamically:</p>
+
+<pre>
+board1-&gt;CreateConfig();//file demo.cpp
+board2-&gt;CreateConfig();
+</pre>
+
+<p>The first instruction calls the version of <B>CreateConfig</B> that is specific for the Burr-Brown DCC, while the second one calls the <B>Wave_device</B> implementation. An important aspect of polymorphism is the need for a virtual base class destructor. For example, when deleting the instance <B>board1</B> of the base class <B>VCard</B>, the destructor of <B>BB_PCI20000</B> is called first.</p>
+<p>All DCCs host six STL vectors: one of pointers to <B>VAO</B> devices, one of pointers to <B>VAI</B> devices, and so on. Each pointer to a virtual device is allocated with a hardware-specific derived class:</p>
+
+<pre>
+vector&lt;VAO*&gt;
+    AnalogOutput; //file vcard.h
+.....
+//file burrb.cpp
+VAO *aop = new AO_PCI20006M(i,j,c);
+
+AnalogOutput.push_back(aop);
+</pre>
+
+<p>where <B>i</B>, <B>j</B>, and <B>c</B> hold the address of this device.</p>
+<p>The class hierarchy supports C++ exception handling, in such a way that every low-level class (e.g., <B>AO_PCI20006M</B>) can throw an exception of type <B>CardError</B>:</p>
+
+<pre>
+class CardError //file vmod.h
+{
+public:
+  CardError(string message);
+  string RetMsg();
+  private:
+  string msg;
+};
+</pre>
+
+<p>It is then responsibility of the client software to catch the exception in the correct way. For example:</p>
+
+<pre>
+//file AO_BB.cpp:
+void AO_PCI20006M::Write(float val)
+{.....
+  if ((val&gt;max)||(val&lt;min))
+    throw(
+      CardError(
+        "this value is out of range"));
+.....}
+.....
+try   //file demo.cpp
+{
+  board1-&gt;WriteAO(AODev,volt);
+//AODev = index of the device
+}
+catch(CardError Error)
+{
+  ....
+}
+</pre>
+
+<p>In this situation, an error of type "out of range" is thrown from the Write function of a Burr-Brown AO device when <B>val</B> goes out of range. This error may occur in the <B>try</B> section of the application <B>demo.cpp</B>, when writing a voltage on the device <B>AODev</B> resident on board1. In that case the client software should specify, in the <B>catch</B> section, the actions to be performed.</p>
+<p>To better understand the use of this class hierarchy, it is interesting to analyse schematically the steps needed to modify the client software in order to control a new I/O card. Let us suppose that this card is produced by company XX (see <A HREF="fig1.htm">Figure 1</A>, green tags), and that it provides four AO, two AI, and one OSC:</p>
+
+<UL><p>1)  Declare and define a new DCC, e.g. called <B>XX</B>, derived from <B>VCard</B>.<br>
+       2)  Declare and define device-specific classes derived from <B>VAO</B>, <B>VAI</B>, and <B>VOSC</B>.<br>
+       3)  In the client software, declare a pointer to <B>VCard</B> allocated with type <B>XX</B>.<br>
+       4)  Use <B>VCard</B> functions (e.g., <B>CreateConfig</B>).<br>
+       5)  <B>XX::CreateConfig</B> will automatically fill <B>vector&lt;VAO*&gt;</B> with four new elements.</p></UL>
+
+<p>And so on.</p>
+<p>To give an example, we implemented two oscillators using the stereo output (Left/Right) of a common Sound Card. An oscillator produces a periodic analog signal (e.g., a sinusoidal wave) with a predefined amplitude, frequency, and phase. Besides the most typical applications, like time synchronisation, signal modulation, and calibration of audio instrumentation, these devices offer an easy and low-budget desktop wave generator. Furthermore, with simple AC-DC rectification, they can be employed as two extra AO, available to a large community of PC owners.</p>
+<p>To use our class hierarchy to implement two oscillators, we have created the DCC class <B>Wave_device</B>, derived from <B>VCard</B>, and the oscillator class <B>OSC_WV</B> derived from the virtual oscillator <B>VOSC</B> (see red tags on <A HREF="fig1.htm">Figure 1</A>). These classes are declared and defined in the files <B>wave.h</B>, <B>wave.cpp</B>, <B>OSC_WV.h</B> and <B>OSC_WV.cpp</B>, available on the <I>CUJ</I> web site (see page 3). You also need to download the file <B>silence.wav</B> containing the information for producing a sine wave, as described in the following section. The client software can now adopt a rather simple syntax to control the Left and Right channels:</p>
+
+<pre>
+//in file demo.cpp
+Vcard *board2;            
+//allocate it with a Sound Card
+board2 = new Wave_device;
+//automatically configure it
+board2-&gt;CreatConfig();    
+board2-&gt;StartOsc(index, type,
+          frequency,phase,amplitude);
+</pre>
+
+<p>where <B>type</B> (set to zero in <B>demo.cpp</B> for a sine wave) could be used to produce non-sinusoidal waves (e.g., square waves), and <B>index</B> is <B>0</B> or 1 for the Left and Right channels, respectively.</p>
+
+<h4><FONT COLOR="#000080">Implementation Details</FONT></H4>
+
+<p>We don't provide the MasterLink library from Intelligent Instrumentationc, which is the driver for the Burr-Brown cards, so the demo file (<B>demo.cpp</B>) cannot be compiled. However, looking at the full source code can help you understand the class hierarchy. In particular, the file <B>demo.cpp</B> is a useful example for showing the syntax used in the client software. This hierarchy (<A HREF="fig1.htm">Figure 1</A>) is implemented in different files, which are organized according to the following table:</p>
+
+<pre>
+Class Name              Header File
+
+VCard                   vcard.h (<A HREF="list1.htm">Listing 1</A>)
+Block, VAO, VAI, VCNT,
+VMCNT, VCLK, VOSC       vmod.h  (<A HREF="list2.htm">Listing 2</A>)
+BB_PCI20000             burrb.h
+Wave_device             wave.h
+AO_PCI20006M            AO_BB.h
+AI_PCI20002M            AI_BB.h
+CNT_PCI20007M,
+MCNT_PCI20007M          CNT_BB.h
+CLK_PCI20007M           CLK_BB.h
+OSC_WV                  OSC_WV.h
+</pre>
+
+<p>We lack the space to show a complete implementation of the hierarchy. Therefore we have chosen two examples. The first implements a wait(time) function that uses the Burr-Brown clocks and counters. The second uses the sound card to implement two oscillators.</p>
+<p>For example 1, member function <B>BB_PCI20000::Wait(int clock, int counter, long timems)</B> is shown in <A HREF="fig2.htm">Figure 2</A>. It overrides the pure virtual function <B>Wait</B> of the <B>VCard</B> base class. As we mentioned earlier, a <B>BB_PCI20000</B> class, deriving from <B>VCard</B>, hosts six vectors, filled with I/O devices (AO, AI, CLK, CNT, MCNT, OSC). To produce a delay, you must combine a CNT from a <B>Counter</B> vector with a CLK from a <B>Clock</B> vector. The counter counts the ticks from the clock. The CLK and the CNT are allocated with Burr-Brown specific classes (<B>CNT_PCI20007M</B> and <B>CLK_PCI20007M</B>), deriving from abstract classes (<B>VCNT</B> and <B>VCLK</B>), deriving from <B>Block</B> (<A HREF="list2.htm">Listing 2</A>).</p>
+<p>The code checks for the existence of the given clock and counter: on error, it throws an exception. Then, it starts a clock with 1 kHz frequency, by calling the <B>Set</B> and <B>Start</B> functions of a CLK. The waiting time in milliseconds (<B>timems</B>) is divided into an integer number of seconds (<B>seconds</B>), plus a remaining number of milliseconds (<B>remainder</B>). This is necessary to avoid counter overflow (65535 = FFFFh). The <B>for</B> loop iterates <B>seconds+1</B> times, spending one second for each step. The final step lasts less than one second (<B>remainder</B>). A CNT element is then set and started. Note that the counter has a dead time before it can be used. The first <B>while</B> loop waits until it is correctly set. The second <B>while</B> loop waits until the counter reading is equal to <B>ms</B> (one second or <B>remainder</B>).</p>
+<p>Sound cards are built to play music. To use them like wave generators, you have to cheat. Make them play a smart <B>.wav</B> file and you will end up with two oscillators, the Left and the Right channels. In example 2, the <B>.wav</B> file (<B>silence.wav</B>) is a stereo file with a sample frequency of 44.1 kHz, containing data for one second of music. This file is played in an infinite loop mode, reproducing a clean sine wave. The amplitude can be chosen in the range of 0-0.75 Volt. The frequency is lower-limited by the high-pass filter of the card output (typically 20 Hz). It is upper-limited by the Nyqvist frequency (22,050 Hz, which is one half of the sample frequency). It is further possible to control the phases of the Left and Right channels to achieve fixed phase shifts between them.</p>
+<p><A HREF="fig3.htm">Figure 3</A> describes the code for setting and starting an oscillator. Among the headers to be included is <B>mmsystem.h</B>, which is provided with the Borland C++ environment for multi-media functionality.</p>
+<p>The <B>wave</B> array stores the data to be played. Function <B>OSC_WV::Start</B> calls the multi-media library function <B>sndPlaySound</B>, which plays the file (wave) contained in memory in an infinite loop. <B>OSC_WV::Set</B> writes to the wave array, after some parameters are checked. <B>RetChn</B> is a function inherited from <B>Block</B> which returns zero for the Left channel and one for the Right. Only the even words (1 word == 2 bytes) of the array are used for the Left channel, starting from byte 44 (word 22), while odd words are used for the Right, starting from byte 46 (word 23). Therefore a wave file is an alternated sequence of Left and Right information. The first 44 bytes contain information on the sound (sample frequency, stereo or mono mode, and so on) which are required from the multi-media functions.</p>
+
+<p><i>Gualtiero Chiaia has a degree in Nuclear Engineering and a Ph.D. in Physics from Politecnico di Milano. He has done research on electron spectroscopy, electronic structure of materials, and material and surface science. He has been interested in computer programming since 1980. He may be reached at <B>gualtiero.chiaia@polimi.it</B>.</i></p>
+<p><i>Marco Marcon is an undergraduate student in Electronic Engineering at Politecnico di Milano. He has been programming in C since he was 18, and published a couple of articles in the Italian magazine <I>MC microcomputer.</I> He may be reached at <B>Marco_Marcon@rcm.inet.it</B>.</i></p>
+
+<h4><a href="../../../source/1998/nov98/chiaia.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

@@ -1,0 +1,112 @@
+<HTML>   
+     <HEAD>
+<TITLE>July 1999/Standard C/C++</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocjul.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Standard C/C++: A Better Red-Black Tree</FONT></H2>
+<H2 ALIGN="center"><FONT COLOR="#800000">P. J. Plauger</FONT></H3>
+
+<BLOCKQUOTE>
+<p>The C++ Standard is silent about issues such as thread safety and DLL safety, but customers and reviewers certainly aren't.</p>
+</BLOCKQUOTE>
+
+<hr>
+<BLOCKQUOTE>
+
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>This was going to be an easy installment to write. My original intent was to follow up last month's installment with more of the same. Last month, I described the improvements I've made over the years to template class <B>deque</B>, one of the more complex container classes in the Standard Template Library (STL). (See "Standard C/C++: A Better Deque," <I>CUJ,</I> June 1999.) The obvious next step was to describe the other really complex STL container classes. They happen to be the template classes <B>map</B>, <B>multimap</B>, <B>set</B>, and <B>multiset</B>.</p>
+<p>All of these container classes control sequences that are kept in order. You use them when you need to retrieve elements of the sequence using some search key &#151; and you need to be sure that even a very large controlled sequence has fast worst-case behavior for searches, insertions, and erasures (deletions). STL traditionally implements all of these container classes in terms of an underlying red-black tree, a type of ordered binary tree with all of these desirable properties. Its major undesirable property, at least to us implementors, is that it's extremely hard to code correctly and robustly. But once you get it right, a red-black tree is a tool every bit as valuable as a well engineered deque.</p>
+<p>So a week or so ago, I sat down to describe the recent improvements I've made to template class <B>_Tree</B>, my version of a red-black tree container. I was feeling slightly smug, having just begun shipping a new code release with those improvements. You can imagine my surprise when I got a bug report from the folks at Microsoft. Seems that good old <B>_Tree</B> wasn't as solid as I thought. For a large enough tree, with a sufficiently nasty pattern of insertions and erasures, you could get it to lose track of tree nodes from time to time.</p>
+<p>I quickly found the problem, or so I thought. I was able to eliminate the failures and still avoid really understanding the twisty code I had modeled after the original Hewlett-Packard implementation. Then Microsoft sent me a fresh set of failures. The same test program was still breaking trees. The only progress was that trees had to be much bigger now before they failed.</p>
+<p>The inescapable truth was that I had to really understand how red-black trees work. Ignorance was no longer a luxury. A week of unscheduled bug chasing later, I now believe that I understand red-black trees properly for the first time in my life. I also want to believe that the code is now pretty solid. But I've left in a few guard rails, just in case.</p>
+
+<h4><FONT COLOR="#000080">Balanced Binary Trees</FONT></H4>
+
+<p>The basic idea behind a tree data structure is obvious enough. It's good old "divide and conquer" at work. Assume every element you want to store contains a key of type <B>Key</B> that defines <B>operator&lt;(const Key&amp;)</B>. You can define a tree node, of type <B>Node</B> that looks something like:</p>
+
+<pre>
+class Node {
+   class Node *parent, *left, *right;
+   Key key;
+   ..... };
+</pre>
+
+<p>A <B>Node</B> object <B>x</B> is the basic building block of a binary tree. Each node has a single parent and up to two children. If every key in the controlled sequence is unique, the tree is ordered by two rules:</p>
+<UL><p>1)  If <B>x.left</B> is not a null pointer, then <B>x.left-&gt;key &lt; x.key</B>.</p>
+<p>2)  If <B>x.right</B> is not a null pointer, then <B>x.key &lt; x.right-&gt;key</B>.</p></UL>
+<p>An STL <B>set</B> container obeys these rules. An STL <B>map</B> differs in one small way. Each node stores additional data, besides the key, that does not participate in the ordering comparisons. That's what I suggest by the ellipsis in the declaration of <B>Node</B>, above, without going into all the gory details here.</p>
+<p>If not every key in the controlled sequence is unique, the tree is ordered by two slightly different rules:</p>
+<UL><p>1)  If <B>x.left</B> is not a null pointer, then <B>!(x.key &lt; x.left-&gt;key)</B>.</p>
+<p>2)  If <B>x.right</B> is not a null pointer, then <B>!(x.right-&gt;key &lt; x.key)</B>.</p></UL>
+<p>An STL <B>multiset</B> container obeys these rules. And an STL <B>multimap</B>, as you might guess, is just a <B>multiset</B> with the ability to store additional data besides the key.</p>
+<p>You can visit the elements of an ordered tree in increasing order, starting at the root of the tree, by recursively visiting the left subtree of each node, followed by the node itself, followed by its right subtree. More important, you can find a given search key &#151; or where it belongs in the tree &#151; by climbing down the tree and comparing the search key with the key value stored at each node. Each comparison eliminates a whole subtree from consideration.</p>
+<p>If the tree is long and skinny, this doesn't win you much. Say every right subtree consists of a single node. The left subtree always contains all the remaining elements. Then you've simply found a more expensive way to implement a linked list. Searches have linear time complexity &#151; the mean time to lookup an element is directly proportional to N, the number of elements in the controlled sequence. Specifically, it is N/2 for a random distribution of keys. And worst-case lookup time is N. Yuk.</p>
+<p>But let's say you can contrive to keep the tree short and bushy. In the case of a perfectly "balanced" tree, the difference in path length from root to any two leaves is never greater than one link. (If the tree holds 2<SUP>N-1</SUP> nodes, all paths should have the same length.) For such a tree, the longest path is essentially log<SUB>2</SUB> N. Time complexity for lookups is thus logarithmic. That means you can find that one-in-a-million search keys with roughly 20 comparisons. Even better, if the mean number of comparisons is 19, the worst case is 20. Much better.</p>
+<p>So the trick is to keep the tree in balance as it grows and shrinks. Otherwise, you lose the payoff in improved time complexity. Every time you hang a new node at the bottom of the tree, you have to rebalance the tree. That means working your way up from the bottom and reconsidering each node on the path to the top. If the longest path lengths of each pair of two subtrees now differ by more than one, you have to rearrange a few nearby nodes to restore the balance.</p>
+<p>Fortunately, there are multiple ways to represent any given sequence. You have some useful latitude in rewriting trees. It is a nontrivial, but manageable, exercise to implement a balanced binary tree. The interesting part is the two functions that insert and erase single nodes in the tree. The time complexity in both cases is logarithmic, just as for lookups. What's regrettable is that you have to climb to the top of the tree on every insert and erase, just to keep the tree perfectly balanced.</p>
+
+<h4><FONT COLOR="#000080">A Little Imbalance</FONT></H4>
+
+<p>Wouldn't it be nice if you could keep a tree <I>mostly</I> in balance, without having to do the job perfectly? You could probably speed up both insertions and erasures if you could cut yourself a little slack. Put proper limits on the permitted slack and you can still avoid sacrificing that nice logarithmic time complexity. It turns out that you have several options in this regard, with the usual tradeoffs between mean cost of operations, code complexity, and guaranteed worst-case behavior.</p>
+<p>Actually, you have gazillions of options. The literature on ordered trees is incredibly broad and deep. I'm only hitting a few high spots in this presentation. See the references at the end for a bit more reading on the topic of ordered trees.</p>
+<p>First, you can do nothing. Most trees stay remarkably well balanced however much you neglect them. You can eliminate all the overhead of maintaining a balanced tree and luck out almost all the time. But we have already discussed how bad the worst case can be. Unbalanced trees may be fine for custom code, but they don't make for the kind of reusable tools for which STL has grown famous.</p>
+<p>You can also allow just a little bit of imbalance on a per-subtree basis. An AVL tree is a balanced binary tree that allows an imbalance of -1 to +1 links, between left and right sub-subtrees, for each subtree. The cumulative cost is to make trees a bit higher, on average, but not all that much. The payoff is that rebalancing is rather faster, on average. You can usually soak up the imbalance caused by an erasure without climbing clear to the top of the tree.</p>
+<p>Unfortunately, you need to keep track of path lengths to know how to rebalance at each node. At the very least, you have to store in each node a three-state path difference between the two subtrees. Legitimate values for an AVL subtree are -1, 0, and +1. A two-bit code will do the job, but those two bits usually cost you one to four bytes of storage in each node, given the padding constraints in modern computers.</p>
+<p>The original implementation of STL from Hewlett-Packard uses an even more sophisticated variant, the red-black tree. Essentially all existing implementations of STL are based on the H-P code, to varying degrees. The C++ Standard does not mandate this implementation, but its time-complexity requirements are certainly met by red-black trees. So that's the topic of the remainder of this discussion.</p>
+<p>I'll begin with the usual description. A red-black tree is a balanced tree that has three kinds of nodes. The simplest flavor is our old friend, the binary node. It stores one element and designates up to two children. But the tree can also have a node that holds two elements and designates three children. The middle subtree, if present, has elements ordered between the left and right elements in the node. Finally, the tree can have a node that holds three elements and designates four children. I'll let you guess the constraints on the middle two children.</p>
+<p>The slack in a red-black tree lies in these larger nodes. Inserting an element is easy if the leaf it abuts has room for more. Just change the leaf to a bigger flavor of node. Only when the insertion point is full do you have to work harder. You make two nodes, each with two elements, and rebalance the tree. Similarly, erasing an element requires rebalancing only when a one-element node evaporates.</p>
+<p>Implementing this description directly in C++ code is graceless, however. You have to declare three different kinds of node classes, or leave lots of wasted space for unused elements if you try to get by with only one node class. Binary trees are so much more elegant.</p>
+<p>Of course, you can represent those three different flavors of nodes as little bitty binary trees in their own right. The various flavors have zero, one, or two children. Stitch those little trees into the links between the fatter nodes and you have something that looks for all the world like a single binary tree once again. Certainly, you can search such a tree as though it were just a vanilla binary tree. You need to distinguish links inside a node from links between nodes only when you have to insert or erase an element.</p>
+<p>And that's where the eponymous red and black colors come in. Paint all the links inside a big node red and all the links between big nodes black. Actually, you paint the binary node itself. Each link points to just one node, and nodes contain all the storage for a tree. Instead of a two-bit balance count for an AVL tree, you need a one-bit color designator. But that's all the extra information you need to store to keep track of the slack offered by red-black trees.</p>
+<p>I tried for years to understand red-black trees in terms of this description, with little success. Each time I studied the code, I understood it a bit better and cleaned it up a bit more. But each time I stopped short of complete understanding. It was only when my faith was shattered in the correctness of the code that I found a way to view it that makes simple sense to me.</p>
+<p>Here's another way to put slack in a balanced binary tree. Let's say the black links represent the proper tree and the red links are poetic license. You want to allow an imbalance of up to two to one in subtree heights, but no more. So you impose two rules on making links:</p>
+<UL><p>1)  Adding a red link does not change the official height of a subtree.</p>
+<p>2)  You can't have two red links in a row.</p></UL>
+<p>The second rule is what keeps the tree from getting too far out of balance. Best I can tell, the resulting family of trees is indistinguishable from the family of red-black trees described above.</p>
+<p>The advantage of this description is that it lets you forget about those ghostly multi-element big nodes that aren't really there. Instead, insertions and erasures are all about preserving invariants on subtree heights, just as with AVL trees. Only the rules are changed slightly, to lower the mean cost of insertions and erasures. Note that the time complexity for all operations remains logarithmic. The payoff is that you perform slightly more complex rebalancing operations rather less often, for a net savings of execution time. And you still maintain good bounds on worst-case times for various operations on trees.</p>
+
+<h4><FONT COLOR="#000080">Implementation History</FONT></H4>
+
+<p>Now you know most of what I know about the anatomy of red-black trees. Here's how the actual implementations have evolved over the years.</p>
+<p>So far, I've talked glibly about null pointers where child subtrees are absent. That's certainly one way of representing a missing subtree, but it's not necessarily the best way. We have to implement two rather tricky algorithms, one for inserting an element and one for erasing an element. It's hard enough to write that code, get it right, make it efficient, and keep it at all readable. Doctor it up with tests for null pointers and all those goals are threatened.</p>
+<p>An old trick for searching a sequence is to provide a backstop. You don't need a special test for the end of the sequence if you can be sure the search will always stop before running off the end. Place a value at the end of the sequence that will satisfy the search. Then just let 'er rip.</p>
+<p>The original Hewlett-Packard implementation of red-black trees uses a similar ploy. It makes use of a single "nil" node to tie off all the loose ends at the frontier of the tree. The nil node is painted black, so it's always permissible to link to it under the coloring rules I gave above. Sometimes you have to test whether a black node you visit is the nil node, but in a surprising number of cases you don't have to. The code just does the right thing, with rather less clutter of special cases.</p>
+<p>But then matters got more complex. In the process of standardization, STL acquired some creatures called "allocators." (See "Standard C/C++: Allocators," <I>CUJ,</I> June 1996.) Each container is constructed with an allocator object that mediates the allocation and freeing of storage for elements of the controlled sequence. The H-P code could simply allocate a nil node, for each specialization of the tree class, and save a pointer to it in a static object. All objects of the same tree class could share the same nil node. But such sharing is more problematic when different objects buy and sell storage through different allocators. The C++ Standard is not at all clear about the status of allocated objects that outlive their allocators.</p>
+<p>Two other real-world issues also arise, although they are not covered by the C++ Standard. In a multithreading environment, you have to be cautious about sharing static objects. The simple H-P code needs thread locks, reference counts, and other complex machinery that can really slow down otherwise simple operations on trees. The rewards of sharing a nil node become less attractive. And then there are the problems introduced by DLLs. Code placed in a DLL has serious problems with sharing static objects.</p>
+<p>For this and other reasons, the STL folks at Hewlett-Packard gave up on the nil node. They introduced null pointers in its place, with all the attendant extra complexity I railed about above. The revised code is a bit overcautious &#151; it sometimes tests for nil nodes where they cannot occur. While such caution may be generally laudable, it is inconsistently applied.</p>
+<p>I was less willing to give up the benefits of the nil node. When I first learned of the problems with multithreading and DLLs, I came up with a quick fix. I allocated a separate nil node for each tree object. The improved speed and flexibility more than makes up for the extra cost in storage. You can still see the revised code for Visual C++ at:</p>
+
+<pre>
+http://www.dinkumware.com/vc_fixes.html
+</pre>
+
+<p>But I was determined to do better. Each tree object has a dummy head node anyway. It's a convenient place to store a pointer to the root of the tree and to the smallest and largest elements in the tree. It seemed to me that it should also do double duty as the nil node. And indeed, with just a bit of finagling, I was able to make it do so.</p>
+<p>The irony is that this final change was what made visible the bugs I mentioned at the outset. In the past, the rebalancing code stumbled about occasionally and left the tree not quite balanced. But now doing bad things to a nil node meant doing bad things to the head node. And that's how I came to spend a week or so learning how red-black trees really work.</p>
+<h4><FONT COLOR="#000080">Latest and Greatest</FONT></H4>
+
+<p><a href="fig1.htm">Figure 1</a> shows the current version of the code that inserts a node. It is largely unchanged from the past, but I show it here for completeness. Basically, it climbs down the tree until it finds the proper node <B>_Y</B> to attach the new node as a leaf. If <B>_Addleft</B> is <B>true</B>, the leaf attaches as the left child of <B>_Y</B>; otherwise it attaches as the right child. Here, <B>_Pairib</B> is just a type definition for <B>pair&lt;iterator, bool&gt;</B>.</p>
+<p><a href="fig2.htm">Figure 2</a> shows the protected member function <B>_Insert</B> that does the actual insertion. The code optimistically adds the new node with a red link. If the link above is black, the job is done. Otherwise, the code works its way up the tree until it finds a place where it can correct for the introduction of an extra black link. Two versions of the same code occur in mirror image. Understanding either half should tell you how the other half lives and works.</p>
+<p>All rearrangements are performed by calls to the protected member functions <B>_Lrotate(_X)</B> and <B>_Rrotate(_X)</B>. The former essentially picks up the right subtree of <B>_X</B> and hangs it in place of <B>_X</B>, letting <B>_X</B> dangle as its left subtree. (Note that the ordering of the tree is preserved with such a transformation.) The latter is its mirror image, promoting the left subtree of <B>_X</B> in its place.</p>
+<p><a href="fig3.htm">Figure 3</a> shows the much more complex <B>erase</B> member function. If it is not lucky enough to be asked to erase a leaf, it replaces the erased element with the next element in sequence &#151; which must itself be a leaf &#151; and erases that instead. If the erased leaf had a red link, the job is done. Otherwise, the code must correct for the removal of a black link. Once again, two versions of the same code occur in mirror image. But each half is rather harder to understand.</p>
+<p>The essential strategy is to look for an opportunity to turn a red link into a black one. Until that can happen, the code has to keep climbing the tree. With each climb, it has to deal with the other subtree it passes by. How do you introduce a black link above a node, to fix up the subtree with the erasure, without messing up the other subtree at that node?</p>
+<p>The operations you have to perform are really no harder than solving a Rubik's Cube. And no easier to capture in code. I'd describe it in greater detail, but I'm out of space here. Besides, I'm still trying to find a napkin in the house that doesn't have little binary trees drawn all over it. Enjoy.</p>
+
+<h4><FONT COLOR="#000080">References</FONT></H4>
+
+<p>[1]  Donald E. Knuth. <I>The Art of Computer Programming, vol.3</I> (Addison-Wesley, 1973 &#151; second edition, 1998). More than you ever wanted to know about sorting and searching.</p>
+<p>[2]  G.M. Adel'son-Vel'skii and E.M. Landis. <I>Soviet Math.</I> 3, pp. 1259-1263, 1962. The original English description of AVL trees.</p>
+<p>[3]  Mark Nelson. <I>C++ Programmer's Guide to the Standard Template Library</I> (IDG Books, 1995). Contains a reasonably readable description of red-black trees.</p>
+
+<p><i>P.J. Plauger is Senior Editor of <I>C/C++ Users Journal</I> and President of Dinkumware, Ltd. He is the author of the Standard C++ Library shipped with Microsoft's Visual C++, v5.0. For eight years, he served as convener of the ISO C standards committee, WG14. He remains active on the C++ committee, J16. His latest books are <I>The Draft Standard C++ Library</I>, <I>Programming on Purpose</I> (three volumes), and <I>Standard C</I> (with Jim Brodie), all published by Prentice-Hall. You can reach him at <B>pjp@plauger.com</B>.</i></p>
+
+
+<h4><a href="../../../source/1999/jul99/plauger.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

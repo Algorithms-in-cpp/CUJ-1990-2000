@@ -1,0 +1,468 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>August 1997/A Portable Multithreading Framework</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><A href="../tocaug.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          <FONT COLOR="#FF0000">Features</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">A Portable Multithreading
+          Framework</FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">Panos Kougiouris and Marco
+          Framba</FONT></H3>
+          
+          <BLOCKQUOTE>
+               
+               <P>Few standards exist for writing multithreaded code, so it's
+                    important to hide the parts that must change between
+                    systems.</P></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <p>As multi-processor computers become more commonplace, so does
+                    the need for software that can take advantage of these
+                    machines. Multithreading supplies one half of the software
+                    solution. The other half is supplied by synchronization
+                    primitives such as mutexes, conditions, etc., which enable
+                    the multiple threads to be synchronized.</p>
+               
+               <p> Synchronization is an oftneglected
+                    part of multithreading, but writing correct multithreaded
+                    programs without a good understanding of these primitives is
+                    impossible. Therefore, if you have never had exposure to
+                    these primitives, we highly recommend skimming through some
+                    books on multithreading (see bibliography). This article is
+                    too short to substitute for such a book; rather, we focus on
+                    one major issue with respect to synchronization primitives
+                    &#151; that they are very operating-system specific. Most of the
+                    multithreading books use one operating system to demonstrate
+                    their concepts and to provide a reality check. But many of
+                    us work for companies that ask for software that seamlessly
+                    and flawlessly runs on multiple platforms. In this article,
+                    we present a C++ framework for multithreading with
+                    implementations for both POSIX and Windows NT 4.0 [<A href="#NOTE1">1</a>]
+.</p>
+               
+               <h4><FONT COLOR="#000080">MT Primitives in
+               POSIX and Win32</FONT></H4>
+               
+               <p>The POSIX standard [<A href="#NOTE2">2</a>]
+
+                    supports two main synchronization primitives: the mutex and
+                    the condition. The mutex is a very simple primitive that
+                    ensures mutual exclusion. Using a mutex, multiple threads
+                    can protect one another while they modify shared data.
+                    </p>
+               
+               <p> The condition variable enables
+                    threads to inform each other of some condition that exists
+                    in the program. An example of its use is the
+                    Producer/Consumer model, in which a producer thread notifies
+                    a consumer thread that goods are available. </p>
+               
+               <p> Win32 provides a lot more primitives:
+                    CriticalRegion, Mutex, Event, and Semaphore are the main
+                    ones. These primitives are also better integrated with the
+                    rest of the operating system APIs than the POSIX primitives.
+                    </p>
+               
+               <p> In addition to the above primitives,
+                    NT 4.0 adds a number of new APIs, such as
+                    InterlockedDecrement and InterlockedExchange. These APIs
+                    bring the raw power of the CPU instructions to the
+                    programmer in a machine-independent fashion. </p>
+               
+               <p> One of the criticisms of the Win32
+                    API was that it provided no interface to atomically signal
+                    one object and wait on another. NT 4.0 introduced the
+                    SignalObjectAndWait API, which finally makes this possible.</p>
+               
+               <h4><FONT COLOR="#000080">The Multithreading
+               Framework</FONT></H4>
+               
+               <p>Our framework consists of eight
+                    classes. The CThread class, and CRunnable classes handle the
+                    creation of multiple threads. The other classes are CMutex,
+                    CCondition, CRWMutex, CMutexGrabber, CRWMutexGrabber, and
+                    CReferenceCount. These classes take care of synchronization.</p>
+               
+               <h4><FONT COLOR="#000080">The CThread and
+               CRunnable classes</FONT></H4>
+               
+               <p>CThread and CRunnable are shown in
+                    <A href="list1.htm">Listing 1</a>.
+ Using these classes is
+                    simple. You subclass the CRunnable class [<A href="#NOTE3">3</a>]
+.
+                    The only method you have to implement is the virtual run
+                    method. Then create a CThread object, passing your CRunnable
+                    object as an argument. Here is a brief example:</p>
+
+<PRE>
+Class MyRunnable : public CRunnable {
+...
+    void run() {...}
+...
+};
+
+main() {
+...
+    MyRunnable *run = new MyRunnable(...);
+    CThread thr = new CThread(run);
+    thr-&gt;make_runnable();
+...
+}
+</PRE>
+               
+               <p>The thread does not start executing
+                    until you call the make_runnable method. The framework takes
+                    care to cleanup the thread and runnable objects upon
+                    completion. </p>
+               
+               <p> Objects of class CRunnable are
+                    reference counted. If you want a CRunnable object to remain
+                    even after the execution ends you must call the increment
+                    method on it before you call the make_runnable method.
+                    Later, when you are done with the object, call the decrement
+                    method. </p>
+               
+               <p> Having two classes to deal with
+                    multiple threads is a little bit complicated. However, it
+                    allows a clean architectural distinction between the "vehicle"
+                    and the "payload." For instance, in our complete
+                    system, in addition to the CThread class we have a
+                    CScheduler class. The scheduler class represents a pool of
+                    threads. The CScheduler class schedules CRunnable objects.
+                    The developer can write the runnable entity once and then
+                    later on decide if he wants to schedule it in a pool of
+                    threads or run it as an independent system thread. </p>
+               
+               <p> For both NT and POSIX we used the
+                    underlying system threads to implement the CThread class. NT
+                    provides a way to start a thread suspended, so the
+                    implementation is really straightforward. For POSIX, on the
+                    other hand, we had to use a condition (described later) to
+                    implement this method. </p>
+               
+               <p> The CRunnable::wait_for_completion
+                    method allows one thread to wait for the completion of
+                    another thread. An optional argument specifies the number of
+                    milliseconds to wait for completion.</p>
+               
+               <h4><FONT COLOR="#000080">The CMutex class</FONT></H4>
+               
+               <p>The CMutex class (<A href="list1.htm">Listing
+                         1</a>)
+ is used for mutual exclusion. Only one thread at
+                    a time can lock the mutex. Additional threads will be
+                    blocked until the mutex is unlocked. </p>
+               
+               <p> The am_owner method can be used in
+                    assertions, so it provides a great way to ensure that your
+                    program does what you intend. Using am_owner in an assertion
+                    also documents your program for the benefit of future
+                    programmers. </p>
+               
+               <p> Since both POSIX and Win32 support
+                    mutexes, implementing CMutex is straightforward. Although we
+                    could have implemented CMutex as an abstract class and then
+                    implemented the different versions via inheritance, we
+                    decided to avoid the performance penalty of virtual
+                    functions. We opted for the straight "one interface,
+                    two implementations" approach.</p>
+               
+               <h4><FONT COLOR="#000080">The CRWMutex class</FONT></H4>
+               
+               <p>The CRWMutex class (<A href="list1.htm">Listing
+                         1</a>)
+ is also used for mutual exclusion. CRWMutex is
+                    used in those situations where the resource controlled by
+                    the mutex is read more frequently than it is updated. Using
+                    CRWMutex in these cases allows for a higher degree of
+                    concurrency. </p>
+               
+               <p> This mutex can be locked by multiple
+                    readers or by a single writer. Multiple threads can call
+                    rdlock and acquire read access to the resource concurrently.
+                    The class allows only one thread at a time to acquire write
+                    access through the call wrlock. When a writer is active, no
+                    other reader or writer can lock the mutex. </p>
+               
+               <p> If multiple readers acquire the mutex
+                    and there are waiting writers, the implementation blocks new
+                    readers and gives priority to the writers. This prevents
+                    indefinite postponement of waiting writers in case of a
+                    consecutive stream of read requests.</p>
+               
+               <h4><FONT COLOR="#000080">The CMutexGrabber
+               class</FONT></H4>
+               
+               <p>One of the most typical mistakes made
+                    with mutexes appears in the code fragment below:</p>
+
+<PRE>
+void do_work()
+{
+    m_mutex.lock();
+    do_internal_work();
+    m_mutex.unlock();
+}
+</PRE>
+               
+               <p>Everything works fine, until
+                    do_internal_work raises an exception. In this case do_work
+                    exits without unlocking the mutex. The next time a thread
+                    tries to grab the lock we will have a deadlock. (For those
+                    who would rush to judge C++ and exceptions for this
+                    misfortune, consider that you can get into the same
+                    situation with setjmp/longjmp and with gotos.)</p>
+               
+               <p>The complicated solution is to make
+                    sure you catch the exception and unlock the mutex before you
+                    rethrow the exception. Do this only if you want to work
+                    harder. If you want your compiler to do the hard work, or if
+                    you want to take advantage of C++'s power, use the
+                    CMutexGrabber class (<A href="list1.htm">Listing 1</a>)
+.
+                    This class is simply a wrapper of the mutex class. The
+                    constructor locks the mutex  you pass as an argument, and
+                    the destructor unlocks it. In effect, the mutex remains
+                    locked only while the mutex grabber object is in scope. Here
+                    is the previous implementation of do_work modified to use
+                    the grabber class:</p>
+
+<PRE>
+void do_work()
+{
+CmutexGrabber m(m_mutex);
+    do_internal_work();
+}
+</PRE>
+               
+               <p>It's a line smaller and works even in
+                    the case of exceptions [<A href="#NOTE4">4</a>]
+.</p>
+               
+               <p>The CRWMutexGrabber class provides the
+                    same functionality for read/write mutexes.</p>
+               
+               <h4><FONT COLOR="#000080">The CCondition class</FONT></H4>
+               
+               <p>The CCondition class (<A href="list1.htm">Listing
+                         1</a>)
+ is very useful in cases where one thread
+                    completes a task and wants to notify another thread. You
+                    could accomplish the same thing by using a Boolean variable
+                    and having one thread wait in a loop. However, this approach
+                    wastes CPU cycles. In contrast, the condition gives your
+                    thread a place to hang on while waiting for the
+                    notification. </p>
+               
+               <p> The class's more important methods
+                    are shown as follows:</p>
+
+<PRE>
+class CKFEXPORT CCondition {
+public:
+
+  RetValue wait
+    (Mutex, unsigned msecs = Infinity);
+  RetValue signal();
+  RetValue broadcast();
+};
+</PRE>
+               
+               <p>One very important point about
+                    condition variables is that they must always be used along
+                    with a mutex. Always be sure you are holding that mutex
+                    before you call into any of the condition methods. In
+                    addition, some operating systems might wake up your thread
+                    by accident, so it is always a good idea to keep a Boolean
+                    variable around. Here is how to put a thread to sleep:</p>
+
+<PRE>
+bool sleep = true;
+{
+  CMutexGrabber grab(m_mutex);
+  while (sleep)
+    m_condition.wait(mutex, CKFMT::Infitity);
+}
+</PRE>
+               
+               <p>And here is how you wake up one thread
+                    waiting on a condition:</p>
+
+<PRE>
+{
+    CMutexGrabber grab(m_mutex);
+    Sleep = false;
+    m_condition.signal();
+}
+</PRE>
+               
+               <p>The signal method wakes up only one of
+                    the waiting threads. If you want to wake up all the threads
+                    waiting on a condition, call the broadcast method.</p>
+               
+               <h4><FONT COLOR="#000080">The CReferenceCount
+               class</FONT></H4>
+               
+               <p>Memory allocation and deallocation are
+                    the Achilles' heel of dynamic languages like C++. Things get
+                    even more complicated in MT situations where an object can
+                    be passed around from thread to thread. If you control how
+                    this passing around happens you might be able to decide when
+                    it is safe to deallocate the object. However, chances are
+                    that your design is already too complicated and you don't
+                    want to add one more thing to track. </p>
+               
+               <p> Reference counting is a technique
+                    that associates the responsibility of tracking the life
+                    cycle of an object with the object itself. When no one uses
+                    the object any more the object commits suicide. If you are
+                    familiar with COM (Microsoft's Component Object Model) you
+                    have probably already heard of this technique. The
+                    complication is that the object itself cannot know if it is 
+                    referenced unless it is told so. For this reason the
+                    CKFReferenceCount interface (<A href="list2.htm">Listing 2</a>)
+
+                    includes two methods, increment and decrement [<A href="#NOTE5">5</a>]
+.
+                    When the object is constructed the reference count is set to
+                    1. The increment method increments the counter by one and
+                    the decrement decrements the counter by one. When the
+                    counter reaches zero the destructor is called. </p>
+               
+               <p> We've designed this framework with
+                    the expectation that the user's class will inherit from the
+                    the CKFReferenceCount class. Therefore, when the
+                    CKFReferenceCount destructor is called the user's destructor
+                    will be called as well. Note that the ~CKFReferenceCount is
+                    a protected method. Users should call decrement, not delete,
+                    on this object. </p>
+               
+               <p> We discuss CKReferenceCount in this
+                    article for two reasons: First CMutex, CCondition, and
+                    CRunnable use CKReferenceCount in their implementations.
+                    Second, in multithreading situations incrementing and
+                    decrementing the counter is not sufficient. The contents of
+                    the counter is shared data and as such we've had to make it
+                    thread-safe as well. </p>
+               
+               <p> Our implementation of
+                    CKReferenceCount differs between POSIX and NT. In the POSIX
+                    implementation (<A href="list3.htm">Listing 3</a>)
+ we use
+                    a mutex to protect the reference counter's critical region.
+                    Using a mutex provides adequate protection but it is an
+                    expensive solution. Since operations on reference counted
+                    objects are very common, this implementation could seriously
+                    degrade performance.  Depending on your situation, you might
+                    need to re-implement this protection in assembly language.
+                    If you do, beware of using advanced synchronization
+                    instructions that might not exist in earlier implementations
+                    of your processor architecture. In this case, make sure your
+                    code checks for CPU versions &#151; otherwise your perfect
+                    program may core dump in an earlier implementation. </p>
+               
+               <p> On NT 4.0 and later, the
+                    implementation (<A href="list4.htm">Listing 4</a>)
+ is not
+                    only trivial but also as fast as it can get. We used the
+                    InterlockedIncrement and InterlockedDecrement APIs. The
+                    implementation of such a primitive on a Pentium Pro computer
+                    takes about five CPU instructions. In a contention benchmark
+                    we found that the ReferenceCount implementation is 4-5 times
+                    faster on NT.</p>
+               
+               <h4><FONT COLOR="#000080">An Example</FONT></H4>
+               
+               <p><A href="list5.htm">Listing 5</A>
+                    shows a simple test program that demonstrates use of CThread
+                    with a consumer thread and two producer threads. The
+                    complete source code for our implementation of POSIX and NT
+                    threads is available on the CUJ ftp site (see p. 3 for
+                    downloading instructions).</p>
+               
+               <h4><FONT COLOR="#000080">Acknowledgments</FONT></H4>
+               
+               <p>We would like to thank all our
+                    colleagues at Healtheon, and in particular Theron Tock for
+                    using and enhancing this framework o</p>
+               
+               <h4><FONT COLOR="#000080">Bibliography</FONT></H4>
+               
+               <p>T.Q. Pham and P.K. Garg.
+                    Multithreading Programming with Windows NT (Prentice-Hall,
+                    1996). ISBN 0-13-120643-5. </p>
+               
+               <p> S. Kleiman, D. Shah, and B.
+                    Smaalders. Programming with Threads (SunSoft Press, 1996).
+                    ISBN 0-13-172389-8.</p>
+               
+               <h4><FONT COLOR="#000080">Notes</FONT></H4> 
+               
+               <p>[<A name="NOTE1">1</a>]
+ Sure, when it
+                    gets past its maturity and performance issues, Java will
+                    provide an even better solution. </p>
+               
+               <p> [<A name="NOTE2">2</a>]
+ Not to be
+                    confused with UNIX, POSIX is actually a collection of system
+                    API standards, which most UNIX systems support in their
+                    entirety. NT supports some of the POSIX standards, namely
+                    POSIX.1, POSIX.5, and POSIX.9. NT does not implement the
+                    P1003.1c standard (known as "pthreads") that
+                    almost all UNIX vendors do. </p>
+               
+               <p> [<A name="NOTE3">3</a>]
+ If you have
+                    experimented with Java and reached the section in
+                    multithreading, these two classes will make a lot of sense.</p>
+               
+               <p>[<A name="NOTE4">4</a>]
+ Your only
+                    enemy here is a buggy compiler. Early C++ compilers were
+                    very buggy in this area, but things have improved
+                    dramatically since then.</p>
+               
+               <p>[<A name="NOTE5">5</a>]
+ In COM these
+                    methods are called AddRef and Release. </p>
+               <p><i>Panos Kougiouris is a software development manager at Healtheon Corp., a
+                    Silicon Valley Internet startup. His interests include distributed systems and
+                    component software. In the past he held technical positions with Oracle and Sun
+                    Microsystems. He holds an MS degree in Computer Science from the University of
+                    Illinois at Urbana-Champaign and a diploma from the University of Patra,
+                    Greece. He can be reached at HYPERLINK mailto:panos@acm.org and
+                    panos@acm.org.<br>
+                    <br>
+                    Marco Framba is a software design engineer at Healtheon Corp. His current
+                    interests are distributed systems, WWW-based applications, and Network
+                    Management. Previously he held technical position with Silicon Graphics and
+                    Olivetti. He holds an MS degree in Computer Science from the University of
+                    Milan, Italy. He can be reached at HYPERLINK mailto:framba@healtheon.com and
+                    framba@healtheon.com.</i></p>
+     
+<h4><a href="../../../source/1997/aug97/kougiou.zip">Get Article Source Code</a></h4>
+
+     </BLOCKQUOTE>
+     </BODY>
+</HTML>

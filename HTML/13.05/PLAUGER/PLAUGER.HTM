@@ -1,0 +1,72 @@
+
+
+<HTML>
+<HEAD>
+
+<TITLE>May 1995/Standard C/C++</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocmay.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Columns</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Standard C/C++<A name="00A0_0063"><A name="00A0_0063"></font></h2><P>
+<h3 align="center"><A name="00A0_0000"><A name="00A0_0000">Implementing &lt;fstream&gt;</h3><P>
+<h3 align="center"><font color="#800000">P.J. Plauger</font></h3><hr><blockquote><P>
+<P><i><A name="00A0_0000"><A name="00A0_0000">P.J. Plauger is senior editor of C/C++ Users Journal. He is convener of the ISO C standards committee, WG14, and active on the C++ committee, WG21. His latest books are The Draft Standard C++ Library, and Programming on Purpose (three volumes), all published by Prentice-Hall. You can reach him at pjp@plauger.com.</i></P><P>
+<h4><FONT COLOR="#000080"><A name="00A0_0064">Introduction<A name="00A0_0064"></FONT></h4></P>
+Last month, I introduced the header <I>&lt;fstream&gt;</I> from the draft Standard C++ library. (See "Standard C: The Header <I>&lt;fstream&gt;</I>," <I>CUJ</I>, April 1995.) It provides the classes you need to read and write external files and devices, in the guise of extracting from an <I>istream</I> object or inserting to an <I>ostream</I> object. I continue this month with a description of one way to implement these classes.<P>
+This implementation should be largely familiar to those of you with some experience with existing iostreams packages. While the draft C++ Standard has introduced various small changes from traditional technology, <I>char</I>-based file I/O is heavily rooted in existing practice. The really new stuff is all the templates introduced into the library. I plan to avoid talking about them for a bit longer, at least.<P>
+<A href="list1.htm">Listing 1</a>
+shows the file <I>fstream</I>, which implements the standard header <I>&lt;fstream&gt;</I>. It defines the classes <I>filebuf</I>,<I> ifstream</I>,<I> ofstream</I>,<I> stdiobuf</I>, <I>istdiostream</I>, and <I>ostdiostream</I>. I begin with several notes on class <I>filebuf</I>, which is the workhorse class for this header.<P>
+The incomplete type declaration <I>struct _Filet</I> is an alias for the type <I>FILE</I>, declared in <I>&lt;stdio.h&gt;</I>. The header <I>&lt;fstream&gt;</I> is not permitted to include <I>&lt;stdio.h&gt;</I>, but it needs to declare parameters and member function return values compatible with type <I>FILE</I>. A secret synonym solves the problem. My implementation of the Standard C library <a href="#1">[1]</a> introduces <I>_Filet</I> for a similar reason. For another implementation, you may have to alter the name, or introduce extra machinery, to achieve the same effect.<P>
+(A recent addition to C++ is the ability to gather multiple declarations into separate <I>namespaces</I>. The entire Standard C++ library then inhabits the namespace <I>std.</I> With such protection, an implementation can more safely include C headers in C++ headers &#151; though a few problems with macro names have yet to be widely discussed. Until <I>namespace</I> support becomes widespread, however, the sort of implementation presented here is prudent.)<P>
+I added a constructor with the signature <I>filebuf(_Filet *)</I>. (I did so by adding a default argument to the default constructor.) This implementation performs all file operations mediated by class <I>filebuf</I> through an associated <I>FILE</I> object. The member object <I>_File</I> points at the associated object, or stores a null pointer if none exists. The secret member function <I>_Init</I>, described below, initializes a <I>filebuf</I> object. Its arguments specify the initial values stored in the <I>_File</I> member objects.<P>
+The type <I>_Uninitialized</I>, and the value <I>_Noinit</I>, mark the constructor used to perform some "double constructor" magic. The standard streams make use of this magic so they can be usable even within static constructors and destructors for other objects. (See "Standard C: The Header <I>&lt;ios&gt;</I>," <I>CUJ</I>, May 1994.)<P>
+Note that class <I>stdiobuf</I> is based on class <I>filebuf</I>. The draft C++ Standard says that <I>stdiobuf</I> is derived directly from <I>streambuf</I>. I pulled a similar trick in implementing the header <I>&lt;sstream&gt;</I>, deriving <I>stringbuf</I> from <I>strstreambuf</I>. (See "Standard C: The Header <I>&lt;sstream&gt;</I>," <I>CUJ</I>, March 1995.) As before, such indirect derivation is permitted by the library "front matter."<P>
+A fundamental difference exists between the classes <I>filebuf</I> and <I>stdiobuf</I>, however. Destroying a <I>filebuf</I> object closes any associated file. Destroying a <I>stdiobuf</I> object does not. I added the member object <I>_Closef</I> to <I>filebuf</I> to tell its destructor what to do. The stored value is nonzero only if the file is to be closed when the object is destroyed. That only happens after <I>filebuf::open</I> successfully opens a file.<P>
+<h4><FONT COLOR="#000080"><A name="00A0_0065">Improving Performance<A name="00A0_0065"></FONT></h4></P>
+<A href="list2.htm">Listing 2</a>
+shows the file <I>filebuf.c</I>, which defines a number of functions required for practically any use of class <I>filebuf</I>. On the face of it, this implementation errs strongly on the side of portability, at the cost of performance. All of the member functions defined here will work atop <I>any</I> Standard C library. Moreover, none of the functions buffer reads or writes, beyond whatever buffering that may occur in the associated <I>FILE</I> object.<P>
+Before you dismiss this as a purely tutorial implementation of class <I>filebuf</I>, take a closer look at the last function definition in the file. As I mentioned above, the member function <I>_Init</I> initializes all <I>filebuf</I> objects when they are constructed. It also reinitializes an object after a successful call to <I>filebuf::open</I>. And it can be made to do one very important additional thing.<P>
+As I indicated way back in June 1994, I defined the base class <I>streambuf</I> from the outset with a bit of extra flexibility. The six pointers that control in-memory buffers are all indirect pointers. You can point them at pointers within the <I>streambuf</I> object itself, or at pointers in another object. For the derived class <I>filebuf</I>, you can sometimes choose the latter course to advantage. That's why the macro<I>_HAS_PJP_CLIB</I> chooses between two different calls to <I>streambuf::_Init</I>, which initializes all those direct and indirect pointers in the base subobject.<P>
+An arbitrary Standard C library should contain no definition for this macro. The code works correctly, if not as fast as many would like. But for operation atop my implementation of the Standard C library <a href="#1">[1]</a>, you can do much better. Define the macro _<I>HAS_PJP_CLIB</I> and the indirect pointers are set differently. They point at the pointers stored in the <I>FILE</I> object controlling access to the file. The pointer discipline is similar enough for things to work properly.<P>
+Here's why. I designed the <I>FILE</I> structure in C so that the macros <I>getchar</I> and <I>putchar</I> could expand to inline code that is reasonably small and generally very fast. The input and output streams are each controlled by a triple of pointers to characters. The C++ equivalent of the macro <I>getchar</I>, for example, is the inline function definition:<P>
+<pre>inline int getchar() {
+   return ((_Files[0]-&gt;_ Next &lt;
+           _Files [0]-&gt;_Rend
+           ? *_Files[0]-&gt;_Next++:
+           fgetc(_Files[0])));
+}</pre>
+Compare this code with the definition of the similar <I>streambuf</I> public member function <I>sgetc</I>:<P>
+<pre>int sgetc() {
+   return (gptr() != 0 &amp;&amp;
+          gptr() &lt; egptr()
+          ? *_Gn() : underflow());
+}</pre>
+The only real difference in protocol is a small one. <I>getchar</I> can assume that its "next" pointer <I>_Files[0]-&gt;_Next</I> is never a null pointer. It certainly doesn't hurt for <I>sgetc</I> to make the extra test.<P>
+What typically happens when extracting from an input stream is pretty much what you'd hope for. If the buffer is empty, <I>sgetc</I> calls <I>underflow</I>. The overriding definition in class <I>filebuf</I> rediscovers that the buffer is empty and calls <I>fgetc </I>to supply a single character. Fortunately,<I> fgetc</I> often delivers up a whole buffer full of additional characters in the bargain.<P>
+The next several hundred calls to <I>sgetc</I> simply exercise inline code that accesses the stored character value directly from the buffer and updates the "next" pointer to note its consumption. This is the same pointer as is used by <I>getchar</I>, either as a macro or an inline function definition. It is also, of course, the same pointer as is used by <I>fgetc</I>. Thus, tight synchronization is maintained across all flavors of input. Equally important, many character extractions within <I>istream</I> extractors have <I>no</I> function-call overhead whatsoever.<P>
+Of course, the same rules apply to out-put streams. Most characters inserted by <I>streambuf::sputc</I> get stored directly into the output buffer, with the "next" pointer suitably updated. Thus, many character insertions within <I>ostream</I> inserters also avoid function-call overhead. <I>Quod erat demonstrandum</I>.<P>
+Any implementation of the Standard C library that follows this discipline for <I>FILE</I> pointers can benefit from the same performance improvement. You probably have to change the pointer member names in the definition of <I>filebuf::_Init</I>. Nothing else need change, however.<P>
+<h4><FONT COLOR="#000080"><A name="00A0_0066">The Remaining Code<A name="00A0_0066"></FONT></h4></P>
+<A href="list3.htm">Listing 3</a>
+shows the file <I>fiopen.c</I>, which shows the member function <I>filebuf::open</I>. It maps the <I>mode</I> argument, of type <I>openmode</I>, to the equivalent mode string expected by the function <I>fopen</I>. If that function succeeds in opening the file, it reinitializes the <I>filebuf</I> object to control the associated <I>FILE</I> object.<P>
+All the remaining source files needed to implement the header <I>&lt;fstream&gt;</I> are trivial. <A href="list4.htm">Listing 4</a>
+shows the file <I>ifstream.c</I>, which defines the destructor for class <I>ifstream</I>. <A href="list5.htm">Listing 5</a>
+shows the file <I>ofstream.c</I>, which defines the destructor for class <I>ofstream</I>. <A href="list6.htm">Listing 6</a>
+shows the file <I>stdiobuf.c</I>, which defines the destructor for class <I>stdiobuf</I>. <A href="list7.htm">Listing 7</a>
+shows the file <I>istdiost.c</I>, which defines the destructor for class <I>istdiostream</I>. And <A href="list8.htm">Listing 8</a>
+shows the file <I>ostdiost.c</I>, which defines the destructor for class <I>ostdiostream</I>.<P>
+<h4><FONT COLOR="#000080"><A name="00A0_0067">Testing <B><I>&lt;fstream&gt;</I><A name="00A0_0067"></B></FONT></h4></P>
+<A href="list9.htm">Listing 9</a>
+shows the file <I>tfstream.c</I>. It tests the basic properties of the classes defined in <I>&lt;fstream&gt;</I>. It does so by manipulating a temporary file whose name is obtained by calling <I>tmpnam</I>, declared in <I>&lt;stdio.h&gt;</I>. First it tries to write the file, then read from it, then intermix reads and writes. It also performs some modest file-positioning operations along the way. Finally, it repeats a few of these operations using the classes <I>istdiostream</I> and <I>ostdiostream</I>.<P>
+If all goes well, the program prints:<P>
+<pre>SUCCESS testing &lt;fstream&gt;</pre>
+and takes a normal exit. It also removes the temporary file it created.<P>
+<h4>References</FONT></h4></P>
+<a name="1"></a>[1]     P.J. Plauger, <I>The Standard C Library</I>, (Englewood Cliffs, N.J.: Prentice-Hall, 1992).<P>
+<I>This article is excerpted in part from P.J. Plauger, The Draft Standard C++ Library, (Englewood Cliffs, N.J.: Prentice-Hall, 1995).</I><P>
+
+<h4><a href="../../../source/1995/may95/pjp.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

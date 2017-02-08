@@ -1,0 +1,81 @@
+<HTML>   
+     <HEAD>
+<TITLE>April 2000/Error Logging with Iostreams</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocapr.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Error Logging with Iostreams</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Brad Offer</FONT></H3>
+
+<BLOCKQUOTE>
+<p>You don't have to sacrifice the convenience of Iostreams while debugging, at least not if they're packaged properly.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<H4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>Most programs we would call "useful" include some way to report, record, and/or respond to error conditions. Methods of displaying errors vary widely, including output to the console, pop-up dialog boxes, or static message areas, to name a few. However, the basic need is the same time after time: to display some textual message in response to an unexpected condition. Many mission-critical applications also include an error logging facility that the developer can use to trace the source of a problem after the fact.</p>
+<p>The need for error reporting and tracing is often greatest during the early stages of development, when the programmer is still trying out prototypes and off-the-cuff code snippets. Unfortunately, this early error handling code is often tacked on just for debugging purposes, and is either discarded later as the code matures, or is replaced by one or more iterations of customized error handling functions.</p>
+<p>For these reasons, I decided to create a simple, standardized, general-purpose error reporting and logging tool that I could use for all stages of the software development cycle, from design through production. I have developed this tool as an extension of the standard iostream library, partly as a way to learn some of the deeper nuances of iostreams. The result of this effort is a class called <B>Errstream</B> and a stream object called <B>errout</B>, which can be used in place of the standard stream <B>cerr</B>.</p>
+<p><B>Errstream</B> provides a simple, standard method for displaying and logging errors and debug information. I use it for everything from quick prototypes and test drivers to large-scale production applications. In this article, I describe the design of the <B>Errstream</B> class and the implementation of its various features. I also attempt to pass on some of the things I learned about extending iostreams.</p>
+
+<H4><FONT COLOR="#000080">iostream vs. stdio</FONT></H4>
+
+<p>I had two main reasons for choosing iostream instead of stdio as the basis for my error handler: type-safety and extensibility <a href="#1">[1]</a>. stdio's <B>printf</B> family of functions is tried and true, and is often the most convenient way to perform a given output task, particularly when specific formatting is desired. However, the convenience of these functions comes at the expense of type safety. If you put the wrong type specifier in the format string, your output may be wrong and the error may not be obvious. The iostream functions, on the other hand, provide type safety at compile time (at the expense of code that is arguably a bit less efficient, more complex, and harder to read).</p>
+<p>The other advantage to iostream is the extensibility provided by its object-oriented nature. <B>Errstream</B> benefits from this nature by inheriting the entire interface and capabilities of the standard class <B>ofstream</B> for writing to a file.</p>
+
+<H4><FONT COLOR="#000080">Class Errstream</FONT></H4>
+
+<p><a href="list1.htm">Listings 1</a> and <a href="list2.htm">2</a> show the interface and implementation of the <B>Errstream</B> class. The listings are abbreviated here to save space. The full source code is available from the <I>CUJ</I> ftp site (see p. 3 for downloading instructions). I will explain the design and each of the features in the class as they appear in the listings.</p>
+<p><B>Errstream</B> inherits publicly from the standard library class <B>ofstream</B>, which provides the log file writing capability. <B>Errstream</B> provides two constructors, one that opens a user-specified log file, and a default constructor that opens a default log file in the current working directory. The default constructor shown in <a href="list2.htm">Listing 2</a> appends the (Unix) process id number as an extension to the default log file name. This prevents overwriting the log file across multiple program runs. A non-Unix developer would of course have to remove or replace this feature. The destructor closes the log file after flushing any pending output.</p>
+<p>The <B>open</B> method first closes any existing log file if one is already open, then creates a new log file with the specified name. Note that the constructors do not actually open the log file; the file is not opened until it is needed for output by one of the inserter operators. Thus, the program creates an error log file only if it generates errors.</p>
+<p>The <B>errString</B> and <B>clear</B> methods provide direct control over the internal error string. The average user should not have much use for these methods, but other parts of the <B>Errstream</B> class depend on them, as I show later. The <B>errString</B> method returns a read-only pointer to the current error string in the form of a null-terminated character array. The <B>clear</B> method sets the error string to an empty string by setting its first element to null.</p>
+<p>As the implementations of these two methods show, I use a fixed-length character array for internal storage of the error string. I would have preferred to use the <B>string</B> class from the standard library, but the simple numeric-to-string formatting capabilities of <B>sprintf</B> were just too tempting. Conversion to the <B>string</B> class after formatting with <B>sprintf</B> would allow error strings of unlimited size, but I felt that this benefit was outweighed by the added complexity.</p>
+<p>Actually, the ideal choice for storing an error string would have been a <B>stringstream</B>, either via multiple inheritance alongside <B>ofstream</B> or as a contained object replacing the character array. The problem here is that <B>stringstream</B> is a relatively recent addition to the standard library, and my compiler currently supports only <B>strstream</B>, which is a poor substitute. For now, I leave the <B>stringstream</B> upgrade as an exercise for the interested reader.</p>
+<p>The <B>setDisplay</B> method allows the programmer to specify a function for displaying error messages to the user. <B>setDisplay</B> takes a pointer to a function that has the same signature as the following:</p>
+
+<pre>
+void displayErr(const char *msg);
+</pre>
+
+<p>You should normally implement the <B>displayErr</B> function (or whatever you choose to call it) in the same module as <B>main</B>. You should then pass the function to <B>Errstream</B>, using <B>setDisplay</B>, as early as possible within <B>main</B> (or at least before the program can generate any errors you might want to display with <B>Errstream</B>). The beauty of this scheme is that it disconnects the user interface used by the error display method from the recording of the error itself. You can sprinkle error messages liberally throughout your code, yet you need decide only once, at the start, how to display them.</p>
+<p>The <B>logOnly</B> methods are used to read or set a flag that tells <B>Errstream</B> whether to display errors to the user. If this flag is set to <B>true</B>, <B>Errstream</B> writes errors to the log file but does not display them to the user. This might be useful for recording information that is not of immediate interest to the user. A third <B>logOnly</B> function is declared outside the <B>Errstream</B> class at the end of <a href="list1.htm">Listing 1</a>. This is an iostream manipulator used for setting the <B>logOnly</B> flag via <B>stream &lt;&lt; syntax</B>. <B>Errstream</B> resets the <B>logOnly</B> flag to <B>false</B> each time it writes a message, so the programmer must set <B>logOnly</B> for each message individually as desired.</p>
+<p>In addition to the error string itself, <B>Errstream</B> logs the source code file name and line number that generated the error. The <B>dspl</B> macro defined near the beginning of <a href="list1.htm">Listing 1</a> accomplishes this task, by passing the predefined macros <B>__FILE__</B> and <B>__LINE__</B> to the <B>Errstream</B> manipulator functions <B>setDebugFile</B> and <B>setDebugLine</B>. The <B>dspl</B> macro then uses the <B>displayError</B> manipulator (not to be confused with <B>displayErr</B> mentioned above) to record and display the error message. <B>Errstream</B> declares the <B>displayError</B> manipulator as a static member just so <B>dspl</B> can use it in this manner. The result of all of this (whew!) is that <B>dspl</B> can be used at the end of an <B>Errstream</B> output statement, much as <B>endl</B> is used for iostreams. The following snippet using the global <B>Errstream</B> object <B>errout</B> (discussed later) shows an example use of <B>dspl</B>:</p>
+
+<pre>
+errout &lt;&lt; "Oops" &lt;&lt; dspl;
+</pre>
+
+<p>The global <B>setDebugFile</B> and <B>setDebugLine</B> functions use the <B>Errstream</B> <B>file</B> and <B>line</B> methods (indirectly) to set the source code file and line numbers displayed by <B>dspl</B>. They do this via some convoluted iostream shenanigans that I discuss in more detail in the next section.</p>
+<p>If a given error message is encountered two or more times in succession, by default it is entered in the log file only once, along with the repetition count. This helps prevent excessive growth of the log file. The programmer can turn this behavior on and off and check its status using the <B>collect</B> methods.</p>
+<p>The purpose for the <B>diffLevel</B> methods and the <B>differentiate</B> manipulator is somewhat obscure, and I have found only occasional uses for them, so I do not discuss them here. The interested reader can find the documentation for these methods in the online source code. The test driver shown in <a href="list3.htm">Listing 3</a> shows a sample usage of <B>differentiate</B>, from which you can infer its necessity.</p>
+<p>There is normally no need to create any new instances of the <B>Errstream</B> class. Simply include the header file <B>Errstream.h</B> to gain access to the global instance <B>errout</B>.</p>
+
+<H4><FONT COLOR="#000080">Extending iostream</FONT></H4>
+
+<p>Creating a new class based on iostream mostly consists of writing new inserter and/or extractor operators and manipulators. An inserter writes to the stream, while an extractor reads from the stream. A manipulator is a special function used with the <B>&lt;&lt;</B> operator notation to change the characteristics of the stream.</p>
+<p>Inserters and extractors are easy &#151; simply overload the <B>&lt;&lt;</B> and <B>&gt;&gt;</B> operators respectively. Parameterless manipulators (such as <B>logOnly</B> and <B>endl</B>) are also easy. These non-member functions take a non-const reference to a stream, modify it in some way, and return it. If a manipulator must operate directly on member data, it should be declared as a friend.</p>
+<p>Things get a lot trickier when creating a manipulator that takes a parameter (such as <B>differentiate</B>, <B>setDebugFile</B>, and <B>setprecision</B>). You must first write a helper class (such as <B>EMANIP_int</B> and <B>EMANIP_string</B> in <a href="list1.htm">Listing 1</a>) to hold the parameter, along with a pointer to a manipulator-like wrapper function that also takes a parameter of the desired type. The parameterized manipulator function itself (e.g. <B>differentiate</B> in <a href="list2.htm">Listing 2</a>) returns an object of this new type (e.g. <B>EMANIP_int</B>) constructed using the supplied parameter value, and a pointer to a wrapper function (e.g. <B>set_diffLevel</B> in <a href="list2.htm">Listing 2</a>). The wrapper function does the actual modification to the supplied stream and then returns it. The final piece of the puzzle is an inserter operator declared and implemented as a friend inside the helper class (<B>EMANIP_int</B>). This is the operator that the compiler actually uses when it encounters the parameterized manipulator (e.g. <B>differentiate</B>). The purpose of this inserter is to call the wrapper function with the supplied parameter and return a reference to the modified stream.</p>
+
+<H4><FONT COLOR="#000080">Usage Example</FONT></H4>
+
+<p><a href="list3.htm">Listing 3</a> shows a small test driver that illustrates the usage and most of the features of <B>Errstream</B>. The <B>displayErrMsg</B> function at the top of the listing simply prepends the word <B>"ERROR:"</B> to the display of each message. Alternate implementations might instead display an MS Windows or X/Motif error dialog. After setting the error display function using <B>Errstream::setDisplay</B>, the program exercises the inserters for the various data types, using the default log file. Then the program opens a new log file, exercises the <B>logOnly</B> manipulator and verifies the mechanism for collection of multiple identical messages in the log file. Finally, the program illustrates the usage (and necessity) of the <B>differentiate</B> manipulator. The screen and log file output of the driver program is shown in <a href="fig1.htm">Figure 1</a>.</p>
+
+<H4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>Errstream</B> provides a simple, standard method for logging and displaying errors and/or debug information. I use it in all my code, from test drivers and quick experiments, to large-scale applications. The design could be improved by replacing the internal fixed-length character array with a <B>stringstream</B> from the standard library when implementations of that class are more widely available.</p>
+
+<H4><FONT COLOR="#000080">Reference</FONT></H4>
+
+<p><a name="1"></a>[1]  Scott Meyers. <I>Effective C++: 50 Specific Ways to Improve Your Programs and Designs</I> (Addison-Wesley, 1998), pp. 17-19. ISBN: 0201924889.</p>
+
+<p><i><B>Brad Offer</B> has worked for Boeing in Kent, Washington for the last 12 years, most recently in the Defense &amp; Space Group writing software for data collection, reduction, and analysis; and operator control of an airborne infrared sensor. Before that he was an officer on a nuclear fast-attack submarine stationed in Hawaii. He has been programming for 14 years, including the last eight years in C++.</i></p>
+
+<h4><a href="../../../source/2000/apr00/offer.zip">Get Article Source Code</a></h4>
+
+
+</blockquote></body></html>

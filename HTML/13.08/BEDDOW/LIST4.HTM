@@ -1,0 +1,223 @@
+<HTML><HEAD>
+<TITLE>August 1995/Remote Procedure Calls Using NetBios/Listing 4</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 4 <I>Transaction management functions</A></I></h4>
+<pre>/* Open a network client (master)
+  Sets up the global masterid as the client name id. Note only
+  one client per machine */
+open_net_client(char *name)
+{  struct Ncb command_ncb ;
+   int dgstat = -1 ;
+
+   if (chk_net_bios())
+     { printf("%s", errmes1) ;
+       exit(1) ;
+     }
+   if (masterid == -1)
+    { NetDelName(name, command_ncb) ; // Precaution against a lost name
+      strcpy(mastername, name) ;
+      if ((dgstat = NetAddName(mastername,command_ncb)) == 0)
+        masterid = command_ncb.NCB_num ;
+    }
+   return(dgstat) ;
+}
+
+/* ***********************  */
+/* Close the network client */
+close_net_client(void)
+{ struct Ncb command_ncb ;
+  int dgstat ;
+
+  dgstat = NetDelName(mastername, command_ncb) ;
+  masterid = -1 ;
+  return(dgstat) ;
+}
+
+/* ****************************************************************** */
+/* Install a datagram server on a given local name. Slave will call post
+  function given when a transaction occurs. Slave will return 0 to master
+  if post function was successful or error code if not.
+  The Net name descriptor is entered in a linked list.
+  Return pointer to descriptor if successful                        */
+struct netrpcserver *install_rpcserver(char *name, void *(*rpc)(void *),
+                               int replysize)
+{  struct netrpcserver *ep ;
+  int dgstat = 0 ;
+  void netslavepost(struct Ncb far *) ;
+
+/* Check for Net Bios first */
+  if (chk_net_bios())
+    { printf("%s", errmes1) ;
+      exit(1) ;
+    }
+
+/* Malloc descriptor space */
+   if ((ep = (struct netrpcserver *)malloc(sizeof(struct netrpcserver))) == NULL)
+     return(NULL) ;
+   if ((ep-&gt;name = strdup(name)) == NULL)
+     { free(ep) ;
+       return(NULL) ;
+     }
+/* Clear error count and last_dgstat */
+  ep-&gt;errcnt = 0 ;
+  ep-&gt;errcnt = 0 ;
+/* Set up Remote procedure call and replysize */
+   ep-&gt;rpc = rpc ;
+   if (replysize &lt; DGRAMSIZE)
+     ep-&gt;replysize = replysize ;
+   else
+     ep-&gt;replysize = DGRAMSIZE ;
+/* Malloc space for Ncb's */
+   if ((ep-&gt;receivencbptr = (struct Ncb *)calloc(2,sizeof(struct Ncb))) == NULL)
+     { free(ep-&gt;name) ;
+       free(ep) ;
+       return(NULL) ;
+     }
+   ep-&gt;sendncbptr = ep-&gt;receivencbptr + 1 ;
+/* Malloc space for Datagram buffer */
+   if ((ep-&gt;dgbufin = (char *)malloc(DGRAMSIZE)) == NULL)
+     { free(ep-&gt;name) ;
+       free(ep) ;
+       return(NULL) ;
+     }
+/* Install name */
+   NetDelName_p(name, ep-&gt;receivencbptr) ;
+   if ((dgstat = net_name_command(NCBADDNAME,name,NULL,ep-&gt;receivencbptr)) != 0)
+     { free(ep-&gt;dgbufin) ;
+       free(ep-&gt;receivencbptr) ;
+       free(ep-&gt;name) ;
+       free(ep) ;
+       return(NULL) ;
+     }
+/* Set up name id */
+  ep-&gt;id = ep-&gt;receivencbptr-&gt;NCB_num ;
+/* and link in */
+  if (netrpcserverlist == NULL)
+    { netrpcserverlist = ep ;
+      ep-&gt;prev = NULL ;
+    }
+  else
+    { ep-&gt;prev = netrpcserverlist ;
+      netrpcserverlist = ep;
+    }
+
+/* Now set up receive */
+  if ( dgstat |= net_dgram_command(NCBRECEIVEDATAGRAM | NCBNO_WAIT,ep-&gt;id,NULL,
+                             ep-&gt;dgbufin,sizeof(struct dgbufsize),
+                             NULL,ep-&gt;receivencbptr))
+    { net_name_command(NCBDELETENAME,name,NULL,ep-&gt;receivencbptr) ;
+      free(ep-&gt;dgbufin) ;
+      free(ep-&gt;receivencbptr) ;
+      free(ep-&gt;name) ;
+      free(ep) ;
+      return(NULL) ;
+    }
+  else
+    return(ep) ;
+}
+
+/* ****************************************************************** */
+/* Remove all net names and pending receives for all datagram servers */
+void remove_all_rpcservers(void)
+{ char *ptr;
+  struct Ncb command_ncb ;
+
+  if (netrpcserverlist != NULL)
+    { do
+      {
+        net_command_cancel(netrpcserverlist-&gt;receivencbptr,&amp;command_ncb) ;
+        NetDelName(netrpcserverlist-&gt;name, command_ncb) ;
+        if (netrpcserverlist-&gt;errcnt)
+         { printf("%d errors occured on rpcserver %s\n", netrpcserverlist-&gt;errcnt,
+                 netrpcserverlist-&gt;name) ;
+           printf("Last error was %s\n",
+                 get_neterrmess(netrpcserverlist-&gt;last_dgstat)) ;
+         }
+        free(netrpcserverlist-&gt;dgbufin) ;
+        free(netrpcserverlist-&gt;receivencbptr) ;
+        free(netrpcserverlist-&gt;name) ;
+
+        ptr= (char *) netrpcserverlist ;
+        netrpcserverlist = netrpcserverlist-&gt;prev ;
+        free(ptr) ;
+      }
+     while (netrpcserverlist != NULL) ;
+   }
+}
+
+/* ****************************************************************** */
+/* Transact a message
+   Uses global masterid as sender id. This must have been set up first
+   by open_net_client().
+   Note : I would advise the implementation of interrupt driven timeout capability
+and locking
+   against re-entrance for multi-threaded applications.
+*/
+
+net_transact(char *name, void *bufin, int bufinlen,
+          void *bufout, int bufoutlen)
+{
+  struct Ncb send_ncb, receive_ncb, command_ncb ;
+  char remotename[17]  ;
+  int dgstat = 0 ;
+  long count = 0 ;
+
+  dgstat |= net_dgram_command(NCBRECEIVEDATAGRAM | NCBNO_WAIT, masterid, NULL,
+                        bufin, bufinlen, NULL, &amp;receive_ncb) ;
+  dgstat |= net_dgram_command(NCBSENDDATAGRAM, masterid, name, bufout, bufoutlen
+,NULL,
+                        &amp;send_ncb) ;
+
+  while(receive_ncb.NCB_cmd_cplt == 0xff)
+    { count++ ;
+      if (count &gt; 100000)
+       { dgstat = NETTIMEOUTERR;
+         net_command_cancel(&amp;receive_ncb,&amp;command_ncb) ;
+         break ;
+       }
+    }
+
+  return(dgstat) ;
+}
+
+/* ****************************************************************** */
+/* net_comms(). This is the datagram server function that
+   services transaction requests. It must be called regularly to service
+   all received transaction requests                                 */
+void net_comms()
+{ struct netrpcserver *netrpcserverptr ;
+  char netmaster[17]  ;
+  void *replyptr ;
+  int dgstat = 0 ;
+
+/* Track list serving any pending datagrams by calling the server funtion
+   with a void pointer to the datagram.
+   The server function will return a pointer to its reply message which is
+   returned to the transaction master.
+*/
+  netrpcserverptr = netrpcserverlist ;
+  while(netrpcserverptr != NULL)
+   { if (netrpcserverptr-&gt;receivencbptr-&gt;NCB_cmd_cplt != 0xff)
+      { dgstat |= netrpcserverptr-&gt;receivencbptr-&gt;NCB_cmd_cplt ;
+        ret_ncb_callname(netmaster, netrpcserverptr-&gt;receivencbptr) ;
+        replyptr = (*netrpcserverptr-&gt;rpc)(netrpcserverptr-&gt;dgbufin) ;
+        dgstat |= netd_gram_command(NCBRECEIVEDATAGRAM | NCBNO_WAIT,netrpcserverptr-&gt;id,
+                               NULL,netrpcserverptr-&gt;dgbufin,sizeof(struct dgbufsize),
+                               NULL,netrpcserverptr-&gt;receivencbptr) ;
+        dgstat |= net_dgram_command(NCBSENDDATAGRAM,netrpcserverptr-&gt;id, netmaster,
+                replyptr, netrpcserverptr-&gt;replysize, NULL,
+                netrpcserverptr-&gt;sendncbptr) ;
+        if (dgstat)
+          { netrpcserverptr-&gt;errcnt++;
+            netrpcserverptr-&gt;last_dgstat = dgstat ;
+          }
+       }
+     netrpcserverptr = netrpcserverptr-&gt;prev ;
+   }
+}
+/* End of File */
+</pre>
+</BODY>
+</HTML>

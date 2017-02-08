@@ -1,0 +1,813 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>September 1997/The Learning C/C++urve</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><FONT COLOR="#FF0000"><A href="../tocsep.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          Columns</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">The Learning C/C++urve</FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000"> Bobby Schmidt</FONT></H3>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">The Pointer Variations</FONT></H3>
+          
+          <BLOCKQUOTE>
+               
+               <P>Bobby implements several additional features for an
+                    auto_pointer class, by declaring members private and then
+                    not implementing them.</P>
+               
+          </BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               <P><B><I>Copyright &copy; 1997 Robert H. Schmidt</I></B></P>
+               <p>Several months ago I started exploring
+                    ways to abstract C-style interfaces, and chose Microsoft's
+                    MAPI as a large real-world example of such interfaces. I
+                    felt the first abstraction should envelop pointers because
+                    MAPI relies so heavily on them. To that end I introduced
+                    auto_pointer, my variation on the Standard Library's
+                    auto_ptr. These classes wrap a "real" pointer
+                    inside a C++ object, guaranteeing that pointer is freed in
+                    the presence of exceptions and other early exits. </p>
+               
+               <p> While such a container class can
+                    simplify and strengthen code normally reliant on raw
+                    pointers, it can also add undesired behavior, detracting
+                    from the class's pointer-like behavior. As promised last
+                    month, I now take my metaphorical pruning shears to
+                    auto_pointera, snipping off those undesired features. The
+                    first item to prune, ironically enough, is a problem only
+                    because of another apparently unrelated feature we added.</p>
+               
+               <h4><FONT COLOR="#000080">Pruning Tip #1:
+               Prevent delete</FONT></H4>
+               
+               <p>If you declare an object with the real
+                    STL auto_ptr, and then try to delete that object:</p>
+
+<PRE>
+auto_ptr&lt;char&gt; p;
+delete p;
+</PRE>
+               
+               <p>the code doesn't compile. The delete
+                    statement requires an operand that satisfies one of two
+                    requirements:</p>
+                    
+               <p><UL><LI>is of pointer type</LI>
+                    <LI>is a class object with exactly one conversion to a
+                    pointer type</LI></UL></p>
+               
+               <p> As written, auto_ptr satisfies
+                    neither of these requirements, and thus can't be used with
+                    delete. If you change the declaration to</p>
+
+<PRE>
+auto_pointer&lt;char&gt; p;
+delete p;
+</PRE>
+               
+               <p>the code will compile. Remember, we
+                    added a conversion operator to auto_pointer&lt;t&gt; that
+                    returns a t *. This conversion satisfies the second
+                    requirement above, so the example works. The trouble is, we
+                    don't really want it to work. Calling delete on a
+                    self-deleting object is a recipe for trouble. And while we
+                    would seldom do it on purpose, we may easily do so by
+                    accident.</p>
+               
+               <p>The solution is to change auto_pointer
+                    so that it no longer satisfies either of the above
+                    requirements. auto_pointer already fails the first
+                    requirement, since it's not of pointer type. The second
+                    requirement says auto_pointer must have exactly one
+                    conversion to a pointer type. If auto_pointer had two such
+                    conversions, it would no longer satisfy that second
+                    requirement. </p>
+               
+               <p> But are we adding a new member we
+                    don't really want to call, risking accidental invocation by
+                    a user? Not necessarily. Note that the rule says nothing
+                    about the accessibility of the conversion. That is, we can
+                    add a second conversion, but make it private so user code
+                    can't touch it. </p>
+               
+               <p> To see how this works, consider again
+                    the example</p>
+
+<PRE>
+auto_pointer&lt;char&gt; p;
+delete p;
+</PRE>
+               
+               <p>With the current auto_pointer
+                    definition, the delete statement is tantamount to</p>
+
+<PRE>
+delete p.operator char *();
+</PRE>
+               
+               <p>If we add a second conversion, say
+                    operator int *, the compiler can't determine whether</p>
+
+<PRE>
+delete p;
+</PRE>
+               
+               <p>really means</p>
+
+<PRE>
+delete p.operator char *();
+</PRE>
+               
+               <p>or</p>
+
+<PRE>
+delete p.operator int *();
+</PRE>
+               
+               <p>Making operator int * private does not
+                    change how the overload resolution works. The compiler will
+                    sense an ambiguity and flag the line, and we avoid the
+                    accidental deletion.</p>
+               
+               <h4><FONT COLOR="#000080">Name Lookup</FONT></H4>
+               
+               <p>I suspect some of you may find the
+                    above non-intuitive, reasoning that if a member is
+                    inaccessible, the compiler should ignore it if another
+                    candidate is accessible. For good or for ill, C++ does not
+                    work this way. The compiler's lookup rules are not bound to
+                    access control. </p>
+               
+               <p> As an experiment, try the simple
+                    example</p>
+               
+               <p></p>
+
+<PRE>
+int i; // at global scope
+
+class base
+    {
+private:
+    int i; // at class scope
+    };
+
+class derived : public base
+    {
+    void f();
+    };
+
+void derived::f()
+    {
+    i = 0; // error
+    }
+</PRE>
+               
+               <p>The line flagged above will not
+                    compile. You may think i should refer to the global int i,
+                    but it does not. The class derived inherits the member i
+                    from base. That i is not accessible to derived does not
+                    change the inheritance. When the compiler does its name
+                    lookup it sees the inherited (but invisible) i first, only
+                    to complain that i is not accessible.</p>
+               
+               <h4><FONT COLOR="#000080">Which Conversion?</FONT></H4>
+               
+               <p>Having decided on a private
+                    conversion, we now must reckon which specific conversion to
+                    add. The choice is not as simple as it may first appear. We
+                    are adding this second conversion purely as an artifice to
+                    avoid deleting auto_pointers. However, my oft-mentioned Law
+                    of Unintended Consequences lurks nearby: while we can't
+                    accidentally invoke the conversion, we can't intentionally 
+                    invoke it either. </p>
+               
+               <p> Therefore we need to pick a pointer
+                    type that we will never want an auto_pointer to become. We
+                    also must pick one that the compiler will not confuse with
+                    the existing public conversion. The only reliable
+                    possibilities are pointers to types we never want to wrap an
+                    auto_pointer around in the first place. Two suggestions
+                    spring to mind:</p>
+               
+               <p>
+               <UL><LI>Create a new type that exists only for this purpose, one
+                    that will never be instantiated.</LI>
+                   <LI>Use void *, which is already forbidden to be
+                    instantiated.</LI></UL></p>
+               
+               <p>I'm electing suggestion #2 for ease of
+                    design, although I will come back to suggestion #1 in a
+                    different context shortly. A consequence of this decision is
+                    that an auto_pointer can never turn into a void *. This
+                    constraint prevents many invalid usages, but also
+                    complicates some aspects of MAPI, as we'll see in later
+                    columns. </p>
+               
+               <p> The conversion operator should also
+                    be a const member, so that the compiler will "see"
+                    it for both const and non-const auto_pointers. </p>
+               
+               <p> With this new conversion,
+                    auto_pointer becomes</p>
+
+<PRE>
+template&lt;class t&gt;
+class auto_pointer
+    {
+public:
+    ~auto_pointer();
+    auto_pointer(t * = NULL);
+    auto_pointer
+        (const auto_pointer &amp;);
+    auto_pointer &amp;operator=
+            (const auto_pointer &amp;);
+    operator t *() const;
+    t **operator&amp;();
+    t * const *operator&amp;() const;
+    t&amp; operator*() const;
+    t* operator-&gt;() const;
+    t* release() const;
+private:
+    operator void *() const; // new
+    mutable bool is_owner_;
+    t *pointer_;
+    };
+</PRE>
+               
+               <p>Note that you need not actually
+                    implement this new conversion operator. In fact, I
+                    discourage you from implementing it; that way, if you get a
+                    link-time error about the operator being missing, you know
+                    you're somehow accidentally trying to reference it (most
+                    likely from within an auto_pointer member). </p>
+               
+               <p> Also note that all delete prevention
+                    goes away once you hand over the contained pointer (via
+                    operator&amp;) to MAPI. This is a specific example of a more
+                    general observation: once you expose its implementation, a
+                    class interface can no longer protect that implementation
+                    from abuse. This is not a practical problem for our
+                    application, since the language-independent MAPI can't
+                    assume delete is appropriate for passed-in pointers. Were
+                    you to use auto_pointer in other contexts, the results might
+                     not be so benign.</p>
+               
+               <h4><FONT COLOR="#000080">Pruning Tip #2 :
+               Prevent Subscripting</FONT></H4>
+               
+               <p>When I first learned C, I was
+                    surprised to discover that arrays so easily decayed into
+                    pointers. That surprise turned into disgust as I saw muddy
+                    design, poor type partitioning, and subtle bugs result from
+                    this array/pointer relationship. In C++ this built-in
+                    conversion relegates arrays to second-class status compared
+                    to true class objects. </p>
+               
+               <p> I could write an entire column on
+                    this subject, but for now will focus on one particularly
+                    odious safety lapse: the declaration of a pointer to a
+                    single "thing," and the declaration of a pointer
+                    to an array of "things," is identical! Thus, in
+                    the function</p>
+
+<PRE>
+void f(char *x)
+    {
+    // ...
+    }
+</PRE>
+               
+               <p>you don't know from x's declaration if
+                    it contains the address of a single char or the address of
+                    an array of chars. You can divine this only through some
+                    means outside the C++ language's domain (such as user
+                    documentation or programmatic idiom). Nothing in the canon
+                    of C++ rules can inform you of the truth, let alone verify
+                    that you comply with that truth.</p>
+               
+               <p>Many of you probably would assume x
+                    references an array &#151; but this assumption is built from an
+                    old and common idiom, not from a requirement that every char
+                    * contain an array address. I certainly expect that, were
+                    the type of x changed to int *, the easy assumption of
+                    array-ness would vanish. </p>
+               
+               <p> Regardless of your design philosophy,
+                    you should never want to treat auto_pointers as arrays
+                    anyway. Remember, auto_pointer wants to call delete on its
+                    contained object. Not delete [] &#151; just delete. Thus,
+                    auto_pointers cannot correctly envelope arrays, meaning you
+                    can't correctly subscript them. </p>
+               
+               <p> To remove possibility of
+                    subscripting, we use yet another private unimplemented
+                    member. That we are trying to disable subscripting suggests
+                    we use some variation of operator[]. To disable subscripting
+                    for both const and non-const auto_pointer objects, we must
+                    declare this operator const. To cover usage of this operator
+                    for both lvalues and rvalues, we must declare it as 
+                    returning a non-const reference. And finally, the operator
+                    must take a single argument of type size_t, because that is
+                    the type for real array subscripts. </p>
+               
+               <p> The end result is:</p>
+
+<PRE>
+template&lt;class t&gt;
+class auto_pointer
+    {
+public:
+    // ... unchanged
+private:
+    operator void *() const;
+    t &amp;operator[]
+        (size_t) const; // new
+    mutable bool is_owner_;
+    t *pointer_;
+    };
+</PRE>
+               
+               <p>If you find that you must subscript an
+                    auto_pointer, you can always cheat:</p>
+
+<PRE>
+auto_pointer&lt;char&gt; s(new char[10]);
+(&amp;s)[0] = 'a'; // Kids, don't try this at home.
+</PRE>
+               
+               <p>However, the auto_pointer will still
+                    try to call delete on the contained array. You can get
+                    around this by releasing ownership:</p>
+
+<PRE>
+auto_pointer&lt;char&gt; s(new char[10]);
+s.release();
+(&amp;s)[0] = 'a';
+// ...
+delete [] &amp;s;
+</PRE>
+               
+               <p>although in that case I wonder why
+                    you'd be using auto_pointer in the first place.</p>
+               
+               <h4><FONT COLOR="#000080">Pruning Tip #3:
+               prevent NULL</FONT></H4>
+               
+               <p>No sense in holding back: I despise
+                    NULL. In my view, the lack of a truly universal, generic,
+                    unbound pointer value is one of C's (and by implication,
+                    C++'s) greatest design flaws. As with the problems of
+                    array/pointer symbiosis, I could write an entire column on
+                    NULL (and for all I know, may one day do so). In a fit of
+                    despotism, I won't bother justifying my decision this month;
+                     just take it as a given that I don't want NULL getting
+                    anywhere near my auto_pointers if I can help it. </p>
+               
+               <p> Well, if I don't use NULL, what will
+                    I use? Were I the Grand Lord Poobah of C++, I would give the
+                    language a real predefined NULL pointer, not just a macro
+                    alias to zero. For inspiration I'd turn to the Pascal value
+                    nil, which is:</p>
+               
+               <p>
+               <UL><LI>a reserved word known to the compiler [<A href="#NOTE1">1</a>]
+</LI>
+                   <LI>type-compatible with all pointers</LI>
+                   <LI>caught by a run-time check when dereferenced</LI></UL></p>
+               
+               <p>As Diligent Readers well know, any
+                    time I engage in wishful thinking about how a language
+                    should be, my usual solution is to either modify an existing
+                    type or craft a new one. In this case, I want to both turn
+                    off use of NULL with auto_pointer (modify an existing type)
+                    and turn on use of some stronger nil-like value instead
+                    (create a new type). The former I'll tackle here, while the 
+                    latter I defer to a subsequent column. </p>
+               
+               <p> As you can probably guess, we turn
+                    off NULL by declaring &#151; surprise! &#151; a private
+                    unimplemented member function. The trick, as always, is
+                    figuring out which member to declare; and the first clue, as
+                    always, is to understand specifically what the compiler is
+                    doing already. </p>
+               
+               <p> Currently, the compiler implicitly
+                    converts the statement</p>
+
+<PRE>
+auto_pointer&lt;char&gt; s = NULL;
+</PRE>
+               
+               <p>to the equivalent statement</p>
+
+<PRE>
+auto_pointer&lt;char&gt; s((char *) NULL);
+</PRE>
+               
+               <p>invoking the conversion constructor
+                    auto_pointer(t *). Depending on the compiler's definition of
+                    NULL, this is really the same as either</p>
+
+<PRE>
+auto_pointer&lt;char&gt; s((char *) 0);
+</PRE>
+               
+               <p>or</p>
+
+<PRE>
+auto_pointer&lt;char&gt; s((char *) 0L);
+</PRE>
+               
+               <p>To keep the compiler from choosing the
+                    public constructor in this operation, we must either</p>
+               
+               <p>
+               <UL><LI>convince it to chose some other private constructor
+                    instead, or</LI>
+                   <LI>declare a second constructor it likes just as well,
+                    thereby creating an overload resolution ambiguity</LI></UL></p>
+               
+               <p>To implement the first method, declare
+                    two private constructors, auto_pointer(int) and
+                    auto_pointer(long). The compiler will match one of these
+                    two, which require no conversion, before matching
+                    auto_pointer(t *), which requires a conversion. The matched
+                    constructor is private and thus inaccessible, leading to a
+                    compile-time diagnostic. </p>
+               
+               <p> To implement the second method,
+                    declare the constructor auto_pointer(void *). The compiler
+                    can't choose between that and auto_pointer(t *), and it will
+                    flag the ambiguity. This method has the additional benefit
+                    of fewer Unintended Consequences. We're already prevented
+                    from instantiating auto_pointer&lt;void&gt; &#151; thanks to
+                    operator void * &#151; so most likely no credible use of
+                    auto_pointer(void *) is possible. Compare this to the first
+                    method, which usurps two otherwise innocuous constructors we
+                    may want to use in the future. </p>
+               
+               <p> Reflecting all of the above, the
+                    class definition now becomes:</p>
+
+<PRE>
+template&lt;class t&gt;
+
+class auto_pointer
+    {
+public:
+    // ... unchanged
+private:
+    auto_pointer(void *);  // new
+    operator void *() const;
+    t &amp;operator[](size_t) const;
+    mutable bool is_owner_;
+    t *pointer_;
+    };
+</PRE>
+               
+               <h4><FONT COLOR="#000080">Alternative
+               Allocation</FONT></H4>
+               
+               <p>So far, all incarnations of
+                    auto_pointer assume the contained object is allocated by
+                    scalar new. But MAPI does not internally know about C++ in
+                    general, let alone new in particular. Because MAPI never
+                    frees objects via delete, while auto_pointers always free
+                    objects via delete, we can't use auto_pointers in their
+                    current form. </p>
+               
+               <p> As a partial solution, let us craft
+                    an auto_pointer variant that assumes its contained object
+                    was spawned by malloc. Such a class would call free on that
+                    contained object. Because the object points to the heap, and
+                    not to the C++ free store, I'll call the class
+                    auto_heap_pointer. To keep the naming consistent, I'll
+                    rename the old auto_pointer to auto_free_store_pointer, 
+                    since it's contained object comes from the free store [<A href="#NOTE2">2</a>]
+.
+                    </p>
+               
+               <p> Believe it or not, nothing other than
+                    the destructor differs between auto_free_store_pointer and
+                    auto_heap_pointer. Both have the same interface and
+                    behavior, and present the same abstraction model to users.
+                    The casual reader may infer an inheritance relationship
+                    lurking in this &#151; but the Diligent Reader knows inheritance
+                    must earn its way into these hallowed pages. </p>
+               
+               <p> To explore the notion of using
+                    inheritance I created an abstract auto_pointer base class (<A href="list1.htm">Listing
+                         1</a>)
+, from which I derived auto_free_store_pointer
+                    and auto_heap_pointer (<A href="list2.htm">Listings 2</A>
+                    and <A href="list3.htm">3</a>)
+. These classes are quite
+                    different from what's come before. Some highlights:</p>
+               
+               <p>
+               <UL><LI>Perhaps most stunning, given my recent diatribe
+                    <A href="#NOTE3">[3</a>]
+, is my use of the keyword
+                    protected! Before you question my integrity, let me explain.
+                    The affected base members are meant to be called only by
+                    derived members, so declaring them public would send the
+                    wrong message. Further, the damage a nefarious base can do
+                    (by promoting protected members to public) is limited;
+                    derived classes can't redeclare base constructors and
+                    destructors, so the only base member at risk of promotion is
+                    operator=.</LI>
+                   <LI>The base destructor is pure virtual. However (and
+                    perhaps surprisingly), I still must implement it! Otherwise
+                    the linker may complain about the missing member [<A href="#NOTE4">4</a>]
+.</LI>
+                   <LI>By contrast, the base operator= is not declared
+                    virtual, meaning the same function implementation will be
+                    used by all derived classes.</LI></UL></p>
+               
+               <p>The derived classes have relatively
+                    few members. In fact other than the destructors, each
+                    derived member does the same thing in each derived class, a
+                    clear redundancy. Why aren't these redundant members pulled
+                    into the base? Because they are constructors, which cannot
+                    be inherited. </p>
+               
+               <p> Inheritance as I'm suggesting here
+                    serves two purposes: reuse of interface and reuse of
+                    implementation. Part of the goal of reuse is to avoid
+                    reinventing wheels. Yet it seems that, for every
+                    auto_pointer derivation we can create, we're also fated with
+                    reinventing all the constructors &#151; even though their
+                    interfaces are the same, and their implementations perform
+                    the same steps.</p>
+               
+               <h4><FONT COLOR="#000080">Reducing Redundancy</FONT></H4>
+               
+               <p>What I'd prefer is to somehow
+                    encapsulate those constructors and instantiate them for each
+                    derived class. Normally I'd think to use a template, but of
+                    course that's the very "solution" I'm having to
+                    fix in the first place. Where class templates fail, my next
+                    thought is always to try macros. </p>
+               
+               <p> Although I normally disdain their
+                    use, macros can perform brilliantly in these situations.
+                    They let me duplicate the code while giving each set of
+                    constructors a unique name. Unfortunately, they also tend to
+                    create some well-known source code compromises. Using
+                    traditional methods to turn the derived classes into macros
+                    results in</p>
+
+<PRE>
+template&lt;class t&gt;
+class auto_pointer
+   {
+   // ...
+   };
+#define AUTO_POINTER(name)\
+   template&lt;class t&gt;\
+   class name : public auto_pointer\
+       {\
+   public:\
+       ~name();\
+       name(t * = NULL);\
+       name(const name &amp;);\
+   private:\
+       name(void *);\
+       };
+</PRE>
+               
+               <p>Put this macro into the new header
+                    auto_pointer.h. To instantiate the derived classes, you'd
+                    then write</p>
+
+<PRE>
+#include "auto_pointer.h"
+AUTO_POINTER(auto_free_store_pointer)
+AUTO_POINTER(auto_heap_pointer)
+</PRE>
+               
+               <p>All those macro lines with terminating
+                    \'s are a nightmare to maintain and debug. Once we add the
+                    implementations for those members, the AUTO_POINTER macro
+                    expansion would generate hundreds of characters on the same
+                    (preprocessed) source line. </p>
+               
+               <p> To avoid this pitfall while still
+                    getting the desired encapsulation, remove the old contents
+                    of auto_pointer.h and use the following instead:</p>
+
+<PRE>
+template&lt;class t&gt;
+class auto_pointer
+   {
+   // ...
+   };
+
+template&lt;class t&gt;
+class AUTO_POINTER : public auto_pointer
+    {
+public:
+    ~AUTO_POINTER();
+    AUTO_POINTER(t * = NULL);
+    AUTO_POINTER(const AUTO_POINTER &amp;);
+private:
+    AUTO_POINTER(void *);
+    };
+</PRE>
+               
+               <p>To instantiate, you now write</p>
+               
+               <p></p>
+
+<PRE>
+#define AUTO_POINTER auto_free_store_pointer
+#include "auto_pointer.h"
+#undef AUTO_POINTER
+
+#define AUTO_POINTER auto_heap_pointer
+#include "auto_pointer.h"
+#undef AUTO_POINTER
+</PRE>
+               
+               <p>I expect you'll wrap each #define ...
+                    #include ... #undef sequence in a separate header, so the
+                    actual use becomes something like</p>
+
+<PRE>
+#include "auto_free_store_pointer.h"
+#include "auto_heap_pointer.h"
+</PRE>
+               
+               <p>This method not only avoids the large
+                    macro, it also allows easy customization of derived-class
+                    implementation. Wait a tick &#151; what customization? Didn't I
+                    say earlier that each derived class has the same interface
+                    and implementation? Yes, but I lied a bit. Almost everything
+                    is the same; the only difference is in the destructors.</p>
+               
+               <h4><FONT COLOR="#000080">The Missing Pieces</FONT></H4>
+               
+               <p>Remember the reason we created the
+                    family of derived classes to begin with: each class has a
+                    different way of destroying its contained object. Therefore,
+                    we need a unique destructor implementation for each derived
+                    class. The simplest solution is to add that implementation
+                    to each derived class header. </p>
+               
+               <p> Reflecting this approach,
+                    <A href="list4.htm">Listings 4 </A>and
+                    <A href="list5.htm">5</a>
+show the complete derived-class
+                    interfaces and destructor implementations.
+                    <A href="list6.htm">Listing 6 </A>shows the implementation
+                    common to all derived classes, as well as the complete
+                    base-class interface and implementation. </p>
+               
+               <p> The base-class operators make some of
+                    the NULL-prevention checks discussed previously. As I've
+                    written them in <A href="list6.htm">Listing 6</a>,
+ these
+                    checks throw the standard exception invalid_argument. In
+                    practice, you'll probably want to craft a more specific set
+                    of exceptions; I use invalid_argument as more of a
+                    placeholder here. You also must add the appropriate throw
+                    clauses to the auto_pointer class definitions in
+                    <A href="list4.htm">Listings 4</a>
+and
+                    <A href="list5.htm">5</a>.
+ </p>
+               
+               <p> Depending on the template
+                    instantiation model your compiler uses, each translation
+                    unit may create a redundant copy of the derived-class
+                    implementations. This is an organic problem with most
+                    template instantiation, a problem the C++ Standard does not
+                    directly address. </p>
+               
+               <p> With clever use of translation units
+                    and macros, we've partitioned the derived classes into a
+                    common interface/implementation subset (encapsulated in
+                    auto_pointer.h) and a class-specific implementation (in each
+                    auto_XXX_pointer.h). While I normally don't like to use
+                    either translation units or macros as a design element, the
+                    combination here is simply too useful and extensible to pass
+                     up.</p>
+               
+               <h4><FONT COLOR="#000080">It's a Small World
+               After All</FONT></H4>
+               
+               <p>The same month I first mentioned
+                    auto_ptr, MSJ (Microsoft Systems Journal) made reference to
+                    a Microsoft-specific variation [<A href="#NOTE5">5</a>]
+.
+                    The article describes a COM smart pointer called CComPtr.
+                    This class is part of Microsoft's new ATL, or Active
+                    Template Library [<A href="#NOTE6">6</a>]
+. CComPtr offers
+                    an alternative to some of what I'm showing you, so you may
+                    find the article an informative companion piece. </p>
+               
+               <p> On a related personal note: MSJ
+                    Technical Editor Dave Edson will have retired from Microsoft
+                    by the time you read this. As you may recall, Dave persuaded
+                    me to write for MSJ earlier this year. </p>
+               
+               <p> Ironically, he was the very first
+                    person to interview me for my initial job at Microsoft, a
+                    distinction for which I've alternately blessed and cursed
+                    him since. Although Dave already has started up a new
+                    business repairing and renting out old pinball machines, I
+                    still expect we'll have more time than ever to play our
+                    interminable games of 9-Ball. </p>
+               
+               <p> One more thing. Dave and I are into
+                    Star Trek. As I'm writing, the season-ending cliffhanger of
+                    Star Trek Voyager just aired, while as you're reading, the
+                    conclusion is about to air, a truly Voyageresque space/time
+                    weirdness. Forget about life being like a box of chocolates
+                    &#151; it's actually more like a Mobius strip.</p>
+               
+               <h4><FONT COLOR="#000080">Beyond the Blue
+               Horizon</FONT></H4>
+               
+               <p>In the next couple months I'll extend
+                    auto_pointer for other allocation schemes, start making up
+                    for the lack of NULL and arrays, and browse my copious
+                    reader mail.</p>
+               
+               <h4><FONT COLOR="#000080">Notes</FONT></H4>
+               
+               <p>[<A name="NOTE1">1]</a>
+Okay, to ward
+                    off spamming from Pascal language lawyers, I should say nil
+                    is either a keyword or a predefined identifier. I don't have
+                    a copy of Jensen &amp; Wirth handy, so I don't remember for
+                    sure. </p>
+               
+               <p> [<A name="NOTE2">2</a>]
+ For reasons
+                    unknown to me, the C library's pool of dynamically-allocated
+                    memory is called the "heap," while C++'s is called
+                    the "free store." More confusing still, C++'s
+                    global new (which carves memory from the free store) often
+                    internally calls malloc (which carves from the heap).
+                    </p>
+               
+               <p> [<A name="NOTE3">3</a>]
+ See "The
+                    Learning C/C++urve: Potpourri for $100, Alex," CUJ,
+                    December 1996, p. 76. </p>
+               
+               <p> [<A name="NOTE4">4</a>]
+ This is an
+                    apparent paradox of pure virtual destructors, that you must
+                    implement a function you never intend to call. If you don't
+                    see the connection, just take it on faith for now; I'll add
+                    it to my burgeoning list for future column ideas. </p>
+               
+               <p> [<A name="NOTE5">5</a>]
+ Don Box. "The
+                    Active Template Library Makes Building Compact COM Objects a
+                    Joy," Microsoft Systems Journal, June 1997, pp. 43-45.
+                    </p>
+               
+               <p> [<A name="NOTE6">6</a>]
+ Contrast
+                    this to Standard C++'s STL, which is presumably an Inert
+                    Template Library. </p>
+               
+               <p><I>Bobby Schmidt is a freelance
+                    writer, teacher, consultant, and programmer. He is also a
+                    member of the ANSI/ISO C standards committee, an alumnus of
+                    Microsoft, and an original "associate" of (Dan)
+                    Saks &amp; Associates. In other career incarnations, Bobby
+                    has been a pool hall operator, radio DJ, private
+                    investigator, and astronomer. You may summon him at 14518
+                    104th Ave NE Bothell WA 98011; by phone at +1-425-488-7696,
+                    or via Internet e-mail as rschmidt@netcom.com. </I></p>
+     
+<h4><a href="../../../source/1997/sep97/schmidt.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+     </BODY>
+</HTML>

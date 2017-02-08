@@ -1,0 +1,246 @@
+<HTML><HEAD>
+<TITLE>June 2000/The Journeyman's Shop/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2: Implementation of class fp</A></h4>
+<pre>
+// fp.cpp
+#include &lt;math.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;iostream&gt;
+#include &lt;iomanip&gt;
+#include &lt;sstream&gt;
+#include "fp.h"
+
+const int BIAS = 127;
+const int MIN_EXP = 0;
+const int MAX_EXP = 255;
+const int P = 15;
+const long MIN_NORM = 1 &lt;&lt; (P - 1);
+const long ONE = 1 &lt;&lt; P;
+
+inline long fp::lf() const
+    {    // sign-extend fraction and convert to long
+    return long(is_neg ? -frac : frac);
+    }
+
+fp::fp()
+    {    // construct
+    convert(0.0);
+    }
+
+fp::fp(const char *str)
+    {    // construct from string
+    convert(strtod(str, NULL));
+    }
+
+fp::fp(double d)
+    {    // construct from double
+    convert(d);
+    }
+
+bool fp::eq(const fp&amp; f) const
+    {    // return this equals f
+    return is_neg == f.is_neg &amp;&amp; exp == f.exp &amp;&amp; frac == f.frac;
+    }
+
+bool fp::lt(const fp&amp; f) const
+    {    // return this less than f
+    return is_neg
+        ? exp == f.exp
+            ? f.frac &lt; frac
+            : f.exp &lt; exp
+        : exp == f.exp
+            ? frac &lt; f.frac
+            : exp &lt; f.exp;
+    }
+
+fp operator + (const fp&amp; f1, const fp&amp; f2)
+    {    // add f1 to f2
+    fp res = f1;
+    res += f2;
+    return res;
+    }
+
+fp&amp; fp::operator += (const fp&amp; f)
+    {    // add f to this fp object
+    return f.exp &lt;= exp
+        ? add(*this, f)
+        : add(f, *this);    
+    }
+
+fp operator - (const fp&amp; f1, const fp&amp; f2)
+    {    // subtract f2 from f1
+    fp res = f1;
+    return res -= f2;
+    }
+
+fp&amp; fp::operator -= (const fp&amp; f)
+    {    // subtract f from this fp object
+    return f.exp &lt;= exp
+        ? add(*this, -f)
+        : add(-f, *this);    
+    }
+
+fp operator - (const fp&amp; f)
+    {    // negate this fp object
+    fp res = f;
+    res.is_neg = !res.is_neg;
+    return res;
+    }
+
+fp operator * (const fp&amp; f1, const fp&amp; f2)
+    {    // multiply f1 by f2
+    fp res = f1;
+    res *= f2;
+    return res;
+    }
+
+fp&amp; fp::operator *= (const fp&amp; f)
+    {    // multiply this fp object by f
+    if (exp == 0 &amp;&amp; frac == 0)
+        is_neg = is_neg != f.is_neg;
+    else if (f.exp == 0 &amp;&amp; f.frac == 0)
+        {    // handle zero second argument
+        exp = 0;
+        frac = 0;
+        is_neg = is_neg != f.is_neg;
+        }
+    else
+        normalize(exp + f.exp - BIAS, lf() * f.lf());
+    return *this;    
+    }
+
+fp operator / (const fp&amp; f1, const fp&amp; f2)
+    {    // divide f1 by f2
+    fp res = f1;
+    res /= f2;
+    return res;
+    }
+
+fp&amp; fp::operator /= (const fp&amp; f)
+    {    // divide this fp object by f
+    if (exp == 0 &amp;&amp; frac == 0)
+        is_neg = is_neg != f.is_neg;
+    else if (f.exp == 0 &amp;&amp; f.frac == 0)
+        exception(div_by_zero);
+    else
+        normalize(exp - f.exp + BIAS,
+            ((lf() &lt;&lt; P) / f.lf()) &lt;&lt; P);
+    return *this;    
+    }
+
+fp&amp; fp::add(const fp&amp; f1, const fp&amp; f2)
+    {    // set this object to sum of f1 and f2
+    long fracr = f1.lf() &lt;&lt; P;
+    if (f1.exp - f2.exp &lt; P + 2)
+        fracr += ((f2.lf() &lt;&lt; P) &gt;&gt; (f1.exp - f2.exp));
+    return normalize(f1.exp, fracr);
+    }
+
+void fp::convert(double d)
+    {    // convert double to fp object
+    int e;
+    double f = frexp(d, &amp;e);
+    if (f == 0.0)
+        {    // handle zero specially
+        exp = 0;
+        frac = 0;
+        is_neg = false;
+        }
+    else
+        normalize(e + BIAS, long(f * (1L &lt;&lt; P)) &lt;&lt; P);
+    }
+
+fp&amp; fp::normalize(int e, long fr)
+    {    // set this object to normalized value of
+        // exponent e and fraction fr
+    if (fr == 0)
+        {    // handle zero specially
+        exp = 0;
+        frac = 0;
+        return *this;
+        }
+    if ((ONE &lt;&lt; P) &lt;= abs(fr))
+        {    // handle fraction overflow
+        fr &gt;&gt;= 1;
+        ++e;
+        }
+    while (abs(fr) &lt; (MIN_NORM &lt;&lt; P))
+        {    // scale left
+        fr &lt;&lt;= 1;
+        --e;
+        }
+    // check for round
+    if (abs(fr) &amp; (1 &lt;&lt; (P - 1)))
+        if (fr &lt; 0)
+            fr -= 1 &lt;&lt; P;
+        else    
+            fr += 1 &lt;&lt; P;
+    if ((ONE &lt;&lt; P) &lt;= abs(fr))
+        {    // handle fraction overflow
+        fr &gt;&gt;= 1;
+        ++e;
+        }
+    if (e &lt; MIN_EXP)
+        exception(exp_underflow);
+    else if (MAX_EXP &lt; e)
+        exception(exp_overflow);
+    exp = e;
+    is_neg = fr &lt; 0;
+    frac = abs(fr) &gt;&gt; P;
+    return *this;
+    }
+
+std::ostream&amp; operator &lt;&lt; (std::ostream&amp; out, const fp&amp; f)
+    {    // insert into stream
+    double d;
+    if (f.exp == 0 &amp;&amp; f.frac == 0)
+        d = 0.0;
+    else
+        {    // convert non-zero value to double
+        d = f.frac;
+        d /= (1 &lt;&lt; P);
+        int e = f.exp - BIAS;
+        if (e == 0)
+            ;
+        else if (e &lt; 0)
+            for (int i = 0; i &lt; -e; ++i)
+                d /= 2;
+        else    
+            for (int i = 0; i &lt; e; ++i)
+                d *= 2;
+        if (f.is_neg)
+            d = -d;
+        }
+    return out &lt;&lt; d &lt;&lt; ' ' &lt;&lt; to_string(f);
+    }
+
+std::string to_string(const fp&amp; f)
+    {    // convert to text representation of internal data
+    std::ostringstream str;
+    str &lt;&lt; '(' &lt;&lt; (f.is_neg ? "-," : "+,")
+        &lt;&lt; (int)(f.exp - BIAS) &lt;&lt; ','
+        &lt;&lt; std::hex &lt;&lt; f.frac &lt;&lt; std::dec &lt;&lt; ')';
+    return str.str();
+    }
+
+static char *except_desc[] =
+    {    // descriptions of floating point exceptions
+    "divide by zero",
+    "exponent underflow",
+    "exponent overflow"
+    };
+
+void fp::exception(fp_exception except)
+    {    // handle floating point exceptions
+    std::cerr &lt;&lt; "floating point error: "
+        &lt;&lt; except_desc[except] &lt;&lt; std::endl;
+    std::exit(1);
+    }
+
+const fp fp::zero(0.0);
+const fp fp::one(1.0);
+const fp fp::two(2.0);
+</pre></body></html>

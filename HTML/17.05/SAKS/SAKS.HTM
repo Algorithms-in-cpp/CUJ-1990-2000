@@ -1,0 +1,462 @@
+<HTML>   
+     <HEAD>
+<TITLE>May 1999/C++ Theory and Practice</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocmay.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">C++ Theory and Practice: Thinking Deeper</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Dan Saks</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>Preserving constness where you want it is a little easier with templates, but it's still rife with complexities.</p>
+</BLOCKQUOTE>
+<HR>
+<BLOCKQUOTE>
+
+<p><I>Copyright &copy; 1999 by Dan Saks</I></p>
+
+<p>Last month, I described a problem with the semantics of the <B>const</B> qualifier. I also presented a programming technique that helps correct the problem. However, the technique is so cumbersome that I really can't recommend it. (See "C++ Theory and Practice: Thinking Deeply," <I>CUJ,</I> April 1999.)</p>
+<p>I have a solution that appears to be much more viable. It's rather involved and requires more than one article to explain it all. It's a bit of a digression from the program design issues I've been discussing, but I think it's pretty neat and I'd like to share it with you. As I cautioned last month, I haven't tested this technique very thoroughly, so it may have a few kinks in it. My hope is that some of you will use it (or at least try to use it) and provide feedback that will help me improve the technique or convince me that it isn't viable after all.</p>
+
+<h4><FONT COLOR="#000080">Recapping the Problem</FONT></H4>
+
+<p>The problem I'm addressing is in the semantics of const-qualified class objects that have data members of pointer or reference types. xr, my cross-reference generator program, provides code that illustrates the problem. (See "C++ Theory and Practice: Partitioning with Classes," <I>CUJ,</I> February 1999 and "C++ Theory and Practice: Trimming Excess Fat," <I>CUJ,</I> March 1999, for background on xr.)</p>
+<p>xr represents a cross-reference table as an object of class <B>cross_reference_table</B>, which in turn, implements the table as a binary tree. Each node in the tree is an object of the nested type <B>tree_node</B>. The <B>cross_reference_table</B> class has a private data member <B>root</B>, which holds the address of the tree's root node. The relevant parts of the class definition are:</p>
+
+<pre>
+class cross_reference_table
+    {
+public:
+    ...
+private:
+    struct tree_node;
+    ...
+    tree_node *root;
+    };
+</pre>
+
+<p>The definition for nested type <B>tree_node</B> appears outside the <B>cross_reference_table</B> class as:</p>
+
+<pre>
+struct
+cross_reference_table::tree_node
+    {
+    char *word;
+    list_node *first, *last;
+    tree_node *left, *right;
+    };
+</pre>
+
+<p>As I did last month, I will try to simplify the discussion by ignoring the enclosing class name for the time being (writing <B>cross_reference_table::tree_node</B> as just <B>tree_node</B>), and rewrite <B>tree_node</B> with each member defined on a separate line:</p>
+
+<pre>
+struct tree_node
+    {
+    char *word;
+    list_node *first;
+    list_node *last;
+    tree_node *left;
+    tree_node *right;
+    };
+</pre>
+
+<p>Class <B>cross_reference_table</B> has a static member function named <B>put_tree</B> declared as:</p>
+
+<pre>
+void put_tree(tree_node const *t);
+</pre>
+
+<p>Parameter <B>t</B> points to the root node of a tree. <B>put_tree</B> writes the contents of that tree to standard output. <B>put_tree</B> shouldn't alter the tree in the course of writing it out. Hence, the parameter declaration has a const qualifier so that <B>t</B> has type "pointer to const tree_node".</p>
+<p>In this example, every node in the tree, not just the root node, should be const. Unfortunately, that's not the way C++ sees it. Rather, an object declared as:</p>
+
+<pre>
+const_tree_node *t
+</pre>
+
+<p>behaves as if you had declared another type:</p>
+
+<pre>
+struct const_tree_node
+    {
+    char *const word;
+    list_node *const first;
+    list_node *const last;
+    tree_node *const left;
+    tree_node *const right;
+    };
+</pre>
+
+<p>and then declared <B>t</B> as:</p>
+
+<pre>
+const_tree_node *t
+</pre>
+
+<p>In other words, although every pointer member is const, they point to objects that are not const. Thus, <B>t</B> points to a tree in which only the root node is const. This is what I mean when I say that "<B>const</B> is shallow." <B>const</B> is shallow in C as well as in C++.</p>
+<p>In this situation, <B>const</B> should be deep. <B>put_tree</B>'s parameter <B>t</B> should behave as if it pointed to an object of type <B>const_tree_node</B>, defined as:</p>
+
+<pre>
+struct const_tree_node
+    {
+    char const *const word;
+    list_node const *const first;
+    list_node const *const last;
+    tree_node const *const left;
+    tree_node const *const right;
+    };
+</pre>
+
+<p>A tree composed of these nodes is "deeply const." Every node in the tree is const, not just the root.</p>
+<p>Thus, the problem is getting const <B>tree_node</B> objects to act like <B>const_tree_node</B> objects, which preserve deep constness.</p>
+<p>Last month, I introduced a technique for enforcing deep constness. The technique is conceptually simple but rather tedious. For each non-static data member of pointer type, you add a pair of member functions overloaded as const and non-const member functions. The const member returns a reference to the pointer data member with const qualifiers added to the return type to produce deep const behavior. The non-const member function returns a reference to the pointer data member with no added const qualifiers. For non-const objects, the return value of the non-const member function acts just like the data member itself.</p>
+<p>For example, applying this technique to <B>tree_node</B>'s data member named <B>word</B> transforms:</p>
+
+<pre>
+struct tree_node
+    {
+    char *word;
+    ...
+    };
+</pre>
+
+<p>into:</p>
+
+<pre>
+struct tree_node
+    {
+public:
+    char *&amp;word();
+    char const *const &amp;word() const;
+    ...
+private:
+    char *_word;
+    };
+</pre>
+
+<p>You must do this for every other pointer member as well. That's how it gets tedious in a hurry. In C++, the common cure for such tedium is a template.</p>
+
+<h4><FONT COLOR="#000080">A Pointer Template</FONT></H4>
+
+<p>Let's consider implementing a template for a class that I'll call <B>deep_pointer</B>. <B>deep_pointer</B> bears some similarity to the standard <B>auto_ptr</B> class template, but unlike <B>auto_ptr</B>, which provides dynamic memory deallocation, <B>deep_pointer</B> provides no run-time functionality beyond that of a built-in pointer type. (For more information on <B>auto_ptr</B>, see selected installments of Bobby Schmidt's old "Learning C/C++urve" column <a href="#1">[1]</a> and P.J. Plauger's "Standard C/C++" column <a href="#2">[2]</a>.)</p>
+<p>Ideally, a <B>deep_pointer&lt;T&gt;</B> should behave exactly like a true "pointer to T", except that a <B>deep_pointer&lt;T&gt;</B> preserves deep constness. In other words, an object declared as:</p>
+
+<pre>
+deep_pointer&lt;T&gt; p;
+</pre>
+
+<p>should behave just like an object declared as:</p>
+
+<pre>
+T *p;
+</pre>
+
+<p>However, an object declared as:</p>
+
+<pre>
+deep_pointer&lt;T&gt; const p;
+</pre>
+
+<p>should behave exactly like an object declared as:</p>
+
+<pre>
+T const *const p;
+</pre>
+
+<p>Syntactically, <B>deep_pointer&lt;T&gt;</B> and <B>const</B> are both declaration-specifiers. You can write them in either order. Thus,</p>
+
+<pre>
+deep_pointer&lt;T&gt; const p;
+const deep_pointer&lt;T&gt; p;
+</pre>
+
+<p>are equivalent. I prefer the former for purely stylistic reasons.</p>
+<p>More than one declaration-specifier can appear in a template type argument (inside the <B>&lt; &gt;</B>), so that:</p>
+
+<pre>
+deep_pointer&lt;T const&gt; p;
+deep_pointer&lt;const T&gt; p;
+</pre>
+
+<p>are also equivalent. Again, I prefer the former.</p>
+<p>Be aware that:</p>
+
+<pre>
+deep_pointer&lt;T&gt; const p;
+</pre>
+
+<p>is different from:</p>
+
+<pre>
+deep_pointer&lt;T const&gt; p;
+</pre>
+
+<p>The former is a "const deep_pointer to T" while the latter is a "deep_pointer to const T".</p>
+<p>The header <B>deep.h</B> appearing in <A HREF="list1.htm">Listing 1</A> contains my first attempt at a <B>deep_pointer</B> class template. The template employs a technique that's remarkably similar to the brute force technique I described earlier, but because it's a template, it eliminates much of the tedium.</p>
+<p>The template implements a <B>deep_pointer&lt;T&gt;</B> as a single private member of type <B>T *</B> called <B>actual_pointer</B>. The class also provides two overloaded member functions named <B>value</B>, each of which returns a reference to the actual pointer. The functions are overloaded as const and non-const members. As in the brute force technique, the const member returns a reference to the actual pointer with const-qualifiers added to the return type to produce deep const behavior. The non-const member function returns a reference to the actual pointer with no added const qualifiers.</p>
+<p>Using this template, the <B>tree_node</B>'s definition is almost as concise as it was when using built-in pointers:</p>
+
+<pre>
+struct
+cross_reference_table::tree_node
+    {
+    deep_pointer&lt;char&gt; word;
+    deep_pointer&lt;list_node&gt;
+        first, last;
+    deep_pointer&lt;tree_node&gt;
+        left, right;
+    };
+</pre>
+
+<p>That's the good part. On the other hand, the code that uses these <B>deep_pointer</B>s can't refer to them as if they were built-in pointers. That's the bad part.</p>
+<p>For example, <B>cross_reference_table::put_tree</B> contains the recursive call:</p>
+
+<pre>
+put_tree(t-&gt;left);
+</pre>
+
+<p>put_tree</B>'s parameter has type <B>tree_node const *</B>. When <B>tree_node</B>'s member <B>left</B> had type <B>tree_node *</B>, this call worked just fine. However, now that <B>left</B> has type <B>deep_pointer&lt;tree_node&gt; const</B>, you must write the call as:</p>
+
+<pre>
+put_tree(t-&gt;left.value());
+</pre>
+
+<p>to transform <B>t-&gt;left</B> to a true pointer type.</p>
+
+<h4><FONT COLOR="#000080">A Less Obtrusive Notation</FONT></H4>
+
+<p>You can make the conversions from deep pointers to true pointers less obtrusive by changing the conversion function names from <B>valve</B> to <B>operator()</B>. That is, you change the declarations of <B>deep_pointer</B>'s member functions:</p>
+
+<pre>
+T *&amp;value();
+T const *const &amp;value() const;
+</pre>
+
+<p>to:</p>
+
+<pre>
+T *&amp;operator()();
+T const *const &amp;operator()() const;
+</pre>
+
+<p>respectively. Change the corresponding member definitions, too.</p>
+<p>The revised header <B>deep.h</B> appears in <A HREF="list2.htm">Listing 2</A>. Using this version of <B>deep_pointer&lt;T&gt;</B>, a call such as:</p>
+
+<pre>
+put_tree(t-&gt;left.value());
+</pre>
+
+<p>becomes:</p>
+
+<pre>
+put_tree(t-&gt;left());
+</pre>
+
+<p>This call appears exactly as it did in the version of the program I presented last month using the "brute force" technique. The parentheses are less obtrusive, but they're still a nuisance.</p>
+<p>Mercifully, you don't have to change every occurrence of expressions such as <B>p-&gt;m</B> into <B>p-&gt;m()</B>. An assignment such as:</p>
+
+<pre>
+t-&gt;left = t-&gt;right;
+</pre>
+
+<p>still compiles and works correctly because members <B>left</B> and <B>right</B> have the same type, namely, <B>deep_pointer&lt;tree_node&gt;</B>. The compiler uses the generated copy assignment operator:</p>
+
+<pre>
+deep_pointer&lt;tree_node&gt; &amp;operator=
+    (deep_pointer&lt;tree_node&gt; const &amp;);
+</pre>
+
+<p>In this case, you need not rewrite the assignment as:</p>
+
+<pre>
+t-&gt;left() = t-&gt;right();
+</pre>
+
+<p>Still, the program has more than thirty places where expressions that had the form <B>p-&gt;m</B> now look like <B>p-&gt;m()</B>. Let's see about getting rid of those pesky parentheses so that, aside from their declarations, deep pointers can look just like ordinary pointers.</p>
+<p>If you change some of the other pointers in the program into <B>deep_pointer</B>s, types should match up so that you don't need to write the function call parentheses to convert <B>deep_pointer</B>s into ordinary pointers. Anyway, that's the hope. For example, the type of an expression such as <B>t-&gt;left</B> is the type of <B>left</B>, which in this example is <B>deep_pointer&lt;tree_node&gt;</B>. Thus, if we change <B>put_tree</B>'s declaration from:</p>
+
+<pre>
+void put_tree(tree_node const *t);
+</pre>
+
+<p>to:</p>
+
+<pre>
+void put_tree
+    (deep_pointer&lt;tree_node&gt; const t);
+</pre>
+
+<p>then:</p>
+
+<pre>
+put_tree(t-&gt;left);
+</pre>
+
+<p>should work in place of:</p>
+
+</pre>
+put_tree(t-&gt;left());
+</pre>
+
+<p>Unfortunately, it doesn't. Since this call to <B>put_tree</B> is recursive, the <B>t</B> in <B>t-&gt;left</B> is the same <B>t</B> as the <B>t</B> in <B>put_tree</B>'s parameter list. <B>t</B> is a <B>deep_pointer&lt;tree_node&gt;</B>, which cannot be the left operand of an arrow, at least not yet. Therefore, you must write the call as:</p>
+
+<pre>
+put_tree(t()-&gt;left);
+</pre>
+
+<p>which is really no better than:</p>
+
+<pre>
+put_tree(t-&gt;left());
+</pre>
+
+<p>Let's leave <B>put_tree</B>'s parameter type as <B>tree_node const *</B> and see if we can eliminate the parentheses another way.</p>
+
+<h4><FONT COLOR="#000080">Constructors and Conversion Operators</FONT></H4>
+
+<p>You can eliminate some of the function call parentheses by providing implicit conversions that can convert deep pointers to or from built-in pointers. Constructors provide conversions from built-in pointers to deep pointers. Conversion operators provide conversions that go the other way &#151; from deep pointers to built-in pointers.</p>
+<p><A HREF="list3.htm">Listing 3</A> contains a new version of <B>deep.h</B> in which class template <B>deep_pointer&lt;T&gt;</B> has a constructor declared as:</p>
+
+<pre>
+deep_pointer(T *p);
+</pre>
+
+<p>Of course, this constructor lets you write declarations that initialize a <B>deep_pointer&lt;T&gt;</B> object using a value of type <B>T *</B>, for any type <B>T</B>. Here's an example where <B>T</B> is <B>char</B>:</p>
+
+<pre>
+char *s = "an important message";
+deep_pointer&lt;char&gt; p = s;
+</pre>
+
+<p>Since it can be called with exactly one argument and it's not declared with the keyword <B>explicit</B>, this constructor is a <I>converting constructor.</I> It acts as an implicit conversion from type <B>T *</B> to type <B>deep_pointer&lt;T&gt;</B>.</p>
+<p>For example, <A HREF="list4.htm">Listing 4</A> contains header <B>table.h</B>, which defines the <B>cross_reference_table</B> class and its corresponding inline member functions. The definition for the default constructor contains the single statement:</p>
+
+<pre>
+root = NULL;
+</pre>
+
+<p>which uses the converting constructor to convert <B>NULL</B> to a deep pointer.</p>
+<p><B>NULL</B> is actually an integer constant expression with value zero. The program converts <B>NULL</B> to <B>tree_node *</B>, and then passes the resulting pointer to the converting constructor to obtain a temporary deep pointer. It uses the generated copy assignment to copy the temporary deep pointer to root, and then destroys the temporary.</p>
+<p>Fortunately, all of this work is just conceptual. Compilers typically eliminate the temporary and copy the null pointer value directly into root's <B>actual_pointer</B> member. The resulting code is the same as if root still had type <B>tree_node *</B>.</p>
+<p>The <B>deep_pointer</B> class template in <A HREF="list3.htm">Listing 3</A> also has a default constructor declared, of course, as:</p>
+
+<pre>
+deep_pointer();
+</pre>
+
+<p>The compiler won't generate this constructor because the <B>deep_pointer</B> class already has at least one explicitly declared constructor &#151; the converting constructor.</p>
+<p>The definition for <B>cross_reference_table</B>'s default constructor doesn't specify a member initializer for data member <B>root</B>. Therefore, the compiler generates a call to <B>deep_pointer</B>'s default constructor that initializes <B>root</B> before entering the body of <B>cross_reference_table</B>'s default constructor. Again, the call is conceptual. <B>deep_pointer</B>'s default constructor is an inline function with an empty body. Compilers can optimize the call away.</p>
+<p>In this particular instance, you can eliminate the need to call <B>deep_pointer</B>'s default constructor by rewriting <B>cross_reference_table</B>'s constructor to specify a member initializer, as in:</p>
+
+<pre>
+inline
+cross_reference_table::
+cross_reference_table()
+    : root(NULL)
+    {
+    }
+</pre>
+
+<p>Still, the <B>deep_pointer</B> class should have a default constructor so that it can mimic the behavior of a built-in pointer.</p>
+<p>The body of <B>cross_reference_table::add</B> in <A HREF="list4.htm">Listing 4</A> contains the statement:</p>
+
+<pre>
+root = add_tree(root, w, n);
+</pre>
+
+<p>add_tree</B>'s return type is <B>tree_node *</B>. Here again, the program uses the converting constructor, this time to transform the return value from <B>add_tree</B> into a <B>deep_pointer&lt;tree_node&gt;</B>, which it then assigns to <B>root</B>.</p>
+<p><B>add_tree</B>'s first parameter also has type <B>tree_node *</B>, but the first argument to the call, namely <B>root</B>, has type <B>deep_pointer&lt;tree_node&gt;</B>. A constructor can't do this conversion. For this you need a conversion operator. Class <B>deep_pointer&lt;T&gt;</B> provides two such operators, declared in <A HREF="list3.htm">Listing 3</A> as:</p>
+
+<pre>
+operator T *&amp;();
+operator T const *const &amp;() const;
+</pre>
+
+<p>Except for their names, these conversion operators are identical to the overloaded <B>operator()</B> functions in <A HREF="list2.htm">Listing 2</A>.</p>
+<p><B>cross_reference_table::add</B> is a non-const member function. In the function body, <B>root</B> is a non-const object. Therefore, when passing <B>root</B> as the first argument to <B>add_tree</B> in:</p>
+
+<pre>
+add_tree(root, w, n);
+</pre>
+
+<p>the compiler uses the non-const conversion operator. The call behaves as if you had written the conversion explicitly using any of the following forms:</p>
+<p>1.  an old-style or C-style cast:</p>
+
+<pre>
+add_tree((tree_node *)root, w, n);
+</pre>
+
+<p>2.  a new-style cast:</p>
+
+<pre>
+add_tree(static_cast&lt;tree_node *&gt;(root), w, n);
+</pre>
+
+<p>3.  an explicit member function call:</p>
+
+<pre>
+add_tree(root.operator T *&amp;(), w, n);
+</pre>
+
+<p>None of these is very pretty.</p>
+<p><B>cross_reference_table::put</B> is a const member function so that in its body, <B>root</B> is a const object. Therefore, when it passes <B>root</B> as the argument to <B>put_tree</B> in:</p>
+
+<pre>
+put_tree(root);
+</pre>
+
+<p>the compiler uses the const conversion operator. This converts <B>root</B> from <B>deep_pointer&lt;tree_node&gt; const</B> to <B>tree_node const *const &amp;</B>. This preserves the deep constness of the <B>tree_node</B> addressed by <B>root</B>.</p>
+
+<h4><FONT COLOR="#000080">The -&gt; Operator</FONT></H4>
+
+<p>The body of <B>cross_reference_table::add</B> contains several expressions with multiple <B>-&gt;</B> operators in succession. In the original xr program, which used built-in pointers instead of deep pointers, one such statement looks like:</p>
+
+<pre>
+t-&gt;first-&gt;next = NULL;
+</pre>
+
+<p>When using the <B>deep_pointer</B> class template that has <B>operator()</B> as the conversion function, that statement looks like:</p>
+
+<pre>
+t-&gt;first()-&gt;next = NULL;
+</pre>
+
+<p>This expression looks a bit odd and I rather not concede that it has to be done this way. Once again, I'd like to get rid of those parentheses.</p>
+<p>When I changed the <B>operator()</B> functions to conversion operators, I briefly hoped that the compiler would once again let me write:</p>
+
+<pre>
+t-&gt;first-&gt;next = NULL;
+</pre>
+
+<p>I was thinking it would apply the conversion operator to turn member <B>first</B> into a pointer that would be the left operand of the second <B>-&gt;</B> operator. Silly me.</p>
+<p>Rather, you must apply the conversion operator explicitly, as in:</p>
+
+<pre>
+static_cast&lt;list_node *&gt;(t-&gt;first)
+    -&gt;next = NULL;
+</pre>
+
+<p>Clearly, deep pointers don't yet look like built-in pointers. To close this gap, define <B>operator-&gt;</B> as a member of class template <B>deep_pointer&lt;T&gt;</B>. Not surprisingly, you need two such operators: one const and the other non-const.</p>
+<p><A HREF="list5.htm">Listing 5</A> contains yet another version of <B>deep.h</B> with a pair of members named <B>operator-&gt;</B>. <A HREF="list6.htm">Listing 6</A> contains <B>table.cpp</B>, the source file that defines the non-inline members for the <B>cross_reference_table</B> class. Using this latest version of <B>deep.h</B>, <B>table.cpp</B> can manipulate deep pointers as if they were built-in pointers, except that it can't use deep pointers to violate the deep constness of the cross-reference table. And that's good.</p>
+
+<h4><FONT COLOR="#000080">More to Come</FONT></H4>
+
+<p>I've tested the code in <A HREF="list6.htm">Listing 6</A> using a few different compilers. One accepts the code without complaint. Another issues warnings but compiles and links the code anyway, producing an xr program that seems to run just fine. Yet another compiler rejects the code, alleging the presence of ambiguities. In the next installment, I'll tell you which one of these compilers is right.</p>
+<p>The <B>deep_pointer</B> class template in <A HREF="list5.htm">Listing 5</A> is still only a start. It needs more operators to completely reproduce the behavior of built-in pointers. That's something else to do next time.</p>
+
+<h4><FONT COLOR="#000080">References</FONT></H4>
+
+<p><a name="1"></a>[1]  Bobby Schmidt. "The Learning C/C++urve," <I>C/C++ Users Journal,</I> July-December 1997 and February-March 1998.</p>
+<p><a name="2"></a>[2]  P.J. Plauger. "Standard C/C++: The Header <B>&lt;memory&gt;</B>," <I>C/C++ Users Journal,</I> July 1996.</p>
+
+<p><i>Dan Saks is the president of Saks &amp; Associates, which offers training and consulting in C++ and C. He is active in C++ standards, having served nearly seven years as secretary of the ANSI and ISO C++ standards committees. Dan is coauthor of </i>C++ Programming Guidelines<i>, and codeveloper of the Plum Hall Validation Suite for C++ (both with Thomas Plum). You can reach him at 393 Leander Dr., Springfield, OH 45504-4906 USA, by phone at +1-937-324-3601, or electronically at <B>dsaks@wittenberg.edu</B>.</i></p>
+
+
+<h4><a href="../../../source/1999/may99/saks.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

@@ -1,0 +1,390 @@
+
+
+
+
+<HTML><HEAD>
+
+<TITLE>October 1996/C++ Theory and Practice/Listing 1</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4>Listing 1:	A declaration parser that also recognizes non-empty parameter
+lists (with possibly unnamed parameters) in function declarations</h4>
+
+<pre>
+
+//
+// decl.cpp - translate C++ declarations into English
+// with syntactic error detection and recovery
+// using exception handling
+//
+// Copyright (C) 1996 by Dan Saks.
+// May be copied for private, non-commercial use,
+// provided this copyright notice remains intact.
+// All other rights reserved.
+//
+#include &lt;iostream&gt;
+#include "scanner.h"
+class parser
+    {
+public:
+    parser(istream &amp;, ostream &amp;);
+private:
+    enum declarator_category { ABSTRACT, CONCRETE, EITHER };
+    struct recoverable_error { };
+    scanner input;
+    ostream &amp;output;
+    string indent;
+    void error(const string &amp;);
+    void must_be(token::category);
+    string array_suffix();
+    string cv_qualifier_seq();
+    string declarator(declarator_category);
+    string decl_specifier_seq();
+    string direct_declarator(declarator_category);
+    string function_suffix();
+    string parameter_declaration();
+    string parameter_list();
+    string ptr_operator();
+    string simple_declaration();
+    parser(const parser &amp;);
+    parser &amp;operator=(const parser &amp;);
+    };
+void parser::error(const string &amp;why)
+    {
+    output &lt;&lt; "error: " &lt;&lt; why &lt;&lt; '\n';
+    input.reset();
+    indent = "";
+    throw recoverable_error();
+    }
+void parser::must_be(token::category tc)
+    {
+    if (input.current().kind() == tc)
+        input.get();
+    else
+        error(string("\'") + image(tc) + "' expected");
+    }
+//
+// array-suffix =
+//     "[" [ constant-name | integer-literal ] "]" .
+//
+string parser::array_suffix()
+    {
+    must_be(token::LEFT_BRACKET);
+    string as = "array with ";
+    token::category tc = input.current().kind();
+    if (tc == token::NAME || tc == token::INT_LITERAL)
+        {
+        as += input.current().text() + ' ';
+        input.get();
+        }
+    else
+        as += "unspecified number of ";
+    as += "elements of type...\n";
+    must_be(token::RIGHT_BRACKET);
+    return indent + as;
+    }
+//
+// cv-qualifier-seq =
+//     { "const" | "volatile" } .
+//
+string parser::cv_qualifier_seq()
+    {
+    bool cq = false;
+    bool vq = false;
+    token::category tc;
+    for (;;)
+        {
+        tc = input.current().kind();
+        if (tc == token::CONST)
+</pre>
+<p><b><u>
+           {</u></b></p>
+
+<pre>
+            if (cq)
+                error("redundant 'const' qualifier");
+            else
+                cq = true;
+            }
+        else if (tc == token::VOLATILE)
+            {
+            if (vq)
+                error("redundant 'volatile' qualifier");
+            else
+                vq = true;
+            }
+        else
+            break;
+        input.get();
+        }
+    string t;
+    if (cq)
+        t += "const ";
+    if (vq)
+        t += "volatile ";
+    return t;
+    }
+//
+// declarator =
+//     direct-declarator | ptr-operator declarator .
+//
+string parser::declarator(declarator_category dc)
+    {
+    token::category tc = input.current().kind();
+    if (tc == token::AMPERSAND || tc == token::STAR
+    || tc == token::NAME)
+        {
+        string p = ptr_operator();
+        return declarator(dc) + p;
+        }
+    else
+        return direct_declarator(dc);
+    }
+//
+// decl-specifier-seq =
+//     {
+//     "const" | "volatile" | type-keyword | type-name
+//     } .
+//
+string parser::decl_specifier_seq()
+    {
+    bool cq = false;
+    bool vq = false;
+    string tn;
+    token::category tc;
+    for (;;)
+        {
+        tc = input.current().kind();
+        if (tc == token::NAME)
+            {
+            input.mark();
+            tc = input.get().kind();
+            input.backup();
+            if (tc == token::SCOPE)
+                break;
+            tc = input.current().kind();
+            }
+        if (tc == token::CONST)
+            {
+            if (!cq)
+                cq = true;
+            else
+                error("redundant 'const' qualifier");
+            }
+        else if (tc == token::VOLATILE)
+            {
+            if (!vq)
+                vq = true;
+            else
+                error("redundant 'volatile' qualifier");
+            }
+        else if (tc == token::TYPE_KEYWORD
+        || tc == token::NAME)
+            {
+            if (tn == "")
+                tn = input.current().text();
+            else
+                break;
+            }
+        else
+            break;
+        input.get();
+        }
+    if (tn == "")
+        {
+        if (!(cq | vq))
+            error("no type specifier");
+        tn = "int";
+</pre>
+<p><b><u>
+       }</u></b></p>
+
+<pre>
+    string t;
+    if (cq)
+        t += "const ";
+    if (vq)
+        t += "volatile ";
+    return t + tn;
+    }
+//
+// direct-declarator =
+//     [ declarator-id | "(" declarator ")" ]
+//         { array-suffix | function-suffix } .
+//
+string parser::direct_declarator(declarator_category dc)
+    {
+    string dd;
+    token::category tc = input.current().kind();
+    if (tc == token::IDENTIFIER)
+        {
+        if (dc == ABSTRACT)
+            error("declarator-id not allowed in abstract-declarator");
+        dd = indent + input.current().text() + " is ...\n";
+        input.get();
+        }
+    else if (tc == token::LEFT_PAREN)
+        {
+        bool its_grouping = false;
+        input.mark();
+        tc = input.get().kind();
+        if (tc == token::IDENTIFIER
+        || tc == token::AMPERSAND || tc == token::STAR
+        || tc == token::LEFT_BRACKET || tc == token::LEFT_PAREN
+        || (tc == token::NAME &amp;&amp; input.get().kind() == token::SCOPE))
+            its_grouping = true;
+        input.backup();
+        if (its_grouping)
+            {
+            input.get();
+            dd = declarator(dc);
+            must_be(token::RIGHT_PAREN);
+            }
+        }
+    if (dd == "")
+        {
+        if (dc == CONCRETE)
+            error("declarator-id missing or obscured"
+                " by something before it");
+        dd = indent + "&lt;unnamed&gt; is ...\n";
+        }
+    for (;;)
+        {
+        tc = input.current().kind();
+        if (tc == token::LEFT_BRACKET)
+            dd += array_suffix();
+        else if (tc == token::LEFT_PAREN)
+            dd += function_suffix();
+        else
+            break;
+        }
+    return dd;
+    }
+//
+// function-suffix =
+//     "(" [ parameter-list ] ")" cv-qualifier-seq .
+//
+string parser::function_suffix()
+    {
+    must_be(token::LEFT_PAREN);
+    string fs = "function with ";
+    token::category tc = input.current().kind();
+    if (tc == token::NAME || tc == token::TYPE_KEYWORD
+    || tc == token::CONST || tc == token::VOLATILE)
+        fs += "parameter(s) ...\n" + parameter_list();
+    else
+        fs += "no parameters ...\n";
+    must_be(token::RIGHT_PAREN);
+    fs += indent + "returning ...\n";
+    string cvs = cv_qualifier_seq();
+    if (cvs != "")
+        fs = cvs + "member " + fs;
+    return indent + fs;
+    }
+//
+// parameter-declaration =
+//     decl-specifier-seq declarator .
+//
+</pre>
+<p><b><u>string
+parser::parameter_declaration()</u></b></p>
+
+<pre>
+    {
+    string dss = indent + decl_specifier_seq();
+    string pd = declarator(EITHER) + dss + '\n';
+    return pd;
+    }
+//
+// parameter-list =
+//     parameter-declaration { "," parameter-declaration } .
+//
+string parser::parameter_list()
+    {
+    const string tab_stop = "    ";
+    indent += tab_stop;
+    string pl = parameter_declaration();
+    while (input.current().kind() == token::COMMA)
+        {
+        input.get();
+        pl += parameter_declaration();
+        }
+    indent = string(indent, 0, indent.length() - tab_stop.length());
+    return pl;
+    }
+//
+// ptr-operator =
+//    "&amp;" | [ type-name "::" ] "*" cv-qualifier-seq .
+//
+string parser::ptr_operator()
+    {
+    token t = input.current();
+    if (t.kind() == token::AMPERSAND)
+        {
+        input.get();
+        return indent + "reference to ...\n";
+        }
+    else
+        {
+        string p = "pointer to ";
+        if (t.kind() == token::NAME)
+            {
+            p += "member of " + t.text()
+                + " with type ";
+            input.get();
+            must_be(token::SCOPE);
+            }
+        must_be(token::STAR);
+        return indent + cv_qualifier_seq() + p + "...\n";
+        }
+    }
+//
+// simple-declaration =
+//     decl-specifier-seq declarator { "," declarator } .
+//
+string parser::simple_declaration()
+    {
+    string d = decl_specifier_seq();
+    string sd = declarator(CONCRETE) + d + '\n';
+    while (input.current().kind() == token::COMMA)
+        {
+        input.get();
+        sd += declarator(CONCRETE) + d + '\n';
+        }
+    return sd;
+    }
+//
+// parser =
+//     { simple-declaration ";" } .
+//
+parser::parser(istream &amp;is, ostream &amp;os)
+    : input(is), output(os)
+    {
+    for (;;)
+        try
+            {
+            while (input.get().kind() != token::NO_MORE)
+                {
+                string s = simple_declaration();
+                if (input.current().kind() != token::SEMICOLON)
+                    error("';' expected");
+                else
+                    output &lt;&lt; s;
+                }
+            break;
+            }
+        catch (const recoverable_error &amp;)
+            {
+            }
+    }
+int main()
+    {
+    parser declarations(cin, cout);
+    return 0;
+</pre>
+<p><b><u>
+   }</u></b></p>
+
+<pre>
+//End of File
+</pre>
+</body></html>

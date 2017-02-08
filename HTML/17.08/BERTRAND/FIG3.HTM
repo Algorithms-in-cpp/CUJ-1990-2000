@@ -1,0 +1,142 @@
+<HTML><HEAD>
+<TITLE>August 1999/TrueType Font Secrets/Figure 3</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Figure 3: The Draw method of class CGlyph</A></h4>
+<pre>
+void 
+CGlyph::Draw(HDC hDC, const int xOffset, const int yOffset) const
+{
+   LPTTPOLYGONHEADER lpttph; // pointer to current polygon in 
+                             // glyph
+   LPTTPOLYCURVE lpttpc;     // pointer to current polycurve in 
+                             // polygon
+   DWORD dwHeaderOffset;     // byte offset of current polygon 
+                             // header from start of buffer
+   DWORD dwCurveOffset;      // byte offset of current polycurve 
+                             // header from start of polygon 
+                             // header
+   DWORD dwStructSize;       // size of current polycurve 
+                             // (depends on the number of points 
+                             // in the polycurve)
+   POINT ptPolyStart;        // polygon start point
+   POINT ptCurveLast;        // last point on previous curve
+   POINT pt;                 // temporary holder of point 
+                             // coordinates
+   int i;                    // to loop thru lines or splines
+   POINTFX p1, p2, p3;       // three points defining spline
+
+   if (!IsRealized())
+      return;
+
+   assert(m_lpvBuffer != NULL);
+
+   // Outer while loops for all polygon headers 
+   // (can be more than one)
+   dwHeaderOffset = 0;
+   while (m_cbBuffer &gt;= 
+         (dwHeaderOffset + sizeof(TTPOLYGONHEADER)))
+      {
+      // Get pointer to start of the polygon.
+      lpttph = (LPTTPOLYGONHEADER)(((char *)m_lpvBuffer) + 
+                  dwHeaderOffset);
+      assert(lpttph-&gt;dwType == TT_POLYGON_TYPE);
+      // Convert polygon's start point to pixels.
+      FromGGOPoint(&amp;ptPolyStart, lpttph-&gt;pfxStart, 
+         xOffset, yOffset);
+      // Init last point of last record to polygon start point.
+      ptCurveLast = ptPolyStart;
+      // Position graphics current pointer to start of polygon.
+      MoveToEx(hDC, ptPolyStart.x, ptPolyStart.y, NULL);
+
+      // Inner while loops for all polycurves in one polygon
+      // (A polycurve is one or more polyline and/or 
+      // QSpline records.)
+      dwCurveOffset = sizeof(TTPOLYGONHEADER);
+      while (lpttph-&gt;cb &gt;= (dwCurveOffset + sizeof(TTPOLYCURVE)))
+         {
+         // Get pointer to start of polycurve.
+         lpttpc = (LPTTPOLYCURVE)(((char *)m_lpvBuffer) + 
+            dwHeaderOffset + dwCurveOffset);
+
+         // Test record type, draw polyline or series of 
+         // Beziers accordingly.
+         switch (lpttpc-&gt;wType)
+            {
+            case TT_PRIM_LINE:
+               // Draw polyline connecting GGO points 
+               // (there are lpttpc-&gt;cpfx).
+               for (i = 0; i &lt; lpttpc-&gt;cpfx; i++)
+                  {
+                  FromGGOPoint(&amp;pt, lpttpc-&gt;apfx[i], 
+                     xOffset, yOffset);
+                  LineTo(hDC, pt.x, pt.y);
+                  }
+               ptCurveLast = pt;
+               break;
+            case TT_PRIM_QSPLINE:
+               // Draw series of Beziers connecting GGO points.
+               // But for initial Bezier, grab last point on 
+               // previous curve.
+               p3.x.value = (short)ptCurveLast.x;
+               p3.x.fract = 0;
+               p3.y.value = (short)ptCurveLast.y;
+               p3.y.fract = 0;
+               // Draw QSplines based on GGO points 
+               // (there are lpttpc-&gt;cpfx-1).
+               for (i = 0; i &lt; lpttpc-&gt;cpfx - 1; i++)
+                  {
+                  // p1 is 1st control -- last point in this or 
+                  // previous contour.
+                  p1 = p3;
+                  // p2 is handle -- a point in the record.
+                  FromGGOPoint(&amp;pt, lpttpc-&gt;apfx[i], 
+                     xOffset, yOffset);
+                  p2.x.value = (short)pt.x;
+                  p2.x.fract = 0;
+                  p2.y.value = (short)pt.y;
+                  p2.y.fract = 0;
+                  // p3 is 2nd control -- the midpoint of 2 
+                  // spline points except for the last spline, 
+                  // when it is the second to the last point in 
+                  // the spline record.
+                  p3 = (i == (lpttpc-&gt;cpfx-2)) ? 
+                     lpttpc-&gt;apfx[i+1] :
+                     AvgPointsFX(lpttpc-&gt;apfx[i], 
+                        lpttpc-&gt;apfx[i+1]);
+                  FromGGOPoint(&amp;pt, p3, xOffset, yOffset);
+                  p3.x.value = (short)pt.x;
+                  p3.x.fract = 0;
+                  p3.y.value = (short)pt.y;
+                  p3.y.fract = 0;
+                  // Call deCasteljau to draw quadratic 
+                  // Bezier curve.
+                  DrawQSpline(hDC, p1, p2, p3);
+                  } // for
+               ptCurveLast = pt;
+               break;
+            default:
+               assert(false); // must be one of the 
+                              // two cases above
+            break;
+            } // switch
+
+         // Increment curve offset so point to next polycurve.
+         dwStructSize = sizeof(TTPOLYCURVE) + ((lpttpc-&gt;cpfx - 1)
+            * sizeof(POINTFX));
+         dwCurveOffset += dwStructSize;
+         } // inner while (polycurve)
+
+      // Close polygon by drawing a line back to the start point.
+      LineTo(hDC, ptPolyStart.x, ptPolyStart.y);
+
+      // Increment polygon offset so point to next polygon.
+      dwHeaderOffset += lpttph-&gt;cb;
+      } // outer while (polygon)
+
+} // Draw()
+
+</pre>
+</BODY>
+</HTML>

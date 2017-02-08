@@ -1,0 +1,308 @@
+<HTML>   
+     <HEAD>
+<TITLE>March 2000/Cross-Platform Development Using GCC</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocmar.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Linux</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Cross-Platform Development Using GCC</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Jamie Guinan</FONT></H3>
+
+<BLOCKQUOTE>
+<p>You can build any number of native and cross compilers from GCC, if you know how.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+<H4><FONT COLOR="#000080">Introduction</FONT></H4>
+<p>There is great value these days in being able to compile code to run on multiple platforms. Software developers today might find themselves in one of the following situations:</p>
+<UL><LI>   creating a program or library that must run on several different operating systems &#151; for example Linux, Windows, and Solaris</LI>
+<LI>   developing software for an embedded device with a MIPS, PowerPC, ARM, or other CPU</LI></UL>
+<p>The GNU Compiler Collection, or GCC <a href="#1">[1]</a>, enables you to do all of this from the same host development system, for no more cost than a little time and elbow grease.</p>
+<p>In this article I guide you through the steps of building and using GCC for cross-platform development, hosted under Linux. All the popular Linux distributions come standard with a "native" copy of GCC, which is needed to build the cross-compiler and other tools. (You have to start somewhere!) After showing how to build and install the tools, I present a small library with sample applications, and build them for native Linux, Win32, and embedded PowerPC EABI <a href="#2">[2]</a>.</p>
+
+<H4><FONT COLOR="#000080">Getting the GCC Sources</FONT></H4>
+
+<p>The best way to become familiar with GCC is to build and install it yourself from the sources. Building a cross-development toolchain is just a special case of building GCC. Most often, people build GCC on the machine on which it will be run, either to supplement the vendor-supplied compiler, or to update to a newer version of GCC. In any case, self-hosted builds and cross-development builds are done from the same set of source files.</p>
+<p>As a prerequisite to installing GCC, you must install Binutils (the GNU Binary Utilities), which includes the assembler, linker, archiver, and other utilities. You will also need appropriate header and library files to enable compilation for the target system. These files may be vendor supplied, but for this article I use the Newlib (see below) library headers for PowerPC, and the Mingw32 runtime for Win32.</p>
+<p>Newlib is a small C library intended for embedded systems. There is a website for Newlib at:</p>
+
+<pre>
+http://sourceware.cygnus.com/newlib/
+</pre>
+
+<p>Mingw32 is shorthand for "Minimalist GNU Win32." It is simply a set of headers and libraries that provide an interface between code built with GCC and the C runtime provided by Microsoft in Win32. You can find more information on Mingw32 on Mumit Khan's "GNU Win32 related projects" page:</p>
+
+<pre>
+http://www.xraylith.wisc.edu/~khan/software/gnu-win32/
+</pre>
+
+<p>and Colin Peters' "GNU Compilers on Win32" page:</p>
+
+<pre>
+http://www.geocities.com/Tokyo/Towers/6162/gcc.html
+</pre>
+
+<p>There are numerous ways to get hold of the Binutils and GCC sources. FTP is my favorite, but there are two alternatives you might want to consider.</p>
+<p>First, all versions of the GNU tools, including the bleeding-edge development versions, are available via public CVS over the Internet. CVS ("Concurrent Versions System") is a free, network-enabled, repository-based version control system, all packed into a single command-line executable. Red Hat Linux includes a copy of CVS. For help getting Binutils and GCC via CVS, see the following URLs:</p>
+
+<pre>
+http://sourceware.cygnus.com/binutils/
+http://egcs.cygnus.com/cvs.html
+</pre>
+
+<p>Second, if your Linux distribution comes with source code, you might have a copy of the Binutils and GCC sources on CD. Red Hat includes the source for its entire distribution on the second CD in the box set, in the form of "SRPMS" (Source [to] Red Hat Package Manager fileS). Note that GCC might be named "egcs" (a name for an interim version of GCC), and some of the instructions for building GCC 2.95 might differ slightly. The Newlib library is not part of Linux, nor is Mingw32, so you will have to obtain them by other means, such as FTP.</p>
+<p>Many GNU projects produce regular "stable" releases, which are believed to be relatively stable and well tested. There are also more frequent "snapshot" releases, which usually correspond to recent CVS versions, and which may contain experimental features and untested code. You may find that you need a snapshot release to get a certain feature or bug fix (until such feature makes it into a stable release), but for this article I've chosen to stick with stable releases.</p>
+<p>The most recent stable releases of Binutils, Newlib, and GCC are always available via FTP. As of this writing they can found at these URLs:</p>
+
+<pre>
+ftp://sourceware.cygnus.com/pub/binutils/releases/binutils-2.9.1.tar.gz
+ftp://sourceware.cygnus.com/pub/newlib/newlib-1.8.1.tar.gz
+ftp://gcc.gnu.org/pub/gcc/releases/gcc-2.95.2/gcc-2.95.2.tar.gz
+</pre>
+
+<p>Download everything to a suitable directory, such as <B>/usr/local/source</B>, and extract with the following commands:</p>
+
+<pre>
+$ tar xvzf binutils-2.9.1.tar.gz
+$ tar xvzf newlib-1.8.1.tar.gz
+$ tar xvzf gcc-2.95.2.tar.gz
+</pre>
+
+<p>You will end up with three new directories containing the sources, <B>binutils-2.9.1/</B>, <B>newlib-1.8.1/</B>, and <B>gcc-2.95.2/</B>. Each of these "source" directories (referred to as <B>&lt;srcdir&gt;</B> later) will be left untouched during the build and install steps.</p>
+<p>If you take a few minutes to browse under <B>gcc-2.95.2/gcc</B>, you will find several subdirectories containing the front-end code for the different languages supported by GCC in addition to C:</p>
+
+<pre>
+cp      C++
+objc    Objective C
+java    Java
+ch      Chill
+f       Fortran 77
+</pre>
+
+<p>For the purposes of this article, I show how to build just the C and C++ front ends. The Java front end is quite new and still under development. (One interesting thing to note about the Java front end is that in addition to generating Java bytecode, it will eventually be able to generate machine code for the target CPU.) The Objective C front end is a bit finicky about cross-development configurations, so I don't bother with it here. Chill and Fortran 77 should work fine, but they are beyond the scope of this article.</p>
+<p>Before you go any further, make a top-level installation directory to hold all of the cross-development tools:</p>
+
+<pre>
+$ mkdir /usr/local/crossdev
+</pre>
+
+<p>For Win32 support, you need the Mingw32 headers and libraries. Building Mingw32 from source would involve a kind of chicken-and-egg situation, so just download the following binary runtime files:</p>
+
+<pre>
+ftp://ftp.xraylith.wisc.edu/pub/khan/gnu-win32/mingw32/runtime/bin-crtdll-1999-11-18.tar.gz
+ftp://ftp.xraylith.wisc.edu/pub/khan/gnu-win32/mingw32/runtime/bin-msvcrt-1999-11-18.tar.gz
+</pre>
+
+<p>Unpack these two files into the <B>crossdev</B> directory created earlier:</p>
+
+<pre>
+$ cd /usr/local/crossdev
+$ tar xvzf &lt;path-to&gt;/bin-crtdll-1999-11-18.tar.gz
+$ tar xvzf &lt;path-to&gt;/bin-msvcrt-1999-11-18.tar.gz
+$ ls -F /usr/local/crossdev i386-mingw32/ i386-mingw32msvc/
+</pre>
+
+<H4><FONT COLOR="#000080">Building the Toolchains</FONT></H4>
+
+<p>When building the GNU cross-development tools, there are three distinct directories you need to keep track of:</p>
+<p>1)  The top-level directory where the sources were unpacked. Call this <B>&lt;srcdir&gt;</B>.</p>
+<p>2)  The directory where the intermediate object files for the tools go. Call this <B>&lt;objdir&gt;</B>. You can (and should) specify a different <B>&lt;objdir&gt; </B>for each cross-development target platform.</p>
+<p>3)  The installation directory where the compiler, assembler, and  other executables will reside. I used <B>/usr/local/crossdev</B> in the above example, but I sometimes refer to it as <B>&lt;installdir&gt;</B>.</p>
+<p>Keeping these directories distinct makes it easy to build multiple cross development toolchains side-by-side, without polluting the main source directory, <B>&lt;srcdir&gt;</B>.</p>
+<p>I now show how to build two separate cross-development toolchains, which I refer to by their respective target specifications, powerpc-eabi and i386-mingw32.</p>
+<p>First, create the object directories (<B>&lt;objdir&gt;</B>) for both targets, for both Binutils and GCC (four total).</p>
+
+<pre>
+$ mkdir /usr/local/build
+$ mkdir /usr/local/build/binutils-powerpc-eabi
+$ mkdir /usr/local/build/gcc-powerpc-eabi
+$ mkdir /usr/local/build/binutils-i386-mingw32
+$ mkdir /usr/local/build/gcc-i386-mingw32
+</pre>
+
+<p>For each given target platform, you must run a configure script and supply a "target specification," which is a string that specifies the CPU type, object file format, and sometimes the operating system, for which your cross-development toolchain will generate object code. This process actually involves running a configure script for each <B>&lt;objdir&gt;</B> above. Running the script sets up a makefile, which you then use by invoking "make" and "make install" from the command line.</p>
+<p>The following commands illustrate this process. You invoke the configure script with the target specification, the installation directory (prefix), and other options:</p>
+
+<pre>
+$ cd &lt;objdir&gt;
+$ &lt;srcdir&gt;/configure &#151;target=&lt;targetspec&gt; &#151;prefix=&lt;installdir&gt;
+$ make
+$ make install
+</pre>
+
+<p>The C/C++ cross-compiler generates assembly code that the cross-assembler (from Binutils) assembles to object code, so you must always build Binutils first.</p>
+
+<H4><FONT COLOR="#000080">Building the PowerPC Toolchain</FONT></H4>
+
+<p>I start by showing how to build the PowerPC toolchain. To prepare the Binutils targeting the PowerPC EABI, do the following:</p>
+
+<pre>
+$ cd /usr/local/build/binutils-powerpc-eabi
+$ /usr/local/source/binutils-2.9.1/configure \
+  &#151;target=powerpc-eabi &#151;prefix=/usr/local/crossdev
+$ make
+$ make install
+</pre>
+
+<p>This process should only take a few minutes on a reasonably fast PC. If all goes well, you should find the assembler and other binary utilities installed, as shown in <a href="fig1.htm">Figure 1</a>.</p>
+<p>Notice that all of the tools for a particular platform are prefixed with the target specification ("powerpc-eabi" in this case). This allows multiple cross development toolchains to coexist in the same directory without naming conflicts. So far I have shown how to create the assembler (as), linker (ld), archiver (ar), and other assorted utilities. At this point you should append to your <B>PATH</B> environment variable to get access to these tools:</p>
+
+<pre>
+$ export PATH=${PATH}:/usr/local/crossdev/bin
+</pre>
+
+<p>(I'm assuming use of the default Linux shell, bash; use the appropriate variable syntax for other shells such as tcsh.)</p>
+<p>Before building GCC for the PowerPC target, the Newlib header files must be copied into the <B>powerpc-eabi</B> installation directory, so that GCC will be able to find things like <B>&lt;stdio.h&gt;</B>:</p>
+
+<pre>
+$ cd /usr/local/source/newlib-1.8.1/newlib/libc
+$ cp -rpv include /usr/local/crossdev/powerpc-eabi
+</pre>
+
+<p>Now build the C/C++ cross-compiler. The configure script for GCC requires a few more arguments than the one for Binutils:</p>
+
+<pre>
+$ cd /usr/local/build/gcc-powerpc-eabi
+$ /usr/local/source/gcc-2.95.2/configure
+&#151;target=powerpc-eabi
+&#151;prefix=/usr/local/crossdev
+&#151;with-headers=/usr/local/crossdev/powerpc-eabi/include
+&#151;with-newlib
+&#151;enable-languages=c,c++
+$ make
+$ make install
+</pre>
+
+<p>GCC will take longer to build than binutils. To verify that the compiler (gcc) is installed and operational, ask it what its version is:</p>
+
+<pre>
+$ powerpc-eabi-gcc -v
+Reading specs from /usr/local/crossdev/lib/gcc-lib/
+  powerpc-eabi/2.95.2/specs
+gcc version 2.95.2 19991024 (release)
+</pre>
+
+<H4><FONT COLOR="#000080">Building the Win32 Toolchain</FONT></H4>
+
+<p>Now build Binutils and GCC again, but this time for the i386-mingw32 target. To build Binutils:</p>
+
+<pre>
+$ cd /usr/local/build/binutils-i386-mingw32
+$ /usr/local/source/binutils-2.9.1/configure
+&#151;target=i386-mingw32
+&#151;prefix=/usr/local/crossdev
+$ make
+$ make install
+</pre>
+
+<p>Build GCC for the Win32 toolchain as follows:</p>
+
+<pre>
+$ cd /usr/local/build/gcc-i386-mingw32
+$ /usr/local/source/gcc-2.95.2/configure
+&#151;target=i386-mingw32
+&#151;prefix=/usr/local/crossdev
+&#151;with-headers=/usr/local/crossdev/i386-mingw32/include
+&#151;enable-languages=c,c++
+$ make
+$ make install
+</pre>
+
+<p>(Note! Before building GCC for i386-mingw32, you must have the mingw32 runtime files installed in <B>/usr/local/crossdev</B> as described earlier.)</p>
+<p>You should now have a complete set of i386-mingw32 tools in <B>/usr/local/crossdev/bin</B> along with the powerpc-eabi tools. Ask the new compiler what its version is to make sure:</p>
+
+<pre>
+$ i386-mingw32-gcc -v
+Reading specs from /usr/local/crossdev/lib/gcc-lib/
+  i386-mingw32/2.95.2/specs
+gcc version 2.95.2 19991024 (release)
+</pre>
+
+<H4><FONT COLOR="#000080">Compiling and Running with GCC</FONT></H4>
+
+<p>To illustrate the use of the cross-development toolchains, I present a trivial CRC(32) implementation. This implementation is in the form of a library that includes both a C interface and a C++ wrapper interface that calls the C layer underneath. The library can be fed data n bytes at a time, and the current running CRC value can be retrieved at any time. I also provide sample applications using the two interfaces. <a href="list1.htm">Listings 1</a> and <a href="list2.htm">2</a> show files <B>crc.c</B> and <B>crcplus.h</B>, which contain the CRC implementation and C++ wrapper class respectively. <a href="list3.htm">Listings 3</a> and <a href="list4.htm">4</a> show the sample C and C++ applications respectively.</p>
+<p>The first thing to do is to verify that the CRC library works, by building the sample C application as a native Linux program:</p>
+
+<pre>
+$ gcc -c crc.c
+$ gcc -c crcplus.cpp
+$ ar -r libcrc.a crc.o crcplus.o
+$ gcc -c app1.c
+$ gcc -o app1 app1.o libcrc.a
+$ ./app1
+CRC result=0xac933f5f
+</pre>
+
+<p>(Note that the C++ wrapper is built into the library, but is not used by the C application.)</p>
+<p>Also build and run the C++ version as a native Linux program:</p>
+
+<pre>
+$ gcc -c app2.cpp
+$ gcc -o app2 app2.o libcrc.a -lstdc++
+$ ./app2
+CRC result=0xac933f5f
+</pre>
+
+<p>Now you can build the library and sample apps for the Mingw32 target, using the cross-development versions of the compiler and archiver:</p>
+
+<pre>
+$ i386-mingw32-gcc -c app1.c -o app1_mingw32.o
+$ i386-mingw32-gcc -c crc.c -o crc_mingw32.o
+$ i386-mingw32-gcc -c crcplus.cpp -o crcplus_mingw32.o
+$ i386-mingw32-ar -r libcrc_mingw32.a crc_mingw32.o \
+  crcplus_mingw32.o
+$ i386-mingw32-gcc -o app1_m32.exe  app1_mingw32.o \
+  libcrc_mingw32.a
+$ i386-mingw32-gcc -c app2.cpp -o app2_mingw32.o
+$ i386-mingw32-gcc -o app2_m32.exe  app2_mingw32.o \
+  libcrc_mingw32.a -lstdc++
+</pre>
+
+<p>If you copy <B>app1_m32.exe</B> and <B>app2_m32.exe</B> to a Windows machine (via ftp or Samba) and run them, you should get the same result as under Linux:</p>
+
+<pre>
+C:\&gt;app1_m32.exe
+CRC result=0xac933f5f
+
+C:\&gt;app2_m32.exe
+CRC result=0xac933f5f
+</pre>
+
+<p>The library is built as follows for the PowerPC target:</p>
+
+<pre>
+$ powerpc-eabi-gcc -c crc.c -o crc_powerpc.o
+$ powerpc-eabi-gcc -c crcplus.cpp -o crcplus_powerpc.o
+$ powerpc-eabi-ar -r libcrc_powerpc.a crc_powerpc.o \
+  crcplus_powerpc.o
+</pre>
+
+<p>At this point, you need an embedded operating system, or at least a suitable library with I/O facilities if you want to produce any output.</p>
+<p>I tested the PowerPC version by compiling <B>app1.c</B>, and linking it with the eCos [<a href="#3">3</a>] target libraries and <B>libcrc_powerpc.a</B>, with a version of the powerpc-eabi toolchain that comes with the eCos distribution. I ran the resulting code on a Motorola MPC821-based development board, and it worked as expected, sending <B>"CRC result=0xac933f5f"</B> to the debugger console.</p>
+
+<H4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>In the embedded space, it is common for developers to deliver "black-box" object and library code to clients or partner companies. Chances are good that you can build a GNU cross-development toolchain that will be compatible with their target system. Find out what the target CPU is, and if they are using ELF or COFF for an object file format, then study the GCC documentation and see if you can figure out a compatible target specification for a cross compiler. On the desktop, it is possible to cross-compile programs for what is currently the most popular platform, Win32.</p>
+<p>Thus, using Linux as your development platform, armed with the GCC sources, you have the capability and flexibility to support your entire enterprise.</p>
+<p>There are a few caveats to keep in mind. First, you should always install C and C++ headers compatible with the target system in your <B>&lt;installdir&gt;/&lt;target-spec&gt;/include</B> directory. You want to make sure that the implementation of Standard C library objects and other structures is consistent so that when your code is linked with the main program code there are no surprises. Second, keep in mind that different C++ compilers intentionally differ in the way they perform name decoration (mangling). You might be able to cross-compile C++ code, but the rest of the code that it is linked with must follow the same conventions. This effectively means that for C++ object code you need to use GCC at link time, unless you export your API with a C interface.</p>
+
+<H4><FONT COLOR="#000080">Resources</FONT></H4>
+
+<p>I tried to give a decent mix of "what," "why," and "how" in this article. The CrossGCC FAQ supplies some additional "how," at <B>http://www.objsw.com/CrossGCC/</B>.</p>
+<p>The GCC home page is <B>http://egcs.cygnus.com/</B>.</p>
+<p>You may have noticed that about half the URLs in this article end in <B>.cygnus.com.</B> Cygnus Solutions does a great deal of development of the GNU tools, and they offer commercial support contracts. Their URL is <B>http://www.cygnus.com/</B>.</p>
+
+<H4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1]  GCC used to stand for GNU C Compiler, but it supports several languages now, hence the name change.</p>
+<p><a name="2"></a>[2]  The PowerPC "Embedded Application Binary Interface" is used by many PowerPC cross-development toolchains. You can grab the specification at <B>http://www.mot.com/SPS/ADC/pps/download/8XX/ppceabi.pdf</B>.</p>
+<p><a name="3"></a>[3]  eCos is a free, portable real-time OS developed primarily by Cygnus. Its website is <B>http://sourceware.cygnus.com/ecos/</B>.</p>
+
+<p><i><B>Jamie Guinan</B> runs Blue Button Solutions, Inc., providing system development and programming services specializing in Linux and other free software. When he's not in front of a computer, he enjoys spending time with his wife and cats, and someday kids. You can reach him at <B>guinan@bluebutton.com</B> or <B>http://www.bluebutton.com</B>.</i></p>
+
+<h4><a href="../../../source/2000/mar00/guinan.zip">Get Article Source Code</a></h4>
+
+
+</blockquote></body></html>

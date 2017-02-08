@@ -1,0 +1,293 @@
+<HTML>   
+     <HEAD>
+<TITLE>June 1999/The Journeyman's Shop</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocjun.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">The Journeyman's Shop: Memory and Object Management</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Pete Becker</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Keep the scope and lifetime of each variable short &#151; but not too short.</p>
+</BLOCKQUOTE>
+
+<HR>
+
+<BLOCKQUOTE>
+
+<p>Back about ten years ago an engineer I worked with gave me a valuable piece of advice. He said that the first thing he does when he starts a new project is design the memory manager. He was exaggerating a bit: designing the memory manager is usually about the third thing to do on a new project. He made a good point, though. Here in The Journeyman's Shop we have learned over the years to look carefully at an application's memory usage characteristics. Using the resulting information to choose an appropriate memory allocation strategy can often shrink an application's memory requirements and make it run faster, sometimes by as much as a couple of orders of magnitude. Don't be fooled by the constant talk of bigger RAM and faster CPUs making efficiency unimportant. We've been hearing that talk for thirty years, and it's always been wrong. Today's memory management problems can be masked by tomorrow's technology, but the day after tomorrow we'll create new memory management problems as we try to solve bigger and harder problems, problems that we wouldn't dream of working on today. The demands made by new software applications are always pushing the limits imposed by the hardware that the applications run on. If your application is too big or too slow you probably can't wait for faster hardware &#151; you have to fix the problem now. One of the first things you should look at is how your application uses memory. Changes here can often produce dramatic improvements.</p>
+<p>For example, a few weeks ago I wrote some Java code that read and summarized data from about 50 text files. The first version of the program took about four minutes to run. It was far too slow. One problem was that the code opened, read, and closed the same file half a dozen times, each time looking for different information. By changing the code to open each file only once and keep the file open until it was no longer needed, I cut the run time to a bit under a minute. That is, the application was faster by a factor of about four. Not bad, but still not as fast as it should have been. Then I looked at how the application used memory. During a single run the application allocated about a million blocks of memory totaling 40 million bytes. With a few simple changes I reduced this to 35,000 blocks and 1.7 million bytes. It now runs in about eight seconds <a href="#1">[1]</a>, which is faster than the previous improved version by a factor of seven. Both fixes were needed, but improving the application's memory management produced a much larger speed increase.</p>
+
+<h4><FONT COLOR="#000080">Overview of Memory Usage Issues</FONT></H4>
+
+<p>Whenever you add a variable to your program you have to make several decisions that affect the program's overall memory usage. These decisions can affect the size, speed, and safety of the program. Just as with any other engineering decision, good program design involves finding the right balance of these three factors for the particular program that you are working on. Over the years you've probably developed a set of rules and habits that you apply when making these decisions. For most of us, these rules and habits do a pretty good job most of the time, but they fail miserably the rest of the time. One of our goals in The Journeyman's Shop is to turn our habits into conscious guidelines, so we will be more aware of the decisions we are making as we write code. That way we will be more likely to recognize situations where our guidelines do not apply and we have to think more carefully about what we are doing. If I had thought more about memory usage when I was writing the code previously discussed, I might have avoided the problems mentioned. I might not have had to go back and rewrite code that I thought was finished.</p>
+<p>Adding a variable to a program involves answering three questions:</p>
+
+<UL><LI>Is the variable really needed?</LI>
+<LI>Where in the program must I be able to use the variable?</LI>
+<LI>How should I define the variable to get the best balance of size, speed, and safety?</LI></UL>
+
+<p>The last of these questions is much more complicated than it may appear. It involves understanding the application that we are developing, as well as the tools that the programming language we are using provides for object and memory management. We'll spend most of our time in the next few months on the last question, after we talk about a few fundamental concepts and briefly go over the first two questions.</p>
+
+<h4><FONT COLOR="#000080">Object Management vs. Memory Management</FONT></H4>
+
+<p>It is important, when talking about memory usage, to distinguish between managing objects <a href="#2">[2]</a> and managing memory. Objects are the things we deal with in our source code. They often have names and they are usually created explicitly in the code. For example, the following code creates eight objects:</p>
+
+<pre>
+int limit = 3;             // two objects
+
+void demo()
+{
+fstream out("test.dat");   // two objects
+complex *data =            // one object
+    new complex(1.0, 0.0); // three objects
+}
+</pre>
+
+<p>We've given names to three of these objects, <B>limit</B>, <B>out</B>, and <B>data</B>. Four of these objects are literal constants (<B>3</B>, <B>"test.dat"</B>, <B>1.0</B>, and <B>0.0</B>), and their names describe their contents. One object, the object of type <B>complex</B> created by <B>new</B>, does not have a name.</p>
+<p>Object management consists of two decisions: the decision to create an object and the decision to dispose of it. In many cases we let the compiler make those decisions for us. We don't know, nor do we care, where the value 3 is stored in the program above. All that matters is that we get the right value when we use it <a href="#3">[3]</a>. Once we get away from literal constants, however, we get more control over when objects are created and when they are disposed of. In the example above the object named <B>limit</B> is created at program startup and isn't disposed of until program termination. The objects named <B>out</B> and <B>data</B> are created upon entry into the function <B>demo</B> and disposed of upon exit from <B>demo</B>. The object created by <B>new</B> is created when program execution reaches the <B>new</B> statement and it is never disposed of.</p>
+<p>Memory, on the other hand, is simply storage space where we can place objects. Memory management involves allocating storage space for objects as needed, and recycling that storage space when it is no longer needed. Memory management is obviously closely involved with object management: creating an object requires allocating space for it and disposing of an object makes the space it occupied available for reuse. Memory management warrants separate consideration, however, because it deals with deciding how to allocate and recycle memory rather than about deciding when to do so. We can often ignore memory management entirely, trusting the compiler and its runtime system to handle it for us. If this works, we can complete our application more quickly than if we wrote and debugged a memory manager ourselves. However, even though the memory management tools that come with the compiler were designed to work well in most cases, we sometimes hit upon a case  where they don't. When that happens we need to take control of memory management ourselves.</p>
+
+<h4><FONT COLOR="#000080">Tools Provided by the Language</FONT></H4>
+
+<p>The design of a programming language involves, in part, deciding how programs written in that language will manage objects and memory. In C and C++, decisions about how the compiler itself manages objects are reflected in the notion of storage duration. In the code snippet above we saw examples of objects with the two storage durations supported by these languages: <B>limit</B> has static duration, lasting throughout the program's execution; <B>out</B> and <B>data</B> have auto duration, lasting only while the block containing them is being executed. In addition, the runtime support libraries for C and C++ provide a free store, accessible through calls to <B>malloc</B> and <B>free</B>, where we can create objects that will continue to exist until we explicitly release them. The notion of storage duration doesn't incorporate explicit management of the free store, so when we are creating an application, instead of talking about storage duration we usually talk about the lifetime of an object. C and C++ give you tools to create objects with three possible lifetimes: objects with static duration exist throughout the program's execution; objects with auto duration exist while the function containing them is being executed; and objects on the free store exist from the time they are explicitly created until the time they are explicitly destroyed.</p>
+<p>These three possible lifetimes usually involve three separate memory management techniques. Objects with static duration are usually created simply as part of the executable image; their memory is never released. Objects with auto duration are usually created on the stack <a href="#4">[4]</a>: upon entry of a function space is allocated for all the auto objects defined in that function, and upon exit that space is made available for use by any other function that may be called. Objects whose lifetime you control are simply allocated with <B>malloc</B> and released with <B>free</B>.</p>
+<p>Now, in the first two cases, the compiler is in charge of the object. Once you've given control to the compiler you have no further say in regard to the memory management technique. With objects whose lifetime you control, however, you have complete control. If you don't like your compiler's implementation of <B>malloc</B> and <B>free</B> you can write your own functions and use them <a href="#5">[5]</a>.</p>
+<p>In C++ we use the keywords <B>new</B> and <B>delete</B> to create and dispose of objects with arbitrary lifetimes. When we say something like</p>
+
+<pre>
+complex *data = new complex(1.0, 0.0);
+</pre>
+
+<p>we're telling the compiler to allocate space from the free store for an object of type <B>complex</B> and to initialize that object using the constructor for the type <B>complex</B> that takes two arguments of type <B>double</B>. When we say</p>
+
+<pre>
+delete data;
+</pre>
+
+<p>we're telling the compiler to call the destructor for <B>complex</B>, passing to it the address held in <B>data</B>, and then to release the memory that this object occupied back to the free store. The C++ runtime library provides two functions, named <B>operator new</B> and <B>operator delete</B>, that are used to talk to the free store. If you don't like your compiler's implementation of <B>operator new</B> and <B>operator delete</B>, you can write your own versions. They must be named <B>operator new</B> and <B>operator delete</B>, because the compiler doesn't necessarily know, when it sees the use of the keyword <B>new</B>, that you have replaced <B>operator new</B> with your own code. The C++ Standard allows you to do this. In addition, the Standard forbids the function <B>malloc</B> to use <B>operator new</B> to get memory and it forbids the function <B>free</B> to use <B>operator delete</B>. This means that it is safe for you to call <B>malloc</B> from inside your version of <B>operator new</B> and to call <B>free</B> from inside your version of <B>operator delete</B>. To try this out you might write simple implementations like the following:</p>
+
+<pre>
+void *operator new(size_t sz)
+{
+void *res = malloc(sz == 0 ? 1 : sz);
+if (res == NULL)
+    throw bad_alloc();
+return res;
+}
+
+void operator delete(void *ptr)
+{
+free(ptr);
+}
+</pre>
+
+<p>In addition, C++ allows you to write a version of <B>operator new</B> and <B>operator delete</B> for any class. When you create an object whose type is a class with its own version of <B>operator new</B> or <B>operator delete</B>, the compiler uses that function instead of the global function to allocate or free the memory. For example:</p>
+
+<pre>
+class sample
+{
+public:
+    static void *operator new(size_t);
+    static void operator delete(void *);
+};
+
+void *sample::operator new(size_t sz)
+{
+void *res = malloc(sz == 0 ? 1 : sz);
+if (res == NULL)
+    throw bad_alloc();
+return res;
+}
+
+void sample::operator delete(void *ptr)
+{
+free(ptr);
+}
+</pre>
+
+<p>That's all there is to it. The tools provided by C and C++ for object management and for memory management are very simple. Of course, that simplicity can be misleading; these tools require thorough understanding and careful use.</p>
+
+<h4><FONT COLOR="#000080">Is This Variable Really Needed?</FONT></H4>
+
+<p>The cheapest way to manage objects is not to create them at all. That's why many programmers tend to reuse variables: creating one variable is usually faster and uses less memory than creating several. C encourages this practice by allowing creation of variables only at the beginning of a block, making it much easier to see how many variables you've created. When you look at the beginning of a function and see the definitions of several integer variables that are used only to control loops within the function, you'll probably be tempted to consolidate them into a single variable. Often this is appropriate, but if you do it, be aware of the risks involved. Using the same variable for different purposes at different points in the code can lead to errors. Let's take a somewhat contrived example:</p>
+
+<pre>
+int show(char **errors, char **warnings)
+{
+int i, j;
+for (i = 0; i &lt; 100; ++i)
+    if (errors[i] == NULL)
+        break;
+    else
+        printf("%s\n", errors[i]);
+for (j = 0; j &lt; 100; ++j)
+    if (warnings[j] == NULL)
+        break;
+    else
+        printf("%s\n", warnings[j]);
+return i;
+}
+</pre>
+
+<p>If you read this code carelessly, overlooking the <B>return</B> statement at the end, you might decide to eliminate <B>j</B> and use <B>i</B> as the only control variable. If you do this you'll change the meaning of the function: instead of returning the number of error messages that it printed, it will return the number of warning messages.</p>
+<p>Of course, a major part of the problem in this code is the poor names chosen for the loop control variables &#151; giving them names like <B>error_count</B> and <B>warning_count</B> might have helped prevent this problem. Nevertheless, the problem is still real: we must not let our zeal for eliminating unnecessary variables lead us into writing code that doesn't work correctly.</p>
+<p>Still, it is often appropriate to hunt for ways to eliminate variables. After all, creating a variable takes time and uses memory space. For an application that's required to be fast and small, eliminating variables can lead to speed improvements.</p>
+
+<h4><FONT COLOR="#000080">Where Do I Need To Use a Variable?</FONT></H4>
+
+<p>One of the most important guidelines for writing good C code is to create objects in the smallest scope possible. For beginners that's an important lesson: don't use a global variable to control a loop. In most cases this is good advice for more advanced programmers, too. But in some cases this guideline leads to poor performance, because giving a variable a short lifetime can result in creating and destroying it more often. This can be expensive, both in terms of initialization and destruction and of allocating and releasing space for the variable. Giving a key variable a longer lifetime can often speed up an application. That's one of the things I did in our implementation of the Java library to make programs run faster.</p>
+<p>Many of the Java functions that write output provide overloaded versions: one that takes a single <B>char</B>, one that takes an array of <B>char</B>s, and one that takes an array of <B>char</B>s with a starting index and a count. In C++ I'd write the version that takes a single <B>char</B> like this:</p>
+
+<pre>
+void write(char *buf, int, int);
+ 
+void write(char b)
+{
+char buf[1];
+buf[0] = b;
+write(buf, 0, 1);
+}
+</pre>
+
+<p>That is, to write a single <B>char</B> I would simply insert it into a one-element array of <B>char</B>s and write out that array. In Java, the implementation of this approach looks like this:</p>
+
+<pre>
+class Writer
+{
+
+public void write(char buf[], int off, int len)
+{
+// code omitted
+}
+
+public void write(char b)
+{
+char buf[] = new char[1];
+buf[0] = b;
+write(buf, 0, 1);
+}
+
+}
+</pre>
+
+<p>In both code samples we've followed the guideline of making the scope of <B>buf</B> as small as possible. We've restricted <B>buf</B> to the function it is used in. In the C++ code this approach works fine. In the Java code it works correctly, but it creates a significant bottleneck. A clue to the difference is in the use of the keyword <B>new</B> in the Java code: we're going out to the free store to allocate a one-element array every time we need to write a <B>char</B>. In the C++ code the array has auto storage duration, so it is created on the stack each time we write a <B>char</B>. The difference in speed between the two object creation mechanisms is profound. We can get the Java code to run much faster by broadening the scope of the array <a href="#6">[6]</a>:</p>
+
+<pre>
+class Writer
+{
+
+public void write(char buf[], int off, int len)
+{
+// code omitted
+}
+
+public void write(char b)
+{
+buf[0] = b;
+write(buf, 0, 1);
+}
+
+private char buf[] = new char[1];
+
+}
+</pre>
+
+<p>This technique speeds up function <B>write</B> dramatically, at the cost of making <B>buf</B> accessible to all the methods in <B>Writer</B> rather than just the one that needs it.</p>
+<p>The problem illustrated in this example is simply that creating an object can be slow. The same problem can occur in C++, even without going to the free store, with objects that have constructors. It often pays to move the creation of an object to an outer scope where it won't be constructed as many times. For example, none of us would write code like this:</p>
+
+<pre>
+void slow(char *msg[])
+{
+for (; *msg != 0; ++msg)
+    {
+    fstream out("test.out", ios::out | ios::ate);
+    out &lt;&lt; *msg &lt;&lt; '\n';
+    }
+}
+</pre>
+
+<p>Here, we're writing each string in the array <B>msg</B> to the file named <B>test.out</B>. For each string, we open the file, write the message, and close the file, repeating the sequence as many times as necessary. The performance of this loop might be satisfactory if we were simply printing out the handful of elements from a command line, but we'd rarely write production code that does this because opening and closing the file so many times would be prohibitively slow <a href="#7">[7]</a>. Instead, we'd write the code like this:</p>
+
+<pre>
+void faster(char *msg[])
+{
+fstream out("test.out", ios::out | ios::ate);
+for (int i = 0; i &lt; 100; ++i)
+    out &lt;&lt; *msg &lt;&lt; '\n';
+}
+</pre>
+
+<p>Note that we've expanded the lifetime of the output stream: it now exists and is available throughout our function, rather than existing only inside the loop where it is actually used. The code does the same thing as the earlier version, but it is much faster.</p>
+<p>However, the change we've made makes the stream <B>out</B> available and usable throughout the function instead of confining it to the <B>for</B> loop where we actually write the messages. In a small function like this that change isn't particularly risky. In a larger function, though, this change adds to the risk that the variable <B>out</B> will be used incorrectly later on in the code. And if we changed the stream <B>out</B> to a global variable because we needed it in several functions, we'd greatly increase the risk involved in using it. We could reduce that risk by adding code to insure that it was properly initialized before any possible use, but as we've seen in the past several columns, such code is hard to get right, and it adds to the bulk of code that needs to be maintained. That's why programmers are urged to define variables in the narrowest scope possible: doing so reduces the risk that variables will be used incorrectly, and reduces the need for additional code to try to protect against misuse. Narrowing the scope as much as possible, however, can slow a program down significantly, so we often compromise by giving such a variable a broader scope than is technically necessary in order to get reasonable performance.</p>
+
+<h4><FONT COLOR="#000080">Corrections</FONT></H4>
+
+<p>Matthew Healy and Eric Nagler both caught me in a misstatement. In the April issue I said that you can use only the default constructor to initialize C++ objects in an array. That's wrong. You can use aggregate initialization, like this:</p>
+
+<pre>
+complex basis[2] =
+    {
+    complex(1.0, 0.0),
+    complex(0.0, 1.0)
+    };
+</pre>
+
+<p>The Standard says that the two unnamed objects in the initializer will be constructed, and then copied into the array. The situation that I had in mind was creating an array using <B>operator new</B>. When using <B>operator new</B> there is no language construct that lets you specify initializers for the elements in such an array. All you can do is create the array and then assign objects:</p>
+
+<pre>
+void create()
+{
+complex *basis = new complex[2];
+basis[0] = complex(1.0, 0.0);
+basis[1] = complex(0.0, 1.0);
+}
+</pre>
+
+<p>Jason Todd raised a good point about the initialization code that I discussed in the March issue. The code that I wrote looked like this:</p>
+
+<pre>
+if (jt_init() != JT_SUCCESS
+    || atexit(jt_cleanup) != 0)
+        quit("unable to initialize thread");
+</pre>
+
+<p>Jason asked why I called <B>atexit</B> from this code, rather than having <B>jt_init</B> call it. The reason is that I was thinking of these functions as analogues of C++'s constructors and destructors, and put both calls in the same function. He's right, though: it makes much more sense for <B>jt_init</B> to register its own cleanup function. That way, if the cleanup requirements for a particular module change, the code that initializes that module doesn't need to change. Instead of two tests, the initialization code would have only one:</p>
+
+<pre>
+if (jt_init() != JT_SUCCESS)
+    quit("unable to initialize thread");
+</pre>
+
+<h4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1]  The system I ran this on had 192 Megabytes of RAM, more than enough for the original version of the application, so the slow speed was not the result of swapping data out to the hard disk.</p>
+<p><a name="2"></a>[2]  Note that throughout this series of columns I will use the term "object" in the compiler-writer's sense: an object is a block of memory that holds a value of some sort and a set of operations that can be performed on that value. From this perspective, an <B>int</B> is an object: it occupies four bytes (the actual size depends on your compiler), and you can store values in it, add its value to another value, subtract values from the value it holds, and so on. This compiler-writer's definition of "object" led to a more restricted use of the term in OOP (object-oriented programming). In OOP, "object" usually does not include built-in types such as <B>int</B>, etc., which have their own sets of rules. The underlying concept, however, is the same in both cases.</p>
+<p><a name="3"></a>[3]  Some implementations of FORTRAN used to create literal values as actual data storage, initialized to the appropriate value. Since FORTRAN used pass-by-reference, a programmer could then modify the value of a literal constant by writing FORTRAN code analogous to this C++ code:</p>
+
+<pre>
+   void modify(int &amp;ir)
+   {
+   ++ir;
+   }
+
+   int main()
+   {
+   modify(1);
+   cout &lt;&lt; 1 &lt;&lt; endl;
+   }
+</pre>
+
+<p>Fortunately, we've learned since then that literals shouldn't be modifiable. Well, except for quoted strings, of course.</p>
+<p><a name="4"></a>[4]  This isn't required. A compiler that called <B>malloc</B> and <B>free</B> at the appropriate points for every auto variable would conform to the language definition. It would also generate applications that ran rather slowly.</p>
+<p><a name="5"></a>[5]  Don't name them <B>malloc</B> and <B>free</B>, however. Although many people think these are supposed to be freely replaceable, the C language definition does not permit you to create your own functions with these names if any of the source files in your application contains the line <B>#include &lt;stdlib.h&gt;</B>. Instead, if you need to replace <B>malloc</B> and <B>free</B> everywhere in some pre-existing code, write functions with their own appropriate names and use macros to replace the names <B>malloc</B> and <B>free</B> in the source code with the names of your functions. [Even this is dangerous and nonportable (at the very least, <B>#undef</B>, <B>malloc</B>, and <B>free</B> in case the library provides macro overrides.) &#151;pjp]</p>
+<p><a name="6"></a>[6]  However, this code does not address synchronization issues. As written, if two separate threads call <B>write(char</B> b) at the same time with two different characters, there's no telling what characters will actually be written. So <B>write(char</B> b) needs to be synchronized, slowing it down. This technique is still worthwhile, in part because <B>write(char buf[], int start, int len)</B> is already synchronized, so getting the monitor in <B>write(char b)</B> simply means that <B>write(char buf[], int start, int len)</B> never has to wait for the monitor when it is called from <B>write(char b)</B>.</p>
+<p><a name="7"></a>[7]  We might actually want to do this if we were logging data in an unstable environment, and wanted to minimize the amount of data that would be lost if the system crashed. Closing the file gives us the best possible guarantee that all the data that we've written will be flushed to the disk.
+
+<p><i>Pete Becker is Technical Project Leader for Dinkumware, Ltd. He spent eight years in the C++ group at Borland International, both as a developer and manager. He is a member of the ANSI/ISO C++ standardization committee. He can be reached by email at <B>petebecker@acm.org</B>.</i></p>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

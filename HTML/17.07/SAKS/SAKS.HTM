@@ -1,0 +1,465 @@
+<HTML>   
+     <HEAD>
+<TITLE>July 1999/C++ Theory and Practice</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocjul.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">C++ Theory and Practice: Thinking Even Deeper</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Dan Saks</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Making a deeply const pointer leads Dan deep into the subtleties of overload resolution and temporary references.</p>
+</BLOCKQUOTE>
+
+<hr>
+<BLOCKQUOTE>
+
+<p><I>Copyright &copy; 1999 by Dan Saks</i></p>
+
+<p>This is the third and final article in my series on the shallowness of the <B>const</B> qualifier and how you can use templates to give <B>const</B> some depth.</p>
+
+<h4><FONT COLOR="#000080">Recapping Our Story</FONT></H4>
+
+<p>When I say that "<B>const</B> is shallow," I'm referring to the way <B>const</B> behaves when applied to any object of a class type with members of pointer or reference types. As before, I'll use code from my cross-reference generator program, <B>xr</B>, to illustrate this behavior. (See "C++ Theory and Practice: Partitioning with Classes," <I>CUJ,</I> February 1999 and "C++ Theory and Practice: Trimming Excess Fat," <I>CUJ,</I> March 1999 for background on xr.)</p>
+<p>xr represents a cross-reference table as an object of class <B>cross_reference_table</B>, which in turn, implements the table as a binary tree. Each node in the tree is an object of the nested type <B>tree_node</B>. Each <B>cross_reference_table</B> object keeps the address of its tree's root node in a private data member named <B>root</B>, as sketched here:</p>
+
+<pre>
+class cross_reference_table
+    {
+public:
+    ...
+private:
+    struct tree_node;
+    ...
+    tree_node *root;
+    };
+</pre>
+
+<p>tree_node</B>'s definition appears outside the <B>cross_reference_table</B> class as:</p>
+
+<pre>
+struct cross_reference_table::tree_node
+    {
+    char *word;
+    list_node *first;
+    list_node *last;
+    tree_node *left;
+    tree_node *right;
+    };
+</pre>
+
+<p>Class <B>cross_reference_table</B> also has a static member function named <B>put_tree</B>, which writes the contents of a tree to standard output. <B>put_tree</B>'s declaration is:</p>
+
+<pre>
+void put_tree(tree_node const *t);
+</pre>
+
+<p>Parameter <B>t</B> points to the root node of a tree that <B>put_tree</B> shouldn't alter. That's why <B>const</B> is where it is.</p>
+<p><B>put_tree</B> should treat every node in the tree, not just the root node, as if it were const. If you're careful, you can write <B>put_tree</B> so that it treats every node as if it were const. Unfortunately, the compiler can't alert you if <B>put_tree</B> ever treats any part of the tree as non-const.</p>
+<p>The problem is that an object declared as:</p>
+
+<pre>
+tree_node const *t
+</pre>
+
+<p>behaves as if its members were declared as:</p>
+
+<pre>
+char *const word;
+list_node *const first;
+list_node *const last;
+tree_node *const left;
+tree_node *const right;
+</pre>
+
+<p>The effect is that, although every pointer member is const, they point to objects that are not const. Thus, <B>t</B> points to a tree in which only the root node is const. <B>const</B> is "shallow." (See "C++ Theory and Practice: Thinking Deeply," <I>CUJ,</I> April 1999 for a more thorough explanation of this behavior.)</p>
+<p>In this situation and many others like it, <B>const</B> should be "deep." <B>put_tree</B>'s parameter <B>t</B> should behave as if it points to a struct whose members were declared as:</p>
+
+<pre>
+char const *const word;
+list_node const *const first;
+list_node const *const last;
+tree_node const *const left;
+tree_node const *const right;
+</pre>
+
+<p>If the members were declared this way, then the members of each node would be const, and each pointer member would point to other objects that are also const. Any tree composed of these nodes would be const from top to bottom. <B>const</B> would be "deep."</p>
+
+<h4><FONT COLOR="#000080">A "Deep Pointer" Template</FONT></H4>
+
+<p>In my last installment, I introduced a template for a class called <B>deep_pointer</B> that provides the desired "deep" behavior for const pointers. (See "C++ Theory and Practice: Thinking Deeper," <I>CUJ,</I> May 1999.) Now I'm going to add a number of refinements to that template.</p>
+<p>Ideally, a <B>deep_pointer&lt;T&gt;</B> should behave exactly like a genuine "pointer to <B>T</B>", except that a <B>deep_pointer&lt;T&gt;</B> preserves deep constness. In other words, an object declared as:</p>
+
+<pre>
+deep_pointer&lt;T&gt; p;
+</pre>
+
+<p>should behave just like an object declared as:</p>
+
+<pre>
+T *p;
+</pre>
+
+<p>However, an object declared as:</p>
+
+<pre>
+deep_pointer&lt;T&gt; const p;
+</pre>
+
+<p>should behave exactly like an object declared as:</p>
+
+<pre>
+T const *const p;
+</pre>
+
+<p>That's the hope, anyway. We'll see how close we can get.</p>
+<p>Last time around, I worked through several versions of the <B>deep_pointer</B> class template. I left off with the version that appears as the header <B>deep.h</B> in <a href="list1.htm">Listing 1</a>.</p>
+<p><B>deep_pointer&lt;T&gt;</B> has just a single private data member of type <B>T *</B> called <B>actual_pointer</B>. It also has a half dozen public member functions:</p>
+
+<UL><LI><B>deep_pointer&lt;T&gt;()</B> is the default constructor. It does nothing, leaving the <B>deep_pointer</B> with an unspecified value.</LI>
+<LI><B>deep_pointer&lt;T&gt;(T *p)</B> is a converting constructor. It initializes the <B>deep_pointer</B> so that it has the same value as <B>p</B>.</LI>
+<LI><B>operator T *&amp;()</B> is a conversion operator that converts a "deep pointer to <B>T</B>" into a "reference to a (genuine) pointer to <B>T</B>".</LI>
+<LI><B>operator T const *const &amp;() const</B> is a conversion operator that converts "const <B>deep_pointer</B> into <B>T</B>" to a "reference to a const pointer to const <B>T</B>".</LI>
+<LI><B>T *operator-&gt;()</B> provides the <B>-&gt;</B> operator for objects of type "deep pointer to <B>T</B>".</LI>
+<LI><B>T const *operator-&gt;() const</B> provides the <B>-&gt;</B> operator for objects of type "const deep pointer to <B>T</B>".</LI></UL>
+
+<p>To be honest, the <B>deep_pointer</B> template in <a href="list1.htm">Listing 1</a> is not quite the same as the one I presented previously. In the previous article, I inadvertently declared the conversion operators as:</p>
+
+<pre>
+operator T *();
+operator T const *() const;
+</pre>
+
+<p>Each of these operators yields a pointer. Each of the conversion operators in <a href="list1.htm">Listing 1</a> yields a reference to a pointer.</p>
+<p>Where did the <B>&amp;</B>s come from? They're left over from earlier versions of the <B>deep_pointer</B> template. They're also part of an experiment to see if conversion operators alone can make deep pointers act like built-in pointers. Writing a pair of conversion operators is easier than defining the complete set of operators, such as <B>+=</B> and <B>-=</B>, needed to make deep pointers act like built-in pointers.</p>
+<p>As you'll see, the experiment is a failure. Not only are the <B>&amp;</B>s unnecessary, but they actually get in the way. However, I don't want to dismiss them until I've given them their due.</p>
+
+<h4><FONT COLOR="#000080">Operator Ambiguities</FONT></H4>
+
+<p>In general, you should be very cautious about writing classes with both converting constructors and conversion operators that convert types in opposite directions. Opposing conversions can lead to ambiguities when the compiler tries to resolve calls to overloaded operators.</p>
+<p>For example, the <B>deep_pointer</B> class template (in <a href="list1.htm">Listing 1</a>) has both a converting constructor:</p>
+
+<pre>
+deep_pointer(T *p);
+</pre>
+
+<p>which converts a built-in pointer to a deep pointer, and a conversion operator:</p>
+
+<pre>
+operator T *&amp;();
+</pre>
+
+<p>which converts a deep pointer to (a reference to) a built-in pointer. These opposing conversions cause ambiguities as follows.</p>
+<p><a href="list2.htm">Listing 2</a> contains the latest version of <B>table.h</B>, which defines the <B>cross_reference_table</B> class and its inline member functions. This version of the class declares its private member <B>root</B> as a <B>deep_pointer&lt;tree_node&gt;</B> rather than as a <B>tree_node *</B>. <a href="list3.htm">Listing 3</a> contains the corresponding version of <B>table.cpp</B>, which defines <B>cross_reference_table</B>'s non-inline member functions.</p>
+<p>The <B>cross_reference_table</B> member function definitions contain expressions that some compilers regard as ambiguous. One such expression is:</p>
+
+<pre>
+root = NULL;
+</pre>
+
+<p>appearing in the body of <B>cross_reference_table</B>'s default constructor (in <a href="list2.htm">Listing 2</a>).</p>
+<p>When a C++ compiler encounters this expression, it must determine whether that assignment operator is a built-in one or a user-defined one. In this case, the user-defined assignment operator is the copy assignment that the compiler generates:</p>
+
+<pre>
+deep_pointer&lt;tree_node&gt; &amp;operator=
+   (deep_pointer&lt;tree_node&gt; const &amp;)
+</pre>
+
+<p>The compiler can interpret the assignment in either of two ways:</p>
+
+<UL><p>1.  It can apply the converting constructor to the right operand, <B>NULL</B>, to obtain a deep pointer, and then use the generated copy assignment to copy the null deep pointer to <B>root</B>. The resulting code behaves as if you had written it as:</p>
+
+<pre>
+   root.operator= (deep_pointer&lt;tree_node&gt;(NULL));
+</pre>
+
+<p>2.  It can apply the conversion operator to the left operand, <B>root</B>, to obtain a reference to a built-in pointer, and then use the built-in assignment operator to store <B>NULL</B> through the reference and into the built-in pointer. The resulting code behaves as if you had written it as:</p>
+
+<pre>
+   root.operator *&amp;() = NULL;
+</pre></UL>
+
+<p>When faced with these choices, the compiler can't decide. Rather than just pick one, it complains that the expression is ambiguous and rejects the code.</p>
+
+<h4><FONT COLOR="#000080">The Special Case of Assignment</FONT></H4>
+
+<p>What I just told you about the choices a compiler must make is almost true, but not quite. It would have been true had I used other binary operators, such as <B>==</B>, <B>!=</B>, <B>&lt;</B>, or <B>&gt;</B>. For example, if <B>deep.h</B> had declared a non-member operator such as:</p>
+
+<pre>
+template &lt;typename T&gt;
+bool operator!= (deep_pointer&lt;T&gt;, deep_pointer&lt;T&gt;);
+</pre>
+
+<p>then the compiler would be unable to decide whether:</p>
+
+<pre>
+root != NULL
+</pre>
+
+<p>means either:</p>
+
+<pre>
+operator!= (root, deep_pointer&lt;tree_node&gt;(NULL))
+</pre>
+
+<p>or:</p>
+
+<pre>
+root.operator *&amp;() != NULL
+</pre>
+
+<p>However, assignment operators behave a little differently from the other binary operators. The C++ Standard (clause 13.3.1.2) says that user-defined conversions cannot be applied to the left operand of a built-in assignment. All assignment operators, including <B>+=</B> and <B>*=</B> as well as plain <B>=</B>, have this restriction. No other operators do.</p>
+<p>Thus, for assignment, the choice between:</p>
+
+<pre>
+root.operator= (deep_pointer&lt;tree_node&gt;(NULL));
+</pre>
+
+<p>and:</p>
+
+<pre>
+root.operator *&amp;() = NULL;
+</pre>
+
+<p>isn't really a choice after all. The second alternative applies a user-defined conversion to the left operand of a built-in assignment, and the C++ Standard says that's not an option.</p>
+<p>Despite what the Standard says, Microsoft's Visual C++ version 12 (as distributed with Visual Studio 6.0) apparently applies conversions to the left operand of a built-in assignment. I'm inferring this from the fact that the compiler complains that the assignment:</p>
+
+<pre>
+root = NULL;
+</pre>
+
+<p>in <B>table.h</B> is ambiguous. It complains about similar assignments elsewhere in <B>table.h</B> (<a href="list2.htm">Listing 2</a>) and <B>table.cpp</B> (<a href="list3.htm">Listing 3</a>). The complaints persist even if you compile with language extensions disabled (using the <B>-Za</B> compile option).</p>
+<p>Borland C++ version 5.3 (as distributed with C++Builder 3) also complains about ambiguities in the same places that Visual C++ complains about. However, it complains only with language extensions disabled (using the <B>-A</B> compile option). With extensions enabled, Borland C++ compiles the code without complaint. This strikes me as backwards. I interpret the Standard to mean that the assignment:</p>
+
+<pre>
+root = NULL;
+</pre>
+
+<p>should compile, yet Borland C++ compiles it only when operating in non-Standard (extensions enabled) mode.</p>
+<p>My confidence got a small boost when I found a compiler that seems to agree with me. Metrowerks C++ version 4 (as distributed with Code Warrior Pro 4) compiles the code without complaint whether or not it applies its interpretation of the C++ Standard (using the <B>-ansi strict</B> compile option).</p>
+<p>I managed to placate the Borland and Microsoft compilers by defining a public assignment operator that assigns a built-in pointer to a deep pointer:</p>
+
+<pre>
+deep_pointer&lt;T&gt; &amp;operator=(T *);
+</pre>
+
+<p>The details of this function appear in a new version of <B>deep.h</B> in <a href="list4.htm">Listing 4</a>.</p>
+<p>With this assignment operator, a compiler now has three ways to interpret the assignment:</p>
+
+<pre>
+root = NULL;
+</pre>
+
+<p>The original two choices:</p>
+
+<pre>
+root.operator=
+    (deep_pointer&lt;tree_node&gt;(NULL));
+root.operator *&amp;() = NULL;
+</pre>
+
+<p>each involve an implicit conversion for either the left or right operand. The new third choice:</p>
+
+<pre>
+root.operator=(NULL);
+</pre>
+
+<p>requires no operand conversions. Here, the arguments match the function parameters exactly. Overload resolution always favors exact matches, so the third choice prevails.</p>
+<p>Adding this assignment operator to the <B>deep_pointer</B> template is enough to make the Borland compiler stop complaining, yet still keep the Metrowerks compiler happy. The Microsoft compiler also stops complaining as long as you stay away from the <B>-Za</B> (disable extensions) option. The <B>-Za</B> option prompts the compiler to complain about the return type of:</p>
+
+<pre>
+cross_reference_table::tree_node *
+cross_reference_table::add_tree
+   (tree_node *t, char const *w, unsigned n)
+</pre>
+
+<p>in <B>table.cpp</B> (<a href="list3.htm">Listing 3</a>). The specific complaint is that <B>tree_node</B> is inaccessible here. For whatever good it does to say so, the compiler is wrong about this. It shouldn't issue an error here. This just means you can't use the <B>-Za</B> option with Visual C++ to compile this code.</p>
+
+<h4><FONT COLOR="#000080">References and Temporary Objects</FONT></H4>
+
+<p>I also compiled the code using the EDG (Edison Design Group) C++ compiler front end version 2.41 coupled with Visual C++ as the back end.</p>
+<p>The EDG compiler doesn't complain about my code when compiling with its default options, but it issues a very interesting warning when applying its "strict" interpretation of the C++ Standard (using the <B>--strict</B> compiler option).</p>
+<p>The nature of the warning is that the <B>return</B> statement in:</p>
+
+<pre>
+template &lt;typename T&gt;
+inline
+deep_pointer&lt;T&gt;::
+operator T const *const &amp;() const
+    {
+    return actual_pointer;
+    }
+</pre>
+
+<p>is returning a reference to a local temporary object. Warnings in my code always make me sit up and take notice, this one more so than most. Here's why.</p>
+<p>Normally, a reference binds only to an lvalue. For example,</p>
+
+<pre>
+int n;
+int &amp;ri = n;
+</pre>
+
+<p>is okay because <B>n</B> is an lvalue. That is, <B>n</B> designates an addressable object. On the other hand,</p>
+
+<pre>
+int &amp;ri = 3;
+</pre>
+
+<p>is an error because <B>3</B> is an rvalue. <B>3</B> does not designate an object that a reference can refer to or that a pointer can point to.</p>
+<p>Not only must a reference bind to an lvalue, it must also bind to an lvalue with the same type as what the reference refers to. More precisely, for any type <B>T</B>, a "reference to <B>T</B>" must bind to an lvalue of type <B>T</B>. For example,</p>
+
+<pre>
+double &amp;rd = n;
+</pre>
+
+<p>is an error because <B>rd</B> must refer to a <B>double</B>; yet <B>n</B>, though an lvalue, has type <B>int</B>.</p>
+<p>The exception to the rules just stated is that, for any type <B>T</B>, a "reference to const <B>T</B>" can bind to any expression (lvalue or rvalue) of type <B>X</B>, provided there's a conversion from <B>X</B> to <B>T</B>. In that case, the compiler generates code to convert the expression to <B>T</B> and then store the result in a temporary <B>T</B> object so that the reference has something to bind to.</p>
+<p>For example, given:</p>
+
+<pre>
+double const &amp;rd = 1;
+</pre>
+
+<p>the compiler generates code to do the following:</p>
+<UL><p>1.  convert <B>1</B> from <B>int</B> to <B>double</B>,</p>
+<p>2.  create a temporary <B>double</B> object to hold the result of the conversion, and</p>
+<p>3.  bind <B>rd</B> to the temporary.</p></UL>
+<p>The compiler also generates code to destroy the temporary object at the end of the reference's lifetime. The timing of the destruction can lead to dangling references, as in this example:</p>
+
+<pre>
+double const &amp;f(int &amp;n)
+    {
+    ...
+    return n;
+    }
+</pre>
+
+<p>This function returns a "reference to a const <B>double</B>". The <B>return</B> statement binds the return value to the return expression using essentially the same rules as if it were declaring a reference variable:</p>
+
+<pre>
+double const &amp;return_value = n;
+</pre>
+
+<p>Since <B>n</B> is an <B>int</B> rather than <B>double</B>, this declaration generates a temporary <B>double</B> object and binds the reference to that temporary. So far, so good, but not for much longer.</p>
+<p>Trouble occurs because the compiler generates the temporary in the context of the function body, not the context of the function call. Therefore, the compiled program will destroy the temporary as it returns from the function to the call site. The function will return a reference referring to a dead object. That'll be nasty.</p>
+<p>Fortunately, most contemporary C++ compilers issue a diagnostic (either a warning or error) when this could happen. At least they try. Sometimes, the problem is so subtle that it eludes detection. In the case of:</p>
+
+<pre>
+template &lt;typename T&gt;
+inline
+deep_pointer&lt;T&gt;::
+operator T const *const &amp;() const
+    {
+    return actual_pointer;
+    }
+</pre>
+
+<p>only the EDG compiler operating in its "strict" C++ Standard mode noticed that the return expression's type differed just enough from the return type to require the use of a temporary object.</p>
+<p>An obvious way to eliminate the warnings about returning a reference to a local temporary is to remove the reference operators from the return types in the conversion operators. That is, change the declarations of <B>deep_pointer&lt;T&gt;</B>'s conversion operators from:</p>
+
+<pre>
+operator T *&amp;();
+operator T const *const &amp;() const;
+</pre>
+
+<p>to:</p>
+
+<pre>
+operator T *();
+operator T const *() const;
+</pre>
+
+<p>respectively. Indeed, with this change, all four compilers accept the code without complaint.</p>
+<p>When I dropped the <B>&amp;</B> from the declaration of:</p>
+
+<pre>
+operator T const *const &amp;() const;
+</pre>
+
+<p>I also dropped the const qualifier to the immediate left of the <B>&amp;</B>. Suppose I had kept that const qualifier, as in:</p>
+
+<pre>
+operator T const *const() const;
+             ^1     ^2      ^3
+</pre>
+
+<p>This function returns an rvalue of a pointer type. In this or any other function that returns a non-class type, the compiler ignores any cv-qualifiers applied to the top level of the type. In the declaration above, it's the second occurrence of <B>const</B> that's ignored.</p>
+
+<h4><FONT COLOR="#000080">Rvalues to the Left</FONT></H4>
+
+<p>A function call expression is an rvalue unless the function returns a reference, in which case it's an lvalue. When the conversion functions returned references, they were returning lvalues. Now they return rvalues. Since the left operand of an assignment must be an lvalue, the compiler can't apply these conversions to the left operand and therefore can't consider the built-in assignment during overload resolution. This, in turn, changes the way some compilers resolve assignment expressions involving deep pointers.</p>
+<p>Let's look again at the assignment:</p>
+
+<pre>
+root = NULL;
+</pre>
+
+<p>Before adding the explicitly-defined assignment operator to <B>deep_pointer&lt;T&gt;</B>, the compiler had to choose from two possible interpretations:</p>
+
+<UL><p>1.  using a built-in assignment after converting the left operand:</p>
+
+<pre>
+root.operator *&amp;() = NULL;
+</pre>
+
+<p>2.  using the generated copy assignment after converting the right operand:</p>
+
+<pre>
+root.operator=
+    (deep_pointer&lt;tree_node&gt;(NULL));
+</pre></UL>
+
+<p>As explained earlier, the C++ Standard says that user-defined conversions cannot be applied to the left operand of a built-in assignment, so (1) above isn't viable. Nonetheless, some compilers consider it anyway and then stumble on an ambiguity. That ambiguity goes away when you provide another assignment operator (the one defined in <a href="list4.htm">Listing 4</a>) that's a better match than either of the previous two.</p>
+<p>When you change the conversion operators so that they no longer return references, the interpretation that uses built-in assignment changes from:</p>
+
+<pre>
+root.operator *&amp;() = NULL;
+</pre>
+
+<p>to:</p>
+
+<pre>
+root.operator *() = NULL;
+</pre>
+
+<p>The latter form has a left operand that's an rvalue, which cannot be. Even those compilers that thought the conversion was viable when it yielded an lvalue apparently reject the conversion when it yields an rvalue.</p>
+<p>So I guess we really don't need the explicitly-defined assignment operator. For the statement:</p>
+
+<pre>
+root = NULL;
+</pre>
+
+<p>compilers no longer consider the built-in assignment (because the conversion on the left, which shouldn't have been done anyway, now yields an rvalue). If we discard:</p>
+
+<pre>
+deep_pointer&lt;T&gt; &amp;operator=(T *);
+</pre>
+
+<p>then the only interpretation left is the one using the generated copy assignment, namely,</p>
+
+<pre>
+root.operator=
+    (deep_pointer&lt;tree_node&gt;(NULL));
+</pre>
+
+<p>There's no longer an ambiguity.</p>
+<p>Visual C++ seems to go along with this and it stops griping about ambiguities. So does Borland C++, except that it starts complaining about generating some other temporaries. I think those generated temporaries are harmless, but I hate to ignore warnings. Thus, at Borland's behest, I've elected not to remove the explicitly-defined assignment operator from <B>deep_pointer&lt;T&gt;</B> after all.</p>
+
+<h4><FONT COLOR="#000080">That's All for Now</FONT></H4>
+
+<p>The <B>deep_pointer</B> class template in <a href="list4.htm">Listing 4</a> is still only a start. It needs definitions for many more operators to fully reproduce the behavior of built-in pointers. Syntactically, the volatile qualifier can appear anywhere that <B>const</B> can appear. It might be that deep pointers should preserve deep volatility as well as deep constness. I believe a really complete implementation also needs to use member templates, which few compilers support yet.</p>
+<p>I examined the code generated for the xr program using <B>deep_pointer</B>s and compared it with code for an earlier version of the program using built-in pointers. I tested the code on a couple of compilers with different levels of optimization. <B>deep_pointer</B>s appear to introduce no speed or space penalties, probably because all the member functions are extremely terse inline functions. <B>deep_pointer</B>s just provide better compile- time type checking than built-in pointers.</p>
+<p>Although <B>deep_pointer&lt;T&gt;</B> needs more work, I think I'll stop here for now. I want to get back to other issues regarding class design and programming technique. I will continue to mine the cross-reference generator for examples. However, I will use deep pointers as appropriate, and augment the <B>deep_pointer</B> template as needed to keep deep pointers looking like built-in pointers.</p>
+<p>For those of you who'd like to try using deep pointers in practical situations, I have posted a more complete header on <I>CUJ</I>'s ftp site. (See p. 3 for downloading instructions.) I invite you to download it and experiment with it, but I caution you that parts of it haven't been tested yet. I admit that I'm hoping some of you will do that testing for me. Maybe together we can develop an industrial-strength <B>deep_pointer</B> template.</p>
+
+<p><i>Dan Saks is the president of Saks &amp; Associates, which offers training and consulting in C++ and C. He is active in C++ standards, having served nearly seven years as secretary of the ANSI and ISO C++ standards committees. Dan is coauthor of <I>C++ Programming Guidelines</I>, and codeveloper of the Plum Hall Validation Suite for C++ (both with Thomas Plum). You can reach him at 393 Leander Dr., Springfield, OH 45504-4906 USA, by phone at +1-937-324-3601, or electronically at <B>dsaks@wittenberg.edu</B>.</i></p>
+
+
+<h4><a href="../../../source/1999/jul99/saks.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

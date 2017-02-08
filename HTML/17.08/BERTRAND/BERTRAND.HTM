@@ -1,0 +1,109 @@
+<HTML>   
+     <HEAD>
+<TITLE>August 1999/TrueType Font Secrets</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocaug.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Windows</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">TrueType Font Secrets</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Michael Bertrand and Dave Grundgeiger</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Ever wonder how all these glyphs get drawn on your monitor or printer? Here's the inside scoop.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<p>TrueType is a common vector font standard used by the Microsoft Windows and Apple operating systems, among others. In a vector font, a series of coordinates define a character's contour, so simple scaling transformations effectively shrink or enlarge the character. Multiplying all the coordinates by two doubles the character's size, for example, and it looks just as good at both resolutions. Operating systems typically allow users to access TrueType font handling without having to know all the details. But font manipulations beyond those supplied by the operating system require a deeper understanding of the TrueType format. Understanding the format, and having the coordinates to each character's contour, opens the door to a world of special text effects like gradient-filling the character's interior, extruding it, placing it realistically on a sphere, and so on.</p>
+<p>Microsoft Windows furnishes direct access to TrueType coordinates through the <B>GetGlyphOutline</B> API. <B>GetGlyphOutline</B> supplies the vector points for straight lines and Bezier curves in an abstract coordinate system. Rendering the character then requires deciphering the vector points and drawing the lines and curves with <B>MoveTo</B>s and <B>LineTo</B>s. The Bezier curves in particular must be decomposed into straight lines and patched together end-to-end to produce the final smooth contour. We provide a class, <B>CGlyph</B>, to handle this task. In this article we explain the mechanics of drawing a TrueType font, and show how you can use the <B>CGlyph</B> class to create your own special effects with TrueType characters.</p>
+
+<h4><FONT COLOR="#000080">The CGlyph Class</FONT></H4>
+
+<p><B>CGlyph</B> is a C++ wrapper class that taps the basic functionality of <B>GetGlyphOutline</B>. <B>CGlyph</B> can be used in either an SDK context (see <a href="fig1.htm">Figure 1</a>) or in an MFC Single Document Interface (SDI) application (see <a href="fig2.htm">Figure 2</a>). We have provided several driver programs of each type, which are available on the <I>CUJ</I> ftp site (see p. 3 for downloading instructions).</p>
+<p><B>CGlyph</B>'s main methods are <B>Realize</B> and <B>Draw</B>. <B>Realize</B> allocates the buffer needed to hold the vector points, then calls <B>GetGlyphOutline</B> to load them. A subsequent <B>Draw</B> traverses the buffer, drawing the lines and Bezier curves making up that character, or glyph. The <B>Draw</B> method is shown in <a href="fig3.htm">Figure 3</a>.</p>
+
+<h4><FONT COLOR="#000080">The GetGlyphOutline API</FONT></H4>
+
+<p>The signature of <B>GetGlyphOutline</B> is shown in <a href="fig4.htm">Figure 4</a>. The handle to device context, <B>hdc</B>, must be valid at the time <B>GetGlyphOutline</B> is called, and it must have the TrueType font of interest selected into it. <B>uChar</B> is the character being interrogated for an outline. <B>uFormat</B> determines whether the data returned is in bitmap (<B>GGO_BITMAP</B>) or vector (<B>GGO_NATIVE</B>) form, the latter being appropriate here. <B>GetGlyphOutline</B> fills in the fields of the <B>GLYPHMETRICS</B> structure pointed to by <B>lpgm</B> with information about the glyph's size and placement; fields <B>gmBlackBoxX</B> and <B>gmBlackBoxY</B>, for example, hold the size of the glyph's bounding box. (See MSDN for a description of the <B>GLYPHMETRICS</B> structure.)</p>
+<p>Using <B>GetGlyphOutline</B> always requires two calls. In the first call, parameter <B>cbBuffer</B> is set to zero and <B>lpvBuffer</B> is set to <B>NULL</B>. This tells <B>GetGlyphOutline</B> to return the size of the buffer needed to hold the glyph data. After the program has allocated a buffer of that size, it calls <B>GetGlyphOutline</B> again, passing the buffer size in <B>cbBuffer</B> and the buffer address in <B>lpvBuffer</B>. When called with these argument values, <B>GetGlyphOutline</B> copies the vector data into the buffer.</p>
+<p>Parameter <B>lpmat2</B> is a pointer to a transformation matrix, which <B>GetGlyphOutline</B> will apply to all points in the glyph before writing them to the buffer. The transformation is applied through matrix multiplication, thus making <B>GetGlyphOutline</B> capable of linear effects such as shearing and rotating. <a href="fig5.htm">Figure 5</a> shows a transformation matrix for rotation through an angle <B>A</B>.</p>
+<p><B>GetGlyphOutline</B> returns numbers in a fixed-point format, in which two integers (<B>fract</B>, <B>value</B>) represent a real number. <B>value</B> represents the part of the real number to the left of the decimal point; <B>fract</B> represents the part to the right of the decimal point, considered as a fraction of 65,536. For example, 0.5 becomes <B>(fract, value) = (32768, 0)</B>; 2.25 is equivalent to <B>(fract, value) = (16384, 2)</B>; and so on. Numbers in this format are stored in structures of type <B>FIXED</B>. This same structure must be used for matrix entries as well.</p>
+
+<h4><FONT COLOR="#000080">Polyline and QSpline Records</FONT></H4>
+
+<p><B>GetGlyphOutline</B> fills the buffer with a sequence of structures describing the glyph. A glyph consists of one or more "contours." Each contour is described by a <B>TTPOLYGONHEADER</B> structure followed by as many <B>TTPOLYCURVE</B> structures as required to describe it. (See MSDN for a description of these structures.) Each <B>TTPOLYCURVE</B> structure can be either a polyline record or a spline record.</p>
+<p>Two contours make up a capital 'A', for example: one for the outer contour and one for the triangular hole. Each contour consists of one or more curves, a series of connected, intermingled polyline and QSpline records. A polyline is a series of connected straight lines, while a QSpline record is a series of connected three-point (quadratic) Bezier curves. A contour is closed, ending where it started. Curve data consists of a series of points, which are represented as <B>POINTFX</B> structures consisting of a <B>FIXED</B> x and a <B>FIXED</B> y.</p>
+<p>Polyline records consist of a <B>short</B> (two-byte) integer n followed by n points. The last point of the previous record connects by a straight line to the first point, then straight lines connect subsequent points.</p>
+<p>QSpline records also consist of a <B>short</B> integer n followed by n points, but only the last point lies on the glyph itself. These points define a connected series of n-1 Bezier curves.</p>
+<p><a href="fig6.htm">Figure 6</a> shows a quadratic Bezier curve. A quadratic Bezier curve is defined by three points: controls <I>p1</I> and <I>p3,</I> and handle <I>p2.</I> The curve begins at <I>p1</I> in the direction of handle <I>p2,</I> eventually veering back towards <I>p3,</I> where it ends. The handle vectors connecting <I>p1</I> and <I>p3</I> to <I>p2</I> in <a href="fig6.htm">Figure 6</a> are construction lines &#151; they're shown only to illustrate how the curve runs tangent to one of these vectors before breaking off towards the other control point. Although Windows 95 has built-in Bezier drawing support with functions <B>PolyBezier</B> and <B>PolyBezierTo</B>, these functions draw four-point (cubic) Bezier curves, not three-point (quadratic) curves. (Cubic Bezier curves have two handles; quadratic Beziers convert to cubic Beziers by choosing the cubic handles to be two-thirds of the way from the quadratic control points to the quadratic handle.)</p>
+<p>Instead of trying to use the Windows 95 functions, we elected to implement the elegant recursive deCasteljau algorithm, which calculates a series of points along the Bezier curve which are then connected as a polyline. DeCasteljau works by calculating the point <I>q1</I> midway between <I>p1</I> and <I>p2,</I> and point <I>q2</I> midway between <I>p2</I> and <I>p3.</I> Then point <I>r1,</I> the midpoint of segment <I>q1q2,</I> is a point on the curve, and one that partitions the original Bezier curve into left sub-Bezier <I>p1q1r1</I> and right sub-Bezier <I>r1q2p3</I> (see <a href="fig6.htm">Figure 6</a>). The subdivision process continues recursively to generate as many evenly spaced points on the original Bezier curve as are desired. (See Mike's article, "Fast Bezier Curves in Windows <a href="#1">[1]</a>," for details on the deCasteljau algorithm.)</p>
+<p>TrueType adds an extra twist in the way Bezier curves are stitched together in a single QSpline record. If n = 2 in a QSpline record, there will be a single Bezier with <I>p1</I> being the last point on the previous record and <I>p2</I> and <I>p3</I> the given points. If n = 3, however, there will be two Beziers joined end to end. Following the notation in <B>CGlyph</B>'s <B>Draw</B> method, denote the three points by <B>apfx[0]</B>, <B>apfx[1]</B>, and <B>apfx[2]</B>. The first Bezier curve is defined by:</p>
+
+<pre>
+p1 = last point in previous record
+
+p2 = apfx[0]
+
+p3 = (apfx[0] + apfx[1]) / 2
+</pre>
+
+<p>The second Bezier curve has points:</p>
+
+<pre>
+p1' = p3 on last Bezier
+
+p2' = apfx[1]
+
+p3' = apfx[2]
+</pre>
+
+<p>With the exception of the last point, the spline points returned by <B>GetGlyphOutline</B> are the Bezier handles. The curve does not pass through any of the points returned by <B>GetGlyphOutline</B> (since they are handles) except the last point. The control points can be reconstructed from the handles: each control point is the average of two adjacent handles. Since the average of two points is the point exactly midway between them, this ingenious scheme insures that the joined Bezier curves are smooth at the point of juncture. This is because the first Bezier is tangent to the vector connecting <I>p3</I> to <I>p2,</I> while the second one is tangent to the vector connecting <I>p1'</I> = <I>p3</I> to <I>p2'. </I>The two vectors point in diametrically opposite directions, by construction (compare with <a href="fig7.htm">Figure 7</a>).</p>
+<p>The same averaging scheme applies if there are more than two Bezier curves in one QSpline record &#151; they patch together continuously at each juncture, insuring smoothness at any resolution.</p>
+
+<h4><FONT COLOR="#000080">Representing an 'A'</FONT></H4>
+
+<p>Consider the TrueType representation of the Times New Roman capital 'A' in <a href="fig8.htm">Figure 8</a>, for example. First comes the outer contour, pictured here, then a second contour for the hole (not shown). The outer contour's start point, marked by a green cross, is on the right underside of the horizontal arm. The contour begins to trace straight to the left, then turns down and to the left to start down the left foot, proceeding all the way around in a clockwise fashion. The blue crosses mark points in polyline records, the red crosses points in QSpline records.</p>
+<p>If Line2 denotes a polyline record with two points, QSpline3 a QSpline record with three points, and so on, then this contour consists of the following records:</p>
+
+<pre>
+Line2
+QSpline2
+QSpline3
+Line3
+QSpline2
+QSpline2
+Line3
+QSpline3
+Line3
+QSpline3
+QSpline2
+</pre>
+
+<p>A detail view of the left foot in <a href="fig9.htm">Figure 9</a> helps illustrate how the QSplines work. The first QSpline record in the contour begins to define the right edge of the left foot. It has two points (QSpline2) and determines a single Bezier curve. The two points are the handle and second control, the first control being the last point on the previous polyline record. The next QSpline record has three points (QSpline3), where the first two handles are not on the contour and the third is the final control. Compare to <a href="fig7.htm">Figure 7</a>, which shows two quadratic Beziers joined at point p3, essentially the same diagram in a different orientation. Here too the construction lines are drawn, showing that the midpoint of the two interior handles is a control point common to both Beziers.</p>
+
+<h4><FONT COLOR="#000080">Hinting</FONT></H4>
+
+<p>Even vector fonts ultimately must be displayed on raster devices. When a filled glyph is displayed, its contours determine which pixels are turned on and off. Boundary pixels present a problem, especially at small font sizes, where the decision to include a pixel can considerably affect the character's legibility and aesthetic appeal. To address this problem, TrueType provides "hinting" to customize glyphs at smaller sizes. While producing the best results in general, hinting means that glyphs produced at different resolutions may not be scaled versions of each other. Our GlyphDemo application uses a very large font size (576) for retrieving glyph contours. Scaling these contours down produces different glyphs than the hinted versions, which are produced at small font size to begin with. (The hinted versions look better.)</p>
+<p><a href="fig10.htm">Figure 10</a> explains the mechanics of using class <B>CGlyph</B> in a Microsoft Visual C++ SDI application. When the application has been built, the user can display Times New Roman characters on the display by pressing keys on the keyboard. GlyphDemo enables the user to choose any TrueType font and any character to render. Then through menu items or hot keys, the character can be rotated clockwise or counter-clockwise or zoomed in (to make the character larger) or zoomed out (to make the character smaller).</p>
+
+<h4><FONT COLOR="#000080">Special Effects</FONT></H4>
+
+<p>Programming special text effects would involve amending <B>CGlyph</B>'s <B>Draw</B> method (<a href="fig3.htm">Figure 3</a>), which traverses the TrueType vector points and sends them directly to <B>MoveTo</B>/<B>LineTo</B>. Coloring a character's interior, for example, would require using the traversal algorithm to collect the points into a buffer, then sending them from there to the Windows <B>Polygon</B> API to draw the character and fill its interior.</p>
+<p>Nonlinear point transformations beyond those built into <B>GetGlyphOutline</B> become possible as well. Think of a character as being painted on a hemisphere, for example, with the center of the character at the top of the hemisphere. Then project the character down onto the plane base of the hemisphere, much as maps of the earth are produced. Projected points on the contour are distorted in proportion to their distance from the center, but nonlinearly according to trigonometric calculations. The transformation is applied to every point produced by <B>GetGlyphOutline</B> and only then is the character rendered as before to produce the special effect.</p>
+
+<h4><FONT COLOR="#000080">Reference</FONT></H4>
+
+<p><a name="1"></a>[1]  Michael Bertrand. "Fast Bezier Curves in Windows," <I>PC Techniques,</I> February/March 1992, pp. 25-30. (Reprinted in the book <I>PC Techniques C/C++ Power Tools,</I> 1992, pp. 213-225.)</p>
+
+<p><i>Mike Bertrand teaches Mathematics and programming at Madison Area Technical College, Madison, WI 53704. He can be reached at <B>mikeber@execpc.com</B> (home page <B>http://www.execpc.com/~mikeber</B>).</i><p>
+<p><i>Dave Grundgeiger is a Microsoft Certified Solution Developer, and is the author of <I>.INI Master &#151; The .INI File Difference Utility for Windows</I>. Dave lives in Madison, Wisconsin, where he is a senior developer at Tara Software, Inc. Dave can be reached at <B>daveg@tarasoftware.com</B> (home page <B>http://www.execpc.com/~iniman</B>).</i></p>
+
+<h4><a href="../../../source/1999/aug99/bertrand.zip">Get Article Source Code</a></h4>
+
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

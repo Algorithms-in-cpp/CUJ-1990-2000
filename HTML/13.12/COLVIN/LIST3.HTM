@@ -1,0 +1,253 @@
+<HTML><HEAD>
+<TITLE>December 1995/Smart Pointers for C++ Garbage Collection/Listing 3</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 3 <I>Implementation of non-portable classes</I></A></h4>
+<pre>////////////////////////////////////////////////////////////
+// gc.cpp                     Copyright 1995 Gregory Colvin.
+//                    Free distribution OK with this notice.
+//
+// MSDOS implementation of mark-sweep garbage collection.
+// Assumes that arrays with destructors have a four byte
+// element count immediately preceding array data.
+// Assumes that vptr is at the beginning of an object.
+// Tested with Borland C++ 4, 16-bit large memory model.
+#include &lt;dos.h&gt;
+#include "runtime.h"
+#include "gc.h"
+
+// DOS memory segments are aligned on 16 byte paragraph
+// boundaries, addressable with two bytes (16 Meg limit).
+const size_t MIN_SEG=16;
+typedef unsigned short SEG, OFF;
+typedef void* PTR;
+
+// State of the memory allocator.
+static new_handler ChainedHandler;
+static SEG Heap, Rover, End;
+static unsigned NAlloc;
+
+// Access to memory segment header and data. At the head
+// of each allocated segment we keep three tag bits, the
+// number of paragraphs allocated, and a count of the number
+// of roots pointing into it. A root is any gc_link which
+// is not on the heap, or is on the heap but locked.
+struct gc_hdr {
+   unsigned mark :  1; // mark as reachable
+   unsigned lock :  1; // lock against collection
+   unsigned mult :  1; // true for arrays
+   unsigned null :  1; // unused, must be 0
+   unsigned size : 12; // number of allocated paragraphs
+   unsigned root : 16; // number of roots pointing in
+
+   void Clear(unsigned n) { memset(this,0,n*MIN_SEG); }
+   void Clear()           { Clear(size); }
+};
+
+inline SEG Seg(PTR p)       { return FP_SEG(p); }
+inline OFF Off(PTR p)       { return FP_OFF(p); }
+inline PTR Ptr(SEG s,OFF o) { return MK_FP(s,o); }
+
+inline gc_hdr&amp; Hdr (SEG s)  { return *(gc_hdr*) Ptr(s,0); }
+inline gc_data&amp; Data(SEG s) { return *(gc_data*)Ptr(s,4); }
+
+inline bool OnHeap(SEG s) { return Heap &lt;= s &amp;&amp; s &lt;= End; }
+inline bool IsRoot(SEG s) { return !OnHeap(s)||Hdr(s).lock;}
+
+inline unsigned NSeg(size_t n_bytes) {
+   return (sizeof(gc_hdr) + n_bytes + MIN_SEG - 1)/MIN_SEG;
+}
+
+// Initialize statics and clean up when done.
+struct gc_statics {
+   gc_statics() {           // take all but 4K of heap for GC
+      unsigned heap_size;
+      _dos_allocmem(0xFFFF,&amp;heap_size);
+      PTR p = halloc(heap_size -= 0xFF,MIN_SEG);
+      if (!p)
+         abort();
+      Heap = Seg(p) + 1;
+      Rover = End = Heap + heap_size - 2;
+      Hdr(End).Clear(1); Hdr(End).lock = Hdr(End).size = 1;
+      do Hdr(--Rover).Clear(1); while (Rover &gt; Heap);
+      ChainedHandler= set_new_handler(gc_min);
+   }
+   ~gc_statics() { gc_all(); }
+};
+
+// Full collection.
+void gc_all() {
+   do gc_data::Mark(); while (gc_data::Sweep());
+}
+
+// Partial collection.
+void gc_min() {
+   gc_data::Mark();
+   gc_data::Sweep();
+}
+
+// Partial collection suitable for use as new-handler.
+void gc_handler() throw(bad_alloc) {
+   gc_data::Mark();
+   if (!gc_data::Sweep()) {
+      if (ChainedHandler)
+         ChainedHandler();
+      throw bad_alloc();
+   }
+}
+
+// Allocate segments.
+void* allocate(size_t size) throw() {
+   static gc_statics init;
+   unsigned n= NSeg(size);
+
+   // loop over heap looking for enough free space
+   for (SEG r,s=Rover,end=End; ; end=Rover,s=Heap) {
+      do {
+         r = s;
+         while (Hdr(s).size == 0)
+            if (++s - r &gt;= n) {
+               Rover = r + n;
+               NAlloc += n;
+               Hdr(r).lock = 1;            // locked
+               Hdr(r).size = n;
+
+               return Ptr(r,sizeof(gc_hdr)); // success
+            }
+         assert(Hdr(s).null==0);
+      } while ((s += Hdr(s).size) &lt; end);
+      if (s == Rover)
+         return 0;                            // failure
+   }
+}
+
+// Deallocate segments by zero filling.
+void deallocate(void* p) throw() {
+   if (p) {
+      SEG s= Seg(p);
+      gc_hdr&amp; hdr= Hdr(s);
+      assert(!hdr.root);
+      NAlloc -= hdr.size;
+      hdr.Clear();
+   }
+}
+
+// Mark garbage collected data temporarily on construction.
+gc_data::gc_data( ) {
+   Hdr(Seg(this)).mark = 1;
+}
+
+// Walk the heap and cause the gc_value assignment
+// operator to recursively mark roots.
+int gc_data::IsMarking;
+struct gc_marking {
+   gc_marking() { gc_data::IsMarking = 1; }
+   ~gc_marking() { gc_data::IsMarking = 0; }
+};
+void gc_data::Mark() {
+   if (IsMarking)
+      throw bad_alloc();
+   struct gc_marking marker;
+   for (SEG s=Heap; s &lt; End; ) {
+      assert(Hdr(s).null==0);
+      gc_hdr&amp; hdr= Hdr(s);
+      unsigned n= hdr.size;
+      if (n) {
+         if (hdr.root &amp;&amp; !hdr.mark)
+            Data(s).mark_all();
+         s += n;
+      } else
+         s++;
+   }
+}
+
+// Sweep heap to collect garbage. If data is marked then
+// clear the mark for the next sweep, else destroy data.
+int gc_data::Sweep() {
+   int released=0;
+   for (SEG s=Heap; s &lt; End; ) {
+      assert(Hdr(s).null==0);
+      gc_hdr&amp; hdr= Hdr(s);
+      unsigned n= hdr.size;
+      if (n) {
+         if (!hdr.lock)
+            if (hdr.mark)
+               hdr.mark = 0;
+            else {
+               Data(s).destroy_all();
+               released = 1;
+            }
+         s += n;
+      } else
+         s++;
+   }
+   return released;
+}
+
+// Loop over data to mark or destroy each contained value.
+void gc_data::mark_loop(size_t size) {
+   char* p= (char*)&amp;this-&gt;data;
+   gc_hdr&amp; hdr= Hdr(Seg(this));
+   if (hdr.mult) {                   // if multiple elements
+      unsigned n= *(unsigned long*)p;
+      for (p += 4; n--; p += size)   // loop over n elements
+         mark(p);
+   } else
+    mark(p);                        // only one element
+   hdr.mark = 1;
+}
+
+void gc_data::destroy_loop(size_t size) {
+   char* p= (char*)&amp;this-&gt;data;
+   gc_hdr&amp; hdr= Hdr(Seg(this));
+   if (hdr.mult) {                   // if multiple elements
+      unsigned n= *(unsigned long*)p;
+      for (p += 4; n--; p += size)  // loop over n elements
+         destroy(p);
+   } else
+      destroy(p);                   // only one element
+   deallocate(this);
+}
+
+// Assignment of gc_links is magic in Marking mode.
+void gc_link::mark_or_copy(const gc_link&amp; r) {
+   if (gc_data::IsMarking) {
+      SEG s= Seg(ptr);
+      if (s &amp;&amp; Hdr(s).size)
+         Data(s).mark_all();
+   } else
+      set_ptr(r.ptr);
+}
+
+// Maintain root counts for gc_links.
+void gc_link::incr_root() {
+   SEG s= Seg(ptr);
+   if (OnHeap(s) &amp;&amp; IsRoot(Seg(this)))
+      ++Hdr(s).root;
+}
+void gc_link::decr_root() {
+   SEG s= Seg(ptr);
+   if (OnHeap(s) &amp;&amp; IsRoot(Seg(this)))
+      --Hdr(s).root;
+}
+void gc_link::set_ptr(void* p) {
+   decr_root();
+   if (ptr = p) {
+      SEG s= Seg(p);
+      if (OnHeap(s)) {                  // if allocated
+         gc_hdr&amp; hdr= Hdr(s);
+         if (hdr.mark) {               // if to be collected
+            hdr.mark = hdr.lock = 0;  // safe to unlock
+            hdr.mult                  // detect arrays
+              = Off(p) &gt; gc_data::min() + sizeof(gc_hdr);
+         }
+      }
+      incr_root();
+   }
+}
+
+//End of File
+</pre>
+</BODY>
+</HTML>

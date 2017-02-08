@@ -1,0 +1,208 @@
+
+
+
+
+<HTML><HEAD>
+
+<TITLE>April 1996/A Portable Multiprocess Gateway in C++/Listing 1</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4>
+<A name="HEADING1">Listing 1: System-specific class</A></h4>
+
+
+<pre>
+
+#include &lt;sys/sleep.h&gt;
+#include &lt;sys/signal.h&gt;
+class AIXkproc
+{
+public:
+                   AIXkproc(char *processName);
+  virtual          ~AIXkproc();
+  int              start();
+  pid_t            pid() const;
+
+private:
+  void             destroyProcess();
+  static   void    AIX_exitP();
+  void             AIX_lockTerm();
+  void             AIX_unlockTerm();
+  void             AIX_notifyTerm();
+  void             AIX_sleepDuringTerm();
+  void             AIX_sendTermSignal();
+  int              AIX_pidIsValid();
+  pid_t            AIX_creatP();
+  int              AIX_initP();
+  int              AIX_okToContinue();
+
+  virtual  void    processWork() = 0;
+
+struct ObjParm
+  {
+  AIXkproc        *theObject;
+  } initStructure;
+  static   void    AIX_main(int flag, ObjParm *initStructPtr, int initLength);
+  unsigned int     processDying : 1;
+  unsigned int     wakeupKernel : 1;
+  unsigned int     started : 1;
+  pid_t            thePid;
+  int              terminationLock;
+  int              terminationEvent;
+  enum             { MAX_AIX_PROC_NAME = 4 };
+  enum             { INVALID_PID = -1};
+  char             procName_[MAX_AIX_PROC_NAME+1];
+};
+
+AIXkproc::AIXkproc(char *procName)
+{
+   thePid              = (pid_t) -1;
+   started          = 0;
+   terminationLock  = LOCK_AVAIL;
+   processDying     = 0;
+   wakeupKernel     = 0;
+   terminationEvent = EVENT_NULL;
+
+   strncpy(procName_, procName, MAX_AIX_PROC_NAME); // Save the ...
+   procName_[MAX_AIX_PROC_NAME] = '\0';             // ...process name
+   thePid = AIX_creatP();                           // Create a kernel process.
+}
+
+// ------------------------------------------------------------------
+// Name:      AIXkproc::start()
+// Function:  Start the Processor processing
+// Returns:   int -- 1 if started, 0 if error
+// Notes:     We need a separate start function (rather than starting
+//            in the constructor) so we can be guaranteed that all
+//            our subclasses' constructors have completed before we
+//            start the processing
+// --------------------------------------------------------------------
+int AIXkproc::start()
+{
+   // ---------------------------------------------------------------
+   // Grab the termination lock in case someone tries to delete us
+   // while we are initializing
+   // ---------------------------------------------------------------
+   AIX_lockTerm();
+   if (!AIX_pidIsValid())
+   {
+   // Process not created properly : Your error handler goes here...
+   }
+   else if (AIX_initP()  != 0)      // Will kickoff AIX_main() execution
+   {
+   // failed to initialize process  : Your error handler goes here...
+   }
+   else
+   {
+   started = 1;
+   }
+   AIX_unlockTerm();
+   return started;
+}
+
+AIXkproc::~AIXkproc()
+{
+   AIX_lockTerm();
+   if (started &amp;&amp; !processDying)
+      {
+      wakeupKernel = 1;
+      AIX_sendTermSignal();
+      AIX_sleepDuringTerm();
+      }
+   AIX_unlockTerm();            // Release the lock protecting termination .
+}
+
+/*------------------------------------------------------------------
+/ Name:      Process::myMain (int flag, ObjParm *initStructPtr, int initLength)
+/ Function:  This function is called to start the kproc working.
+/ Input:     int       -- initialization flag
+/            ObjParm * -- initialization structure
+/            int       -- size of initialization structure
+/ ------------------------------------------------------------------*/
+void AIXkproc::AIX_main(int flag,
+			AIXkproc::ObjParm *initStructPtr,
+			int initLength)
+{
+  if ((flag != 0) || (initLength != sizeof(ObjParm)))
+  {
+  // invalid flag or struct size  : Your error handler goes here...
+  return;
+  }
+  AIXkproc *self = initStructPtr-&gt;theObject;
+  self-&gt;processWork();
+  self-&gt;destroyProcess();    // Finished our work. Kill our process.
+}
+
+// ------------------------------------------------------------------
+// Name:      void AIXkproc :: destroyProcess ()
+//
+// Function:  Waits for the right time to terminate and then exits
+// Notes:     Called by AIX_main() when it is time to kill
+//            the process.  Coordinates with the AIXkproc destructor
+//            via the termination lock and sleep and wakeup calls. The
+//            flags must be set and accessed only while holding the
+//            lock.
+// ------------------------------------------------------------------
+void AIXkproc::destroyProcess()
+{
+   int            wakeup;
+
+   AIX_lockTerm();
+   processDying = 1;
+   wakeup = wakeupKernel;
+   AIX_unlockTerm();
+   if (wakeup)
+      AIX_notifyTerm(); // Wakeup the parent process running the destructor.
+   AIX_exitP();
+}
+
+pid_t AIXkproc::AIX_creatP()     // Create the process. Return the process ID.
+{ return creatp();}
+
+int AIXkproc::AIX_initP()  // Initialize the process. Return 0 if successful.
+
+{
+   initStructure.theObject = this;
+   return
+	       initp (thePid,               // process id from AIX_creatP()
+                      AIXkproc::AIX_main,   // entry point for new process
+                      &amp;initStructure,       // parms containing object
+                      sizeof(initStructure),// size of parms
+                      procName_);           // process name
+}
+
+void AIXkproc::AIX_notifyTerm() // Send a wakeup to those who wait.
+{ e_wakeup(&amp;terminationEvent); }
+
+void AIXkproc::AIX_sendTermSignal()     // Tell thePid to terminate.
+{ pidsig ( thePid, SIGTERM ); }
+
+int AIXkproc::AIX_okToContinue()    // Return 1 if okay to continue processing
+{ return ((sig_chk()) != SIGTERM); }
+
+// ------------------------------------------------------------------
+// Name:      void AIXkproc :: sleepDuringTerm()
+// Function:  The calling process goes to sleep until event completes.
+// Notes:     Upon entry this call must atomically release
+//            the terminationLock and go to sleep.
+//            Upon return (when woken up) must reacquire the lock.
+// ------------------------------------------------------------------
+void AIXkproc::AIX_sleepDuringTerm()
+{ e_sleepl(&amp;terminationLock, &amp;terminationEvent, EVENT_SHORT); }
+void AIXkproc::AIX_exitP()
+{ _exit( 0 ); }
+
+int AIXkproc::AIX_pidIsValid() // Returns 1 if process ID is valid, 0 otherwise
+{ return ((thePid == INVALID_PID) ? 0 : 1); }
+
+void AIXkproc::AIX_lockTerm() // Get termination lock
+{ lockl(&amp;terminationLock, LOCK_SHORT); }
+
+void AIXkproc::AIX_unlockTerm() // Release termination lock
+{ unlockl(&amp;terminationLock); }
+
+pid_t AIXkproc::pid() const
+{ return thePid; }
+
+</pre>
+</body></html>

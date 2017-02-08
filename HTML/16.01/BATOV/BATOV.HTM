@@ -1,0 +1,384 @@
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+<TITLE>January 1998/A Quick and Simple Memory Allocator</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<H2><A href="../tocjan.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+<FONT COLOR="#FF0000">Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">A Quick and Simple Memory Allocator</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Vladimir Batov</FONT></H3>
+
+<blockquote>
+<p>C++ lets you really speed up storage allocation, when you need the improved
+performance.</p></blockquote><hr>
+<blockquote>
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>Everyone knows about dynamic memory allocation. No serious application could do without
+the mechanism directly or indirectly. Inevitably a default implementation of
+the dynamic memory allocators has to be very basic and general to cover the
+wide spectrum of all possible usage variations. The cost of generality,
+however, is often a degradation of the time needed for memory
+allocation/deallocation, or memory allocation overhead.<p>
+Some obvious examples are the implementations of the memory allocators in the
+Standard C/C++ library, and the quick memory library I remember seeing in the
+original BSD 4.2 distribution. The first one is relatively economical and
+ve-e-ry slo-o-ow, the second is faster but consumes on an average 50 per cent
+more memory than the standard implementation. The storage inefficiency occurs
+because, in order to boost performance, the library really allocates fixed
+chunks of memory from a predefined set of available sizes. (The next available
+size is twice as big as the previous one.) So if you request a block of memory
+a little bit bigger than the closest available size you will get nearly twice
+as much as you asked for.<p>
+C++ permits us to write our own efficient customized memory allocators, then
+invisibly integrate such allocators into the classes being built.
+Unfortunately, many programmers/practitioners are far too caught up in the
+day-to-day development fever to think about such issues as performance and
+memory-usage optimization until it is far too late to integrate improvements
+into an existing design. Having been caught in such a situation one too many
+times, I dedicated a couple of nights to writing a practical and easy-to-use
+memory-allocator class. My design goals included:</p>
+<ul><li>dramatic optimization of the memory allocation/deallocation mechanism,</li>
+<li>simplicity of usage and integration with other classes,</li>
+<li>minimal static and operational memory overhead, and</li>
+<li>the ability to check the integrity of the allocated memory blocks.</li></ul>
+<p>I feel that other programmers might benefit from this practical
+"heat-and-serve" implementation.<p>
+The basic idea is not new. It is described in quite a few magazines and books.
+A starting point for optimization is an assumption that the vast majority of
+memory allocations are related to instances of a class. That means that blocks
+of memory of the same size are allocated and freed over and over again. That
+size is the size of a class instance. Once we know the size, we can allocate
+memory in considerably larger blocks to accommodate more than one instance at a
+time, and maintain a pool of freed blocks of memory for further reuse instead
+of repeatedly freeing them.<p>
+Nothing new. But when I tried a draft implementation of the idea I was
+astonished to discover that it worked nearly eleven (!) times faster than the
+standard memory allocator. Ultimately, with a little cautious inlining, I
+boosted the performance by a factor of ten to 20, depending on the pattern of
+allocations and the compiler options used.</p>
+
+<h4><FONT COLOR="#000080">A Usage Example</FONT></H4>
+
+<p>Apart from performance, I gave serious consideration to simplicity of usage and
+integration with other classes. Allocators are clearly support classes, and
+while important, they play a secondary role in development. So an allocator
+class interface has to be minimal, and encapsulation of the class maximal. For
+example:</p>
+
+<pre>
+class Foo
+  {
+public:    // the Foo specific stuff
+     
+  void* operator new (size_t)
+    { return _allocator.allocate(); }
+  void operator delete (void* storage)
+    {_allocator.deallocate(storage); }
+     
+private:    // more of the Foo stuff
+  static TheAllocator&lt;Foo&gt; _allocator;
+  };
+     
+TheAllocator&lt;Foo&gt; Foo::_allocator;
+</pre>
+<p>operator new and operator delete for class Foo are overridden to replace the default
+memory allocator. The whole new memory allocation mechanism is completely
+encapsulated within the class TheAllocator. The unpretentious interface &#151;
+allocate() and deallocate(void*) &#151; is sufficient. The _allocator instance of
+class TheAllocator&lt;Foo&gt; is bound to class Foo class through a static
+declaration within the class. An allocator with such interface can be coded
+within seconds, and it is really difficult to get wrong.<p>
+As an advanced feature, a simple debugging tool is provided through an
+additional argument to the TheAllocator constructor. It is not very
+sophisticated but can be handy at early development stages to monitor integrity
+of allocated memory. Just change the static initializer from:</p>
+
+<pre>
+TheAllocator&lt;Foo&gt; Foo::_allocator;
+</pre>
+
+<p>to:</p>
+
+<pre>
+TheAllocator&lt;Foo&gt; Foo::_allocator(true);
+</pre>
+<p>and every chunk of memory will be tested for integrity before being freed. If the
+chunk sovereignty has been violated somehow (it was overwritten at the
+beginning or at the end) an exception will be thrown.</p>
+<p>To process the exception, you can change operator delete to:</p>
+
+<pre>
+void operator delete (void* storage)
+  {
+  try {
+    _allocator.deallocate(storage);
+    }
+  catch(char*) {
+    // Do something about it.
+    }
+  };
+</pre>
+<p>Such a simple aid cannot compete with commercial memory debugging tools such as
+Purify and the like, but it is here and you are welcome to use it. It is worth
+mentioning, though, that taking the code related to the memory integrity check
+out of the implementation boosts the performance by eight per cent.</p>
+
+<h4><FONT COLOR="#000080">The Implementation</FONT></H4>
+
+<p>The implementation consists of two classes &#151; MemoryAllocator and TheAllocator. The
+functionality could be easily implemented by just one class. However the
+self-contained, quasi-generic, and essentially typeless MemoryAllocator
+implements all the mechanics with no need for template methods or inlining.
+TheAllocator provides a better interface to the class it supplements.<p>
+When we create an instance of the class we provide the size of memory units to
+be allocated (unit_size) and a number of units to be allocated at once
+(block_size). The rest is pretty automatic &#151; every call to allocate() returns
+a chunk of memory of size unit_size. The method gets the first available free
+memory unit from the free list. Its only extra job is to ask for more free
+units if the list is empty.<p>
+The method deallocate(void*) is as simple and quick as allocate(). It does the
+opposite &#151; it puts a block of freed memory into the free list for future
+reuse. No wonder the allocator is quick &#151; the methods do not do much.<p>
+Only these two methods, allocate() and deallocate(void*), are inlined for the
+sake of performance, but even they do not have to. The implementation of
+lesser-used functions has been moved from the header file into a source file to
+minimize the number of inlined functions. I've noticed no performance
+degradation as a result. <A href="list2.htm">Listing 2</a>
+shows the code for these member functions.
+As I mentioned above, when memory blocks are not in use they are added to the
+list of free blocks. Storage for the unit being freed is used to store a
+pointer to the next free unit. The pointer is written at the beginning of the
+current chunk. It means that the block size cannot be less than the size of a
+pointer. This requirement is reflected in the MemoryAllocator constructor,
+where the size of memory block to be allocated is:</p>
+
+<pre>
+_allocated_size = max(unit_size, sizeof(Free))
+</pre>
+<p>which can be different from the actual requested size.</p>
+<p>The method that does the hard job is more. It asks the system for more
+memory and prepares the free list. But since we allocate memory in multiples of
+_block_size units (which is 16 by default) we make such requests that much less
+often than does the standard implementation. Furthermore such an allocation
+does not incur as much memory overhead as the standard implementation for the
+same number of memory units.<p>
+If we want the integrity check enabled, slightly more memory will be allocated
+for every memory unit:</p>
+
+<pre>
+if (_debug)
+  _allocated_size += 2 * sizeof(int);
+</pre>
+<p>The useful part of the memory chunk is sandwiched between two integers, the head
+and tail. The method debug_correct makes the nesessary adjustments. These
+integers will be checked when the memory chunk is about to be freed to ensure
+that their values have not been overwritten. The method debug_check performs
+the check.<p>
+Class MemoryAllocator is complete and very usable on its own. It is not very
+friendly though. It lacks a visible association with the class that the
+allocator allocates memory for, the Foo class in the example above. Template
+class TheAllocator fulfills the intermediary role. It makes use of
+MemoryAllocator without introducing any additional overhead. Its public
+interface is:</p>
+
+<pre>
+template&lt;class T&gt;
+class TheAllocator : public MemoryAllocator
+  {
+public:
+  TheAllocator(bool debug = false, uint block_size =16)
+    : MemoryAllocator(sizeof(T), block_size, debug)
+    {}
+  };
+</pre>
+
+<h4><FONT COLOR="#000080">Testing</FONT></H4>
+
+<p>I tested the implementation on IBM PCs running OS/2 version 2.11 and UnixWare
+2.03. The test was quite simple &#151; I just measured the time needed to execute
+the following code:</p>
+
+<pre>
+#define NUM_CYCLES 50000
+#define NUM_CHUNKS 18
+     
+CLASS* array[222];
+     
+for (int n = 0; n &lt; NUM_CYCLES; ++n) {
+  for (int k = 0; k &lt; NUM_CHUNKS; ++k)
+    array[k] = new CLASS;
+  for (k = 0; k &lt; NUM_CHUNKS; ++k)
+    delete array[k];
+  }
+</pre>
+<p>I tested the following two similar classes, using the standard and the optimized
+memory allocation schemes respectively:</p>
+
+<pre>
+struct Std
+  {
+  int _1;
+  int _2;
+  int _3;
+  int _4;
+  };
+struct New
+  {
+  int _1;
+  int _2;
+  int _3;
+  int _4;
+  void* operator new(size_t)
+    { return _allocator.allocate(); }
+  void operator delete(void* p)
+    { _allocator.deallocate(p); }
+  static TheAllocator&lt;New&gt; _allocator;
+  };
+</pre>
+<p>This implementation outperformed the standard by a factor of 10.6 to 10.9, running
+under the OS/2 operating system. An even better performance ratio has been
+achieved &#151; 11.5 to 11.7 times &#151; when NUM_CHUNKS was increased to 180.<p>
+On UnixWare the results were even more impressive. For NUM_CHUNKS equal to 18
+and 180, the performance boost was 13.0 and 19.9 times respectively. As an
+interesting observation, I would like to mention that the performance of our
+allocator remained constant regardless of the number of memory chunks being
+allocated. Performance ratio improvement in the case of bigger number of
+allocated memory chunks (180) has been achieved due to considerable performance
+degradation of the standard memory allocator.</p>
+
+<h4><FONT COLOR="#000080">Limitations and Extensions</FONT></H4>
+
+<p>The first and obvious "limitation" is that TheAllocator is not a totally general
+purpose class. An instance of it is bound to the class for which it allocates
+memory &#151; the Foo class in the example above. I put "limitation" in quotes
+since it is not really a limitation. Quite the opposite, it is a very logical
+way to encapsulate all class implementation-related details, including memory
+allocation, within the boundaries of the class. A recipe for disaster is using
+the raw MemoryAllocator in order to gain further memory usage optimisation, as
+in the following:</p>
+
+<pre>
+class ABAllocator : public MemoryAllocator
+  {
+public:
+  ABAllocator(bool debug = false, uint block_size =16)
+    : MemoryAllocator(8, block_size, debug)
+   {}
+  };
+extern ABAllocator allocator;
+     
+class A
+  {
+public:
+  void* operator new(size_t)
+    { return allocator.allocate(); }
+  void operator delete(void* p)
+    { allocator.deallocate(p); }
+private:
+  int _1;
+  int _2;
+  };
+     
+// Instances of B happened to be the 
+// same size as instances of A
+class B
+  {
+public:
+  void* operator new(size_t)
+    { return allocator.allocate(); }
+  void operator delete(void* p)
+    { allocator.deallocate(p); }
+private:
+  int _1;
+  int _2;
+  };
+</pre>
+<p>The second limitation could be an inability of class TheAllocator to allocate
+memory for an array of instances of class Foo. I do not think that it is a big
+issue though. I personally have not come across the problem so far as I tend to
+use arrays of pointers to individually allocated instances of class Foo class.
+The arrays of pointers are not expensive in memory terms but much more flexible
+in use. Obviously such arrays easily support sorting, insertions, removals,
+etc. By allocating instances one-by-one instead of allocating them in an array,
+we do not get performance degradation. Furthermore we get the ability to create
+elements of such an array using specified constructors, rather than the default
+constructor.<p>
+The third limitation is more a warning or a functionality extension. The
+destructor for MemoryAllocator just goes through the list of allocated blocks
+and frees them as memory blocks. Obviously if an instance of class Foo is
+created but not deleted before we decide to destroy the allocator instance, the
+destructor for Foo will not be invoked. This is the behavior you might
+expected, since MemoryAllocator is merely a memory allocator. It knows
+absolutely nothing how allocated memory was or probably is used.<p>
+The problem can be fixed if we override the destructor for TheAllocator. For
+every memory unit within every allocated block of units we will have to scan
+through the free list to check if the unit has already been freed. If it has
+not, we can invoke the destructor for Foo explicitly. An allocator destructor
+most probably gets invoked when an application exits. So, I believe, we will
+have plenty of time to go through such procedures to ensure that everything is
+freed properly. The destructor for TheAllocator then reads:</p>
+
+<pre>
+template&lt;class T&gt;
+TheAllocator::~TheAllocator()
+  {
+  for (int k = 0;
+       k &lt; _num_allocated_blocks;
+       ++k)
+    {
+    void* the_block =
+        _allocated_blocks[k];
+    for (int n = 0;
+         n &lt; _block_size; ++n)
+      {
+      void* the_unit =
+          (char*) the_block + n *
+        _allocated_size;
+      for (Free* free_unit = _free;
+        free_unit;
+        free_unit = free_unit-&gt;next)
+        {
+        if (free_unit == the_unit)
+          // The unit has already
+          // been freed
+          break;
+        }
+      if (!free_unit)
+        // is still in use
+        ((T*) the_unit)-&gt;~T();
+      }
+    }
+  }
+</pre>
+  
+
+<h4><FONT COLOR="#000080">References</FONT></H4>
+
+<p>[1]
+B. Stroustrup. The C++ Programming Language, 2nd Edition (Addison-Wesley
+1993).<p>
+[2] P.J. Plauger. "Standard C/C++: Allocators," C/C++ Users Journal,
+June-July 1996.
+
+<p><b><A href="list1.htm">Listing 1</A></b></p>
+
+</p><p><i>Vladimir Batov is a software developer living in Australia. You can reach
+him at vladimir@adacel.com.au.
+</i></p>
+
+<h4><a href="../../../source/1998/jan98/batov.zip">Get Article Source Code</a></h4>
+
+</blockqoute>
+</body></html>

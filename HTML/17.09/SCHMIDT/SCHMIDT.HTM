@@ -1,0 +1,424 @@
+<HTML>   
+     <HEAD>
+<TITLE>September 1999/Uncaught Exceptions</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocsep.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Uncaught Exceptions: Eroica</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Bobby Schmidt</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Bobby addresses a host of C++ subtleties, which he identifies by the bite marks on reader-supplied code.</p>
+</BLOCKQUOTE>
+
+<hr>
+<BLOCKQUOTE>
+
+<p><i>Copyright &copy; 1999 Robert H. Schmidt</i></p>
+
+<p>Like Beethoven in his Third Symphony, I'm giving scant introduction this month. The column is long (with ten footnotes!), and my wit and pith are used up. Those who live for these intellectual hors d'oeuvres must find cerebral snack food elsewhere 'til next month.</p>
+
+<h4><FONT COLOR="#000080">Oh the Pain!</FONT></H4>
+
+<h4><FONT COLOR="#000080">Q</FONT></H4>
+
+<p> Greetings Sir!</p>
+<p>I have a project I am working on that requires a fixed-precision type for some computations. I wrote such a class, the relevant portions of which are included below.</p>
+<p>The code has been (apparently) working fine for some time, but I was surprised the other day when a coworker discovered during debugging that the addition operator in <B>main</B> never calls the defined addition operator on the <B>Fixed</B> class. Instead, it converts the <B>Fixed</B> to a <B>double</B>, does the math as <B>double</B>, and then converts it back to <B>Fixed</B>.   Is this the correct behavior? If so, is it safe to assume that built-in data types have a higher precedence when performing implicit promotion? &#151; Ethan D. Frolich</p>
+
+<h4><FONT COLOR="#000080">A</FONT></H4>
+
+<p> The results you see are correct. I've edited your example to better show what's going on:</p>
+
+<pre>
+class Fixed
+   {
+public:
+   Fixed &amp;operator=(double);
+   operator double() const;
+   friend Fixed operator+
+      (Fixed const &amp;, Fixed const &amp;);
+   };
+     
+// ...'Fixed' member functions...
+     
+int main()
+   {
+   double d(1);
+   Fixed f;
+   f = 2;
+   f = f + d;
+   return 0;
+   }
+     </pre>
+
+<p>You expect that the + in f + d will call your <B>operator+</B>. Were that expectation correct, your original statement</p>
+
+<pre>
+f = f + d;
+</pre>
+
+<p>would be equivalent to</p>
+
+<pre>
+f = operator+(f, d);
+</pre>
+
+<p>As an experiment, replace your original addition statement with this explicit equivalent. You should find that your program fails to build. This result implies that your <B>operator+</B> was never called implicitly in the first place, just as your coworker discovered.</p>
+<p><B>operator+</B> expects two <B>Fixed</B> arguments. But when you call</p>
+
+<pre>
+operator+(f, d);
+</pre>
+
+<p>you are passing <B>operator+</B> a <B>Fixed</B> argument and a <B>double</B> argument. For the call to work, the <B>double</B> argument needs to convert to a <B>Fixed</B> value.</p>
+<p>I've mentioned this in print several times over the years, but it bears repeating here: for any arbitrary type <B>A</B> to convert to another arbitrary type <B>B</B>, at least one of the following must be accessible:</p>
+
+<UL><LI>a standard conversion from <B>A</B> to <B>B</B> </LI>
+<LI>a conversion operator in <B>B</B> that yields an <B>A</B> return value</LI>
+<LI>a conversion constructor in <B>A</B> that accepts a <B>B</B> parameter</LI></UL>
+
+<p>C++ has no standard conversion from <B>double</B> to <B>Fixed</B>. And since <B>double</B> is not a class type, it can't have a conversion operator. The only alternative is to have <B>Fixed</B> support a conversion constructor that takes a <B>double</B>. If you add the constructor</p>
+
+<pre>
+Fixed(double = 0.);
+</pre>
+
+<p>to the <B>Fixed</B> class, the explicit call</p>
+
+<pre>
+operator+(f, d);
+</pre>
+
+<p>works. (I gave the constructor a default argument, so it can work in contexts where you had been calling the compiler-synthesized default constructor.)</p>
+<p>Unfortunately, if you change the statement back to the original</p>
+
+<pre>
+f = f + d; // error
+</pre>
+
+<p>your compiler should complain about type ambiguity. Because <B>f</B> can turn itself into a <B>double</B> via <B>Fixed::operator double</B>, the expression</p>
+
+<pre>
+f + d
+</pre>
+
+<p>can be interpreted as</p>
+
+<pre>
+double + double
+</pre>
+
+<p>But <B>d</B> can also be turned into a <B>Fixed</B> via our new conversion constructor, meaning the expression can also be interpreted as</p>
+
+<pre>
+Fixed + Fixed
+</pre>
+
+<p>Since each candidate interpretation requires a single conversion, the compiler can't pick a "best" match.</p>
+<p>This is a frequent problem when a class has both conversion constructors and conversion operators interchanging with the same type, especially when that type is built-in. You need to somehow remove the ambiguity, either by eliminating one of the competing interpretations, or by making your intent overt. Simple solutions:</p>
+
+<UL><LI>Change the addition expression to <B>double(f) + d</B>.</LI>
+<LI>Change the addition expression to <B>f + Fixed(d)</B>.</LI>
+<LI>Replace <B>Fixed::operator double()</B> with a function such as <B>Fixed::as_double()</B>.</LI>
+<LI>Replace <B>Fixed::operator+</B> with a function such as <B>Fixed::add</B>.</LI>
+<LI>Add extra overloads of <B>operator+</B> that explicitly take <B>(double, Fixed const &amp;)</B> and <B>(Fixed const &amp;, double)</B>.</LI></UL>
+
+<p>The best choice depends on your design needs and personal aesthetic, although I'd lean toward the third option (eliminating the conversion operator); otherwise you'll face similar ambiguities when you go to add other <B>Fixed</B> operators.</p>
+
+<h4><FONT COLOR="#000080">Bad Templates</FONT></H4>
+
+<h4><FONT COLOR="#000080">Q</FONT></H4>
+
+<p>Suppose I write a template class:</p>
+
+<pre>
+template&lt;class T&gt; class Foo {
+... public:
+void bar(T t); };
+</pre>
+
+<p>and I want to provide a non-inline definition for the member function <B>bar</B>. Why do I have to write:</p>
+
+<pre>
+template&lt;class T&gt;
+void Foo&lt;T&gt;::bar(T t) { ... }
+</pre>
+
+<p>instead of</p>
+
+<pre>
+template&lt;class T&gt;
+void Foo::bar(T t) { ... }
+</pre>
+
+<p>In other words, by providing a <B>T</B> argument to the template <B>Foo</B>, what am I telling the compiler it shouldn't already know?</p>
+<p>Since I cannot create both a template class <B>Foo</B> and a non-template class <B>Foo</B> in the same program (doesn't the Standard forbid it?), why do I need to qualify <B>Foo</B> with an argument? Is this an inconsistency in C++ template syntax?</p>
+<p>Here's another way to ask the question: when you define a member function within the scope of a class definition, you don't have to provide template arguments. In fact, you don't even have to provide the name of the class it's a member of! The class definition itself provides no template arguments.</p>
+<p>Why then, should the simple act of moving the member function definition outside the scope of the class definition suddenly require us to provide template arguments? What information is lost in this process that would require the addition of information via template arguments?</p>
+<p>There can be no question which template class this function is a member of. It is the template class <B>Foo</B> parametrized by a single type. No information is lost, as far as I can see. &#151; Leonard Pinth-Garnell</p>
+
+<h4><FONT COLOR="#000080">A</FONT></H4>
+
+<p>Let's consider your example:</p>
+
+<pre>
+template&lt;class T&gt;
+class Foo
+    {
+    void bar(T);
+    };
+     
+template&lt;class T&gt;
+void Foo&lt;T&gt;::bar(T)
+    {
+    }
+</pre>
+
+<p>According to the C++ Standard, what precedes the <B>::</B> scoping operator must be a namespace name or class name <a href="#1">[1]</a>. <B>Foo</B> is not a namespace name or class name &#151; it is a template name <a href="#2">[2]</a>, and cannot appear before <B>::</B>. On the other hand, <B>Foo&lt;T&gt;</B> is a class name <a href="#3">[3]</a>, and thus can appear before <B>::</B>.</p>
+<p>And yet as you note, that same bare name <B>Foo</B> can appear in the class template definition sans <B>&lt;T&gt;</B>:</p>
+
+<pre>
+template&lt;class T&gt;
+class Foo // no &lt;T&gt;, OK
+    {
+    Foo *p1;    // no &lt;T&gt;, OK
+    Foo&lt;T&gt; *p2; // &lt;T&gt;, also OK
+    };
+</pre>
+
+<p>In fact, if you try to explicitly add the <B>&lt;T&gt;</B> to the template declaration name:</p>
+
+<pre>
+template&lt;class T&gt;
+class Foo&lt;T&gt; // error
+</pre>
+
+<p>your compiler gives an error <a href="#4">[4]</a>.</p>
+<p>You see this is as inconsistent. Since the compiler can clearly infer <B>&lt;T&gt;</B> in the class template definition, you wonder why it can't similarly infer <B>&lt;T&gt;</B> in the function template definitions associated with that class template.</p>
+<p>For your desired construct</p>
+
+<pre>
+template&lt;class T&gt;
+void Foo::bar(T)
+</pre>
+
+<p>to be allowed, the grammar would have to be modified. Probably the least intrusive change: interpret <B>Foo</B> as a true class name tantamount to <B>Foo&lt;T&gt;</B>. Assuming the grammar were so modified, the question then becomes: could the compiler unambiguously make the correct interpretation?</p>
+<p>Dan Saks and I talked this over, and our tentative answer is "yes." Neither of us can conjure a scenario where the compiler could not properly infer <B>&lt;T&gt;</B>. For now, my conclusion is that some other reason compelled the Standard committee to require <B>&lt;T&gt;</B> here. I looked in both the ARM <a href="#5">[5]</a> and the D&amp;E <a href="#6">[6]</a>, but could find no decisive rationale in either.</p>
+<p>I invite Diligent Readers, especially those involved with C++ standardization, to provide me some insight here. If I get what appears to be a compelling rationale, I'll publish a follow up.</p>
+
+<h4><FONT COLOR="#000080">It Slices, It Dices!</FONT></H4>
+
+<h4><FONT COLOR="#000080">Q</FONT></H4>
+
+<p>In my enclosed example I get a bizarre run-time error complaining about caller and callee calling convention mismatch. In the real code I get a complaint about calling a pure virtual.</p>
+<p>Why doesn't this call to <B>for_each</B> work? &#151; David X Callaway</p>
+
+<h4><FONT COLOR="#000080">A</FONT></H4>
+
+<p>I believe you are seeing correct (if non-intuitive) behavior.</p>
+<p>I've taken the liberty of reorganizing and renaming your code pieces to show the flow more clearly:</p>
+
+<pre>
+#include &lt;algorithm&gt;
+#include &lt;iostream&gt;
+#include &lt;vector&gt;
+using namespace std;
+     
+struct base_func
+    {
+    virtual void operator()(int) = 0;
+    };
+     
+struct derived_func : base_func
+    {
+    void operator()(int)
+        {
+        cout &lt;&lt; "derived" &lt;&lt; endl;
+        }
+    };
+     
+int main()
+    {
+    vector&lt;int&gt; v(3);
+    vector&lt;int&gt;::iterator it;
+    derived_func df;
+    base_func &amp;bf = df;
+    //
+    // this runs correctly:
+    //
+    for (it = v.begin(); it != v.end(); ++it)
+         bf(*it);
+    //
+    // this blows up:
+    //
+    for_each(v.begin(), v.end(), bf);
+    //
+    return 0;
+    }
+</pre>
+
+<p><B>for_each</B> is a function template. If you crack open <B>&lt;algorithm&gt;</B>, you'll find that <B>for_each</B> is implemented as something like:</p>
+
+<pre>
+template &lt;class It, class F&gt;
+F for_each(It it, It last, F f)
+    {
+    for (; it != last; ++it)
+        f(*it);
+    return f;
+    }
+</pre>
+
+<p>The two template parameters are deduced from the corresponding function arguments. In our example, the first template parameter is deduced from the static type of <B>v.begin()</B> and <B>v.end()</B>, while the second template parameter is deduced from the static type of <B>bf</B>. By implication, you'd expect the instantiated function to be</p>
+
+<pre>
+base_func &amp;for_each
+    (vector&lt;int&gt;::iterator it,
+     vector&lt;int&gt;::iterator last,
+     base_func &amp;f)
+    {
+    for (; it != last; ++it)
+        f(*it);
+    return f;
+    }
+</pre>
+
+<p>The expression <B>f(*it)</B> is really <B>f.operator()(*it)</B>. Because that function is virtual, the override of <B>operator()</B> called depends on <B>f</B>'s dynamic type. Since the function argument <B>bf</B> has dynamic type <B>derived_func</B>, the parameter <B>f</B> should have dynamic type <B>derived_func</B> as well.</p>
+<p>Were that the case, the <B>for_each</B> code would run as you want &#151; yet you claim it doesn't. Why the discrepancy? Because your compiler actually deduces the template as <a href="#7">[7]</a></p>
+
+<pre>
+base_func for_each
+    (vector&lt;int&gt;::iterator it,
+     vector&lt;int&gt;::iterator last,
+     base_func f) // &lt;&lt;&lt;=== NOTE!
+    {
+    for (; it != last; ++it)
+        f(*it);
+    return f;
+    }
+</pre>
+
+<p>Look closely at <B>f</B>'s declaration. In this correct instantiation, <B>f</B> is passed not by reference, but by value. By-value parameters don't exhibit polymorphism &#151; their static and dynamic types are the same, regardless of their corresponding arguments' dynamic types. (This phenomenon is known among C++ literati as the dreaded Slicing Problem.)</p>
+<p><B>f</B> therefore has the dynamic type <B>base_func</B>, meaning <B>base_func::operator()</B> is called. That function is declared pure virtual and has no implementation. The result is undefined behavior, which typically manifests as a call either into "nothing" or into implementation-specific code that traps pure virtual calls.</p>
+<p>A simple solution: have the compiler deduce from a non-reference:</p>
+
+<pre>
+for_each(v.begin(), v.end(), df);
+</pre>
+
+<p>Alternatively you can bypass deduction via explicitly specifying the template arguments:</p>
+
+<pre>
+for_each&lt;vector&lt;int&gt;::iterator,
+    base_func &amp;&gt;
+    (v.begin(), v.end(), bf);
+</pre>
+
+<p>I also recommend that you provide stub bodies for your pure virtual functions, at least in the early debugging stages of your projects. Such a technique lets you readily identify calls to those functions. One possible solution is</p>
+
+<pre>
+#if defined DEBUG
+    #define PURE \
+        { \
+        assert(!"pure virtual"); \
+        }
+#else
+    #define PURE \
+        = 0;
+#endif
+     
+class C
+    {
+ virtual void f() PURE
+    };
+</pre>
+
+<p>The <B>assert</B> has the side effect of writing the offending source file name and line number. You can of course replace <B>assert</B> with a break into a debugger, a stack trace with symbols, or some other diagnostic aid.</p>
+
+<h4><FONT COLOR="#000080">Heads or Tails</FONT></H4>
+
+<h4><FONT COLOR="#000080">Q</FONT></H4>
+<p> Bobby,</p>
+<p>I've come across an issue which I'm sure must have been brought up before but I've never seen discussed.</p>
+<p>I'm a big proponent of interface/implementation separation. To this end I ensure that all methods of any class, which compose an interface to a shared library, are contained within that shared library and not defined in a header file. This insures that if the size of the class (or order of its components) changes, I merely need to re-compile the class module and build the shared library. Or so I thought.</p>
+<p>The big problem with this design (class interface to shared lib) is that <B>myClass *ptr = new myClass</B> is effectively converted to:</p>
+
+<pre>
+myClass *ptr =
+    (myClass *)
+    malloc(sizeof myClass);
+myClass::myClass(ptr);
+</pre>
+
+<p>...and these <B>new</B>s are in the program, not the library, leaving information about the implementation (<B>sizeof myClass</B>) stored in the program!</p>
+<p>I've only tested this with my Solaris compiler but it seems unlikely that I'd see different behavior in another compiler. Are there compilers out there that address this problem?</p>
+<p>The only solutions I see would be:</p>
+
+<UL><LI>Use a static method to create new objects for each class. (But you could not have objects on the stack.)</LI>
+<LI>Use shared library interface classes which are wrappers to classes that contain actual data.</LI></UL>
+
+<p>As an example of solution #2:</p>
+
+<pre>
+class RealMyClass {
+    private:
+    int a;
+     
+    public:
+    RealMyClass();
+    ~RealMyClass();
+    myMethod();
+}
+     
+class myClass {
+    private:
+    RealMyClass *ptr;
+     
+    public:
+    myClass() { // would actually reside in library not header
+        ptr = new RealMyClass;
+    }
+    myMethod() {
+        ptr-&gt;myMethod();
+    }
+}
+</pre>
+
+<p>This really doubles the amount of code that comprises the interface to each class. Is there a more elegant way to address this problem?</p>
+<p>Thanks, &#151; Mike Morgan</p>
+
+<h4><FONT COLOR="#000080">A</FONT></H4>
+
+<p>You've encountered a classic feature/limitation of the C++ object model: the tight coupling between interface and implementation. Both manifest as the same object instance; they are in many ways synonymous, two sides of the same thin coin. As a result, when you dynamically create a new object interface you are simultaneously creating a new object implementation attached to that interface. To create the interface/implementation pair, the compiler must know how big the implementation is.</p>
+<p>As you point out, a <B>new</B> expression implicitly calls the function <B>operator</B> <B>new</B>. That function's first parameter is a <B>size_t</B> byte length for the new object. Even though an abstracted interface is purposely ignorant of the implementation's existence, let alone its length, this information must nonetheless be available to operator <B>new</B>.</p>
+<p>Every solution I've seen to this problem involves a variation of what you've proposed:</p>
+
+<UL><LI>Separate the conceptual interface into one object, the conceptual implementation into another.</LI>
+<LI>Keep only function members in the public interface. The interface then has a conceptual length of zero <a href="#8">[8]</a>.</LI>
+<LI>Calls to the interface pass into the implementation, either through a contained implementation object pointer (like your <B>RealMyClass *</B>), or via concrete inheritance from the interface's abstract base.</LI></UL>
+
+<p>This solution requires the very thing you want to avoid: two classes and two actual C++ objects for each conceptual interface/implementation instance. Yet as you've discovered, once you decouple interface from implementation, you are free to modify that implementation invisibly to interface clients. In fact, you can even replace the local C++ implementation with one built from a completely different language or running on a different machine <a href="#9">[9]</a>.</p>
+<p>In sum, you can't create any physical C++ object via <B>new</B> without knowing the object's size. Yet by adopting a separated interface/implementation design, you can create a logical object from two physical C++ objects: a constant interface and a potentially-varying implementation <a href="#10">[10]</a>.</p>
+
+<h4><FONT COLOR="#000080">Notes and References</FONT></H4>
+
+<p><a name="1"></a>[1]  As given in clause 3.4.3p1 ("Qualified name lookup"). See my column in the July 1997 <I>CUJ</I> for more detail.</p>
+<p><a name="2"></a>[2]  Inferred from clauses 9p1 ("Classes") and 14p2 ("Templates").</p>
+<p><a name="3"></a>[3]  Clauses 9p1 and 14.2p1 ("Names of template specializations").</p>
+<p><a name="4"></a>[4]  Clause 14.5p1 ("Template declarations").</p>
+<p><a name="5"></a>[5]  Bjarne Stroustrup and Margaret Ellis. <I>The Annotated C++ Reference Manual</I> (Addison-Wesley, 1990).</p>
+<p><a name="6"></a>[6]  Bjarne Stroustrup. <I>The Design and Evolution of C++</I> (Addison-Wesley, 1994).</p>
+<p><a name="7"></a>[7]  This allegation is based on my laborious spelunking through the C++ Standard, backed by experiments on several translators, including EDG's.</p>
+<p><a name="8"></a>[8]  Although in most circumstances the actual C++ object size will be non-zero.</p>
+<p><a name="9"></a>[9]  To see such separation taken to the extreme, I invite you to investigate Microsoft's COM (Component Object Model).</p>
+<p><a name="10"></a>[10]  If your interface calls the implementation through virtual functions or some other dispatch mechanism, you must ensure that the vtable entries (or their equivalents) don't change over time. To prevent this problem, the rules of COM forbid you to change an interface once it's published.</p>
+
+<p><i><B>Bobby Schmidt</B> is a freelance writer, teacher, consultant, and programmer. He is also an alumnus of Microsoft, a speaker at the Software Development and Embedded Systems Conferences, and an original "associate" of (Dan) Saks &amp; Associates. In other career incarnations, Bobby has been a pool hall operator, radio DJ, private investigator, and astronomer. You may summon him on the Internet via <B>rschmidt@netcom.com</B>.</i></p>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

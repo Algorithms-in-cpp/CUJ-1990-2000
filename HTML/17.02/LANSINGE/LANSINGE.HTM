@@ -1,0 +1,105 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>February 1999/A Lightweight C++ Library for Embedded LCDs</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocfeb.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Real-Time/Embedded Systems</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">A Lightweight C++ Library for Embedded LCDs</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Edward J. Lansinger</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>An LCD panel is a simple enough device, but one well worth encapsulating inside a C++ class or two.</p>
+</BLOCKQUOTE>
+<HR>
+<BLOCKQUOTE>
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>Okay, so your embedded system can handle weapons control while producing stock picks in the background. Maybe you'd better think about something a little more sophisticated than the traditional 40x2 LCD text display. Full graphics displays are now commonly available, some with little or no glue logic required. They perch on the data bus and a few chip-select lines, and then it's all software from there.</p>
+<p>I have written a small, but useful, C++ class library to handle graphic LCD displays in embedded applications. The library handles multi-process output on a graphics LCD display, as well as simple user input.</p>
+<p>The library meets the following design goals:</p>
+
+<UL><LI>Ability to virtualize the display to allow different processes to have a separate screen. The user can cycle between the screens to see what each process is doing.</LI>
+    <LI>Point-, line-, and text-drawing capability.</LI>
+    <LI>Dynamic output fields within each virtual display. These fields can be updated regularly when connected to a multitasking system.</LI>
+    <LI>Support for a simple button-and-dial interface.</LI></UL>
+
+<p>The end result is a set of classes that allow me to create up to four virtual screens, each containing dynamic text or graphics fields, with user input marshaled to the appropriate processes.</p>
+
+<h4><FONT COLOR="#000080">Overview of the Class Hierarchy</FONT></H4>
+
+<p>I'll describe the class library first in an overview and later in more detail. As you might guess, there is a class <B>LCDDisplay</B> (see <A HREF="fig1.htm">Figure 1</A>). It handles initialization of the hardware, virtualization of the screen, and drawing to the LCD. The class interface is hardware-independent in case I move to a different display in the future.</p>
+<p>I have purposely limited the scope of <B>LCDDisplay</B>'s functionality. User I/O is a higher-level concept than plotting pixels. The decisions about what to draw and when, for example, aren't the responsibility of the LCD. Neither is the LCD responsible for watching the status of an input switch. So, <B>LCDDisplay</B> objects are just simple output devices. Extending <B>LCDDisplay</B> to handle different types of displays would be appropriate and easy, but adding drop-down menu functions goes beyond their design scope.</p>
+<p>The base class <B>IOProcess</B> is what enables user I/O. All <B>IOProcess</B> objects encapsulate an <B>LCDDisplay</B> data member, which they use for output. To create a screen full of gauges and annunciators, the user might derive a class <B>InstrumentClusterDisplay</B> from <B>IOProcess</B>. Classes derived from <B>IOProcess</B> automatically receive messages like <B>Paint</B> and <B>ButtonPress</B>. Then, they decide how to change their internal state and what actions should be taken as a result.</p>
+<p>Some <B>IOProcess</B> classes may need full "raw" access to the screen to show unusual types of output. This is easily accomplished by sending messages directly to the embedded <B>LCDDisplay</B> member. However, most of my output screens use common elements, like text fields. It makes sense for each <B>IOProcess</B> class to be able to throw up any of several predefined I/O fields on the contained display member. These predefined fields, objects based on the class <B>IOField</B>, know how to draw and update themselves once they've been told which <B>LCDDisplay</B> to use. They receive <B>Paint</B> and other I/O messages directly from the <B>IOProcess</B> class that created them.</p>
+<p><B>IOProcess</B> also handles basic user input. I needed two input devices for my embedded system: a push-button to tab between input fields on the display and a rotary dial to select a value. There are overrideable <B>IOProcess</B> member functions that handle the hardware interface to these devices. Also, there is a function <B>NextLCDDisplay</B>, a friend to <B>IOProcess</B>, that monitors a toggle switch, which the user flips to select one of the available virtual screens.</p>
+<p>As a summary of this overview, let's say I want to create an LCD screen that shows the time. In essence, the classes and objects I need to create look like this:</p>
+
+<pre>
+class TimeField : IOField
+{
+  virtual void Paint();
+  ...
+};
+
+class TimeDisplay : IOProcess
+{
+  TimeField TimeOutput;
+  ...
+} MyDisplay;
+</pre>
+
+<p>It's a little more complicated than this. The object <B>TimeOutput</B> must be told which <B>LCDDisplay</B> to use, and it must be registered with the object <B>MyDisplay</B> before use. But this is easily and trivially handled in the constructor for <B>TimeDisplay</B>. I discuss this in more detail later.</p>
+
+<h4><FONT COLOR="#000080">Graphics LCD Hardware</FONT></H4>
+
+<p>The Samsung UG24B03, Optrex DMF5005, and Sharp LM24014 are inexpensive 240x64 monochrome graphics LCD displays. All are based on the Toshiba T6963C controller chip. This chip provides a quick and easy eight-bit bus interface with little or no support hardware. The displays are available from surplus for as little as $30, or new from a distributor for $70-$100, depending on quantity and options.</p>
+<p>Low-level control of a T6963C-based LCD is a matter of sending it a series of command and data byte values. I accomplished this by mapping the eight-bit LCD port to a specific address in the processor address space. This was done easily by way of programmable chip selects on the target microcontroller. I could then read and write command bytes directly to the LCD controller chip. Details of the hardware, timing, and lowest-level control code are discussed on my website (<B>www.dbit.com/~lansie/lcd.htm</B>).</p>
+
+<h4><FONT COLOR="#000080">The LCDDisplay class</FONT></H4>
+
+<p>Naturally, when working at the level of an output process, I want to think about drawing lines on a screen, not shoveling bytes back and forth. Class <B>LCDDisplay</B> represents the LCD and contains member functions for drawing points, lines, text, etc. This class is also responsible for virtualizing the LCD, so that independent processes can run under the assumption that each has its own separate output screen.</p>
+<p>My systems typically have many processes running at once, a small number of which need to send output to the LCD. The user toggles a switch to cycle through the few available output screens created by these processes. Some screens have static text or graphics, others take a long time to fully repaint the screen after a display switch. For these reasons, it's desirable to maintain a copy of screen contents or allow processes to draw even when the user is viewing the output from another process. Allowing each output process to have its own independent virtual screen is a clean and simple model that addresses these issues.</p>
+<p><A HREF="fig1.htm">Figure 1</A> shows the skeleton of the <B>LCDDisplay</B> class and a sample member function for drawing on the screen. A process that wants to create LCD output creates an instance of this class, setting up a 240x64 virtual screen. This virtual screen is immediately usable for drawing via the member functions <B>Plot</B>, <B>Line</B>, and so forth.</p>
+<p>One of the most convenient features of many T6963C-based LCDs is that they come with 8Kb of built-in display RAM, enough for four complete 240x64 graphics screens. Drawing pixels is a simple matter of setting the desired bits within this 8Kb range. Then a special command to the display sets the position of the "graphics home address" pointer, telling the physical LCD panel where within the 8Kb it should start displaying.</p>
+<p>Since I didn't need more than four virtual screens, I was able to simplify things considerably by giving each virtual screen its own block of memory in LCD RAM. Each new instance of <B>LCDDisplay</B> remembers the start point ("graphics home address") of its block within the 8Kb range. All drawing functions set bits within that block. That allows the processes to draw at will without clobbering one another's output. They don't have to repaint static items either.</p>
+<p>The friend functions <B>NextLCDDisplay</B> and <B>FirstLCDDisplay</B> are activated by a user via a toggle switch. They reposition the graphics home address pointer by a special command sent to the LCD, causing one of the extant virtual screens to appear.</p>
+<p>The drawing functions were chosen with an eye toward utility and speed. You can draw horizontal lines much faster than vertical lines on a T6963C. This is because horizontal scan lines on the display are mapped to consecutive bytes, and you can set a whole byte (eight horizontal pixels) with one low-level command. A column of eight pixels would take eight separate commands. Wherever practical, the more complex drawing functions rely on <B>LCDDisplay::HLine</B> instead of <B>VLine</B> or <B>Plot</B>.</p>
+<p>Full source code for this class (and others discussed in this article) is available on my website and the <I>CUJ</I> ftp site (see p. 3 for instructions on accessing the <I>CUJ</I> ftp site).</p>
+
+<h4><FONT COLOR="#000080">IO Processes and Support Classes</FONT></H4>
+
+<p>My embedded systems incorporate a non-preemptive, round-robin task scheduler for low-priority tasks via a <B>Process</B> class. At first, I created LCD output by letting <B>Process</B> objects create their own instances of <B>LCDDisplay</B>, and then figuring out when and what to draw. Later, I defined the class <B>IOProcess</B> to extend the functionality of the basic <B>Process</B> class. All instances of <B>IOProcess</B> contain an <B>LCDDisplay</B> member object. They receive <B>Paint</B> messages at regular intervals while the virtual screen is visible. They also receive messages corresponding to changes in the user-input push-button and dial. The essentials of the class declaration are shown in <A HREF="fig2.htm">Figure 2</A>.</p>
+<p>Usage of this class is simple. For each desired output screen, I derive a class from <B>IOProcess</B>, and override the <B>Paint</B> function. Then the system can instantiate the derived class to put up the working output screen.</p>
+<p>I've kept things simple for user input. In addition to the toggle switch for selecting different output screens, I have provided one push-button and one rotary dial (a potentiometer). The push-button can be used as an event trigger or (as described later) to tab between input fields. The dial can be used as a general-purpose analog input. The <B>ButtonPress</B> and <B>DialMovedTo</B> functions can be overridden to take appropriate action in the derived classes.</p>
+<p>Of course, button presses and dial movement should be sent to an <B>IOProcess</B> object only when that object's <B>Display</B> is visible. (You wouldn't want to take the user's input out of context.) The private base class <B>functionIOProcess::Go</B> (<A HREF="fig2.htm">Figure 2</A>) checks to make sure the <B>Display</B> is currently visible before parceling out <B>ButtonPress</B>, <B>DialMovedTo</B>, and <B>Paint</B> messages.</p>
+<p>I've designed a further extension to standardize common user I/O. Each output screen naturally breaks down into a collection of rectangular fields, some for output and some for input. I want the user to be able to press the push-button to tab through the different input fields. Then when an input field has focus, the dial can be turned to set a value or select an option.</p>
+<p>It seems wasteful to extend <B>IOProcess</B> to draw all desired fields. Instead, I've decided that each field should be an object unto itself, of class <B>IOField</B>. Each <B>IOField</B> encapsulates its own knowledge about how to draw itself. By the default action of its member functions, <B>IOProcess</B> acts as manager for a collection of <B>IOField</B> objects, telling them when to draw themselves and sending them user input. The basics of <B>IOField</B> and a simple text output field are shown in <A HREF="fig3.htm">Figure 3</A>.</p>
+<p>All types of fields deriving from <B>IOField</B> will typically override the <B>Paint</B> member function. Only input fields will normally override <B>GotFocus</B>, <B>LostFocus</B>, and <B>DialMovedTo</B>.</p>
+<p>Once an <B>IOField</B> is instantiated, it must be registered with the <B>IOProcess</B> object that is to manage it. This is the purpose of function <B>IOProcess::RegisterField</B>. Registration tells the <B>IOProcess</B> object the order in which to paint the <B>IOField</B> objects. It also identifies which fields are user-input fields and which ones are to receive <B>GotFocus</B>, <B>LostFocus</B>, and <B>DialMovedTo</B> messages.</p>
+<p>The <B>IOProcess</B> object keeps a list of all <B>IOField</B>s registered to it. The details of maintaining this list are pedestrian and omitted for space.</p>
+<p>The base member function <B>IOProcess::Paint</B> runs through the list of registered <B>IOField</B>s. It dispatches <B>Paint</B> messages to the individual <B>IOField</B>s in the order that they are to be painted (as defined during <B>IOField</B> registration).</p>
+<p><B>IOProcess::ButtonPress</B> is defined in the base class to capture button presses and move the input focus between the input <B>IOField</B>s. The <B>IOField</B>s expecting input are registered with the desired tab-stop order. On a button press, the <B>IOProcess::ButtonPress</B> function sends the <B>IOField</B> with focus a <B>LostFocus</B> message, finds the next input field in order, and sends it a <B>GotFocus</B> message. A typical response by the <B>IOField</B> is to highlight itself upon receipt of <B>GotFocus</B> and unhighlight itself on <B>LostFocus</B>.</p>
+<p>When an object derived from <B>IOProcess</B> uses <B>IOField</B> objects for all I/O, it is not necessary to override <B>IOProcess::Paint</B>. However, if the derived object needs to do something fancier than the base class <B>Paint</B> method, it should remember to call <B>IOProcess::Paint</B> explicitly to make sure that all registered <B>IOField</B> objects get updated properly.</p>
+<p>My library contains two more classes derived from <B>IOField</B>: <B>StripChartField</B> and <B>ParmSelectField</B>. (The latter lets the user dial up various system operating parameters for view.) These classes are described in the following example.</p>
+
+<h4><FONT COLOR="#000080">An Example</FONT></H4>
+
+<p><A HREF="fig4.htm">Figure 4</A> shows the code used to create a two-channel, strip-chart display. Some items have been omitted for clarity, such as the definition of the class <B>PRM</B>, which represents system parameters. (You may wish to refer to my website.) <A HREF="fig5.htm">Figure 5</A> is a picture of the LCD display running the strip-chart process.</p>
+<p>The screen is set to update four times per second. There is not much point in going any faster, as the pixels for this type of display take a long time to change state. However, it is important to minimize the number of screen elements that are redrawn during each update in order to keep the update time less than the time it takes to change a pixel. This is particularly true when elements are made up mostly of dots instead of horizontal lines. An eight-bit bus interface just isn't as fast as memory-mapped video RAM. But the example shown exhibits little or no flicker and does not hog the CPU.</p>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>Setting up this little class library has made LCD graphics programming a breeze for my systems. All I have to do is instantiate a few classes, and I've got concurrent graphics screens with useful user I/O. Helping to make this possible is an easy-to-use LCD graphics display with virtually no hardware interface requirements. Welcome your embedded systems to the graphics age! o</p>
+
+<p><i>Edward J. Lansinger has been writing embedded and application code for over fourteen years as an engineer, consultant, and entrepreneur. Recently he has been working in the auto industry and has joined Visteon Automotive Systems to work on advanced chassis and driveline controls. He has a B.S. in Computer and Systems Engineering and an M.S. in Management. He may be reached at <B>lansie@rpi.edu</B> or <B>elansing@ford.com</B>.</i></p>
+
+<h4><a href="../../../source/1999/feb99/lansinge.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

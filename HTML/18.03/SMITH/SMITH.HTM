@@ -1,0 +1,126 @@
+<HTML>   
+     <HEAD>
+<TITLE>March 2000/An STL-Based N-Way Set</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocmar.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">An STL-Based N-Way Set</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Mark L. Smith</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Databases support access with multiple keys. Why not allow the same latitude with an STL-style container?</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<H4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>STL defines associative containers, <B>set</B> and <B>map</B> (and their more lenient cousins, <B>multiset</B> and <B>multimap</B>), to organize data that needs to be quickly searched. Unfortunately, these containers are limited to searching on just one key, or index. In many instances, it's convenient to have a collection of data with multiple indexes. A multiple-key lookup can be modeled using several traditional STL containers glued together, but this approach becomes tedious and error prone when the data being stored is dynamic (requiring updates to several containers) or when the exact number and type of indexes to maintain isn't known at design time.</p>
+<p>A better solution is a wrapper class that hides the disparate containers behind a consistent, familiar interface. This is what class <B>nwayset</B> endeavors to accomplish. <B>nwayset</B> allows the insertion and removal of data items and the insertion and removal of indexes on those items. Additionally, iterators over the data items and indexes are exposed. <B>nwayset</B> also provides a way to automatically iterate over all indexes and search them for a particular data item. Finally, <B>nwayset</B> has searching performance characteristics very close to that of an STL <B>multiset</B>.</p>
+<p>Here is an example. A DNS server maintains an in-memory database of host information indexed on hostname and IP address. It searches both indexes to satisfy name resolution queries from clients. A DNS server might, conceivably, read in a host database file into an STL list of <B>CDNSRecord</B> instances at server startup. Then, two STL sets of <B>CDNSRecord</B> pointers (one that sorts on <B>CDNSRecord::m_strAddress</B> and the other that sorts on <B>CDNSRecord::m_strName</B>) might be populated from the list. As requests came in, the sets could be searched for hostnames and IP addresses and the result dereferenced to gain access to the appropriate <B>CDNSRecord</B> instance. Many DNS servers also support dynamic updates to the host database as hosts connect and disconnect from the network (such as Dynamic DNS with DHCP). In that dynamic update scenario, the DNS server would have to update the list of <B>CDNSRecords</B> and then update each set.</p>
+<p>In this example, the interaction between the master list and auxiliary sets is tedious and could be difficult to maintain. If a new variety of query type is added to the DNS server (such as mail-exchange information), an additional set (for the new mail-exchange index) has to be added. Additionally, the logic sections that handle reading in the host database file, adding new host information, and removing host information that is no longer valid all have to be changed. Clearly, a more self-managing container (such as <B>nwayset</B>) is called for.</p>
+
+<H4><FONT COLOR="#000080">Architecture</FONT></H4>
+
+<p>nwayset</B> is defined in the header <B>nwayset.h</B>, shown in <a href="list1.htm">Listing 1</a>. It maintains two member variables: an STL <B>list</B> of data items and an STL <B>list</B> of indexes. The <B>list</B> of data items (<B>m_lData</B>) is a simple list of the type that is being managed (template parameter <B>T</B>). The <B>list</B> of indexes (<B>m_lIndexes</B>) is a list of <B>TIndex</B> structures. A <B>TIndex</B> is a <B>multiset</B> of a special iterator class (<B>CDataListIterator</B>) that points into <B>m_lData</B>. The comparison predicate for the <B>multiset</B> is another special helper class (<B>CCompareHelper</B>) that contains a pointer to the real compare function. The real compare function must have the signature:</p>
+
+<pre>
+bool func(const T &amp;, const T&amp;, bool)
+</pre>
+
+<p>and must have an address. (The function cannot be inlined.)</p>
+<p>One important subtlety to highlight is the choice of the <B>list</B> as the container for both indexes and data items. On casual inspection, it might look like a <B>deque</B> or <B>vector</B> would work just as well, but keep in mind that iterators are being stored and handed out. Since each <B>TIndex</B> essentially holds a <B>list::iterator</B> from <B>m_lData</B> for each data item managed by <B>nwayset</B>, iterators need to remain valid as items are added and removed from <B>m_lData</B>. This same behavior for indexes is desirable as well so that once a user of <B>nwayset</B> has obtained an iterator to an index, the user doesn't have to worry about that iterator suddenly becoming invalid because of some unrelated mutating operation. Additionally, a <B>list</B> iterator is sufficiently complex to be a separately defined class and not a fundamental type (like a pointer). This is important since <B>nwayset</B> derives from <B>list::iterator</B>. (Fundamental types cannot be derived from.)</p>
+
+<H4><FONT COLOR="#000080">Special Iterators</FONT></H4>
+
+<p>To inherit as much functionality as possible from the underlying STL classes and to automatically obscure some of the magic that goes on inside <B>nwayset</B>, two special iterator derivatives have been defined.</p>
+<p><B>CDataListIterator</B> is the data-item pointer from <B>m_lData</B> that is stored by <B>TIndex</B>. <B>CDataListIterator</B> is based on <B>list&lt;T&gt;::iterator</B> and therefore can be resolved into the real data item in <B>m_lData</B> (which is necessary for <B>TIndex</B> to be able to sort). <B>CIterator</B> is the publicly accessible iterator type that users of <B>nwayset</B> utilize to iterate over an index, use as a pointer value for data-item removal, and receive as the return value from find operations. In fact, <B>CIterator</B> is a typedef for <B>iterator</B> for convenience. There is also a <B>const</B> cousin of <B>CIterator</B> called <B>CConstIterator</B> that is an alias for <B>const_iterator</B>.</p>
+<p>Deriving from a base iterator class accomplishes three things. First, all of the iterator functionality (including the myriad of operators supported by iterators) stays intact and does not have to be duplicated, resulting in much less code to implement or to wrap. Second, <B>operator*</B> can be overridden to act more appropriately depending on the context. When <B>CIterator</B> is dereferenced using <B>operator*</B>, the more desirable behavior is to go ahead and return the underlying data item and not the internal <B>nwayset</B> class <B>CDataListIterator</B>. To accomplish this, <B>operator*</B> for <B>CIterator</B> essentially does a double dereference &#151; one to get from a <B>CIterator</B> to a <B>CDataListIterator</B> and another to get from there to a <B>T&amp;</B>. In actuality, a third dereference occurs &#151; to convert from the <B>this</B> pointer to a <B>CIterator</B>. But that happens transparently with a normal iterator dereference as well.</p>
+<p>The final favor that deriving from the base iterator class affords is the ability to build an iterator around an item to search for. Since a <B>TIndex</B> manages a <B>CDataListIterator</B>, it can only search using a <B>CDataListIterator</B> as the criterion. The preferred search-item data type is <B>T&amp;</B>, so a <B>CDataListIterator</B> can be constructed directly from an item of type <B>T&amp;</B>. The idea is that the compiler will see that it has a type <B>T&amp;</B> but needs a <B>CDataListIterator</B> and will see that a <B>CDataListIterator</B> can be constructed from a type <B>T&amp;</B>. It will then generate a temporary <B>CDataListIterator</B> in place. While the concept of building a mock iterator is peculiar (the derived iterator classes really acts like two disparate classes fused together), it does allow for easier searching.</p>
+<p>As mentioned before, one item of note is that neither <B>list::iterator</B> nor <B>multiset::iterator</B> can be a fundamental data type (such as a pointer). The restriction stems from the derivation we want to perform; fundamental data types cannot be derived from. Fortunately, given the nature of linked lists and binary trees (which <B>list</B> and <B>multiset</B> are supposed to model, respectively), all implementations should have <B>list::iterator</B> and <B>multiset::iterator</B> defined as classes to deal with the multiple pointers of a doubly linked list and the left and right children of a binary tree.</p>
+<p><B>CCompareHelper</B> is a wrapper class to bind the <B>CDataListIterator</B> to the comparison index functions (typedefed as <B>TFncCompare</B> for convenience). While developers of comparison function don't need to be concerned about the existence of <B>CDataListIterator</B>, a <B>TIndex</B> that the comparison function will be plugged into manages a <B>CDataListIterator</B>. The <B>CCompareHelper</B> wraps itself around the user-defined comparison function and then dereferences a <B>CDataListIterator</B> for that function when <B>TIndex</B> needs some values compared. Since <B>CCompareHelper</B> is a general class that calls the comparison function through a pointer, the comparison function must have an address. This means that the function cannot be inlined and that the function must actually exist. Keep in mind that instances of function objects, such as <B>less&lt;string&gt; objCompare</B>, do have an address.</p>
+
+<H4><FONT COLOR="#000080">Index Operations</FONT></H4>
+
+<p>One of the most powerful features of <B>nwayset</B> is the ability to manage indexes on the fly: an ability that is really more akin to SQL databases or xBase than to STL containers. <B>nwayset</B> automatically keeps all indexes synchronized as data items are added or deleted. This necessarily means that mutating data operations perform more slowly as more indexes are added. Additionally, every time an index is added to <B>nwayset</B>, each item in <B>m_lData</B> must be touched. For an <B>nwayset</B> that contains a large number of data items, adding indexes can be costly.</p>
+<p>Indexes can be added to <B>nwayset</B> using the member function <B>index_insert</B>. <B>index_insert</B> takes a function pointer as an argument and uses that as the <B>sort</B> function for the <B>TIndex multiset</B>. The return value is an <B>index_iterator</B> that can be retained to search the newly added index or remove the index later. To remove the index, a member function <B>index_erase</B> is exposed that takes an <B>index_iterator</B> and removes it from the <B>m_lIndexes list</B>.</p>
+<p>Iterating over all indexes is accomplished by using <B>index_begin</B> and <B>index_end</B>. Each of these functions returns an <B>index_iterator</B>. They are obvious analogs to <B>begin</B> and <B>end</B> in many other STL contexts. When an <B>index_iterator</B> is dereferenced, it returns a reference to a <B>TIndex</B>. Since a <B>TIndex</B> is really a <B>multiset</B>, the normal <B>multiset</B> member function <B>find</B> behaves just as expected. The return value from a <B>TIndex::find</B> is <B>CIterator</B> compatible (using our hijacked iterator classes) so that <B>TIndex::find</B> fits in with the rest of the <B>nwayset</B> paradigm.</p>
+
+<H4><FONT COLOR="#000080">Data Operations</FONT></H4>
+
+<p>nwayset</B> exposes a small set of member functions to perform list data operations. <B>insert</B> takes an item as an argument, adds it to the data list (<B>m_lData</B>), and updates the indexes to reflect the new item. <B>erase</B> takes a <B>CIterator</B> as an argument, removes an item from <B>m_lData</B>, and deletes the corresponding item from the indexes by iterating over <B>m_lIndexes</B>, searching for the item to delete and then finding the exact iterator that matches the <B>CIterator</B> passed in to <B>erase</B>. (This means that a particular index can have duplicate entries, and the correct entry will be removed.) The number of items managed by <B>nwayset</B> can be determined by calling <B>size</B>, which simply rebroadcasts <B>m_lData.size()</B>.</p>
+<p><B>nwayset</B> also exposes a powerful searching member function called <B>find</B>. It takes a data item (of type <B>T</B>) as an argument and searches all indexes looking for a match. In essence, the data item passed to <B>find</B> is very much like an SQL query object or xBase expression, where each data member (or data member combination) that an index is built on is a column to search. Each data member value is the column criterion that is ORed together with the other column criteria and then submitted. If a match is found, a <B>CIterator</B> designating that data item is returned. Otherwise, the value <B>end()</B> is returned to signal that no match was found.</p>
+
+<H4><FONT COLOR="#000080">A DNS Search Utility</FONT></H4>
+
+<p>The capabilities of <B>nwayset</B> can be demonstrated using an example similar to the DNS server example above. Using a combination of the standard <B>nslookup</B> command and <B>nwayset</B>, an interactive host information utility can be built. The utility takes a host database file generated by <B>nslookup</B>, reads it into an <B>nwayset</B> (indexing as the file is read), and allows searches to be performed against it.</p>
+<p>The <B>nslookup</B> command is a utility for connecting to a DNS server and asking it questions related to name resolution. When <B>nslookup</B> is presented with either a hostname or an IP address, it passes it to a DNS server and returns the opposite of what was passed (a hostname for IP address and vice versa). <B>nslookup</B> can also be used to transfer the host database to the local machine. The following example parses a host database file, generated by <B>nslookup</B>, and allows interactive lookups much like <B>nslookup</B> does, except that it doesn't connect to a DNS server.</p>
+<p>To generate a host database file, run <B>nslookup</B>. Various DNS related messages should scroll by. Once the <B>nslookup</B> prompt (<B>&gt;</B>) appears, type:</p>
+
+<pre>
+ls &gt; host.db
+</pre>
+
+<p>This should create a file named <B>host.db</B> (see <a href="fig1.htm">Figure 1</a> for an example) that contains the guts of the DNS that <B>nslookup</B> is connected to. If <B>nslookup</B> complains about zone transfers not being allowed or prints some other error, the DNS that <B>nslookup</B> defaults to is too secure to allow its host database to be transferred. Either switch to a less paranoid DNS using the command:</p>
+
+<pre>
+server NEW_DNS_SERVER_ADDRESS
+</pre>
+
+<p>or make up a host database file.</p>
+<p>One other caveat: different <B>nslookups</B> produce different results for the <B>ls</B> command. The following example expects the output to look like the results from the Microsoft Windows 9x/NT <B>nslookup</B>. Unix <B>nslookups</B> tend to generate a different format.</p>
+<p><a href="list2.htm">Listing 2</a> shows the file hostdb.cpp, which contains the host database search utility. The first <B>nwayset</B> is declared passing the <B>CDNSRecord</B> class as the template parameter <B>T</B>:</p>
+
+<pre>
+nwayset&lt;CDNSRecord&gt; nsDNSLookup;
+</pre>
+
+<p>Next two indexes are added (on hostname and on IP address) while <B>nwayset</B> is empty.</p>
+
+<pre>
+nsDNSLookup.index_insert (DNSNameCompare);
+nsDNSLookup.index_insert (DNSAddressCompare);
+</pre>
+
+<p>DNSNameCompare</B> is a plain function that takes two <B>CDNSRecord</B> instances and compares their <B>m_strName</B> member. <B>DNSAddressCompare</B> performs a similar operation on the <B>m_strAddress</B> member.</p>
+<p>After some file opening and parsing magic, <B>CDNSRecord</B> instances are inserted into <B>nwayset</B>:</p>
+
+<pre>
+nsDNSLookup.insert(CDNSRecord
+   (pszName, pszType, pszAddress));
+</pre>
+
+<p>Now that the host database is in our <B>nwayset</B>, it can be searched. The console is polled for a string to search for. That string is used to build a <B>CDNSRecord</B> search object:</p>
+
+<pre>
+CDNSRecord objSearch (szLine,"",szLine);
+</pre>
+
+<p>Using the search object, the <B>nwayset::find</B> member function is used so that both the hostname and IP address indexes are searched:</p>
+
+<pre>
+nwayset&lt;CDNSRecord&gt;::const_iterator it =
+   nsDNSLookup.find(objSearch);
+</pre>
+
+<p>In this example utility, the most difficult part of the whole process was parsing the file to begin with. All of the strange iterator hijacking and layered containers are sufficiently insulated so that the code is clean, straightforward, and consistent with STL style and naming conventions. Later on, if the program logic dictates that additional indexes are needed (perhaps indexes that search <B>CDNSRecord::m_strType</B> or case-insensitive versions of <B>CDNSRecord::m_strAddress</B> and <B>CDNSRecord::m_strName</B>), they can be added without losing the contents of <B>nwayset</B> and forcing the host database file to be reprocessed.</p>
+
+<H4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>nwayset</B> hides the messy details of managing a collection of data and indexes using STL while pushing most of the real work off on the STL containers themselves. This results in a small code implementation that performs quickly and with very little overhead.</p>
+<p><B>nwayset</B> could be extended to more closely mimic a database table by supporting keyed indexes (all values unique). One way to accomplish this is to add a Boolean uniqueness indicator, along with each index, that is checked when new values are pumped in. A further improvement would be to extend this class to support disk-based lists, perhaps through a disk-based allocator for <B>m_lData</B>, with in-memory indexes.</p>
+
+<H4><FONT COLOR="#000080">Further Reading</FONT></H4>
+
+<p>For more on <B>nslookup</B> and the internal workings of DNS servers, see Paul Abitz and Cricket Liu, <I>DNS and BIND</I> (O'Reilly and Associates, 1998).</p>
+<p>For an excellent STL tutorial and discussions on mutating operations and their effect on iterators, see Leen Ammerall, <I>STL for C++ Programmers</I> (John Wiley and Sons, 1997). </p>
+
+<p><i><b>Mark L. Smith</B> is head of aiWorks, a firm specializing in software toolkits and full software applications for document and forms processing with Adobe Acrobat/PDF and Lotus Domino. Mark has been developing software for 15 years (8 of those with C++) and feels that STL is the biggest advance in C++ programming this decade. Feel free to contact Mark at <B>msmith@aiworks.com</B> or check on what he is up to at <B>www.aiworks.com</B>.</i></p>
+
+<h4><a href="../../../source/2000/mar00/smith.zip">Get Article Source Code</a></h4>
+
+
+</blockquote></body></html>

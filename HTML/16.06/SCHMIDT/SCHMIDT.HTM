@@ -1,0 +1,618 @@
+
+
+
+
+
+<HTML><HEAD>
+
+<TITLE>June 1998/The Learning C/C++urve</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A href="../tocjun.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">The Learning C/C++urve: Dis-Array</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Bobby Schmidt</FONT></H3>
+
+<BLOCKQUOTE>So how hard can it be to mimic a C array with a C++ class? Read on.</p></BLOCKQUOTE>
+
+<hr>
+
+<BLOCKQUOTE>
+
+<p><B><I>Copyright &#169; 1998 Robert H. Schmidt</B></I></p>
+<p>This month I summarize the properties of class Array vis-&agrave;-vis those
+of real arrays. This comparison will lead to alternative design paths that
+start deviating away from real arrays and toward STL containers.</p>
+
+<h4><FONT COLOR="#000080">Array Recap</FONT></H4>
+
+<p>Here
+are the real array properties I sketched out in March's column, along with
+comments about class Array's support for those properties. (In all instances,
+assume the declaration Array&lt;T, N&gt; a):</p>
+<p>
+<UL><LI>A given array a contains a fixed number of other objects, called a's
+        elements. The number of elements N is called a's length. Once a is created, N
+        cannot change.</LI>
+<LI>sizeof(a) yields the total number of bytes occupied by a. Each a element is
+    of the same static type and occupies sizeof(a) / N bytes.</LI>
+</UL>
+<p>Arrays take two template parameters &#151; an element type T and an element
+count N &#151; that define a hidden internal real array named array_. Every array_
+element is of the same static type T. This internal array's length stays fixed
+for the containing Array object's lifetime.<p>
+Given the simplifying assumption in Note 3 of April's column (i.e., an Array
+object contains no padding bytes), sizeof(Array) is the same as sizeof(array_),
+or sizeof(T) * N. This implies that the size of each element is sizeof(Array) /
+N.</p>
+<p>
+<UL><LI>a has value semantics. Storage for a's elements exists within a itself.</LI>
+    <LI>a supports random access of its elements, referenced by successive whole
+        number indices ranging from 0 to N - 1. Those elements are stored contiguously
+        in their indexed order.</LI>
+</UL>
+<p>An Array's elements live within the contained array_. The elements are
+randomly accessed by [] for both gets and sets. A get of the ith element yields
+the value (conceptually a copy) of that element <a href="#1">[1]</a>. A set of the ith element
+copies the setting object's value into the Array.<p>
+The [] operator expects, but does not enforce, an index range of 0 to N - 1;
+attempts to get/set elements outside this range lead to undefined behavior.<p>
+The addresses returned by &amp;a[0], &amp;a[1], etc., represent contiguous
+addresses, such that &amp;a[i] + sizeof(a[i]) == &amp;a[i + 1].</p>
+<p>
+<UL><LI>The name a represents a non-modifiable lvalue, even if a is declared
+        non-const.</LI>
+    <LI>In expressions, a often converts or "decays" to a pointer. The expression
+        a[i] is equivalent to *(a + i).</LI>
+</UL>
+<p>Thanks to our declaration of operator= as private last month, assignment to
+a non-const a is no longer allowed &#151; although as also noted last month, this
+prohibition violates normal C++ object behavior.<p>
+The expression a does decay to &amp;a[0], and a[i] yields the same net result
+as *(a + i), although the actual code paths taken differ &#151; the former uses
+operator[], the latter operator T * (see note <a href="#2">[2]</a>).</p>
+
+<h4><FONT COLOR="#000080">Verdict</FONT></H4>
+
+<p>As
+written, Array does a pretty complete job of emulating C arrays, and C++ arrays
+of built-in element types. This emulation is bought largely through cheating:
+except for [], much of the other Array operation is via real pointers (as
+returned by operator T *) to an underlying real array implementation
+(array_).<p>
+Indeed, Arrays seem to offer no compelling advantage over real arrays &#151; at
+least from a limited perspective. From a larger view, Array's evolution does
+make us consider design aspects fundamental to any container class. Perhaps
+further reflection on those problems can reveal more subtle Array advantages.</p>
+
+<h4><FONT COLOR="#000080">operator[] Revisited</FONT></H4>
+
+<p>As
+I spelled out in May, having Array offer the two members</p>
+
+<pre>
+operator[](size_t)
+</pre>
+
+<p>and</p>
+
+<pre>
+operator T *()
+</pre>
+
+<p>presented
+an ambiguity. The compiler had trouble knowing which member to call when
+resolving expressions like a[3]. To get around this ambiguity, I changed the
+first member to</p>
+
+<pre>
+operator[](ptrdiff_t)
+</pre>
+
+<p>Now
+a clever reader may wonder why I bothered defining operator[] in the first
+place. After all, since I'm using the language's built-in pointer facilities
+for other Array features, why not get rid of operator[] and use the language's
+built-in [] instead? This would certainly avoid the above ambiguity and
+streamline the class definition &#151; as written, operator[] nets out to the same
+behavior as built-in [] anyway.<p>
+Yes, a clever reader may wonder &#151; but a Diligent Reader knows I (almost)
+always have a method lurking within my madness. In this case, I snuck in
+operator[] for two reasons:</p>
+<UL><LI>to show how the operator[] declaration opens the door for alternative
+        implementations, a capacity I'll exploit in future  columns</LI>
+    <LI>to artificially create a conflict exposing a design flaw in C and C++
+        arrays</LI>
+</UL>
+<p>(Note that "to run into the ptrdiff_t-related ambiguity" was not one of my
+reasons. That one was a genuine Unintended Consequence.)</p>
+<p>The "design flaw" in question is one I've deplored since first learning C:
+array/pointer symbiosis. In short, I believe the automatic decay of a C/C++
+array into the address of an array element is an unfortunate leftover of C's
+origin as a high-level assembler, a legacy at odds with C++'s object-oriented
+aspirations.</p>
+
+<h4><FONT COLOR="#000080">Array Decay</FONT></H4>
+
+<p>Any
+respectable teacher of C++ class design will tell you to minimize silent
+conversions via single-argument constructors or conversion operators. Yet the
+language itself allows this most grievous conversion with no warning and no
+recourse. Further, once the decay occurs, you have no way to tell if the
+pointer references a single object or the first object in an array.<p>
+Consider the function prototyped as</p>
+
+<pre>
+void f(char const *p)
+</pre>
+
+<p>with
+no explanatory comments or other documentation. Do you reckon that p is 1) a
+pointer to a single char, or 2) a pointer to the first element in an array of
+chars?</p>
+<p>If presented with this declaration out of context, you would probably assume
+#2, since that matches a common idiom (string literal constants) enshrined in
+the both the language and its standard library.<p>
+But if faced with the declaration</p>
+
+<pre>
+void f(FILE *p)
+</pre>
+
+<p>you'd more likely assume interpretation #1, since arrays of FILEs are not so
+idiomatic.</p>
+<p>How then to interpret the general case of</p>
+
+<pre>
+void f(T *p)
+</pre>
+
+<p>where the definition of T is not readily apparent? Or even worse, a truly generic
+definition like</p>
+
+<pre>
+template&lt;class T&gt;
+void f(T *p)
+</pre>
+
+<p>where the definition of T changes over the code space? What is the intuitive meaning
+here?</p>
+
+<h4><FONT COLOR="#000080">* versus []</FONT></H4>
+
+<p>If
+you believe that char *p actually references an array, you may be tempted to
+declare it as char a[]. Unfortunately, this does not really buy you much; in
+fact, from the compiler's perspective, the two prototypes</p>
+
+<pre>
+void f(char *p)
+</pre>
+
+<p>and</p>
+
+<pre>
+void f(char a[])
+</pre>
+
+<p>are synonymous. Try declaring both in the same translation unit, then see how your
+compiler reacts. As another test, try compiling</p>
+
+<pre>
+void f(char a[])
+    {
+    a = NULL;
+    }
+</pre>
+
+<p>This works, demonstrating that a is not an array; otherwise the compiler would
+disallow the assignment. Even adding a dimension like</p>
+
+<pre>
+void f(char a[10])
+</pre>
+
+<p>doesn't help &#151; a is still a char *, as evidenced by</p>
+
+<pre>
+void f(char a[10])
+    {
+    cout &lt;&lt; "sizeof(a) is " &lt;&lt; sizeof(a)
+         &lt;&lt; endl;
+    }
+</pre>
+
+<h4><FONT COLOR="#000080">[] versus (&amp;)[]</FONT></H4>
+
+<p>You
+might conclude that you have no way of telling f to think of a as an array.
+With C, your conclusion would be correct. But with C++, you can take advantage
+of a feature unavailable in C: references.<p>
+By changing f to</p>
+
+<pre>
+void f(char (&amp;a)[10])
+    {
+    a = NULL; // error
+    }
+</pre>
+
+<p>you make a a reference to an array. The name of real array objects (and references
+to them) are non-modifiable lvalues, so the assignment a = NULL fails.</p>
+<p>In contrast to the previous example, sizeof(a) is 10. Because of the
+compiler's type checking, f accepts only arrays of this size:</p>
+
+<pre>
+f("123456789"); // OK, converts char[10]
+                // to char (&amp;)[10]
+</pre>
+
+<p>If you try to pass in an array of a different size, the compiler complains of a
+type mismatch:</p>
+
+<pre>
+f("123"); // error, can't convert
+          // char[4] to char (&amp;)[10]
+</pre>
+
+<p>So while a benefits from maintaining its array identity, it suffers from accepting
+only arguments of length 10. Contrast this with f(char *), which accepts arrays
+of any length.<p>
+But not all is lost. To make f work for any length array, turn it into a
+function template:</p>
+
+<pre>
+template&lt;ptrdiff_t N&gt;
+void f(char (&amp;a)[N]);
+     
+f("a");   // OK, instantiates
+          // f(char (&amp;)[2])
+f("abc"); // OK, instantiates
+          // f(char (&amp;)[4])
+</pre>
+
+<p>You can extend this to work for element types beyond char:</p>
+
+<pre>
+template&lt;ptrdiff_t N, class T&gt;
+void f(T (&amp;a)[N]);
+     
+int x[7];
+f(x);   // OK, instantiates
+        // f(int (&amp;)[7])
+f("a"); // OK, instantiates
+        // f(char (&amp;)[2])
+</pre>
+
+<h4><FONT COLOR="#000080">Reality Check</FONT></H4>
+
+<p>Templatized
+array references are a powerful technique. Unfortunately, their non-decay
+property extends only to the call; once inside the function, array references
+decay as easily as ever:</p>
+
+<pre>
+template&lt;ptrdiff_t N, class T&gt;
+void f(T (&amp;a)[N]);
+    {
+    T *p = a; // OK
+    }
+</pre>
+
+<p>In this regard, class Array is no better: it maintains its identity during the
+call, but crumbles once in the function:</p>
+
+<pre>
+template&lt;ptrdiff_t N, class T&gt;
+void f(Array&lt;T, N&gt; &amp;a)
+    {
+    T *p = a; // OK
+    }
+</pre>
+
+<p>No matter how I approach the problem, I'm left with the same conclusion:
+arrays are unstable isotopes, too easily decaying into more elementary
+pointers. It's too late for us to re-architect language support for real
+arrays, but we can change class Array by removing the members</p>
+
+<pre>
+operator T *();
+operator T const *() const;
+</pre>
+
+<p>Not only does such a change avoid the problems cited above, it also apparently
+renders moot the whole ptrdiff_t discussion from last month. That discussion
+centered on the ambiguity between operator[] and operator T *. With operator T
+* gone, there is no ambiguity; the compiler must choose operator[], regardless
+of its parameter type. So maybe we should consider changing the parameter type
+of operator[] back to size_t.<p>
+For inspiration, I turn to the Standard C++ library, including the Standard
+Template Library (STL). Sifting through the definitions for array-like classes
+basic_string, deque, and vector, I find several instances of operator[]. Every
+one of them has an index parameter of type size_t.<p>
+However, if I look at the core language instead, the picture is less clear.
+Remember, for built-in arrays, the language predefines the [] operator. In the
+example</p>
+
+<pre>
+int a[10];
+a[3];
+</pre>
+
+<p>the compiler acts as if the function</p>
+
+<pre>
+int &amp;operator[](int *, Index);
+</pre>
+
+<p>is implicitly declared. Index is the type of the index (3 here). And what type is
+that? ptrdiff_t.</p>
+<p>Yep, the implicitly defined [] operator for built-in types uses ptrdiff_t
+for the index type. (You can check out section 13.6, paragraph 14 in the C++
+Standard for the full score.) To better match the behavior of built-in [], we
+should continue using ptrdiff_t for our Array [] &#151; except that usage conflicts
+with the Standard Library's use of size_t. What is a law-abiding C++itizen to
+do?<p>
+Until I'm convinced to do otherwise, I'm sticking with ptrdiff_t. Dan Saks and
+I are researching and debating this contradiction; I'll let you know what we
+figure out.</p>
+
+<h4><FONT COLOR="#000080">Fallout</FONT></H4>
+
+<p>The
+removal of implicit Array-to-pointer decay brings up a host of interesting
+design decisions. In the statements</p>
+
+<pre>
+int a[10];
+int *p1 = a;        // pointer to first
+                    // array element
+int *p2 = &amp;a[0];    // equivalent
+int (*p3)[10] = &amp;a; // pointer to entire
+                    // array object
+</pre>
+
+<p>p1 and p2 are pointers to a's first element, while p3 is a pointer to a itself
+<a href="#3">[3]</a>. A typedef adds clarity:</p>
+
+<pre>
+typedef int element;
+typedef element array[10];
+     
+array a;
+element *p1 = a;
+element *p2 = &amp;a[0];
+array *p3 = &amp;a;
+</pre>
+
+<p>Now let's use an Array object, changing the second typedef to produce</p>
+
+<pre>
+typedef Array&lt;10, element&gt; array;
+</pre>
+
+<p>Since we've removed operator T * from the Array class template, the statement</p>
+
+<pre>
+element *p1 = a;
+</pre>
+
+<p>fails to compile, as expected. But what about the second statement</p>
+
+<pre>
+element *p2 = &amp;a[0];
+</pre>
+
+<p>which is equivalent to p2 = a for real arrays?</p>
+
+<p>This still compiles, and yields a pointer to the first element of a::array_
+(Array's internal data structure). So while we have removed implicit
+Array-to-pointer conversions, we can still make an explicit conversion.<p>
+This presents a problem. Since p = a and p = &amp;a[0] are equivalent for real
+arrays, shouldn't they also be equivalent for Array objects? If so, then we
+ought to change Array so that</p>
+<p></p>
+
+<pre>
+element *p2 = &amp;a[0];
+</pre>
+
+<p>fails to compile.</p>
+<p>But ... if we do that, we can no longer get a pointer to any Array elements.
+And without pointers, we can't iterate across an Array's elements by the
+familiar iterator idiom:</p>
+
+<pre>
+for (ptrdiff_t i(0); i &lt; N; ++i)
+    *p++ = ...;
+</pre>
+
+<p>The only way we could directly access Array elements would be with subscripting:</p>
+
+<pre>
+for (ptrdiff_t i(0); i &lt; n; ++i)
+    p[i] = ...;
+</pre>
+
+<p>I consider iteration a fundamental property of containers, and the STL concurs.
+While only some STL containers support [] directly, all of them support
+iteration via ++ and *. For the moment, I'll leave Array alone.</p>
+
+<h4><FONT COLOR="#000080">Pointers to Arrays</FONT></H4>
+
+<p>We
+must now face the last of our earlier three statements <a href="#4">[4]</a>:</p>
+
+<pre>
+array *p3 = &amp;a;
+</pre>
+<p>For definition of array aliased to int[10], this works &#151; p3 takes on a pointer
+to the entire array object. In order to access a's ith element, you need the
+somewhat bizarre syntax</p>
+
+<pre>
+(*p3)[i] = 123; // OK, set's i'th
+                // element to 123
+</pre>
+
+<p>(For the special case of i == 0, the expression (*p3)[0] is equivalent to *(*p3), or
+the simpler **p3.)</p>
+<p>Now consider the behavior when array is aliased to Array&lt;int, 10&gt;. The
+expression &amp;a returns a pointer to the Array object, and p3 accepts such a
+pointer, so the statement</p>
+
+<pre>
+array *p3 = &amp;a;
+</pre>
+
+<p>compiles, as does</p>
+
+<pre>
+(*p3)[i] = 123; // OK
+</pre>
+
+<p>where the expression (*p3) yields the Array object a. Thus, (*p3)[i] is equivalent to
+a[i].</p>
+<p>Unfortunately, we now have an asymmetry. The statement</p>
+
+<pre>
+int *p = &amp;a[i];
+</pre>
+
+<p>works whether a is an int[10] or an Array&lt;int, 10&gt;. But the derivative
+statement</p>
+
+<pre>
+int (*p)[10] = &amp;a;
+</pre>
+
+<p>works only for a real array. If a is an Array, this statement fails to compile.</p>
+
+<h4><FONT COLOR="#000080">Dominoes</FONT></H4>
+
+<p>Once
+again we're left with conflicting design goals: making Array act like a real
+array, and making Array act like a C++ object. If we respect the former, &amp;a
+should return a pointer to a::array_; if we respect the latter, &amp;a should
+return a pointer to a.<p>
+You can see the dominoes falling here. Because a no longer implicitly decays
+into a pointer, we earlier faced the problem of whether &amp;a[i] should yield
+a pointer. Now we ponder what kind of pointer &amp;a should yield.<p>
+One easy solution is to disallow &amp;a[i], thereby removing the incentive to
+maintain symmetry among a, &amp;a, and &amp;a[i]. Unfortunately, a[i] returns a
+reference to an int. To disallow &amp;a[i], we'd have to actually disallow
+taking the address of an int; short of rewriting the language specification, we
+can't make such a prohibition.<p>
+A more sophisticated solution involves returning something other than an int
+from a[i], and disallowing pointers to that object. (I'll examine that solution
+in a future column, once we start looking at iterators for real.)</p>
+<p>Another possibility is declaring a private unimplemented
+Array::operator&amp;. Such a declaration would effectively disable the
+expression &amp;a.</p>
+<p>Or we could declare operator&amp; to return an int * , so that &amp;a acted
+more like real arrays.<p>
+All of this strikes me as gross over-engineering. Having removed array/pointer
+decay earlier, I find that these other pointer aspects of real arrays no longer
+make consistent sense within class Array. Instead, I will leave &amp;a[i] and
+&amp;a alone, allowing Array to act like a "normal" C++ object. Given the
+choice of maintaining strict array emulation, or maintaining a C++ object
+idiom, I'll favor the latter.</p>
+
+<h4><FONT COLOR="#000080">Copying Revisited</FONT></H4>
+
+<p>To
+stay consistent, I must reverse last month's decision to turn off Array object
+copying. I made that decision in the spirit of array compatibility; but now
+that I'm tending toward C++ object compatibility, I ought to take another
+look.<p>
+The simple bit-copying solution of</p>
+
+<pre>
+Array(Array const &amp;that)
+    {
+    memcpy(array_, that.array_, sizeof(array_));
+    }
+     
+Array &amp;operator=(Array const &amp;that)
+    {
+    if (this != &amp;that)
+        memcpy(array_, that.array_, sizeof(array_));
+    return *this;
+    }
+</pre>
+
+<p>works for elements that are built-in types. But for elements of some class type,
+copying bits is probably not enough. Instead we should call the element class's
+copy-assignment operator:</p>
+
+<pre>
+Array(Array const &amp;that)
+    {
+    for (ptrdiff_t i(0); i &lt; N; ++i)
+        array_[i] = that.array_[i];
+    }
+     
+Array &amp;operator=(Array const &amp;that)
+    {
+    if (this != &amp;that)
+        for (ptrdiff_t i(0); i &lt; N; ++i)
+            array_[i] = that.array_[i];
+    return *this;
+    }
+</pre>
+
+<p>For elements that are pointers, we have a dilemma. Either of the above
+implementations copies the pointer values from one Array to another. Such a
+copy is shallow, and does not copy what those pointers reference. This may not
+match the user's expectations.<p>
+Trouble is, we really have no robust alternative. Even if we wanted to copy the
+pointed-to contents, we cannot know if those pointers reference single objects
+or arrays &#151; and if the latter, how long those arrays are. The same weaknesses
+that plagued array/pointer decay earlier come back to haunt us here.<p>
+This difficulty gives us strong motivation to avoid Arrays or other containers
+with pointer elements. I leave it as an exercise for the student to create an
+Array specialization that disallows pointer elements. <A href="list1.htm">Listing 1</a>
+contains the
+current Array definition sans that specialization.</p>
+
+<h4><FONT COLOR="#000080">Around the Bend</FONT></H4>
+
+<p>In
+a slight variation of our array theme, next month we'll explore the new
+variable length arrays (or VLAs) in C9X. I'll survey their syntax and behavior,
+and compare them both to "classic" C/C++ arrays, and to container classes
+like Array and those in STL.<p>
+In February I solved Diligent Reader Bill Palladino's trouble with static
+object initialization ordering. Another Diligent Reader &#151; Simeon Simeonov &#151;
+has an alternative view I'll share in July. I also have the usual assortment of
+flotsam, including more evidence that Scott Meyers has entirely too much time
+on his hands. Back at ya' then.</p>
+
+<h4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1]
+The notion that a get yields an object copy is a design fiction. As
+implemented, a get actually returns a const reference to a T object, not a
+cloned T object. This design better mimics  the semantics of real C arrays.<p>
+<a name="2"></a>[2] See last month's discussion of ptrdiff_t for more on these two code
+paths.<p>
+<a name="3"></a>[3] If you were unaware that arrays could have their addresses taken, don't
+feel bad. I suspect many experienced C programmers believe such a thing is
+impossible.<p>
+<a name="4"></a>[4] Recall the "foreshadowing" I gave at the end of last month's column. This
+is the payoff.
+</p>
+<p><i>Bobby Schmidt is a freelance writer, teacher, consultant, and programmer.
+He is also a member of the ANSI/ISO C standards committee, an alumnus of
+Microsoft, and an original "associate" of (Dan) Saks &amp; Associates. In other
+career incarnations, Bobby has been a pool hall operator, radio DJ, private
+investigator, and astronomer. You may summon him at 14518 104th Ave NE Bothell
+WA 98011; by phone at +1-425-488-7696, or via Internet e-mail as
+rschmidt@netcom.com.
+</i></p>
+
+<h4><a href="../../../source/1998/jun98/schmidt.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</body></html>

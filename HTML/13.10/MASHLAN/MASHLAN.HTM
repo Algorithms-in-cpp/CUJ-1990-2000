@@ -1,0 +1,212 @@
+
+
+<HTML>
+<HEAD>
+
+<TITLE>October 1995/Checked Pointers for C++</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tococt.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Debugging</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Checked Pointers for C++<A name="014A_00CE"><A name="014A_00CE"></font></h2><P>
+<h3 align="center"><font color="#800000"><A name="014A_0000"><A name="014A_0000">Robert Mashlan</font></h3><hr><blockquote><P>
+<P><i><A name="014A_0000"><A name="014A_0000">Robert Mashlan is an independent software consultant doing business as R2M Software Company, specializing in Windows device drivers. He may reached at +1-503-728-0849 or rmashlan@r2m.com on the internet. WWW surfers may see his home page at http://www.csn.net/~rmashlan.</i></P><P>
+<h4><FONT COLOR="#000080"><A name="014A_00CF">Introduction<A name="014A_00CF"></FONT></h4></P>
+One of the complaints about C and C++ is the lack of built-in facilities for checking the valid usage of pointers and arrays. It can be frustrating to track down errors where pointers and array subscripting operations access invalid memory locations. Such errors can cause corruption of the heap, the stack, or static data areas that may not show until much later in the program's execution. With the addition of templates and exceptions to the C++ language specification, however, it is possible to define a template class that throws exceptions for invalid pointer and array usage. I present here two template classes, <I>CheckedPtr</I> and <I>CheckedClassPtr</I>, that do so.<P>
+Another common problem is a memory leak caused by failing to delete an object when the pointer to it goes out of scope. C++ exceptions introduce a similar problem, because a thrown exception may by-pass the code that deletes a pointer. So I also present the template class <I>HeapPtr</I>, which solves both problems.<P>
+Objects of the <I>CheckedPtr</I> class, and its descendant <I>CheckedClassPtr</I>, work like pointers to a typed object. You can use a <I>CheckedPtr</I> object in place of a normal typed pointer in an expression. The template class <I>CheckedPtr</I> defines operators that behave the same way as do the built-in operators for typed pointers.<P>
+You use the template class <I>CheckedClassPtr</I> to describe an object that can represent a pointer to an object of some other type. The template class <I>CheckedClassPtr</I> is necessary because of the rules for the member access operator. I discuss this problem later in this article. These template classes support only representations of pointer to object types. They do not support representations of pointers to void, pointers to functions, or pointers to references. The limitation is imposed because pointer arithmetic works only on pointers to objects. For instance, it is an error to use the expression <I>p++</I> where <I>p</I> is a pointer to void or a function pointer. It is not possible to declare a pointer to a reference.<P>
+The template class <I>CheckedPtr</I> uses C++ exceptions to signal errors. To field exceptions, you place any code that may cause an exception within a try block. When the code in a try block throws an exception, control flow continues at the nearest matching catch block associated with the try block. But first, the exception mechanism calls the destructors for any automatic objects that go out of scope.<P>
+The template class <I>CheckedPtr</I> employs three exception classes derived from the class <I>xCheckedPtr</I>, which is in turn derived from <I>xmsg</I>, the generic exception class defined by the C++ standard header file <I>except. h</I>. The <I>CheckedPtr</I> class may throw three possible exceptions:<P>
+<UL><li><I>xnullptr</I> for a dereferenced null pointer</li>
+<li><I>xoutofrange</I> for accesses outside the range of an array to which a <I>CheckedPtr</I> object is limited</li>
+<li><I>xnotsamebase</I> for pointer arithmetic with pointers that do not refer to the same array.</li></UL>
+The source file <I>cptest. cpp</I> (<A href="list3.htm">Listing 3</a>)
+ uses the function <I>test</I> to create an environment that handles <I>xCheckedPtr</I> exceptions. When the catch block catches an exception object derived from <I>xCheckedPtr</I> class, the code in the catch block handles the exception by displaying the reason for the exception on the stream <I>cout</I>, using the <I>why</I> member function of <I>xmsg</I>.<P>
+<h4><FONT COLOR="#000080"><A name="014A_00D0">Template Class <B><I>CheckedPtr</I><A name="014A_00D0"></B></FONT></h4></P>
+A template class allows you to code a generic definition of a class that you may associate with another class or C++ built-in type. Instead of writing a slightly different <I>CheckedPtr</I> class definition for each type of pointer that needs to be checked, you include the header file <I>checkptr.h</I> (<A href="list1.htm">Listing 1</a>)
+, which defines a single template class. It lets the compiler do the work of generating instances of the class definition for each type to be associated with the class.<P>
+For instance, to declare a class definition that represents a pointer to <I>char</I>, you write <I>CheckedPtr&lt;char&gt;</I>. When the compiler sees <I>CheckedPtr&lt;char&gt;</I> in a declaration, it uses the template class definition, which begins with <I>template&lt;class T&gt; class CheckedPtr</I>, and generates an actual class definition by substituting <I>char</I> for each usage of <I>T</I> in the template.<P>
+The template class <I>CheckedPtr</I> has three member objects: the pointer that the <I>CheckedPtr</I> object represents, a pointer to the base of an array, and a limit. For a pointer to a single object, the base is the same value as the pointer, and the limit is one. (You may think of a single object as an array with one element.) For a pointer associated with an array, the base is a pointer to the beginning of the array, and the limit is the number of elements in the array. The <I>CheckedPtr</I> class uses the base and limit for checking that the represented pointer and any operations on it result in a valid pointer that points to an element in the array or to the non-existent element at the end of the array.<P>
+There are two constructors for the template class <I>CheckedPtr</I>. The first (default) constructor initializes a <I>CheckedPtr</I> object with a specified pointer, limit, and base. All three parameters have default values. If constructed with no parameters, the object represents a null pointer. If constructed with a single pointer passed as a parameter, the object represents a pointer to a single object. For instance, to construct a <I>CheckedPtr&lt;int&gt;</I> object that represents a pointer to a single integer you write:<P>
+<pre>int i;
+CheckedPtr&lt;int&gt; pi= &amp;i;</pre>
+For arrays, use the first two parameters to specify the base and limit of the array. For instance, for an array of 10 <I>float</I>, you construct a <I>CheckedPtr&lt;float&gt;</I> object like this:<P>
+<pre>float a[10];
+CheckedPtr&lt;float&gt; p(a, 10);</pre>
+You use all three parameters to create an object that represents a pointer that points somewhere inside an array other than the beginning. For instance, to create a <I>CheckedPtr&lt;float&gt;</I> object that points to the third element of an array of 10 <I>float</I>, and is allowed to point at any element in the array, write:<P>
+<pre>float a[10];
+CheckedPtr&lt;float&gt; p(a+2, 10, a);</pre>
+If the pointer passed as the first parameter does not point to an element specified by the limit and base parameters, the constructor will throw an <I>xoutofrange</I> exception.<P>
+The template class <I>CheckedPtr</I> declares the copy constructor to show that it may be used. This constructor simply does a physical copy of the pointer, base, and limit member objects into the newly constructed object, like a default compiler-generated copy constructor would do.<P>
+<h4><FONT COLOR="#000080"><A name="014A_00D1">Operators<A name="014A_00D1"></FONT></h4></P>
+The template class <I>CheckedPtr</I> provides a conversion operator so that you can pass the represented pointer as a parameter to a function that requires the underlying pointer type. For instance, by using the conversion operator you can pass a <I>CheckedPtr&lt;char&gt;</I> object as the <I>char *</I> argument to the <I>strlen</I> function.<P>
+When a logical expression involves a <I>CheckedPtr</I> object, the expression will use this conversion operator, which mimics the use of pointer types in the same situation. For instance:<P>
+<pre>CheckedPtr&lt;char&gt; a(0), b(0);
+bool r = a || b; // returns false</pre>
+The class <I>CheckedPtr&lt;T&gt;</I> defines the member operator functions:<P>
+<pre>T&amp; operator*() const;
+T&amp; operator[](ptrdiff_t) const;</pre>
+which perform indirection and subscripting. These functions return a reference so that you may use the result of the expression as the left operand in an assignment statement, or in other situations that require an 1value.<P>
+The member function <I>operator[]</I> uses an integral value of type <I>ptrdiff_t</I> for the right operand. C++ uses this type to represent the subtraction of two pointers of the same type. <I>ptrdiff_t</I> is defined in the standard C++ header file <I>stddef.h.</I> It is a signed type, typically either <I>int</I> or <I>long</I>. The operators for the template class <I>CheckedPtr</I> which require an integral operand use <I>ptrdiff_t</I> for this purpose.<P>
+The member function <I>operator*()</I> calls <I>operator[](0)</I>, which validates the returned reference. Before <I>operator[]</I> returns a reference to an object represented by the operation, it first checks that the represented pointer is not null. If it is, the function throws an <I>xnullptr</I> exception. Next, the function checks that the resulting reference is to a valid array element. If it is not, the function throws an <I>xoutofrange</I> exception. It is valid for a pointer to reference the location that is just beyond the end of an array, but it is not valid to dereference that pointer value. For instance, it is valid C++ to write:<P>
+<pre>char a[10];
+char *end = a+10;
+for( char *p = a; p &lt; end; p++ )
+   ;</pre>
+The pointer <I>end</I> points to the element <I>a[10]</I>, which does not exist.<P>
+This implementation of template class <I>CheckedPtr</I> has an incompatibility with valid pointer usage. For instance, the following variation of the previous example is valid C++ code:<P>
+<pre>char a[10];
+for( char *p = a; p &lt; &amp;a[10]; ++p )
+   ;</pre>
+However, if you convert this example to use <I>CheckedPtr&lt;char&gt;</I> objects instead of <I>char</I> pointers, like this:<P>
+<pre>char a[10];
+const CheckedPtr&lt;char&gt; cpa(a,10);
+for( CheckedPtr&lt;char&gt; p = cpa;
+   p &lt; &amp;cpa[10]; ++p )
+   ;</pre>
+then the expression <I>&amp;cpa[10]</I> throws an <I>xoutofrange</I> exception when evaluated, because <I>CheckedPtr&lt;char&gt;::operator[]</I> does not know that the result is really not being dereferenced.<P>
+A less than well-known fact is that the subscript operator is commutative in C and C++. That is, the expression <I>p[n]</I> is equivalent to the expression <I>n[p].</I> Unfortunately, C++ does not allow the subscript operator to be a non-member function. If it did, then defining the template function:<P>
+<pre>template&lt;class T&gt; inline
+T&amp; operator[]( ptrdiff_t i,
+   const CheckedPtr&lt;T&gt;&amp; cp )
+   { return cp.operator[i]; }</pre>
+would allow the class <I>CheckedPtr</I> to behave like a C++ typed pointer.<P>
+<h4><FONT COLOR="#000080"><A name="014A_00D2">Template Class <B><I>CheckedClassPtr</I><A name="014A_00D2"></B></FONT></h4></P>
+The other operator that dereferences a pointer, the member access <I>operator-&gt;</I>, is not defined for the <I>CheckedPtr</I> class template. Instead, the derived class <I>CheckedClassPtr</I> defines this operator. This is because most current C++ compilers produce an error when they generate an instance of a template class that defines a member access operator that does not return a pointer to a class object. For example, if you use the type <I>CheckedClassPtr&lt;char&gt;</I> then the generated instance of the class definition would have the member function definition:<P>
+<pre>char *CheckedClassPtr&lt;char&gt;::operator-&gt;() const;</pre>
+This is not accepted because the return type, <I>char *</I> is not a pointer to a class.<P>
+If the C++ language definition were relaxed by allowing the member access operator to be a non-member function, it would eliminate the need for the <I>CheckedClassPtr</I>. If this were the case, you could define a non-member function template for the member access operator. The compiler would generate an error only if it generated an instance of the template function instead of when it generates an instance of the class definition.<P>
+[The draft C++ Standard has recently been altered in a slightly different way. The net effect, however, is to permit <I>CheckedClassPtr</I> to be instantiated even for non-class types. It will probably take a year or more for this new latitude to be reflected in commercially available compilers. &#151; pjp]<P>
+The member function <I>CheckedClassPtr&lt;T&gt;::operator-&gt;</I> calls <I>CheckedPtr&lt;T&gt;::operator*()</I>, which checks that the returned pointer can be dereferenced, then returns the address of the result.<P>
+The derived class redefines the operators that return references to the class object, such as <I>operator+=</I>, and operators that return copies of the class object, such as <I>operator+</I>, to return references or objects of class <I>CheckedClassPtr</I> rather than <I>CheckedPtr</I>. This let you use the member access operator with expression that return type<I> CheckedClassPtr, </I>such as<I> p++-&gt;f()</I><P>
+<h4><FONT COLOR="#000080"><A name="014A_00D3">Pointer Arithmetic and Comparisons<A name="014A_00D3"></FONT></h4></P>
+The template class <I>CheckedPtr</I> defines operators that you use to perform pointer arithmetic on the pointers represented by a <I>CheckedPtr</I> object. Each of these operators checks that the represented pointer is not null, and that the resulting pointer representation still points to a valid array element, including the element that lies just beyond the end of an array. Even with a pointer to a single object, it is still valid to write:<P>
+<pre>char c;
+char *p = &amp;c;
+c++;    // OK</pre>
+The <I>CheckedPtr</I> class defines the assignment operators <I>operator+=</I> and <I>operator-=</I>. These work like the same operators on pointer to object types. <I>operator-=(n)</I> calls <I>operator+=(-n)</I>, which does the validation of the result. When the member function <I>operator+=</I> is called with a right operand of type <I>CheckedPtr</I>, the operator simply does a physical copy of original object. When the right operand is a compatible pointer type, the <I>CheckedPtr</I> object sets its internal pointer to use the right operand, treating it as a pointer to a single object.<P>
+The template class <I>CheckedPtr</I> defines the postfix and prefix increment and decrement operators, which behave like the same built in operators for pointer types. The postfix operators return a reference to the operand object. The postfix operators, which have an (unused) <I>int</I> parameter, create a copy of the operand before modifying it. These operator functions return this copy as the result, which is how postfix operators behave for pointers and other built-in types.<P>
+When the member functions <I>operator+</I> or <I>operator-</I> are called with a left operand of class <I>CheckedPtr</I> and a right operand of some integral type, they call in turn <I>operator+=</I> or <I>operator-=</I>, respectively. These member functions each create a copy of the left operand object and call the appropriate assignment operator for the copied object. They then return this copy as the result, leaving the original object operand unmodified. The addition operator is commutative, so the template header file defines an additional non-member function for <I>operator+</I> where the left operand is an integral type and the right operand is of type <I>CheckedPtr</I>.<P>
+C++ defines subtraction for two pointers of the same type. The result of this subtraction is the number of objects separating the pointers. The template header file also defines subtraction operator functions that perform this kind of subtraction when at least one of the object is of class <I>CheckedPtr</I>. These functions check that the two pointers refer to the same array. If the operands do not, they throw an <I>xnotsamebase</I> exception.<P>
+The <I>xnotsamebase</I> exception is useful for catching pointer errors with the relational operators <I>&gt;, &gt;=, &lt;</I>, and <I>&lt;=</I>. The header file <I>checkptr.h</I> (<A href="list1.htm">Listing 1</a>)
+ defines these operators with at least one operand an object of class <I>CheckedPtr</I>. These operators call <I>operator-</I>, which makes sure that the pointers refer to the same array. This is useful for catching error like this:<P>
+<pre>char a[10];
+char b[10];
+const CheckedPtr&lt;char&gt; cpa(a,10);
+const CheckedPtr&lt;char&gt; cpb(b,10);
+
+CheckedPtr&lt;char&gt; p;
+for( p = cpa; p &lt; cpa+10; ++p )
+   *p = 0;
+for( p = cpb; p &lt; cpa+10; ++p )
+
+   // error, probably meant p &lt; cpb+10
+   *p = 0;</pre>
+The equality operators, <I>==</I> and <I>!=</I>, simply return the result of comparing the two operands without any checking. Likewise, the logical negation operator returns the result of the same operator used on the represented pointer.<P>
+<h4><FONT COLOR="#000080"><A name="014A_00D4">Template Class <B><I>HeapPtr</I><A name="014A_00D4"></B></FONT></h4></P>
+One of the problems created by the introduction of C++ exceptions is that only the destructors of objects constructed on the stack are called when an exception is thrown and these objects go out of scope. If you allocate an object from the heap and store a pointer to it as a local variable, a thrown exception will cause the object to be lost along with the memory it occupies. Another common pointer error, which also leads to a memory leak, happens when you fail to delete a locally declared pointer to an object when the pointer goes out of scope.<P>
+The header file <I>heapptr.h</I> (<A href="list2.htm">Listing 2</a>)
+, defines the template class <I>HeapPtr</I>, for managing heap allocated objects. It is the responsibility of a <I>HeapPtr</I> object to delete the represented pointer when the object goes out of scope.<P>
+You use <I>HeapPtr</I> objects to allocate either a single object or an array of objects from the heap. In the first case, you create a <I>HeapPtr</I> object to manage a pointer to an object of type <I>X</I> by writing the declaration:<P>
+<pre>HeapPtr&lt;X&gt; Xptr( new X(/* parameters */));</pre>
+To create a <I>HeapPtr</I> object that refers to an array, use the constructor that takes a <I>size_t</I> argument. For instance, to allocate an array of ten objects of type <I>X</I> from the heap, you write:<P>
+<pre>HeapPtr&lt;X&gt; Xptr(10);</pre>
+The constructor calls <I>new X[10]</I>.<P>
+A <I>HeapPtr</I> object is responsible for deleting the pointer to the heap allocated object. If no copies are made of a <I>HeapPtr</I> object, its destructor deletes the represented pointer. But consider what happens when you make a copy of a <I>HeapPtr</I> object. If the original object deleted the pointer to the heap allocated object for which it is was responsible, then the copied object would reference an invalid pointer.<P>
+To solve this problem, template class <I>HeapPtr</I> uses an internal <I>Ref</I> class to manage references to a single heap allocated object. This allows more than one <I>HeapPtr</I> object to refer to the same heap allocated object. Internally, the object stores a pointer to a <I>Ref</I> object allocated from the heap. This object in turn stores a pointer to the heap allocated object. Every <I>HeapPtr</I> constructor other than the copy constructor initializes the internal <I>Ref</I> object pointer to point at a newly allocated <I>Ref</I> object. That object, when first constructed, has a reference count of one. When the <I>HeapPtr</I> object is constructed with the copy constructor, the constructed object inherits its pointer to the <I>Ref</I> object from the original. The common <I>Ref</I> object has its reference count incremented.<P>
+When you destroy either the copied or original <I>HeapPtr</I> object, the common <I>Ref</I> object has its reference count decremented. When the reference count returns to one, the pointer to the <I>Ref</I> object and the pointer to the heap allocated object it references are deleted.<P>
+<h4><FONT COLOR="#000080"><A name="014A_00D5">Operators<A name="014A_00D5"></FONT></h4></P>
+The template class <I>HeapPtr</I> defines a conversion operator so that you may treat a <I>HeapPtr</I> object as the represented pointer in some cases. However most of the other pointer operators will not work through the conversion operator. For instance, you cannot use the subscript operator or the indirection operator. Instead, use a typed pointer or a <I>CheckedPtr</I> object initialized to the same value as the pointer associated with the <I>HeapPtr</I> object. For instance:<P>
+<pre>HeapPtr&lt;char&gt; hp(100);
+for(int i = 0; i &lt; 100; i++)
+   hp[i] = 0;   // won't work
+char *p = hp;
+for(int i = 0; i &lt; 100; i++)
+   p[i] = 0; // OK</pre>
+You can fix this limitation of template class <I>HeapPtr</I> by adding the appropriate operator functions to the class definition. If you wish, you can combine the functionality of <I>HeapPtr</I> and <I>CheckedPtr</I> by creating a multiply derived class, with appropriately redefined operators.<P>
+You should not use expressions like this, however:<P>
+<pre>char *p = HeapPtr&lt;char&gt;(100);</pre>
+The unnamed <I>HeapPtr&lt;char&gt;</I> object exists only in the scope of the expression, and the returned pointer (through the conversion operator) will be invalid.<P>
+<I>HeapPtr</I> defines three assignment operators and three function call operators that work like the three constructors. These operators have the same effect as destroying and reconstructing the object. For instance:<P>
+<pre>HeapPtr&lt;int&gt; hp; // null pointer
+hp(100);         // allocate array of 100 ints
+hp = new int(0); // delete previous, allocate int
+hp = 100;        // delete previous, allocate array</pre>
+The usefulness of these operators is demonstrated in situations where they are used in tandem with a <I>CheckedPtr</I> object. For instance, to declare a <I>CheckedPtr</I> object and a <I>HeapPtr</I> object that represent the same pointer to an object allocated from the heap, write code like this:<P>
+<pre>HeapPtr&lt;X&gt; hp; // empty HeapPtr
+CheckedPtr&lt;X&gt; cp( hp(new X) );
+   // initialize HeapPtr and CheckPtr
+   // to point to same object</pre>
+Likewise, an array allocation looks like this:<P>
+<pre>// empty HeapPtr
+HeapPtr&lt;X&gt; hp;
+// allocate an array of
+CheckedPtr&lt;X&gt; cp(hp(100), 100 );</pre>
+<h4><FONT COLOR="#000080"><A name="014A_00D6">Using the Template Classes<A name="014A_00D6"></FONT></h4></P>
+The template classes <I>CheckedPtr</I> and <I>CheckedClassPtr</I> use inline functions for speed's sake. After you debug an application, however, it may be desirable to turn off the pointer checking to avoid a performance penalty. To do this, use a conditional typedef for the pointer types that you use. The following macros create typedef statements for different pointer types:<P>
+<pre>#ifndef NDEBUG
+ #define PTRTYPEDEF(type) \
+    typedef CheckedPtr&lt;type&gt; type##ptr
+ #define CLASSPTRTYPEDEF(type) \
+    typedef CheckedClassPtr&lt;type&gt; type##ptr
+#else
+ #define PTRTYPEDEF(type) typedef *type##ptr
+ #define CLASSPTRTYPEDEF(type) type *type##ptr
+#endif
+
+PTRTYPEDEF(char);    // defines type charptr
+CLASSPTRTYEPDEF(complex);    // define type complexptr</pre>
+This conditional typedef introduces an incompatibility with existing pointer usage. Consider what happens when you declare a const <I>charptr</I>. Then <I>const char *</I> refers to a pointer that may be changed, but may not have the data to which it points changed. But a const <I>CheckedPtr&lt;char&gt;</I> means that the object may not be modified, but the data to which the pointer it represents points may be modified. For example, the declaration:<P>
+<pre>const CheckedPtr&lt;char&gt; p;</pre>
+is analogous to the declaration:<P>
+<pre>char *const p;</pre>
+The solution is to use another macro that defines const pointer types:<P>
+<pre>#ifndef NDEBUG
+#define CONSTPTRTYPEDEF(type) \
+   typedef CheckedPtr&lt;const type&gt; \
+       const##type##ptr
+#define CONSTCLASSPTRTYPEDEF(type) \
+   typedef CheckedClassPtr&lt;const type&gt; \
+       const##type##ptr
+#else
+#define CONSTPTRTYPEDEF(type) \
+   const type *const##type##ptr
+#define CONSTCLASSPTRTYPEDEF(type) \
+   const type *const##type##ptr
+#endif
+
+CONSTPTRTYPEDEF(char);
+   // defines the type constcharptr</pre>
+To create checked pointers to static and auto arrays, use the following conditional macro:<P>
+<pre>#ifndef NDEBUG
+#define FIXEDARRAY(array) \
+   (array),sizeof(array)/sizeof((array)[0])
+#else
+#define FIXEDARRAY(array) (array)
+#endif</pre>
+Using this conditional macro, your code would look something like this:<P>
+<pre>char a[10];
+charptr pa(FIXEDARRAY(a));
+for( charptr p = pa; p &lt; pa+10; ++p )
+   *p = 0;</pre>
+For dynamically allocated arrays that are managed by a <I>HeapPtr</I> object, use a conditional macro like this:<P>
+<pre>#ifndef NDEBUG
+#define HEAPPTRARRAY(hp,n) hp=(n),(n)
+#else
+#define HEAPPTRARRAY(hp,n) hp=(n)
+#endif</pre>
+With this macro, the previous example converted to use a heap-allocated array becomes:<P>
+<pre>// nothing allocated
+HeapPtr&lt;char&gt; ha;
+// array of 10
+charptr pa(HEAPPTRARRAY(ha,10));
+for( charptr p = pa; p &lt; 10; ++p )
+   *p = 0;
+// ha deletes array when it goes out of scope</pre>
+In summary, These class templates are useful debugging tools for developing C++ code. By using these class templates, you can detect many pointer errors when they happen, rather than helplessly observing the side effects, resulting in long debugging sessions, missed deadlines, and hair loss.<P>
+
+<h4><a href="../../../source/1995/oct95/mashlan.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

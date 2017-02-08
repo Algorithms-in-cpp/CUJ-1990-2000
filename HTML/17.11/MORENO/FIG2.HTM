@@ -1,0 +1,183 @@
+<HTML><HEAD>
+<TITLE>November 1999/Constructing FIR Digital Filters with valarray/Figure 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Figure 2: Partial listing of file FIR.h, the FIR filter implementation</A></h4>
+<pre>
+const double pi = 3.14159265359;
+const complex&lt;double&gt; j(0,1);            // Imaginary unit
+
+#include "filter_types.h"
+#include "conversions.h"
+#include "Matrix.h"
+
+template &lt;class T&gt;
+class basic_FIR
+{
+public:
+    struct Constraint_point { double w, gain; };    
+        // For the frequency-sampling filter design method
+
+        // ***************  Constructors  ********************
+    basic_FIR (valarray&lt;T&gt; coefficients)
+        : h (coefficients)
+    { reverse (&amp;h[0], &amp;h[0] + h.size()); }
+
+    basic_FIR (const T * coefficients, size_t N);
+        // Not shown here -- similar to the previous one
+
+    basic_FIR (struct Low_pass, double scale_factor = 1);
+    basic_FIR (struct High_pass, double scale_factor = 1);
+    basic_FIR (struct Band_pass, double scale_factor = 1);
+
+    basic_FIR (double (*frequency_response) (double), 
+               int N, double scale_factor = 1);
+    basic_FIR (const vector &lt;struct Constraint_point&gt; &amp; H, 
+               double scale_factor = 1);
+
+        // *************  Filtering operations  ***************
+    template &lt;class Iterator, class Type&gt;
+    void output (Iterator sample, Type &amp; result) const
+    {
+            // Use convert in case rounding is required
+        convert (inner_product(sample-h.size()+1, sample+1, 
+                               &amp;(const_cast&lt;basic_FIR *&gt;(this)-&gt;h[0]), 
+                               Type()), 
+                 result);
+    }
+
+    template &lt;class Iterator, class IteratorOut&gt;
+    void operator() (Iterator first, Iterator last, 
+                     IteratorOut OutputSignal) const
+    {
+        for (Iterator current = first; current != last; ++current)
+            output (current, *OutputSignal++);
+    }
+
+        // ************  Misc. member functions  *************
+
+    complex&lt;double&gt; H (double w) const;   // Frequency response
+
+    int length () const  { return h.size(); }
+
+private:
+    valarray&lt;T&gt; h;      // filter coefficients
+
+    void compute_coefficients(const vector&lt;Constraint_point&gt;&amp;);
+};
+
+typedef basic_FIR&lt;double&gt; FIR;
+
+
+// *************************************
+//      Member functions definitions
+// *************************************
+
+template &lt;class T&gt;
+basic_FIR&lt;T&gt;::basic_FIR (struct Low_pass filter_descriptor, 
+                         double scale_factor)
+{
+    if (filter_descriptor.N &lt; 2)
+        filter_descriptor.N = 2;    // N can not be &lt; 2
+
+    vector&lt;Constraint_point&gt; H (filter_descriptor.N);
+
+    const double Wc = filter_descriptor.Fc * 2 * pi / 
+                      filter_descriptor.Fs;
+
+    for (int i = 0; i &lt; H.size(); i++)
+    {
+        const double delta_w = pi / (H.size() - 1);     
+                // delta_w is the difference in w between two 
+                // consecutive frequency samples
+
+        H[i].w = i * delta_w;
+
+        if (H[i].w &lt;= Wc - 2 * delta_w)     // In the pass-band
+        {
+            H[i].gain = 1 * scale_factor;
+        }
+        else if (H[i].w &gt;= Wc + 2 * delta_w)    // stop-band
+        {
+            H[i].gain = 0;
+        }
+        else        // Transition band (near Wc)
+        {           // Use a raised cosine to calculate values 
+            H[i].gain = (1 + cos(pi * (H[i].w - (Wc - 2 * delta_w)) / 
+                        (4 * delta_w))) * scale_factor / 2;
+        }
+    }
+
+    compute_coefficients (H);
+}
+
+template &lt;class T&gt;
+basic_FIR&lt;T&gt;::basic_FIR (double (*frequency_response) (double), int N, double scale_factor)
+{
+    if (N &lt; 2)  N = 2;      // N can't be &lt; 2
+
+    vector &lt;struct Constraint_point&gt; H(N);
+
+    for (int i = 0; i &lt; N; i++)
+    {
+        H[i].w = pi * i / (N - 1);
+        H[i].gain = scale_factor * frequency_response (H[i].w);
+    }
+
+    compute_coefficients (H);  // compute_coefficients resizes h
+}
+
+// *** Other constructors not shown here -- see note below 
+
+template &lt;class T&gt;
+complex&lt;double&gt; basic_FIR&lt;T&gt;::H (double w) const
+{
+    complex&lt;double&gt; result = complex&lt;double&gt; (0,0);
+    for (int n = 0; n &lt; h.size(); n++)
+        result +=  static_cast&lt;double&gt;(h[n]) * exp (-j * (w * n));
+
+    return result;
+}
+
+template &lt;class T&gt;
+void basic_FIR&lt;T&gt;::compute_coefficients 
+                   (const vector&lt;struct Constraint_point&gt; &amp; H)
+{
+        // Use Gauss method to solve the linear set of eqs.
+
+    const int N = H.size();
+
+    Matrix A (N, N);
+    valarray&lt;long double&gt; x(N), b(N);
+
+    for (int n = 0; n &lt; N; n++)
+    {
+        A[n][0] = 1;
+        for (int k = 1; k &lt; N; k++)
+            A[n][k] = 2 * cos(k * H[n].w);
+
+        b[n] = H[n].gain;
+    }
+
+    Gauss (A,x,b);
+
+    h.resize (2*N - 1);
+
+    convert (x[0], h[N-1]);
+    for (int i = 1; i &lt; N; i++)
+    {
+        convert (x[i], h[N-1 + i]);
+        h[N-1 - i] = h[N-1 + i];    // Symmety condition
+    }
+}
+
+// Some of the functions are omited here (as well as in the 
+// next listings) to save magazine space.  The complete version 
+// of the code can be downloaded from the Journal's web site, 
+// or from my my web site, at http://www.mochima.com/downloads
+
+
+</pre>
+</BODY>
+</HTML>

@@ -1,0 +1,190 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>November 1998/Questions &amp; Answers</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocnov.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Questions &amp; Answers: Catching Exceptions, and Flak, from Readers</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Pete Becker</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>Whether you're handling exceptions, packing characters, or manipulating large character sets, you have to be careful of the details.</p></BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+<p><b>[Do you have a question about C or C++? Send your questions to cujqa@mfi.com. &#151; mb]</b></p>
+
+<h4><FONT COLOR="#000080">Q</FONT></H4>
+
+<p>Using MSVC 5.0, the following code results in program termination (on Win32):</p>
+
+<pre>
+class exceptionTest {
+public:
+    ~exceptionTest();
+};
+
+exceptionTest::~exceptionTest(){
+    throw 1;
+}
+
+void test(){
+    exceptionTest a;
+    throw 0;
+}
+
+int main(void){
+    try{
+        test();
+        return 0;
+    }catch(...){
+        return -1;
+    }
+}
+</pre>
+
+<p>Is it possible to catch exceptions thrown in a destructor that is executed during the "stack unwinding" phase of exception handling? If so, how? How else could they be handled? &#151; Michael Christie</p>
+
+<h4><FONT COLOR="#000080">A</FONT></H4>
+
+<p>First, in case you had some doubt, program termination is the correct behavior. Second, yes, it's possible to recognize this situation and avoid having your application terminate.</p>
+<p>When an exception is thrown the stack is unwound up to the point where the exception is caught. This means that destructors will be invoked for all auto objects that go out of scope while the stack is being unwound. That's why, for example, the destructor for <B>exceptionTest</B> is invoked in your sample code: throwing an exception in function <B>test</B> transfers control to the <B>catch</B> block in <B>main</B> after the destructor for <B>exceptionTest</B> has run. What you're seeing here is the result of that destructor itself throwing an exception. The rule in C++ is that when a destructor that is invoked as part of stack unwinding because of an exception throws an exception itself the program terminates. This simplifies the rules for exception handling: there's no need to spell out the rules for deciding which <B>catch</B> block to enter when two exceptions are simultaneously calling for attention.</p>
+<p>That's not quite as strong a ban as it might at first seem. It's okay to throw an exception if that exception is handled in such a way that it does not escape from the destructor. Let's modify your destructor a bit to see what this means:</p>
+
+<pre>
+class exceptionTest {
+public:
+    ~exceptionTest();
+void f();
+};
+
+void exceptionTest::f(){
+    throw 1;
+}
+
+exceptionTest::~exceptionTest(){
+    try {
+        f();
+    } catch(...) {
+    }
+}
+</pre>
+
+<p>Now there's no problem: the destructor is invoked as part of the stack unwinding, and it calls <B>f</B>. <B>f</B> throws another exception, which is caught inside the destructor, and the destructor returns normally.</p>
+<p>Another way to prevent termination is to avoid throwing an exception from within the destructor if it was invoked during stack unwinding. To do that you call the library function <B>std::uncaught_exception</B>, which returns a <B>bool</B>. If the result is <B>true</B> there is an active exception that has not been caught, and throwing an exception can result in program termination. If the result is <B>false</B> there is no active exception, and throwing an exception will act as it usually does. So you could rewrite your destructor to test whether it's safe to throw an exception:</p>
+
+<pre>
+#include &lt;exception&gt;
+
+exceptionTest::~exceptionTest(){
+    if (!std::uncaught_exception())
+        throw 1;
+}
+</pre>
+
+<p>This, however, leaves you with a dilemma: you know that something has gone wrong, which is why you wanted to throw an exception in the first place. How do you tell the rest of your code that an error occurred without throwing an exception? Well, that's fairly easy, and there are a bunch of techniques for doing it. Whichever one you settle on, though, you should ask yourself whether it makes sense for your class to have two different mechanisms to signal problems &#151; throwing an exception, and whatever technique you've chosen as an alternative. Users of your class will have to accommodate both, and they'll grumble about having to write two different pieces of code to do that. That's why many class designers have a rule of thumb that says that destructors should not throw exceptions. Instead, they should simply implement whatever error reporting technique is appropriate. That way they don't have to check whether there's an exception pending, and users don't have to write two pieces of code.</p>
+
+<h4><FONT COLOR="#000080">Q</FONT></H4>
+<p>I read with interest your response to Mr. Wood's question in the August '98 issue of <I>C/C++ Users Journal</I>. I think that there should be two slight additions to your answer.</p>
+<p>The code (your corrected version):</p>
+
+<pre>
+start = base + 4 * to_index(letter);
+</pre>
+
+<p>or (the original):</p>
+
+<pre>
+start = base + 4 * (letter - 'A');
+</pre>
+
+<p>and the loop:</p>
+
+<pre>
+for(pos=start; pos&lt;start+4; pos++){
+    ....
+</pre>
+
+<p>imply that the size of an <B>int</B> is four bytes. This is not always the case. On many platforms <B>int</B>s are two bytes; I've worked on machines where they were ten bytes (where a byte is a character); and heard of machines where they are six bytes. And on some machines, and more coming soon, <B>int</B>s are eight bytes.</p>
+<p>The body of the aforementioned loop contained the statement:</p>
+
+<pre>
+val = (val &lt;&lt; 8) + readbyte(pos);
+</pre>
+
+<p>This implies an assumption that a byte is eight bits, which is the usual case. But not always. I've worked on machines with 9-bit bytes, with 6-bit bytes, and on one platform where bytes were documented as being both six and twelve bits. Although I'm not sure if C/C++ allow bytes less than eight bits.</p>
+<p>I haven't given it a lot of thought, but I think that there may be other issues here. What about ones- vs. twos-complement? And might we be better off making <B>pos</B> and <B>val</B> unsigned? Besides <B>&lt;ctype.h&gt;</B>, the use of <B>sizeof(int)</B> and <B>&lt;climits&gt;</B> might be of use here. And there are other questions. Suppose our definition of portability means moving not just our program, but our data file as well. Suppose that the data file originated on a platform with four 8-bit bytes per <B>int</B> and we want to move it to a platform with two 8-bit bytes per <B>int</B>. At the very least, we'd want to look into something like:</p>
+
+<pre>
+#ifdef FOUR_BYTE_INT
+typedef int INT;
+#endif
+#ifdef TWO_BYTE_INT
+typedef long INT;
+#endif
+INT start, base, pos, val;
+</pre>
+
+<p>assuming (hoping!) that our target platform has a <B>long</B> that is four bytes. And more. Like platforms that require the use of trigraphs to compile. My compiler will actually compile:</p>
+
+<pre>
+int main() ??&lt;
+    return 0;
+??&gt;
+</pre>
+
+<p>&#151; Louis A. Russ <a href="#1">[1]</a></p>
+
+<h4><FONT COLOR="#000080">A</FONT></H4>
+
+<p>In Law School a typical final exam question consists of several pages of text describing what happened. The question then is, what legal issues are raised, and how would they probably be decided? You'd have done well on that sort of exam. You've identified several important issues that I skipped over <a href="#2">[2]</a>. You've also made some assumptions about the program design which may not be warranted.</p>
+<p>The code I presented definitely assumes that <B>int</B>s are at least four bytes long. That's clear because it packs four <B>char</B>s into each <B>int</B>. If we assume that the goal here is to pack as many <B>char</B>s as will reasonably fit, it suggests that the code should perhaps be generalized to accommodate larger <B>ints</B>. If an <B>int</B> is eight bytes then the loop should execute while <B>pos &lt; start + 8</B> rather than while <B>pos &lt; start + 4</B>. On the other hand, maybe it's not required to pack as many <B>char</B>s as possible: if the requirement is that four chars go into each <B>int</B> then the loop itself is correct. You're right, though, that the code definitely won't work right if an <B>int</B> is less than four bytes. The code should test this:</p>
+
+<pre>
+#include &lt;limits.h&gt;
+#if INT_MAX &lt; 4 * CHAR_MAX
+#error Bad assumption about size of int
+#endif
+</pre>
+
+<p>You're also right that the code assumes that <B>char</B>s are eight bits. The shift should probably be by the number of bits in a <B>char</B>, rather than the usual value of <B>8</B>.</p>
+
+<pre>
+val = (val &lt;&lt; CHAR_BITS) +
+   readbyte(pos);
+</pre>
+
+<p>The value of <B>CHAR_BITS</B> can be found in <B>limits.h</B>. Both C and C++ require that <B>CHAR_BITS</B> be at least <B>8</B>, but it can be larger.</p>
+<p>As to ones- versus twos-complement representation, that shouldn't make a difference. The C and C++ language definitions tell you what the results of these operations should be. The results do not depend on how the underlying hardware represents data values. It's easiest when <B>&lt;&lt;</B> can be translated into a single machine instruction, but if that single machine instruction doesn't do what the language definition requires, then it's wrong, and the compiler writer has to generate more complicated and slower code.</p>
+<p>Concerning making <B>pos</B> and <B>val</B> unsigned, you can do that if you're superstitious. The language rules make left shifts of signed types well defined, so there's no need for it. It's right shifts that get you into trouble.</p>
+<p>Creating portable data types can be a nightmare. You've touched on part of it, but there are further possibilities. The C9X working paper <a href="#3">[3]</a>, for example, goes quite a bit farther. It requires compilers to provide typedefs for types that can represent 8-, 16-, 32-, and 64-bit values, both signed and unsigned. It doesn't require that the compiler provide all of these types, but when you use the type <B>int16</B> you will know that you have at least 16 bits of precision. You can also ask for the smallest or the fastest type that can handle those four precisions, as well. So if you want guaranteed sizes for data types, C9X will give them to you.</p>
+<p>But that's not all. If you really want portable data types, take a look at ASN.1 <a href="#4">[4]</a>. It's a specification for fully portable data streams. You can and must say what the size of each piece of data in the stream is. The stream interpreter on the other end translates the subsequent octets in its input stream into the specified size. You can also define structures on the fly. I've never been in a situation where I needed to use this, but I can see that it could be useful in many circumstances.</p>
+<p>Trigraphs I think are a red herring. C compilers must be able to compile code written in C's source character set. That character set includes <B>{</B> and <B>}</B>. C compilers are also required to support trigraphs, as your final code example illustrates <a href="#5">[5]</a>. But trigraphs are there because some keyboards do not have all of the characters needed for C. Source code that uses curly braces is still valid on such a platform. The only problem is that it's hard to type it in. There's usually a way to do it, it's just that using trigraphs can be faster. So using curly braces rather than trigraphs does not present a portability problem. After all, the code that you're porting has already been put into a file. All you have to do is copy it.</p>
+<p>Thanks for prompting an interesting excursion into portability. I realize that my comments here have been a bit superficial, but please don't write to me about anything else I've left out. Enough is enough.</p>
+
+<h4><FONT COLOR="#000080">Q</FONT></H4>
+
+<p>Portable character handling has some other hidden traps. (I use them to emphasise <a href="#6">[6]</a> the desirability of using library functions instead of rolling your own.) Functions such as <B>toupper</B>, <B>isalpha</B>, etc. are all locale-aware. There is no reason to suppose that the letters are just the 26 found in the ASCII set. We have a lot of accented letters, special language symbols (the Scandinavian countries have some real beauties). The consequence is that you cannot even assume that an array of 26 will hold all the characters that return <B>true</B> for <B>isupper</B>. While most of the functions in <B>ctype.h</B> are locale-dependent, my references add that <B>iscntrl</B> and <B>ispunct</B> include implementation-defined responses. &#151; Francis Glassborow.</p>
+
+<h4><FONT COLOR="#000080">A</FONT></H4>
+
+<p>Can't you guys give me a break? I said I didn't want to hear any more on this subject. It's closed. Finished. Done. Go away.</p>
+
+<h4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1]  Thanks also to Will Thompson who made the same point, although a bit less emphatically.</p>
+<p><a name="2"></a>[2]  Okay, issues that I overlooked. I got going on character classification issues, which I still think was the primary point of the question, and completely neglected the secondary, but still important, portability issues.</p>
+<p><a name="3"></a>[3]  A copy of the proposed standard is available at http://osiris.dkuug.dk/jtc1/sc22/open/n2620. If you're not ambitious enough to read the whole thing, a list of the new features is available at http://wwwold.dkuug.dk/JTC1/SC22/WG14/www/newinc9x.htm.</p>
+<p><a name="4"></a>[4]  For more information on ASN.1 you can start at http://www.inria.fr/rodeo/personnel/hoschka/asn1.html, which has a fairly large set of links to other pages.</p>
+<p><a name="5"></a>[5]  Some compilers supply a separate filter that translates files that use trigraphs into the source character set, and translates files that are written in the source character set back to trigraphs. That way they don't have to burden the lexical scanner with trigraphs.</p>
+<p><a name="6"></a>[6]  Here's a completely different sort of portability problem: My spelling checker says that "emphasise" is spelt incorrectly, recommending that it end in "ize" instead of "ise." Francis, however, is British, and would undoubtedly be offended if I changed the spelling of a word that he spelt correctly. If it ended up being spelt with a final "ize," in the American manner, it's because some copy editor changed it. I did it right. [We were sorely tempted to change it, but we left it alone for your sake, Pete. &#151; mb]</p>
+
+<p><i>Pete Becker is Technical Project Leader for Dinkumware, Ltd. He spent eight years in the C++ group at Borland International, both as a developer and manager. He is a member of the ANSI/ISO C++ standardization commmittee. He can be reached by email at <B>petebecker@acm.org</B>.</i></p>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

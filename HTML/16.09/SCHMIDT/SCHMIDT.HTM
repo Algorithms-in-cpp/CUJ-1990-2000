@@ -1,0 +1,357 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>September 1998/The Learning C/C++urve</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocsep.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">The Learning C/C++urve: C/C++urve Ball</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Bobby Schmidt</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>What's the difference between an array and a vector? Whatever you make it.</p></BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+<p><B><I>Copyright &copy; 1998 Robert H. Schmidt</I></B></p>
+
+<p>Life is change [<a href="#1">1</a>]. Starting with this December's <I>CUJ</I> issue, my column becomes a bona fide Q&amp;A feature. As I solicit, answer, and publish so much reader mail anyway, this seems a natural progression. We may have an interactive online presence at some point, but I make no promises &#151; yet.</p>
+
+<p>Diligent Readers may think, "Yes yes, but y'all already have a Q&amp;A columnist." Fear not! Pete Becker is not going away, but instead is starting up a new column that will show how to solve problems effectively using C and C++ (maybe even Java) and will address what Pete calls "low-level design" issues. We each get a chance to fly with new wings.</p>
+
+<p>(I don't have a new column title yet, and before you ask, no I won't hold a contest. Look what happened to the last guy who tried that. Traumatized him so much he's going to have to take a sabbatical.)</p>
+
+<p>My immediate task: wrapping up "The Learning C/C++urve" in the remaining three installments. I've accumulated quite a few odds-n-ends I've never had cause to publish, until now. I'll conclude my formal array discourse this month, leaving the next two months free for my column-topic clearance sale.</p>
+
+<h4><FONT COLOR="#000080">Array Length Revisited</FONT></H4>
+
+<p>In June I introduced templatized array references like</p>
+
+<pre>
+template&lt;class T, ptrdiff_t N&gt;
+void f(T (&amp;a)[N])
+    {
+    // 'a' is an array of length 'N'
+    // containing type 'T' elements.
+    }
+</pre>
+
+<p>While spelunking Usenet, I ran across a dead-obvious application of this technique, one efficiently converting an array to its length:</p>
+
+<pre>
+template&lt;class Element,
+    size_t Length&gt;
+inline
+size_t lengthof(Element (&amp;)[Length])
+    {
+    return Length;
+    }
+</pre>
+
+<p>Note that the array object is not referenced directly, and hence is left unnamed &#151; the template is merely a contrivance to extract the array parameter's length.</p>
+
+<p><B>lengthof</B> works as you'd expect:</p>
+
+<pre>
+int a[10];
+size_t n = lengthof(a); // OK, sets 'n' to 10
+</pre>
+
+<p>and effectively replaces the idiomatic macro analogue:</p>
+
+<pre>
+#define LENGTHOF(a)\
+    (sizeof(a) / sizeof(*a))
+     
+int a[10];
+size_t n = LENGTHOF(a); // also sets 'n' to 10
+</pre>
+
+<p><B>lengthof</B> solves <B>LENGTHOF</B>'s biggest flaws: the lack of scope, the possibility of side effects (from evaluating <B>a</B> twice), and most importantly, the inability to distinguish pointers from arrays:</p>
+
+<pre>
+int *p = new int[10];
+
+// runs, probably yields 1 or 2
+size_t n = LENGTHOF(p);
+</pre>
+
+<p>This is another fine legacy of C's array/pointer symbiosis. Such errors are not possible with <B>lengthof</B>:</p>
+
+<pre>
+int *p = new int[10];
+
+// error, 'p' doesn't match the
+// function's parameter type
+size_t n = lengthof(p);
+</pre>
+
+<p>I'm purposely declaring the length parameter as <B>size_t</B> and not <B>ptrdiff_t</B> as I did before [<a href="#2">2</a>]. This way I avoid casting problems, since the length type and the return type are the same, and reinforce the equivalence relationship between <B>lengthof(a)</B> and <B>(sizeof(a) / sizeof(*a))</B>.</p>
+
+<h4><FONT COLOR="#000080">Arrays vs. Vectors</FONT></H4>
+
+<p>At my Editor-in-Chief's suggestion, I checked out a long tortuous thread on <B>news:comp.lang.c++</B>. The topic: are Standard C++ <B>vector</B>s guaranteed to hold contiguous storage, and if so, should that storage always be user accessible? Such an arrangement would let <B>vector</B>s mix with older C-style functions and APIs expecting pointers to array elements:</p>
+
+<pre>
+vector&lt;char&gt; v;
+// ...
+strlen(v.pointer_to_internal_array());
+</pre>
+
+<p><B>vector</B>s support random access via <B>v[n]</B> or the equivalent <B>*(v.begin() + n)</B>, which is suspiciously like <B>a[n]</B> and <B>*(a + n)</B> for real arrays. However, <B>v.begin()</B> returns a <B>vector::iterator</B>, not a pointer, implying <B>v.begin() + n</B> doesn't use the same <B>+</B> operator as <B>a + n</B>.</p>
+
+<p>Unless, of course, <B>vector::iterator</B> actually is a pointer. In that case, <B>v.begin()</B> must point to contiguous storage so that <B>v.begin() + n</B> works correctly. And that would allow</p>
+
+<pre>
+vector&lt;char&gt; v;
+// ...
+strlen(v.begin()); // OK, 'v.begin()'
+                   // yields a 'char *'
+</pre>
+
+<p>Unfortunately, you have no guarantee that <B>vector::iterator</B> is a pointer. While real pointers make for an easy and simple implementation, they don't allow for reference counting, bounds checking, and other useful techniques. A <B>vector</B>'s iterator may actually be a class object or some other distinctly non-pointer entity.</p>
+
+<h4><FONT COLOR="#000080">The Plot Thickens</FONT></H4>
+
+<p>Several postings on Usenet, and at least one prominent C++ book, imply that the storage in a <B>vector</B> is in fact always contiguous. Mr. C++ himself, Bjarne Stroustrup, had this to say in that same Usenet thread:</p>
+
+<p>I suggested to the person who originally raised the issue of contiguous allocation of vector elements that he ask for clarification from the C++ standards committee through his national standards body. This has been done so that this issue will be officially settled in due course.</p>
+
+<p>Until then, I will personally assume vector elements to be allocated contiguously despite the lack of a firm promise and despite the arguments brought forward to the effect that there should be no such guarantee.</p>
+
+<p>If this assumption were true, then <B>vector</B> could potentially be rewritten, allowing portable access to its contiguous storage.</p>
+
+<p>However, I can find no specific language in the C++ Standard supporting this assumption. Certainly a contiguous <B>vector</B> implementation makes sense, given a <B>vector</B>'s operational semantics, And I personally can't think of a sensible alternative implementation matching those semantics. But making sense and being required are two different things [<a href="#3">3</a>].</p>
+
+<p>My guess is the C++ committee never intended <B>vector</B>s to be guaranteed contiguous, even if every vendor implements them that way anyhow. But that's just a guess. As Bjarne hints, we'll have to wait for clarification of the committee's intent to be sure.</p>
+
+<h4><FONT COLOR="#000080">What If...</FONT></H4>
+
+<p>Just for fun, assume a <B>vector</B>'s storage is always contiguous, and that <B>vector::iterator</B> is always a pointer:</p>
+
+<pre>
+vector&lt;int&gt; v1, v2;
+// ...
+int *p1 = v1.begin(); // OK
+</pre>
+
+<p>Now consider</p>
+
+<pre>
+v1.insert(v2.begin(), 1);
+</pre>
+
+<p>Is the value of <B>p1</B> still valid?</p>
+
+<p>Maybe, maybe not. If <B>v1</B> has enough unused capacity to absorb the inserted values, everything's fine. But if <B>v1</B> is too small, its storage must be relocated and expanded. In that case, the internal storage address would change, leaving <B>p1</B> pointing to where the storage used to be.</p>
+
+<p>This raises a more fundamental conceptual problem. Consider</p>
+
+<pre>
+int *p1a = v1.begin();
+v1.insert(...); // may relocate 'v1' storage
+int *p1b =v1.begin();
+</pre>
+
+<p><b>p1a</B> and <B>p1b</B> both conceptually reference the beginning of the same container, yet may compare as different.</p>
+
+<p>To get around this, <B>vector</B>s could support freezing, much like C++ string streams. Freezing would allow a non-const <B>vector</B> to temporarily act as if it were const:</p>
+
+<pre>
+v1.freeze(true);
+int *p1 = v1.begin();
+v1.insert(...);   // would fail for a frozen vector
+                  // 'p1' is still valid
+v1.freeze(false); // 'v1' is thawed
+                  // 'p1' may become invalid
+</pre>
+
+<p>Alternatively, <B>vector</B>s could manufacture a contiguous block that mirrors or shadows the real internal storage, a dynamically allocated array filled on demand with the <B>vector</B>'s real contents:</p>
+
+<pre>
+vector&lt;int&gt; v1;
+// ...
+int *p1 = v1.snapshot();
+</pre>
+
+<p>Here <B>p1</B> references not the <B>vector</B>'s real storage, but rather a clone of that storage guaranteed to be contiguous. This way, the <B>vector</B> can use whatever scheme it wants most of the time, creating a contiguous image only when explicitly required to.</p>
+
+<p>The ownership of the storage referenced by <B>p1</B> is unclear. Does the <B>vector</B>'s destructor remove this storage, or is the user responsible? This is especially problematic for multiple references:</p>
+
+<pre>
+int *p1 = v1.pointer();
+v1.insert(...);
+int *p2 = v1.pointer();
+</pre>
+
+<p>The insertion may have forced a movement of internal storage. Presumably <B>p1</B> references a copy of the old contents only. Does the vector automatically deallocate this (now out-of-date) block, invalidating <B>p1</B>? Or is the user responsible for deallocating all these blocks, and tracking which blocks contain which vintage of the <B>vector</B>'s contents? And if the user must deallocate, is it by <B>free</B>, or <B>delete []</B>, or something else?</p>
+
+<p>Finally, if <B>vector</B> is internally implemented as contiguous storage (a.k.a. an array), a <B>vector</B>'s maximum size is bounded by an array's maximum size. For reasons I discussed in May's column, you're safest assuming arrays are limited to 65,535 bytes. This implies a single <B>vector</B> can portably hold at most 65,535 bytes.</p>
+
+<p>That's bytes, not elements. If your <B>vector</B> is holding four-byte <B>long</B> values, it is limited to 16,383 elements. For users wanting large <B>vector</B>s, such a limit may be a dear price to pay for contiguous storage.</p>
+
+<p>(Note that this is not a limitation specific to <B>vector</B>s. Any container implemented by a single array will be portably limited to 65,535 bytes.)</p>
+
+<h4><FONT COLOR="#000080">Alternatives to vector</FONT></H4>
+
+<p>Of course, <B>vector</B> doesn't have the features I cited above, and can't guarantee contiguous storage. But our <B>Array</B> class has held contiguous storage all along. Rather than make <B>vector</B> more array-like, perhaps we should make <B>Array</B> more <B>vector</B>-like.</p>
+
+<p>The largest genetic difference between <B>Array</B> and <B>vector</B> is that the former is fixed-size while the latter can grow. Rather than add another member to <B>Array</B> (analogous to <B>vector::insert</B>), I'll instead modify <B>Array::operator[]</B> to automatically grow the <B>Array</B> when needed:</p>
+
+<pre>
+Array&lt;int, 10&gt; a;
+a[9] = 9;   // OK, 'a' is big enough
+a[10] = 10; // 'a' needs to grow to handle 11 elements
+</pre>
+
+<p>For such behavior to work, the internal array must be relocatable. This implies that the single fixed-size <B>Array</B> member <B>array_</B> we've been using needs to be dynamically allocated. <B>Array</B> also needs to track the current length of this internal allocation; when a requested <B>[]</B> index exceeds this current length, the internal allocation must grow.</p>
+
+<p>My candidate solution appears as <A HREF="list1.htm">Listing 1</A>, and shows one more reason to support <B>operator[]</B> directly (vs. converting via <B>operator T *</B> and using the built-in <B>[]</B> operator). Of particular interest is how the two overloads of <B>operator[]</B> respond to an out-of-bounds index:</p>
+
+<UL><LI>The writable (non-const) version silently grows the array to accommodate the new index.</LI>
+    <LI>The read-only (const) version doesn't grow the array, and assumes the index is in-bounds. A more robust solution would detect an  errant index and notify the user.</LI></UL>
+
+<p>As written, my solution is pretty naive. I've augmented the interface with the <B>vector</B>-esque member <B>begin</B>, but you'll almost certainly need others. As for implementation improvements, here's one hint:</p>
+
+<pre>
+Array&lt;int, 10&gt; a;
+for (int i(0); i &lt; 20; ++i)
+    a[i] = i;
+</pre>
+
+<p>How many times is <B>a</B>'s storage relocated in this loop? Can you reduce this number? And if so, how do you balance the need for maximum speed (fewer relocations) with the need for minimum space (fewer unused elements)?</p>
+
+<p>Standard C++ containers face these same design problems. You can learn much by comparing and contrasting the different container specifications. Even if you never intend to use these containers, or decide to stick with C only, you'll find much to inform your own designs.</p>
+
+<p>(Speaking of C, I haven't mentioned Variable Length Arrays, a.k.a. VLAs, in this discussion, principally because they don't help much. Like <B>vector</B>s, VLAs have their initial length set dynamically; but unlike <B>vector</B>s, VLAs can't grow after initialization. And of course, VLAs aren't supported by C++ anyway.)</p>
+
+<h4><FONT COLOR="#000080">Array Construction</FONT></H4>
+
+<p>When you declare a real C++ array such as</p>
+
+<pre>
+T a[10];
+</pre>
+
+<p>the element type <B>T</B> must have a default constructor available [<a href="#4">4</a>]. In this example, <B>T::T()</B> is called ten times, once for each element of <B>a</B>. If <B>T</B>'s default constructor is unavailable:</p>
+
+<pre>
+class T
+    {
+private:
+    T();
+    };
+</pre>
+
+<p>the array definition</p>
+
+<pre>
+T a[10]; // error
+</pre>
+
+<p>won't compile [<a href="#5">5</a>]. This is true even if other constructors are available:</p>
+
+<pre>
+class T
+    {
+public:
+    T(T const &amp;);
+    T(int);
+    T(void *);
+    };
+     
+T a[10]; // still an error
+</pre>
+
+<p>The same "feature" extends to the Standard C++ sequence containers (<B>deque</B>, <B>list</B>, and <B>vector</B>). <B>Array</B> follows this trend, thanks to</p>
+
+<pre>
+Array()
+        :
+        array_(new T[N]),
+        length_(N)
+    {
+    }
+</pre>
+
+<p>where the expression <B>new T[N]</B> calls <B>T</B>'s default constructor <B>N</B> times.</p>
+
+<p>If you want to create an <B>Array</B> of elements that don't have default constructors, you can change <B>Array</B>'s default constructor to something like</p>
+
+<pre>
+Array()
+        :
+        array_((T *)
+        malloc(N * sizeof(T))),
+        length_(N)
+    {
+    for (ptrdiff_t i(0); i &lt; N; ++i)
+        new(array_ + i) T(i);
+    }
+</pre>
+
+<p>How this works:</p>
+
+<UL><LI>malloc(N * sizeof(T))</B> allocates the space for the elements, but does not construct them. <B>array_</B> holds the address of this space.</LI>
+    <LI><B>new(array_ + i)</B> uses so-called "placement <B>new</B>." [<a href="#6">6</a>] Whereas plain <B>new</B> allocates memory before constructing an object, placement <B>new</B> does not; instead it uses its pointer argument (<B>array_ + i</B> here) as the address of memory within which to construct the object (that is, the "placement" or location of the constructed object).</LI>
+    <LI><B>T(i)</B> calls the (non-default) <B>T</B> constructor accepting a <B>ptrdiff_t</B> argument.</LI></UL>
+
+<p>The net result: a non-default <B>T</B> constructor gets called <B>N</B> times (once for each element) with the construction occurring within the space reserved by <B>malloc</B>. All this presupposes <B>T</B> has an appropriate non-default constructor available. As written, my solution also assumes <B>malloc</B> always succeeds.</p>
+
+<p>The C++ language's rules impose the default-constructor requirement on array elements. Your class-implemented container objects, in contrast, can require whatever element constructor(s) you choose. By adapting the techniques I've shown the past few months, you can combine the efficiency and convenience of arrays with the flexibility of Standard C++ containers.</p>
+
+<h4><FONT COLOR="#000080">Trail's End</FONT></H4>
+
+<p>I may poke and prod at containers a bit more, but my long column arc is done. In the two months remaining before my big make-over, expect to see a grab bag of smaller, less connected items. (This fits with how I expect to run my Q&amp;A anyway.)</p>
+
+<h4><FONT COLOR="#000080">Erratica</FONT></H4>
+
+<p>This time I have genuine spam, er, email from Scott Meyers:</p>
+
+<p><I>I'm not quite sure why, but now nitpicking your column has become a habit :-) Tsk, tsk, and two demerits, but the type of</I> <B>abc</B> <I>is</I> <B>const char[4]</B>, <I>not</I> <B>char[4]</B> <I>as you misinform your readers on p. 83 of the June</I> CUJ. <I>Get a clue or buy a vowel or something...</p>
+
+<p>Scott</I></p>
+
+<p>Forget vowels &#151; I need to buy a qualifier. He's right, but didn't go far enough. Several of my code comments in that month's issue were wrong.</p>
+
+<p>Standard C reckons string literals as arrays of non-const <B>char</B>. When I shifted from C to C++ in that column, I clearly failed to update the comments accordingly: the type of C++ string literals is array of <B>const char</B>, not array of <B>char</B>.</p>
+
+<p>Everywhere you see a code line like</p>
+
+<pre>
+f("abc"); // OK, instantiates f(char (&amp;)[4])
+</pre>
+
+<p>in that June column mentally substitute</p>
+
+<pre>
+f("abc"); // OK, instantiates f(char const (&amp;)[4])
+</pre>
+
+<p>Be sure to make that a mental substitution, not a real one. Marking on your precious <I>CUJ</I>s could reduce their potent collectible value.</p>
+
+<h4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1]  Of all people, my former wife's current husband most recently told me that, in reference to my current partner. Sounds like something from the Jerry Springer show.</p>
+
+<p><a name="2"></a>[2]  I wish this whole <B>ptrdiff_t</B> vs. <B>size_t</B> stuff would just go away. It's enough to make me miss Pascal, with which I did not know (or care) what size and sign my integers had.</p>
+
+<p><a name="3"></a>[3]  Ponder the implication of such contiguous storage requirements on bit-packed <B>vector&lt;bool&gt;</B>.</p>
+
+<p><a name="4"></a>[4]  Clearly this discussion assumes that <B>T</B> is some class or struct type.</p>
+
+<p><a name="5"></a>[5]  Metrowerks CodeWarrior Pro 3 on Mac OS shows a bug here (which I've reported), acting as if the default <B>T</B> constructor is still  public.</p>
+
+<p><a name="6"></a>[6]  Dan Saks discusses placement <B>new</B> in his April 1997 <I>CUJ</I> column.</p>
+
+<p><I>Bobby Schmidt is a freelance writer, teacher, consultant, and programmer. He is also an alumnus of Microsoft, a speaker at the Software Development and Embedded Systems Conferences, and an original "associate" of (Dan) Saks &amp; Associates. In other career incarnations, Bobby has been a pool hall operator, radio DJ, private investigator, and astronomer. You may summon him on the Internet via <B>rschmidt@netcom.com</B>.</i></p>
+
+<h4><a href="../../../source/1998/sep98/schmidt.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

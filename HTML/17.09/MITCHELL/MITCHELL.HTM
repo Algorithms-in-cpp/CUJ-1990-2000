@@ -1,0 +1,118 @@
+<HTML>   
+     <HEAD>
+<TITLE>September 1999/Easier Console Apps in Win32</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocsep.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Easier Console Apps in Win32</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Stan Mitchell</FONT></H3>
+
+<BLOCKQUOTE>
+<p>It's tiresome enough to parse a command line, but harder still if you have to deal with the varying character representations of Win32.</p>
+</BLOCKQUOTE>
+
+<hr>
+<BLOCKQUOTE>
+
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>Win32 console applications are ideal for many programming tasks. When writing such an application, a programmer faces the initial hurdle of deciding on command-line syntax and then writing a command-line parser to extract program arguments. In this article, I present some simple C++ classes that wrap <B>main</B> (or <B>wmain</B>) and parse the command line into switches, options, and strings.</p>
+<p>These are "lightweight" classes. They are meant to be easy to understand and use, rather than a bulky application framework. A user of these classes starts a new console application by deriving from <B>CConsoleApp</B>. Calls to member functions <B>GetSwitch</B>, <B>GetOption</B>, and <B>GetString</B> retrieve command-line arguments. The user completes the application by "fleshing out" the virtual member functions <B>init</B>, <B>main</B>, <B>deinit</B>, and <B>usage</B>.</p>
+<p>This implementation relies on the C++ Standard library and uses the built-in support for <B>string</B>, <B>wstring</B>, <B>list</B>, and iterators. The generic text mappings in <B>tchar.h</B> (a Microsoft-specific header) handle strings and characters. Consequently, my implementation supports console applications using either SBCS (single-byte character sets) or Unicode. The library is built as a static library (<B>conlib.lib</B>) and is targeted for Windows 9x/NT.</p>
+
+<h4><FONT COLOR="#000080">The Console Application Framework</FONT></H4>
+
+<p>The core class for the framework is <B>CConsoleApp</B>. This class is defined in <B>conapp.h</B> (see <a href="fig1.htm">Figure 1</a>). A <B>CConsoleApp</B> application derives a class from <B>CConsoleApp</B> and creates a single global instance of the derived class. Here is an application skeleton:</p>
+
+<pre>
+class CTrivialApp :
+  public CConsoleApp {};
+CTrivialApp App;
+inline CConsoleApp* GetConApp()
+{ return &amp;App; }
+</pre>
+
+<p>Instead of implementing a <B>main</B> function and fiddling with <B>argc</B> and <B>argv</B>, the class user overrides the <B>CConsoleApp</B> member functions <B>init</B>, <B>main</B>, <B>deinit</B>, and <B>usage</B>. <B>_tmain</B>, the console app's entry point, calls these functions. <B>_tmain</B>, a friend function of <B>CConsoleApp</B>, is implemented in the library. <B>_tmain</B> maps to <B>main</B> for SBCS apps and to <B>wmain</B> for Unicode apps. <a href="fig2.htm">Figure 2</a> shows the implementation of <B>_tmain</B>.</p>
+<p><B>_tmain</B> first retrieves a pointer to the derived class via a call to <B>GetConApp</B>, a global function defined by the class user. This pointer allows <B>_tmain</B> to access member functions of <B>CConsoleApp</B> and its derived class.</p>
+<p>The remainder of <B>_tmain</B> is straightforward. <B>ParseCmdline</B>, the base-class member function, parses the command line. Then, the application's <B>init</B> function is called. If <B>init</B> returns <B>false</B>, the application exits with the return value <B>m_ExitCode</B>. If the flag <B>m_ShowUsage</B> is <B>true</B>, the application's usage function is called before exit. If <B>init</B> succeeds and returns <B>true</B>, the application's <B>main</B> function executes. When <B>main</B> completes and returns, the <B>deinit</B> function is called before the application exits with the return code <B>m_ExitCode</B>.</p>
+<p><B>CConsoleApp</B> also inherits several member functions from its base class, <B>CModule</B>. The constructor for <B>CModule</B> calls the Win32 API <B>GetModuleFilename</B> to determine the complete pathname of the application. Various parts of the pathname can be accessed using <B>CModule</B>'s member functions (see <a href="fig3.htm">Figure 3</a>).</p>
+
+<h4><FONT COLOR="#000080">Parsing the Command Line</FONT></H4>
+
+<p>Prior to calling the application entry points (<B>init</B>, <B>main</B>, <B>deinit</B>, and <B>usage</B>), <B>ParseCmdline</B> parses the command line (see <a href="fig4.htm">Figure 4</a>). This member function parses the application command line into a list of <B>CCmdArg</B> (see <a href="fig5.htm">Figure 5</a>) tokens. This list is stored as the class member <B>arglist</B>. <B>arglist</B> will be empty if the application does not have any command-line arguments.</p>
+<p><B>ParseCmdline</B> does not use <B>argc</B> or <B>argv</B> from <B>_tmain</B>; instead, it gets the "raw" command line using the Win32 API, <B>GetCommandLine</B>. This character string is converted to class <B>tstring</B>, where <B>tstring</B> maps to class <B>string</B> for SBCS apps and class <B>wstring</B> for Unicode apps. As far as <B>ParseCmdline</B> is concerned, a token is any substring of non-whitespace characters that is delimited by whitespace characters. A token may also be delimited by a pair of double quotes, in which case it may include embedded whitespace. <B>AddToArglist</B> constructs a <B>CCmdArg</B> for each extracted <B>tstring</B> that is passed to it and then adds it to <B>arglist</B>. The very first token in the command line is excluded from the list, since it corresponds to the executable's pathname.</p>
+<p>Once a token is extracted, it is converted into a <B>CCmdArg</B> object and added to the <B>arglist</B>. Each <B>CCmdArg</B> object is given a type of <B>CmdSwitch</B>, <B>CmdOption</B>, or <B>CmdString</B>. Along with the type, all or a portion of the token string is stored as well. If a token starts with a '-' or '/' character, it is either a <B>CmdSwitch</B> or a <B>CmdOption</B>. A <B>CmdOption</B> is a <B>CmdSwitch</B> with a trailing ':' character followed by an option value. A <B>CmdString</B> is any token that does not start with a switch character ('-' or '/'). <a href="tab1.htm">Table 1</a> shows some examples.</p>
+<p><B>AddToArglist</B>, shown in <a href="fig6.htm">Figure 6</a>, converts a <B>tstring</B> into a <B>CCmdArg</B> object. The constructors for class <B>CCmdArg</B> take a type and either one or two <B>tstring</B>s. If the input string is a <B>CmdSwitch</B>, then the <B>tstring</B> stored with the <B>CCmdArg</B> object does not include the switch character. If the input string is a <B>CmdOption</B>, then two <B>tstring</B>s, the option name <B>tstring</B> (without the switch character) and an option value <B>tstring</B> (without the option delimiter), are stored with the <B>CCmdArg</B> object. For a <B>CmdString</B>, the entire input <B>tstring</B> is stored in the <B>CCmdArg</B> object.</p>
+<p>The <B>CCmdArg</B> objects, which represent the tokens of the command line, are stored in a list, the <B>arglist</B> member of <B>CConsoleApp</B>. Elements are appended to the end of the list using the <B>push_back</B> function, which stores <B>CCmdArg</B> tokens in order from the start to the end.</p>
+
+<h4><FONT COLOR="#000080">Accessing the Tokens</FONT></H4>
+
+<p>Once the command line has been parsed into a list of <B>CCmdArg</B> objects, it is easy to perform operations on the list. One common operation is to test for the presence of a particular switch in the command line. <B>CConsoleApp</B> supplies the member function <B>TestSwitch</B> for this purpose. <B>TestSwitch</B> takes two arguments, the name of the switch and a Boolean instructing whether or not to remove a matching <B>CCmdArg</B> from <B>arglist</B>. <B>TestSwitch</B> returns <B>true</B> if the named switch is present in the command line.</p>
+<p><a href="fig7.htm">Figure 7</a> shows the implementation of <B>TestSwitch</B>. The iterators <B>iter_begin</B> and <B>iter_end</B> are initialized to the start and end of <B>arglist</B>. The generic algorithm <B>find_if</B> is applied to <B>arglist</B> over the range of these iterators. <B>EqualArg</B>, a function object, tests the equality of two <B>CCmdArg</B> objects (see <a href="fig8.htm">Figure 8</a>). If it returns <B>true</B>, then <B>find_if</B> returns an iterator pointing at the matching <B>CCmdArg</B> in the <B>arglist</B>.</p>
+<p>Another <B>CConsoleApp</B> member function that is useful for retrieving command-line switches is <B>GetSwitch</B>. This function takes an additional argument, a reference to a <B>bool</B>. This makes it ideal for initializing a set of variables to reflect the presence of command-line switches. For example, to set three variables corresponding to the switches <B>"noise"</B>, <B>"noexec"</B>, and <B>"exact"</B>, a programmer might use these calls:</p>
+
+<pre>
+GetSwitch(bNoise,"noise",true);
+GetSwitch(bNoexec,"noexec",true);
+GetSwitch(bExact,"exact",true);
+</pre>
+
+<p>If the switch is not present in the command line, the corresponding variable will be set <B>false</B>. If the switch is present, the variable is set <B>true</B>, and the <B>CCmdArg</B> is removed from <B>arglist</B> (since the third argument is <B>true</B>). For example, after executing the above <B>GetSwitch</B> calls with the command line <B>"-noise -exact"</B>, the variables will have the values <B>bNoise=true</B>, <B>bNoexec=false</B>, and <B>bExact=true</B>.</p>
+<p>The <B>CConsoleApp</B> member function, <B>GetOption</B>, queries and retrieves command-line options. This function takes four arguments: a reference to a <B>bool</B> that is set <B>true</B> if the requested option is present, a reference to a <B>tstring</B> that is the name of the requested option, a reference to a <B>tstring</B> that will contain the value of the option, and a <B>bool</B> that indicates whether or not to remove the matching <B>CCmdArg</B> from <B>arglist</B>. The following example retrieves the command-line option <B>"-o:outfile.txt"</B>:</p>
+
+<pre>
+GetOption(bOut,"o",oval,false);
+</pre>
+
+<p>On return, <B>bOut</B> is <B>true</B>, <B>oval</B> has the value <B>"outfile.txt"</B>, and <B>CCmdArg</B> remains in <B>arglist</B>.</p>
+<p>The <B>CConsoleApp</B> member function <B>GetString</B> retrieves command-line strings. Unlike the previous access functions, which use the function object <B>EqualArg</B> to find a matching <B>CCmdArg</B>, <B>GetString</B> uses the function object <B>EqualType</B> (see <a href="fig9.htm">Figure 9</a>) to find a matching <B>CCmdArg</B> type. <a href="fig10.htm">Figure 10</a> shows the source for <B>GetString</B>. Note that when the generic algorithm <B>find_if</B> is applied to <B>arglist</B>, it will return when it encounters the first <B>CCmdArg</B> that is a <B>CmdString</B>. Subsequent command-line strings will be returned only if the strings are removed from <B>arglist</B> as they are enumerated.</p>
+<p>Finally, <B>CConsoleApp</B> provides the utility function <B>DumpArglist</B> for dumping all <B>CCmdArg</B> tokens to standard output.</p>
+
+<h4><FONT COLOR="#000080">Dealing with SBCS and Unicode</FONT></H4>
+
+<p>The Microsoft compiler libraries use character-set mappings to allow applications to be recompiled for MBCS (multi-byte character sets), SBCS, or Unicode. To take advantage of this encoding portability, applications must include the header file <B>tchar.h</B> and use encoding-portable types (<B>TCHAR</B>, <B>LPTSTR</B>, etc.) and macros (<B>T("...")</B>). C applications must also use encoding-portable string functions, such as <B>_tcscpy</B> instead of <B>strcpy</B> or <B>wcscpy</B> and <B>_tmain</B> instead of <B>main</B> or <B>wmain</B>.</p>
+<p>This character-set mapping has been extended to the string classes of the C++ Standard library by including the following macros in <B>conapp.h</B>:</p>
+
+<pre>
+#ifdef  _MBCS
+#undef  _MBCS   // enforce SBCS
+#endif
+
+#include &lt;tchar.h&gt;
+#include &lt;string&gt;
+#include &lt;list&gt;
+using namespace std;
+
+#ifdef _UNICODE
+#ifndef  UNICODE
+#define  UNICODE    1
+#endif
+#define  tcout      wcout
+#define  tcerr      wcerr
+#define  tstring    wstring
+#else
+#undef   UNICODE
+#define  tcout      cout
+#define  tcerr      cerr
+#define  tstring    string
+#endif
+</pre>
+
+<p>Note that <B>_MBCS</B> is explicitly undefined. This is necessary because the C++ Standard library does not support MBCS. This leaves us with either SBCS, the default, or Unicode. To get Unicode support, the manifest constants <B>_UNICODE</B> and <B>UNICODE</B> must both be defined. The first constant enables Unicode types in <B>tchar.h</B>; the second constant enables the use of Win32 APIs, which have a <B>'W'</B> suffix (as opposed to the <B>'A'</B> suffix for SBCS applications). I've also added appropriate mappings for <B>tcout</B>, <B>tcerr</B>, and <B>tstring</B>.</p>
+<p>When a Unicode-compiled version of a <B>CConsoleApp</B>-derived application is executed on a non-Unicode platform (Windows 9x), an error message displays, and the application terminates. This check is made in the constructor for <B>CModule</B> when the Win32 API <B>GetModuleFileName</B> is called. Because the <B>UNICODE</B> manifest constant is defined when the app is built, <B>GetModuleFileNameW</B> is called, which generates the error <B>ERROR_CALL_NOT_IMPLEMENTED</B>. A string resource loads the error message using an explicit <B>LoadStringA</B> call. Incidentally, this string resource is the reason <B>conlib.rc</B> and <B>conres.h</B> need to be included in an application project.</p>
+
+<h4><FONT COLOR="#000080">Building a Test Application</FONT></H4>
+<p>My library includes an example application called <B>Testapp</B>, which is available from the <I>CUJ</I> ftp site (see p. 3 for downloading instructions). Visual C++ 5.0 and 6.0 project files are provided for <B>Testapp</B>. Once you add <B>conlib.lib</B> to your library search path and <B>conapp.h</B>, <B>conres.h</B>, and <B>conlib.rc</B> to your include file search path, these projects are ready to be built. I've also supplied project files for building several variants of <B>conlib.lib</B> to work with different run-time libraries. For details, see <B>usage.doc</B>, which accompanies the source code.</p>
+<p>For more extensive examples using <B>conlib.lib</B>, see source code for the utility programs <B>preMake</B> and <B>preBuild</B> at my website (<B>http://www.sourcequest.com</B>). These utilities act as command-line wrappers to the Microsoft Nmake and Build tools. </p>
+
+<p><i><B>Stan Mitchell</B> founded SourceQuest, Inc., which provides Windows system programming services to clients in the Silicon Valley and beyond. He is author of <I>Inside the Windows 95 File System,</I> published by O'Reilly &amp; Assoc. Stan can be reached at <B>stanm@sourcequest.com</B> and at <B>http://www.sourcequest.com</B>.</i></p>
+
+
+<h4><a href="../../../source/1999/sep99/mitchell.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

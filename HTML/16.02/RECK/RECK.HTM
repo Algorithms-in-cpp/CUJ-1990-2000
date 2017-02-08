@@ -1,0 +1,412 @@
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+<TITLE>February 1998/Thread Synchronization with Reference-Counting Handles</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<H2><A href="../tocfeb.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+<FONT COLOR="#FF0000">Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Thread Synchronization with Reference-Counting Handles</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Bill Reck</FONT></H3>
+<blockquote>
+<p>Often, the best time to protect access to a shared object is right when you reach for
+it.</p></blockquote><hr>
+
+<blockquote>
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>Reference-counting
+handles are a powerful idiom for managing the ownership and lifespan of
+dynamically allocated objects. They can even provide thread-safe access to
+representation objects with minimal modifications. In this article I briefly
+review the reference-counting handle idiom and introduce a basic
+implementation. I then detail a handle-based, object-level synchronization
+technique that does not rely on guards or acquire-access-release sequences. If
+this sounds like just another bottle of snake oil, then I invite you to read on
+and find out about the applications, limitations, and pitfalls of these
+techniques.</p>
+
+<h4><FONT COLOR="#000080">Handle Overview</FONT></H4>
+
+<p>The Handle Class Idiom, as described by Coplien <a href="#1">[1]</a>, involves a pair of classes.
+These are the shared representation class and the reference-counting handle
+class. The representation class is responsible for implementing the behavior of
+the reference-counted object. The representation class contains the attributes,
+methods, and intelligence that make the representation useful. The handle class
+owns a pointer to the representation instance. The handle class takes care of
+memory management for the representation.<p>
+The handle maintains a count of outstanding references to the representation
+instance. This reference counter is usually a member of the representation
+class. The counter is set to zero when the representation is allocated,
+incremented when a handle is constructed, and decremented when a handle is
+destroyed. In addition, the handle's assignment operator modifies the reference
+counts of its operands. The handle deletes its representation instance when its
+reference count reaches zero. In short, a number of handles share the ownership
+of a representation and are jointly responsible for its lifespan.<p>
+Handles also provide access to the members of the representation instance. They
+may do so by implementing a dereferencing operator that returns a pointer to
+the representation instance. This operator gives the handle the appearance of a
+simple pointer. String classes are often implemented using this idiom. This
+approach involves two classes, the String and the StringRep. The String class
+is a type of handle. It is the class with which the rest of the program
+interacts. The String class forwards calls to the StringRep representation
+class. The StringRep implements the smarts of the string. The convention in
+using the handle idiom is to assign a concise name to the class that the user
+manipulates. The hidden representation class is then named with a Rep suffix.</p>
+
+<h4><FONT COLOR="#000080">A Handle Implementation</FONT></H4>
+
+<p>A basic reference-counting handle class is easy to implement. The following is an
+excerpt from a basic, parameterized handle class. The copy constructor,
+assignment operator, and other methods are omitted. The class appears in its
+entirety in <A href="list1.htm">Listing 1</a>.
+</p>
+
+<pre>
+template &lt;class REP,
+          class ACCESS = REP*&gt;
+class Handle {
+public:
+    Handle(REP *rep) : rep_(rep) {}
+    ACCESS operator-&gt;() const {
+        return(rep_); }
+    ....
+private:
+    REP *rep_;
+};
+</pre>
+<p>The
+Handle class is parameterized with the representation (REP) and access (ACCESS)
+types. The dereferencing operator (-&gt;) returns an instance of the ACCESS
+type. The default ACCESS type is a representation pointer. This ACCESS template
+parameter is the key to the object-level synchronization technique that I
+describe later in this article.<p>
+The Handle class requires that the representation provide a reference counter
+and access methods. The base class for the representation includes these
+members so that they can easily be shared with derived classes. Below is a
+fragment from a representation base class, detailed in <A href="list3.htm">Listing 3</a>:
+</p>
+
+<pre>
+class Rep {
+public:
+    ....
+    void incrRefCount();
+    void decrRefCount();
+    ....
+private:
+    int counter_;
+};
+</pre>
+<p>The
+Handle and Rep classes implement the basic handle idiom. They are easy to use.
+For example:</p>
+
+<pre>
+template &lt;class SUPER&gt;
+class AddressRep : public SUPER {
+public:
+    string firstName();
+    void firstName(const string &amp;n);
+    ....
+private:
+    string firstName_;
+    ....
+};
+int main(int argc, char *argv[])
+{
+    typedef AddressRep&lt;Rep&gt; AddrRep;
+    typedef Handle&lt;AddrRep&gt; Address;
+    Address addr = new AddrRep;
+    addr-&gt;firstName(argv[1]);
+    ....
+}
+</pre>
+<p>In
+this example I've created an address record for use in an automated faxing
+simulation. <A href="list2.htm">Listings 2</a>
+and <A href="list3.htm">3</a>
+show the entire source.</p>
+<p>The cool thing about handles is that they feel like automatic variables but
+they have the scope of dynamically allocated objects. With the handle idiom you
+can create the representation, hand it off to a collection, pass it up and down
+the call chain, and not have to worry about memory leaks or bringing the
+machine to its knees. If you haven't used handles before or you just want
+another explanation, then Scott Meyers' book, More Effective C++ <a href="#2">[2]</a>, is a
+great place to start.</p>
+
+<h4><FONT COLOR="#000080">Thread Synchronization with Handles</FONT></H4>
+
+<p>The
+C++ dereferencing operator is the key to what makes handles so useful. The
+dereferencing operator is usually defined as returning a pointer to an
+instance. The compiler takes this address and adds an offset to access the
+member of the instance specified on the right of the operator. It is important
+to note that the dereferencing operator is unary. It does not know how the
+resultant pointer will be used. This decoupling becomes important when
+implementing a parameterized handle class.<p>
+C++ does not restrict the return type of the dereferencing operator to that of
+a pointer. It is valid syntax to define a dereferencing operator that returns
+an instance, rather than a pointer to an instance. The instance's return type
+can define an additional dereferencing operator. This second operator may
+return a pointer or another intermediate instance. The compiler generates
+successive calls to the dereferencing operators, down the chain of instances,
+until one instance type returns a pointer. The compiler uses this final pointer
+to address the member.<p>
+The dereferencing operators each return an unnamed temporary instance. These
+unnamed temporaries are deleted at the end of the current expression, usually
+before the semicolon <a href="#3">[3]</a>. This limited scope supplies the hook I need to define
+what happens after the dereferencing operation. Using this scope, I can define
+a dereferencing operator return type, the lifespan of which brackets access to
+the members of the representation instance. This is almost all I need to
+implement object-level synchronization. Below are fragments from an extended
+representation class and a parameterized access type. See <A href="list4.htm">Listing 4</a>
+for the
+full implementations.</p>
+
+<pre>
+class SyncRep {
+public:
+    ....
+    void incrRefCount()
+        { ::InterlockedIncrement(&amp;count_); }
+    void decrRefCount()
+        {if (::InterlockedDecrement(&amp;count_) &lt;= 0)
+            delete this;}
+    void acquireAccess() {
+        ::EnterCriticalSection(&amp;sync_); }
+    void releaseAccess()  {
+        ::LeaveCriticalSection(&amp;sync_); }
+    ....
+private:
+    CRITICAL_SECTION sync_;
+    LONG count_;
+};
+</pre>
+<p>The
+SyncRep class extends the Rep class with synchronization support. I have used
+Win NT's critical section interface here to enforce mutually exclusive access
+across threads. All multithreaded platforms supply a nearly equivalent
+mechanism <a href="#4">[4]</a>. Access to the reference counter may occur from multiple threads
+and must now be atomic. I have used Win NT's interlocked interface to guarantee
+atomic updates to the counter.</p>
+
+<pre>
+template &lt;class REP&gt;
+class Access
+{
+public:
+    Access(REP *rep) : rep_(rep) {}
+    ~Access() { rep_-&gt;releaseAccess(); }
+    REP *operator-&gt;() {
+        rep_-&gt;acquireAccess();
+        return(rep_);
+    }
+    ....
+private:
+    REP *rep_;
+};
+</pre>
+<p>The
+Access template implements a variation of the construction is
+acquisition/destruction release pattern. In this class the dereferencing
+operator, rather than the constructor, performs the acquisition.<p>
+With the above I have the classes I need to make my example thread-safe.</p>
+
+<pre>
+int main(int argc, char *argv[])
+{
+    typedef AddressRep&lt;SyncRep &gt; AddrRep;
+    typedef Handle&lt;AddrRep, Access&lt;AddrRep&gt; &gt; Address;
+    Address addr = new AddressRep;
+    addr-&gt;firstName(argv[1]);
+    ....
+}
+</pre>
+<p>Now
+things are getting interesting. I can access an instance of the AddressRep
+type, safely, across multiple threads. With a couple of simple support classes
+and typedefs I have made the original example thread-safe. The modified example
+changes only the typedef for the AddrRep and the Address handle. The AddressRep
+class is not modified and does not requires intrusive synchronization support,
+other than inheritance from an enhanced base class. The Handle's dereferencing
+operator now provides mutually exclusive, multithreaded access to the members
+of the representation instance. See <A href="list4.htm">Listing 4</a>
+for the full example.<p>
+The invocation syntax of the firstName method has not changed from the previous
+example. However, this dereferencing operation now triggers a more complicated
+sequence of events. This scenario is detailed as follows:</p>
+<p>1) The dereferencing operator method is invoked on the addr instance.<p>
+2) This method constructs an instance of the Access&lt;AddrRep&gt; type, with
+the representation pointer, of the addr instance, as an argument. This newly
+constructed Access instance is returned as the result of the dereferencing
+operator.<p>
+3) A second dereferencing operator is invoked on this returned, unnamed Access
+instance.<p>
+4) This second operator acquires a synchronization lock by calling the
+acquireAccess method in the representation instance. The operator then returns
+the representation pointer as its result.<p>
+5) The firstName method is invoked on the representation instance while the
+instance is protected with the lock acquired in step (4).<p>
+6) firstName performs its task and returns.<p>
+7) The end of the expression statement is reached and the destructor of the
+unnamed instance, created in step (2), is invoked.<p>
+8) This Access&lt;AddrRep&gt; destructor calls the releaseAccess method on the
+representation instance to release the synchronization lock.<p>
+9) Execution continues with the representation instance in the initial,
+unlocked state.</p>
+
+<h4><FONT COLOR="#000080">Applications and Pitfalls</FONT></H4>
+
+<p>As
+I have shown, object-level synchronization with reference-counted handles is
+easy to implement and use. This is a seductive concept to anyone who has
+struggled with multithreaded programming. I didn't have to touch the methods in
+my example class to make them thread-safe. You don't see any guard instances or
+acquire-access-release sequences in the AddressRep class. With this technique
+the usual block-level synchronization methods become obsolete &#151; well, almost.
+The technique does have limitations and should be avoided in some
+circumstances.<p>
+Object-level synchronization is best suited to representation classes that have
+the right "granularity." Granularity refers to a metric of complexity, of the
+representation's methods, and the types of instances with which they interact.
+The most complex method of the class determines the granularity, since the same
+synchronization mechanism is applied evenly to all methods. A fine or medium
+granularity works best. A class that has one or more complex methods may have
+too coarse a granularity. Avoid object-level synchronization with classes that
+have complex interactions with other synchronizing classes.<p>
+Object-level synchronization works like a charm with simple classes that have
+only data and access members. It is quick and easy to protect these classes
+from multithreaded access. There is no need to add repetitive, error-prone,
+synchronization logic to make them thread-safe.<p>
+Collection classes have medium granularity and are good candidates for
+object-level synchronization. Collection classes often do not interact in a
+complex manner with the objects they collect. This characteristic is what makes
+collection templates possible. Collections usually add, remove, and locate
+items. These operations often translate into simple calls to the item's copy
+constructor. Collections of handle objects are extremely useful since handles
+implement a very efficient copy constructor. In addition, collections are often
+accessed by multiple threads. A communications queue is a good example of a
+collection that may require synchronization support.<p>
+Representation classes that require synchronized access to a second instance
+may have a coarse granularity. This second instance may be a method argument, a
+data member, or a global instance. A deadlock will result if that second object
+attempts synchronized access to the first object, directly or indirectly, while
+executing on a separate thread. This is an example of the deadly embrace
+problem. Avoid object-level synchronization with these classes, since no
+mechanism exists to release the synchronization lock before the second object
+is accessed. These classes are problematic in multithreaded programming and
+require special attention.<p>
+Using the Handle template places a heavy load on many compilers. Not all C++
+compilers provide good support for templates, thus heavy usage results in a
+number of problems. In addition, not all compilers correctly implement the
+scope of unnamed temporary instances. In a recent project we had to abandon the
+use of object-level synchronization because the compiler we were using did not
+destroy unnamed temporaries in the correct place. These temporaries were being
+deleted at the end of the block rather than at the end of the expression. I am
+happy to report that the compiler vendor has since fixed this flaw.<p>
+Object-level synchronization is as efficient in terms of execution time as the
+other synchronization techniques. The amount of code executed is about the same
+with either approach. In addition, the object-level technique can reduce
+recursive synchronizations. Recursive synchronization occurs, with the
+traditional approaches, when a synchronized instance invokes one of its own
+public methods. This public method must acquire synchronization since it may
+have been invoked from outside the class. The object-level approach does not
+incur these expensive and redundant synchronizations, since the handle controls
+the synchronization of the representation.<p>
+Synchronized handles, with their low level of intrusion, encourage better reuse
+than the traditional synchronization approaches. You can add or remove
+synchronization support by changing the arguments to the Handle typedef. This
+can be as simple as a one-line change to a header file. Traditional,
+block-level synchronization may require modifications to every method in the
+class.</p>
+
+<h4><FONT COLOR="#000080">The Source Code</FONT></H4>
+
+<p>The code in the listings was written for MS Window NT 4.0 using MS VC++ 5.0. I
+chose this environment for its multithreaded support, its good implementation
+of the C++ Standard, and its widespread availability. I tried to keep the
+operating system dependencies to a minimum so that the key concepts will work
+with most modern platforms.<p>
+The classes and templates I have presented are not complete. They ignore
+several important issues and are not suitable for production-quality work.
+These classes are intended to illustrate the techniques I have described rather
+than fully implement them. Their most serious flaw is that they do not detect
+or prevent the user from creating a handle to a representation instance that
+has not been allocated in free store. For example, the following is valid
+syntax:</p>
+
+<pre>
+AddressRep rep;
+Handle&lt;AddressRep&gt; addr = &amp;rep;
+return(addr);
+</pre>
+<p>This usage would cause disastrous consequences as the Handle template would attempt
+to access and delete a representation instance that has been allocated on the
+call stack, after the stack frame had been released and the local
+representation instance deleted.</p>
+<p>I have made a tradeoff here. I could have written the Handle template so
+that it allocated the representation instance and avoided this dangerous
+possibility. The benefit of the approach I have chosen is that the
+representation class does not have to supply any special member functions such
+as a default or copy constructor. This approach does not intrude on the design
+of the representation class with the exception of the inheritance
+requirement.<p>
+I have developed a full implementation of the these classes. This
+implementation resolves this allocation problem and others. It features a
+generalized approach to the techniques I have shown, which I call
+representation traits. With representation traits, my handle template works
+with any representation class, without modification. It also supports features
+like copy-on-write and generalized access control. Although a full discussion
+of representation traits is beyond the scope of this article, I would consider
+sharing these classes with interested parties.</p>
+
+<h4><FONT COLOR="#000080">Conclusions</FONT></H4>
+
+<p>My
+experience with these techniques on a medium-sized project has shown that
+handles and object-level synchronization are no cure-all. This synchronization
+technique cannot be applied safely to all representations. In addition, the
+technique conceals so many details that it may hinder some team members. On the
+other hand, the benefits of the approach cannot be ignored. Overall, I believe
+that object-level synchronization is a powerful technique that should be in the
+toolbox of any programmer or designer who works in a multithreaded development
+environment.</p>
+
+<h4><FONT COLOR="#000080">References and Footnotes</FONT></H4>
+
+<p><a name="1"></a>[1]
+James O. Coplien. Advanced C++ Programming Styles and Idioms (Addison-Wesley,
+1992), pp. 58-72. ISBN 0-201-54855-0. I have used Coplien's terminology
+liberally. The "Counted Pointers" and the "Reference Counting Idiom" come
+closer to what I have shown here.<p>
+<a name="2"></a>[2] Scott Meyers. More Effective C++: 35 New Ways to Improve Your Programs and
+Designs (Addison-Wesley, 1996). ISBN 0-201-63371-X. Items 28 and 29 include a
+great discussion of smart pointers, reference counting, and handles.<p>
+<a name="3"></a>[3] C++ Standard online at http://www.cygnus.com/misc/wp/dec96pub/<p>
+<a name="4"></a>[4] ACE &#151; Adaptive Communication Environment online at
+http://siesta.cs.wustl.edu/~schmidt/ACE.html The ACE package has heaps of
+platform-independent, multithreaded support code as well as all kinds of other
+great stuff. It also has a very generous license as well as good online support.
+</p>
+<p><i>Bill Reck is the founder of Wombat Works Pty Ltd. He has a BA in Physics
+from Grinnell College in Iowa, and has been programming professionally since
+1984. Wombat Works specializes in contract programming services using
+object-oriented designs and implementations. Bill is based in Sydney, Australia
+and can be reached at breck@magna.com.au or http://magna.com.au/~breck.
+</i></p>
+
+<h4><a href="../../../source/1998/feb98/reck.zip">Get Article Source Code</a></h4>
+
+</blockquote>
+</body></html>

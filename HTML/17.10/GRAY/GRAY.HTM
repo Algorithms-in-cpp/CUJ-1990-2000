@@ -1,0 +1,124 @@
+<HTML>   
+     <HEAD>
+<TITLE>October 1999/Dynamic C++ Classes</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tococt.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Objects and Components</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Dynamic C++ Classes</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Robert S. Gray and G&iacute;sli Hj&aacute;lmtysson</FONT></H3>
+
+<BLOCKQUOTE>
+<p>How do you upgrade parts of a running system without shutting it down? Very carefully.</p>
+</BLOCKQUOTE>
+
+<hr>
+<BLOCKQUOTE>
+
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>Every modern organization has software systems that are critical to its mission and must operate continuously. A network provider, for example, loses both revenue and customer goodwill if its switches or service controllers are temporarily unavailable. Unfortunately for system developers and maintainers, however, continuous change has become just as important as continuous operation. Systems increasingly need to be customized on a very fine time scale, either due to changing customer needs or load and usage fluctuations. If every change requires system downtime, needed changes will be delayed or abandoned under the pressure for continuous operation.</p>
+<p>One way to allow both continuous operation and continuous change is through dynamic code updates. New code is added to a running program without halting the program, thus introducing new functionality but avoiding downtime. Of course, such dynamic code updates must be performed carefully and at a clearly defined abstraction level, or the program will quickly become impossible to understand.</p>
+<p>In an object-oriented language such as C++, the most natural unit of update is a dynamic class. A dynamic class is a class whose interface is known at compile time, but whose underlying implementation can be changed at any point during runtime. In C++, you write a dynamic class as multiple C++ classes, an abstract interface class that defines the methods, and one or more implementation classes, which implement those methods. Each implementation class, which can be thought of as a particular "version" of the dynamic class, is compiled into its own shared library. To create an instance of a dynamic class, one creates an instance of a proxy (or smart pointer) template, which is parameterized with the type of the interface class. The proxy object locates and loads the shared library of the current implementation version, and redirects all method calls to that version.</p>
+<p>Updating an entire class implementation, rather than individual methods or functions, honors the semantic integrity of the program and minimizes interference between the update and ongoing computation. Moreover, the proxy-based implementation requires only existing C++ features, and is usable with any complete C++ compiler. It is lightweight enough to use in applications where performance is a primary concern (and where the use of C++ is already widespread). For example, it has been used at AT&amp;T Labs-Research in several service-provisioning applications, where new services are implemented as new versions of (existing) dynamic classes and then loaded on demand into the appropriate network elements.</p>
+<p>The basic problem when updating the implementation of a dynamic class is what to do with existing objects. There are at least three approaches. The first is to raise a "barrier," blocking object creation until all objects that are using older versions of the dynamic class have expired. This approach is equivalent to halting the system, and does not achieve the goal of continuous operation. The second approach is to recreate all existing objects. This approach retains the one attractive property of the barrier approach &#151; at any time all the objects are of the same version. Unfortunately, since different versions can have different internal data structures, copying each object's state requires an understanding of the object's semantics. You would have to write your own routines to transfer state from one version of the class to the next.</p>
+<p>The third approach, and the one that the proxy uses, is not to take any action at all. All new objects are created with the new version, and existing objects continue with their old versions. Once the existing objects finish their tasks and expire, only the new version will be in use. This approach is the most basic, is sufficient in most applications, can be implemented efficiently, and does not preclude the recreation of older objects if desired.</p>
+<p>The proxy provides three static methods for registering the current implementation version: activate, invalidate, and activate-and-invalidate. The activate method registers a new version as the current version. Objects of older versions remain in existence. The activate-and-invalidate method registers a new version as the current version but also invalidates all objects of older versions. The method accomplishes this invalidation by setting a flag that is checked in the proxy's member-selection operator (<B>operator-&gt;</B>). If the operator sees that the flag is set, it will throw an exception. Similarly, the invalidate method invalidates (destroys) all objects of a particular version. Invalidating the current version is an error. With these semantics, the three methods maintain the invariant that each dynamic class has a unique current version.</p>
+<p>Most applications provide an external interface through which an administrator, developer, or automated management tool can invoke these three methods. The main parameter to each of the three methods is simply the filename of the shared library that contains the desired current version. The activate-and-invalidate and invalidate methods are used only in special circumstances, since they require that client code be prepared to handle an object's "disappearance" due to invalidation.</p>
+
+<h4><FONT COLOR="#000080">Implementation</FONT></H4>
+
+<p>The core of the implementation is the generic template class, which serves as a proxy (or smart pointer) for each dynamic class. As with any proxy, a program creates a dynamic-class instance by creating a proxy instance instead. A partial listing of the template is shown in <a href="fig1.htm">Figure 1</a>. Instructions for downloading the complete source code appear at the end of the article.</p>
+<p>Each dynamic class is written as two separate parts:</p>
+<p>1.  an abstract interface class that is known to the program at compile time, and</p>
+<p>2.  one or more implementation classes that inherit from the interface class.</p>
+<p>There is one implementation class for each version of the dynamic class. The abstract interface class specifies the public operations that remain constant across all versions of the dynamic class. These operations are defined as pure virtual functions so that each derived implementation class is forced to provide them (and so that the method redirection will work correctly). Although each implementation class can have any additional methods and data members that it needs to perform its task, only the methods defined in the interface class can be invoked from other program modules. Each implementation class is compiled into its own shared library.</p>
+<p>To use a dynamic class, you first call the static <B>activate</B> method to register an initial implementation version. Then you create a dynamic-class instance by creating a template instance, parameterized with the type of the interface class. The template constructor loads the shared library of the desired version into the program's address space, and calls into the library to create an instance of the implementation class. (Details of this step appear in the next section.) Once the instance is created, you invoke the public interface methods through standard pointer redirection.</p>
+<p>As an example, suppose you write a dynamic class whose job is to receive packets sent across a network connection. For simplicity, the public interface provides only a single operation:</p>
+
+<pre>
+class Receive {
+public:
+   virtual Packet receive(void)=0;
+};
+</pre>
+
+<p>You write the normal production version. Later, after the discovery of an unexpected problem, you write a debugging version that contains new debugging code:</p>
+
+<pre>
+class ReceiveImp: public Receive {
+public:
+   Packet receive(void) {...};
+};
+
+class ReceiveDebuggingImp: public
+   Receive {
+public:
+   Packet receive (void) {
+      logDebuggingInfo(); ...
+   }
+};
+</pre>
+
+<p>You compile each of these two implementation classes into its own shared library, say <B>imp.so</B> and <B>debugimp.so</B> respectively. Your main program starts in some normal operation mode, creating and using normal packet receivers. (<B>dynamic</B> is the name of the proxy template as shown in <a href="fig1.htm">Figure 1</a>. The purpose of the handles and other details are explained in the next section.)</p>
+
+<pre>
+Handle h =
+    dynamic&lt;Receive&gt;::activate
+       ("imp.so", "Receive");
+dynamic&lt;Receive&gt; receiver (h);
+Packet p = receiver-&gt;receive();
+</pre>
+
+<p>Later, you switch to the debugging implementation by sending an external event to the program. The external event would include the name of the new version library, <B>debugimp.so</B>. After the switch is made, all new instances of <B>Receive</B> will use the new debugging code.</p>
+
+<pre>
+Handle h =
+   dynamic&lt;Receive&gt;::activate
+      ("debugimp.so", "Receive");
+dynamic&lt;Receive&gt; receiver2 (h);
+</pre>
+
+<p>Thus you have introduced new debugging functionality without stopping the running program. Once the bug is identified, you can create a third version of <B>Receive</B>, one that contains the necessary fix. You then activate the fixed version, again without stopping the program. Of course, not all bugs can be fixed without stopping the program, but many can be.</p>
+
+<h4><FONT COLOR="#000080">Implementation Details</FONT></H4>
+
+<p><a href="fig1.htm">Figure 1</a> shows a partial definition of the proxy template, while <a href="fig2.htm">Figure 2</a> shows a partial (Unix) implementation of the three most important parts of the proxy: the static <B>activate</B> method, the constructor, and the member-selection operator. For clarity, <a href="fig2.htm">Figure 2</a> omits all error checking and most bookkeeping details.</p>
+<p><I>Activation.</I> The static <B>activate</B> method takes two parameters: a class name and a library name. The class name is necessary since different dynamic classes can share the same interface. For example, in the application above, you might have two different kinds of receivers, a <B>PacketReceiver</B> and a <B>MessageReceiver</B>, both conforming to the <B>Receive</B> interface, each with multiple implementation versions. The class name specifies whether you are creating a <B>PacketReceiver</B> or a <B>MessageReceiver</B>. (Note that the code example above showed the creation of two different versions of the <I>single</I> dynamic class <B>Receive</B>, so the same classname, <B>"Receive"</B> was passed to both <B>activate</B> calls. To use two different kinds of receivers, we would pass a different classname to each <B>activate</B> call.)</p>
+<p>The <B>activate</B> method loads the shared library (<B>dlopen</B> on most Unix variants) into the program's address space, "searches" the library (<B>dlsym</B>) for a static factory method that creates instances of the implementation version, and stores a pointer to the factory method for use in the constructor. The name of the factory method is derived from the class name. The <B>activate</B> method associates a unique handle with each dynamic class, and returns this handle to the client code.</p>
+<p>The <B>activate</B> method is more complex than shown in <a href="fig2.htm">Figure 2</a>. After an activation, existing objects continue with previous implementation versions. Thus the <B>activate</B> method actually maintains a list of <B>DynamicVersion</B> instances for each dynamic class, one <B>DynamicVersion</B> instance for each implementation version present in the program. <B>activeMap</B> is really just an array of pointers into these version lists. The proxy constructor and destructor count the number of objects of each version, so that <B>DynamicVersion</B> instances (and the associated shared libraries) can be removed when the count for an old version drops to zero.</p>
+<p><I>Construction.</I> The constructor simply invokes the factory method for the active version of the desired dynamic class. The handle argument, which is a handle returned from the <B>activate</B> method, specifies the desired dynamic class. Using handles eliminates costly class name lookups in the constructor, which is invoked far more often than the <B>activate</B> method.</p>
+<p>Why use a factory method? The proxy constructor cannot use <B>operator new</B>, since any particular implementation version might not be available at compile time. The proxy constructor could obtain a pointer to the implementation constructor (using <B>dlsym</B>) and then invoke the constructor through the pointer. Unfortunately, the constructor itself does not allocate space for the object, and each implementation version might have different space requirements. Thus, the proxy constructor first would need to invoke a special "space-requirements" method inside the shared library, then allocate the needed space, and then invoke the constructor. Rather than calling into the shared library twice, the proxy constructor can just call a single factory method, which the dynamic-class author provides in place of a "space-requirements" method.</p>
+<p>Since the proxy constructor invokes the factory method through an explicit pointer, it has no type-safe way to pass arguments to the factory method. Thus the factory method takes no arguments, and a dynamic class essentially has only a single constructor. If different instances of a dynamic class need to be initialized in different ways, you must provide initialization methods in the interface class.</p>
+<p><I>Invocation.</I> The member-selection operator simply returns a pointer to the underlying implementation object. This pointer is typed as a pointer to the interface class, so that the client code can call only those methods defined in the interface. In addition, since all the methods in the interface class are defined as virtual, the method invocation is resolved through normal C++ virtual tables, and the correct implementation of the interface method is invoked.</p>
+<p>The dynamic-class implementation provides three versions of the proxy template. One version has restricted functionality but high performance; another has full functionality but lower performance; and the third falls between the first two on both functionality and performance. The full-functionality version is the one shown in <a href="fig1.htm">Figures 1</a> and <a href="fig2.htm">2</a>. It allows multiple dynamic classes to share the same interface class. The medium-functionality template supports version updates only &#151; each dynamic class must have its own interface class. This eliminates the overhead of mapping class names to handles for use in the constructor.</p>
+<p>Finally, the low-functionality template does not support the invalidate and activate-and-invalidate methods. Consequently the member-selection operator in the proxy does not need to check for invalid versions. More importantly, it does not throw an exception. This allows more C++ compilers to inline the operator, eliminating one function call and making method invocation much faster.</p>
+
+<h4><FONT COLOR="#000080">Implementation Tradeoffs</FONT></H4>
+
+<p>The proxy approach has the benefit of simplicity. It works in any standard C++ environment without special preprocessor or compiler support. Although this ability to work in standard environments was a primary design goal, it is still worth considering the tradeoffs that were involved in choosing the proxy approach.</p>
+<p><I>Performance.</I> The proxy approach involves two overheads. First, the proxy constructor must invoke the factory method. The factory method then invokes the constructor of the implementation class. Second, all method invocations go through the proxy's member-selection operator, which involves an extra function call (in the absence of inlining) and a Boolean comparison to verify that the class version has not been invalidated. Although custom preprocessor or compiler support could not eliminate all of this overhead, it could eliminate at least some levels of indirection. In other words, the consequence of the proxy approach is that dynamic classes are not suitable for the finest-grained classes in the system, but instead for classes that have longer lifetimes and whose methods are sufficiently elaborate to overshadow the overheads.</p>
+<p>Experiments on an SGI Indy confirm this. The experiments compared (1) a heap-allocated instance of a standard C++ class with virtual methods, and (2) a dynamic-class instance created through the medium-functionality template. When the constructors are empty, it takes 80% more time to construct the dynamic-class instance than the standard instance, but when the constructors zero out a 128-byte block of static memory, it takes only 14% more time. When the class methods are empty, it takes 240% more time to invoke a method in the dynamic class, but when the class methods do just three increments and three integer comparisons, it takes only 110% more time. If you use the low-functionality template (whose member-selection operator can be inlined trivially), the method-invocation overheads are just 39% for the empty method and 18% for the non-empty method. The per-object memory overhead for a dynamic class is also low, one pointer to the embedded implementation object, and one pointer to the object's version information inside the version list.</p>
+<p><I>Abstraction hiding.</I> The proxy approach does not hide the existence of the proxy from client code, since client code must access the dynamic class through the proxy's member-selection operation. In addition, the dynamic class can have only a single constructor, and the proxy cannot prevent direct manipulation of the embedded implementation object (which breaks the dynamic-class mechanism). Although preprocessor or compiler support could address these issues, it is a simple C++ programming task to write a wrapper class to contain (and protect) an embedded instance of the dynamic-class proxy. The wrapper class would (1) hide the existence of the proxy from client code, (2) provide multiple constructors, (3) support normal method-invocation syntax, and (4) prevent the client code from obtaining any direct reference to the versioned object.</p>
+<p><I>Inheritance.</I> The proxy approach complicates inheritance in several ways. First, it demands a clean separation between the interface and implementation of a class, simply because the interface and implementation must be separate classes. Such clean separation is not seen in many existing C++ programs. In addition, the proxy approach limits how dynamic classes are inherited. In general, interface classes inherit from other interface classes, implementation classes inherit from other implementation classes, and a normal class that wants to extend the functionality of a dynamic class contains an instance of the appropriate proxy. Preprocessor or compiler support could relax these restrictions, although it is questionable whether such relaxation is desirable, since then the inheritance hierarchies would become difficult to understand.</p>
+<p>There is one more complication. The proxy approach breaks polymorphism. Even if one interface class inherits from another, the proxy class instantiated on the derived interface is not related to the proxy class instantiated on the base interface. Therefore, contrary to the intent of the interface inheritance, a proxy object of the derived interface cannot be used where a proxy object of the base interface is expected. Fortunately, it is possible to write a function that performs an explicit cast from one proxy type to another, and that succeeds at compile time only if the respective interfaces are related through inheritance.</p>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>Dynamic classes provide powerful support for the maintenance and extension of mission-critical and other long-running services. New implementations of a class can be dynamically added to running programs, reducing the need to shut down the programs when fixing bugs, enhancing performance, or extending functionality. In contrast to special preprocessor or compiler support, the proxy approach presented here has lower performance, does not fully hide the dynamic-class abstraction, and restricts inheritance. However, the performance penalty is usually small relative to the processing that the dynamic classes are performing, the proxy can be completely hidden from client code with a straightforward wrapper class, and any dynamic-class implementation would likely restrict inheritance in order to keep it comprehendible.</p>
+<p>The proxy implementation has been used in several applications at AT&amp;T Labs-Research, including flow-oriented active networking and active email messages. In these applications, the proxy implementation was easy to use, and the performance penalties were insignificant.</p>
+
+<h4><FONT COLOR="#000080">Source Code</FONT></H4>
+
+<p>A source-code distribution is available at <B>http://www.research.att.com/~gisli/dynamic/</B> and at <B>ftp://actcomm.dartmouth.edu/dynamic/</B>. It is also available on the <I>CUJ</I> ftp site (see p. 3 for downloading instructions). The source code includes the three versions of the proxy template (and some examples of their use). The source code is known to compile under Irix, Solaris, and Windows 95/98/NT. Porting to another platform is simple, as long as the platform has (1) a C++ compiler with exception and template support and (2) dynamic-linking facilities comparable to those of Irix. More detail on the implementation issues can be found at the AT&amp;T web sites above, and in the source code distribution.</p>
+
+<p><i><B>Robert Gray</B> received a Ph.D. in Computer Science (1997) from Dartmouth College. After graduating, he stayed on at Dartmouth College as the lead technical coordinator for an Air Force MURI project that revolves around command-and-control applications within wireless networks. His current research is on the scalability and security of mobile-code systems. He is the lead programmer on the Dartmouth mobile-code system, D'Agents, which is implemented almost entirely in C++.</p>
+<p><B>G&iacute;sli Hj&aacute;lmtysson</B> received an M.S. (1992) and Ph.D. (1995) in Computer Science from the University of California, Santa Barbara. He joined AT&amp;T Bell Laboratories, Murray Hill, in 1995, and has been with AT&amp;T Labs Research since 1996. His current research is in active and programmable networking, active and mobile network services, performance evaluation, lightweight signaling, and more generally in new opportunities resulting from the convergence of computer networking and traditional telecommunication. In this effort, he has led the Pronto (Programmable Networks of Tomorrow) project at AT&amp;T Labs, producing abstractions and mechanisms to dynamically change the behavior of routers and network servers without service interruption. This project includes extensive prototyping at user and kernel level (Linux), implemented almost exclusively in C++.</i></p>
+
+<h4><a href="../../../source/1999/oct99/gray.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

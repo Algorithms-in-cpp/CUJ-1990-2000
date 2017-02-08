@@ -1,0 +1,523 @@
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+<TITLE>February 1998/The Learning C/C++urve</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<H2><A href="../tocfeb.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+<FONT COLOR="#FF0000">Columns</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">The Learning C/C++urve: Morte d'Autopointer</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Bobby Schmidt</FONT></H3>
+
+<blockquote>
+<p>Once you start replacing macros with templates, it's hard to know when to
+stop.</p></blockquote><hr>
+<blockquote>
+<p><b><i>Copyright &#169; 1998 Robert H. Schmidt</i></b></p>
+
+This month I finally end our exploration of auto_pointer, solve a reader's
+problem, bring happy news from the C++ front, issue a couple of corrections,
+and tack on the usual stray thought.</p>
+
+<H4><FONT COLOR=#000080>End of the Road</FONT></H4>
+
+<p>As
+a coda to our auto_pointer opus, I want to sketch a few more variations you can
+play, based on counterpoint from Diligent Reader Marcus Barnes.<p>
+In my September 1997 column, a macro encapsulated behavior common to all
+classes derived from the auto_pointer abstract base. In that scheme, the only
+member that differed from one derived class to another was the destructor;
+everything else was implemented by the macro.<p>
+Marcus suffered indigestion at this (ab)use of a macro, and proposed a
+template-based solution. Since templates are glorified macros anyway, Marcus's
+underlying design is not all that different from mine. In execution his idea is
+simple: pass a second argument to the auto_pointer template, designating the
+deallocation scheme for the pointed-to object:</p>
+
+<pre>
+template&lt;class T, class Allocator&gt;
+class auto_pointer
+    {
+public:
+    ~auto_pointer()
+        {
+        if (is_owner_ &amp;&amp; pointer_ != NULL)
+            Allocator::deallocate(pointer_);
+        }
+    // ... other members same as
+    // before
+    };
+</pre>
+<p>Previously we derived multiple objects from auto_pointer, each with a common
+implementation encapsulated in a macro; now we have one auto_pointer class, and
+pass it one of multiple Allocators:</p>
+
+<pre>
+template&lt;class T&gt;
+class free_store_allocator
+    {
+public:
+    static void deallocate(T * const pointer)
+        {
+        free(pointer);
+        }
+    };
+ 
+template&lt;class T&gt;
+class heap_allocator
+    {
+public:
+    static void deallocate(
+        T * const pointer)
+        {
+        delete pointer;
+        }
+    };
+ 
+//
+//    destructor calls 'free'
+//    on contained pointer
+//
+auto_pointer&lt; int, free_store_allocator&lt;int&gt; &gt; fp =
+        (int *) malloc(sizeof(int));
+//
+//    destructor calls 'delete'
+//    on container pointer
+//
+auto_pointer&lt; char, heap_allocator&lt;char&gt; &gt; hp =
+        new char;
+</pre>
+<p>I originally used macros in a similar class hierarchy a couple years ago to get
+around a particular compiler's lack of proper template support. I continued to
+use them in my column, largely to avoid problems you might have with similarly
+crippled compilers, and to keep my examples' template-speak to a minimum.<p>
+In hindsight, I think I should have used Marcus's method all along. It is
+certainly more aesthetic, and better leverages C++'s design strengths. In fact,
+I'm such a convert that I'm going to break the promise I made last month, and
+not develop the macro method any farther. Instead I'll show all remaining
+modifications using this new template design.</p>
+
+<H4><FONT COLOR=#000080>Alternatives</FONT></H4>
+
+<p>Variations on this template technique abound. Perhaps most obvious is extending it to
+other kinds of deallocation schemes. Possibilities include an auto_pointer
+containing a Microsoft COM object:</p>
+
+<pre>
+template&lt;class T&gt;
+class COM_allocator
+    {
+public:
+    static void deallocate(T * const pointer)
+        {
+        // assume pointer was
+        // AddRef'ed
+        pointer-&gt;Release();
+        }
+    };
+ 
+auto_pointer&lt; int, COM_allocator&lt;int&gt; &gt; p;
+some_COM_call(&amp;p);
+</pre>
+<p>and one requiring no deallocation at all <a href="#1">[1]</a>:</p>
+
+<pre>
+template&lt;class T&gt;
+class null_allocator
+    {
+public:
+    static void deallocate(T * const)
+        {
+        }
+    };
+ 
+int array[10];
+auto_pointer&lt; int, null_allocator&lt;int&gt; &gt; p = array;
+</pre>
+<p>You could instrument auto_pointer to "NULL" out a pointer once it's deallocated, as
+a debugging aid and to help prevent dangling pointers:</p>
+
+<pre>
+template&lt;class T&gt;
+class heap_allocator
+    {
+public:
+    static void deallocate(T *&amp;pointer) // changed
+        {
+        delete pointer;
+        pointer = NULL; // new
+        }
+    };
+</pre>
+<p>And of course, in addition to automatically deallocating pointers, you could also
+automatically allocate them:</p>
+
+<pre>
+template&lt;class T&gt;
+class heap_allocator
+    {
+public:
+    static T *allocate(T const &amp;value) // new
+        {
+        return new T(value);
+        }
+    // ...
+    };
+ 
+template&lt;class T, class Allocator&gt;
+class auto_pointer
+    {
+public:
+    auto_pointer(T const &amp;value)
+        {
+        pointer_ = Allocator::allocate(value); // new
+        }
+    // ...
+    };
+ 
+auto_pointer&lt; int, heap_allocator&lt;int&gt; &gt; p = 123;
+</pre>
+
+<H4><FONT COLOR=#000080>Streamlining</FONT></H4>
+
+<p>If you reckon most of your auto_pointers will come from the heap, set that as the
+default allocation scheme:</p>
+
+<pre>
+template&lt;c lass T, class Allocator=heap_allocator&lt;T&gt; &gt;
+class auto_pointer
+    {
+    // ...
+    };
+ 
+auto_pointer&lt;int&gt; p;
+// same as auto_pointer&lt; int, heap_allocator&lt;int&gt; &gt; p;
+</pre>
+<p>For
+the other allocation schemes, you can tidy the syntax (ironically enough) with
+macros:</p>
+
+<pre>
+// original
+auto_pointer&lt;int, free_store_allocator&lt;int&gt; &gt;p1;
+ 
+// alternative using macro
+#define AUTO_POINTER(T, Allocator)\
+    auto_pointer&lt; T, Allocator&lt;T&gt; &gt;
+ 
+AUTO_POINTER(int, free_store_allocator) p2;
+</pre>
+<p>thereby eliminating the redundant int argument.</p>
+<p>If you absolutely must have your auto_pointer macro-unsaturated, you can
+borrow a recipe from C++'s Standard Template Library (STL):</p>
+
+<pre>
+template&lt;class T&gt;
+class free_store_allocator
+    {
+public:
+    typedef T value_type;
+    // ...
+    };
+ 
+template&lt;class Allocator&gt;
+class auto_pointer
+    {
+private:
+    typedef typename Allocator::value_type T;
+    // ...
+    };
+ 
+auto_pointer&lt; free_store_allocator&lt;int&gt; &gt; p;
+</pre>
+<p>How
+this works:</p>
+<UL><LI>auto_pointer is passed an allocation type.</LI>
+    <LI>That allocation type exports the symbol value_type, aliased to the type of
+        object allocated.</LI>
+    <LI>auto_pointer in turn aliases an internal symbol T to the allocator's
+        value_type. This is equivalent to the T passed in as a second template argument
+        in the earlier auto_pointer version.</LI>
+</UL>
+Thus auto_pointer indirectly discovers its contained type, without requiring
+that type as an explicit template argument.</p>
+
+<H4><FONT COLOR=#000080>Traits</FONT></H4>
+
+<p>While I did not design our months-long auto_pointer derivation as an introduction to
+STL, I find that identifying and solving many of the auto_pointer design issues
+leads to greater understanding of STL. That library uses traits like value_type
+in abundance. Such traits are especially helpful for abstracting differences
+between class and non-class types.<p>
+In our example, all auto_pointer objects could export a standard symbol for
+their contained object type:</p>
+
+<pre>
+template&lt; class T, class Allocator=heap_allocator&lt;T&gt; &gt;
+class auto_pointer
+    {
+public:
+    typedef T value_type;
+    // ...
+    };
+</pre>
+<p>You could then create a container of objects referencing an auto_pointer's
+underlying value_type:</p>
+
+<pre>
+template&lt;class Pointer&gt;
+class container
+    {
+private:
+    typename Pointer::value_type *pea;
+    // ...
+    };
+</pre>
+<p>While this works when the passed-in Pointer is an auto_pointer:</p>
+
+<pre>
+container&lt; auto_pointer&lt;int&gt; &gt; can_o_peas; // OK
+</pre>
+<p>it fails if Pointer is a real C++ pointer:</p>
+
+<pre>
+container&lt;int *&gt; can_o_peas; // error, 'int *' has no
+                             //  member 'value_type''
+</pre>
+<p>You clearly can't add members such as value_type to real pointers, but you can
+construct another class that describes the pointer's traits <a href="#2">[2]</a>. In the case of
+auto_pointers, the traits class simply aliases information the auto_pointer
+class already provides:</p>
+
+<pre>
+template&lt;class Pointer&gt;
+class pointer_traits
+    {
+public:
+    typedef Pointer::value_type value_type;
+    // ...
+    };
+</pre>
+<p>For traits of real pointers, the traits class infers the value type:</p>
+
+<pre>
+template&lt;class T&gt;
+class pointer_traits&lt;T *&gt;
+    {
+public:
+    typedef T value_type;
+    // ...
+    };
+</pre>
+<p>The upshot is that the pointer_traits&lt;x&gt;::value_type abstraction always
+works, whether x is a class or a real C++ pointer:</p>
+
+<pre>
+template&lt;class Pointer&gt;
+class container
+    {
+private:
+    typename pointer_traits&lt;Pointer&gt;::value_type *pea;
+    // ...
+    };
+</pre>
+<p>Although this example is a bit strained, it does help show how STL internals bolt
+together.</p>
+
+<H4><FONT COLOR=#000080>Next Adventure</FONT></H4>
+
+<p>Barring some epiphany, this should be my last missive on auto_pointer and its kin. If
+your appetite for souped-up pointers is insatiable, I invite your perusal of
+Chapter 24 within the C++ Standard, which describes STL iterators in all their
+glory. Pay particular attention to iterator taxonomy (the tables in section
+24.1) for ideas on your own auto_pointer derivatives.<p>
+Next month we'll start designing an abstracted array-like class. Just as
+auto_pointer lies somewhere on the evolutionary scale between C++ pointer and
+STL iterator, I expect the array class to fall between C++ array and STL
+container.<p>
+Well, almost. I find the C++ array property set impossible to fully emulate;
+our class's behavior will therefore not be a strict superset of an array's,
+although it should come close.</p>
+
+<H4><FONT COLOR=#000080>Today's Scoreboard Stumper</FONT></H4>
+
+<p>Self-proclaimed "avid reader" Bill Palladino ran into some problem code, which I've reworked
+as</p>
+
+<pre>
+class B1
+    {
+    // ...
+    };
+ 
+class B
+    {
+public:
+    static B1 b1;
+    };
+ 
+class A1
+    {
+public:
+    A1()
+        {
+        B::b1;
+        }
+    };
+ 
+class A
+    {
+public:
+    static A1 a1;
+    };
+</pre>
+<p>Here's Bill's dilemma:</p>
+<UL><LI>Class A has a static member a1 defined in a.cpp.</LI>
+    <LI>Class B has a static member b1 defined in b.cpp.</LI>
+    <LI>Object A::a1's constructor directly or indirectly references object B::b1.</LI>
+    <LI>Therefore B::b1 must always construct before A::a1 references it.</LI>
+    <LI>In practice, B::b1 sometimes constructs before A::a1 and sometimes
+        doesn't.</LI>
+</UL>
+<p>Bill stumbled upon a much-forgotten aspect of both C and C++: the relative
+initialization order of externally-linked objects. If a.cpp and b.cpp both
+define objects visible to the linker (and thus to one another), we can't know
+if a.cpp's objects initialize before or after b.cpp's <a href="#3">[3]</a>.</p>
+<p>Such chaotic ordering exists only across translation units. If Bill
+defined A::a1 and B::b1 in the same translation unit, they would construct in
+their order of definition. However, I dislike bundling unrelated definitions in
+the same translation unit, and wanted to find Bill a different strategy.</p>
+
+<H4><FONT COLOR=#000080>And The Final Jeopardy Answer Is</FONT></H4>
+
+<p>I gave Bill several possible solutions. The one he chose changes B::b1 into a
+function member that in turn encapsulates a B1 object:</p>
+
+<pre>
+class B1
+    {
+    // ...same
+    };
+ 
+class B
+    {
+public:
+    static B1 &amp;b1() // changed
+        {
+        static B1 b1_; // new
+        return b1_;
+        }
+    };
+ 
+class A1
+    {
+public:
+    A1()
+        {
+        B::b1(); // changed
+        }
+    };
+ 
+class A
+    {
+    // ...same
+    };
+</pre>
+<p>This design has no externally linked object B::b1 to initialize, and thus suffers no
+uncertainty of initialization ordering, to wit:</p>
+<UL><LI>Object b1_ (with no linkage and static duration) is constructed the first
+        time its enclosing block (function B::b1) is entered.</LI>
+    <LI>Function B::b1 is first entered in the A1 constructor.</LI>
+    <LI>The A1 constructor is first called when object A::a1 is created.</LI>
+</UL>
+<p>Net result: object b1_ constructs just before object A::a1 references it.<p>
+When I told Bill I'd be answering his question in print, he wrote a tender
+reply expressing his infinite gratitude for such an honor:<p>
+"My name in the CUJ?! I can't believe it &#151; at long last I'd get my
+15-microseconds of fame."</p>
+<p>He also wondered</p>
+<p><p>
+"Can I get my picture on the cover?"<p>
+As if! Even we CUJ editors can't get our pictures published &#151;although come to
+think of it, that may be to everyone's advantage. I certainly am not pining for
+the Orwellian countenance of my Editor-in-Chief.<p>
+By the way, if you're new to C++, you may have been surprised to learn that the
+original a1 and b1 were conceptually extern, especially since their
+declarations featured the keyword static. That keyword has conflicting meanings
+depending on context, and is an unfortunate choice; a keyword like noninstanced
+or per_class would be less ambiguous.<p>
+The C++ Committee has not been shy about adding new keywords. I have to believe
+that were it not for legacy C++ code, Committee members would have created a
+new keyword here.</p>
+
+<H4><FONT COLOR=#000080>Pass Out the Cigars</FONT></H4>
+
+<p>But we have come to praise the Committee, not to bury it. After an eight-year
+gestation, it has finally given birth to the Final Draft Information Standard,
+or FDIS <a href="#4">[4]</a>. For most practical concerns, you should consider the Standard a
+done deal. Technically, the ISO bureaucracy still needs to check for dotted i's
+and crossed t's; they then hand the Draft over to their Electoral College for a
+final formal ballot.<p>
+By the time you read this, the Standard should be publicly available. For more
+information, see Pete Becker's column in this month's issue.</p>
+
+<H4><FONT COLOR=#000080>Erratica</FONT></H4>
+
+<p>Two issues back (December 1997) I discussed a letter from Diligent Reader David R.
+Tribble. Little did I know that he was also Diligent Writer David R. Tribble,
+for he has a feature article in the same CUJ issue. Such a small circle we
+travel in &#151; next thing you know, I'll start getting fan mail from Dan Saks
+<a href="#5">[5]</a>.<p>
+Last month I mentioned a couple of features missing from Metrowerks' Mac OS
+compiler. One week after I submitted that article, Metrowerks sent me their
+latest release, CodeWarrior Pro version 2. I am happy to report that
+CodeWarrior finally supports namespaces in general, and namespace std in
+particular. It also now recognizes default template arguments and some template
+specialization. (Unfortunately, however, it has yet to understand all the
+specialization required by STL).<p>
+Other improvements in version 2 include wchar_t as a keyword, and const static
+data member initialization. For details on these changes and more, check out
+the Metrowerks home page at &lt;http://www.metrowerks.com&gt;.</p>
+
+<H4><FONT COLOR=#000080>And Finally...</FONT></H4>
+
+<p>It's my turn to ask a personal favor of you. Having written my first programs on
+them, I harbor a fondness for Texas Instruments programmable calculators from
+the mid/late 70's. I am especially interested in the TI-59 and the enigmatic
+TI-88. If you have any information, material, or merchandise relating to these
+machines, and would like to find a loving home for same, please drop me a line.
+Thanks.</p>
+
+<H4><FONT COLOR=#000080>Notes</FONT></H4>
+
+<p><a name="1"></a>1.
+See last month's column, where I present an auto_pointer-like class that does
+not automatically release its contained pointer.<p>
+<a name="2"></a>2. Caveat: this technique requires partial template specialization, which some
+compilers do not yet support.<p>
+<a name="3"></a>3. For a full treatise on linkage specification, see Dan Saks' column in the
+November 1997 CUJ.<p>
+<a name="4"></a>4. U.S. readers, please don't confuse this with the FDIC. The financial
+security of your C++ code is most assuredly not guaranteed by FDIS.<p>
+<a name="5"></a>5. At least he knows who I am. I think he's still figuring out that SK Boothill
+guy, or whatever his name is.
+</p>
+<p><i>Bobby Schmidt is a freelance writer, teacher, consultant, and programmer.
+He is also a member of the ANSI/ISO C standards committee, an alumnus of
+Microsoft, and an original "associate" of (Dan) Saks &amp; Associates. In other
+career incarnations, Bobby has been a pool hall operator, radio DJ, private
+investigator, and astronomer. You may summon him at 14518 104th Ave NE Bothell
+WA 98011; by phone at +1-425-488-7696, or via Internet e-mail as
+rschmidt@netcom.com.
+</i></p></blockquote>
+</body></html>

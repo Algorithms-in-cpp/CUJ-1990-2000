@@ -1,0 +1,172 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>October 1996/A DBWin32 Debugger/Listing 3</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H4><A name="HEADING1">Listing 3: Worker thread routine</A></H4>
+
+<PRE>
+
+/*
+   The main gist of this routine comes from the MSDN DBMON
+   example.
+*/
+void EventThreadRoutine(void *pvParam)
+{
+    HANDLE AckEvent;
+    HANDLE ReadyEvent;
+    HANDLE SharedFile;
+    LPVOID SharedMem;
+    LPSTR  String;
+    LPSTR  lpszDebugText;
+    DWORD  ret;
+    DWORD  LastPid;
+    LPDWORD pThisPid;
+    BOOL   fDidCR = TRUE;
+
+    AckEvent = CreateEvent(NULL, FALSE, FALSE,
+                           "DBWIN_BUFFER_READY");
+    if (!AckEvent)
+    {
+        MessageBox(NULL, 
+            "DBWIN32: Unable to create obj DBWIN_BUFFER_READY", 
+            "Error", MB_OK);
+        return;
+    }
+
+    if (GetLastError() == ERROR_ALREADY_EXISTS)
+    {
+        MessageBox(NULL, 
+                   "DBWIN32: already running",
+                   "Error", MB_OK);
+        return;
+    }
+
+    ReadyEvent = CreateEvent(NULL, FALSE, FALSE,
+                             "DBWIN_DATA_READY");
+    if (!ReadyEvent)
+    {
+        MessageBox(NULL, 
+            "DBWIN32: Unable to create object DBWIN_DATA_READY",
+            "Error", MB_OK);
+        return;
+    }
+
+    SharedFile = CreateFileMapping((HANDLE)-1, NULL, 
+        PAGE_READWRITE, 0, 4096, "DBWIN_BUFFER");
+    if (!SharedFile)
+    {
+        MessageBox(NULL, 
+            "DBWIN32: Unable to create file object DBWIN_BUFFER",
+            "Error", MB_OK);
+        return;
+    }
+
+    SharedMem = MapViewOfFile(SharedFile, FILE_MAP_READ,
+                              0, 0, 512);
+    if (!SharedMem)
+    {
+        MessageBox(NULL, "DBWIN32: Unable to map shared memory",
+            "Error", MB_OK);
+        return;
+    }
+
+    String = (LPSTR)SharedMem + sizeof(DWORD);
+    pThisPid = SharedMem;
+    LastPid = 0xffffffff;
+    SetEvent(AckEvent);
+
+    for (;;) {
+
+        ret = WaitForSingleObject(ReadyEvent, INFINITE);
+
+        if (ret != WAIT_OBJECT_0)
+        {
+            MessageBox(NULL, "DBWIN32: wait failed",
+                       "Error", MB_OK);
+            return;
+        }
+        else
+        {
+            // only output if it is requested
+            if ( fOutput )
+            {
+                LPSTR lpszScratch;
+                BOOL fWantNewLine = FALSE;
+                if (LastPid != *pThisPid)
+                {
+                    LastPid = *pThisPid;
+                    if ( !fDidCR )
+                    {
+                        fWantNewLine = TRUE;
+                        fDidCR = TRUE;
+                    }
+                }
+
+                // fix up the newlines
+                lpszScratch = FixNewLines(String);
+
+                // allocate display buffer
+                lpszDebugText = malloc(strlen(lpszScratch) + 20);
+                if ( !lpszDebugText )
+                {
+                    MessageBox(NULL, 
+                       "DBWIN32: malloc failed", "Error", MB_OK);
+                    continue;
+                }
+
+                // make it empty or a newline
+                if ( fWantNewLine )
+                    strcpy(lpszDebugText, "\r\n");
+                else
+                    *lpszDebugText = 0;
+
+                // prepend the PID necessary
+                if ( fDisplayPID &amp;&amp; fDidCR )
+                {
+                    // avoid overwriting the \r\n if it exists
+                    int iLen = strlen(lpszDebugText);
+                    wsprintf(&amp;lpszDebugText[iLen], "%3lu: ",
+                             LastPid);
+                }
+
+                // build display buffer
+                strcat(lpszDebugText, lpszScratch);
+
+                // record newline status
+                fDidCR =
+                    (*lpszScratch &amp;&amp;
+                     (lpszScratch[strlen(lpszScratch)-1]=='\n'));
+
+                // cleanup from FixNewLines
+                free(lpszScratch);
+
+                // send the display string to the window
+                PostMessage(hwndDBWin, WM_DEBUGTEXT,
+                            (WPARAM)lpszDebugText, 0);
+            }
+
+            // ready for new event
+            SetEvent(AckEvent);
+        }
+    }
+
+    return;
+}
+/* End of File */
+</PRE>
+     </BODY>
+</HTML>

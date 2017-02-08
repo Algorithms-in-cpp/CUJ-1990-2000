@@ -1,0 +1,256 @@
+
+
+
+
+
+
+<HTML><HEAD>
+<TITLE>June 1998/Inter-Object Messaging Using a SwitchBoard</TITLE></HEAD>
+
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A href="../tocjun.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">Features</FONT></H2>
+
+<HR>
+<H2 ALIGN="center"><FONT COLOR="#800000">Inter-Object Messaging Using a SwitchBoard</FONT></H2>
+
+<H3 ALIGN="center"><FONT COLOR="#800000">William Crowe</FONT></H3>
+
+<BLOCKQUOTE>
+<p>One way to reduce coupling in a program is to generalize it to a fare-thee-well.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>Sending
+messages to unknown objects is a problem frequently encountered in software
+applications. We want object A to send some message to object B, without
+knowing anything about object B. That is, we want object A to be
+compile-independent of object B. A typical example is that of an
+ApplicationShell that needs to send a saveYourself message to persistent object
+PersonnelList. Now imagine ten other persistent objects, just like the
+PersonnelList, that are also interested in the saveYourself message. Compile
+dependencies and a cluttered object model just became a real problem.<p>
+An effective solution to this problem is to implement an inter-object messaging
+system. Using a switchboard metaphor, the PersonnelList, and all other
+persistent objects, would subscribe to the saveYourself message and the
+ApplicationShell would send the message, via the switchboard, to all the
+saveYourself subscribers. This is a variant of the Mediator pattern <a href="#1">[1]</a>. Using
+this model frees all the objects from the unnecessary compile-time dependencies.</p>
+
+<h4><FONT COLOR="#000080">Implementation: the SwitchBoard</FONT></H4>
+
+<p>The
+SwitchBoard is an object that allows one object to send a message to another
+object or objects. It enables messages to be sent in such a fashion that the
+caller need not know what or where the receiver is. An object interested in
+receiving a message simply subscribes to the SwitchBoard, thus becoming a
+subscriber. The sending object posts messages to a subscription, which is a key
+by which client objects subscribe to the SwitchBoard. Continuing the above
+example, the PersonnelList would subscribe to the SwitchBoard for the
+saveYourself message (subscription). The ApplicationShell would post
+saveYourself when the persistent objects needed to be saved. At that time the
+SwitchBoard would dispatch the message to each subscriber of the saveYourself
+subscription.<p>
+The SwitchBoard consists of two classes, SwitchBoard and SubscriberHookup, and
+a template subclass TSubscriberHookup. The SwitchBoard and SubscriberHookup
+classes work together to keep track of who is whom and who is interested in
+what. The SubscriberHookup class, however, cannot contain a handle to the
+subscribing object's receiver method because the receiver's type is unknown at
+this time. (Also, it would force all subscribers to be of the same type).
+Therefore, I've made SubscriberHookup an abstract base class that relies on a
+subclass (TSubscriberHookup) to implement the actual delivery method. The
+TSubscriberHookup class automates the subclassing of SubscriberHookup, the
+binding of the receiver object's method, and the delivery of messages.<p>
+<A href="list1.htm">Listing 1</a>
+shows the definition for the SwitchBoard class. The SwitchBoard class
+follows a singleton pattern; only one instance exists per application. This is
+enforced by making the constructor protected (or private) and by providing only
+a static utility interface. Every static method that wants to retrieve a handle
+to the SwitchBoard object must call the static instance method. The method
+checks whether or not a SwitchBoard has already been instantiated; if not, the
+method instantiates it. (Using a utility interface also provides an easier
+access method than having to use extern or keeping track of a public handle to
+a SwitchBoard that you had to instantiate.)<p>
+SwitchBoard declares SubscriberHookup as a friend class so it can access the
+protected subscribe and unsubscribe methods. These methods are responsible for
+managing the SwitchBoard's internal list of SubscriberHookups. These methods
+are protected because the SubscriberHookup automatically subscribes to the
+SwitchBoard upon construction, as well as unsubscribes during destruction and,
+therefore, the developer does not need access to them. They are protected,
+however, so special-case subclasses can evoke them.<p>
+The only other public method, post, is used to send messages to subscribing
+objects. post is a static method  it must retrieve a handle to the SwitchBoard
+via instance. It then simply calls the protected _post method (which is passed
+a this pointer) to dispatch the message.<p>
+SubscriberHookup is a straightforward class. Its definition appears in <a href="list2.htm"> Listing
+2</a>.
+ This class takes advantage of SwitchBoard's utility interface during
+construction by automatically subscribing to the SwitchBoard. Conveniently,
+when the SubscriberHookup goes out of scope it cancels its subscription. The
+only information stored by the hookup is the name of the subscription. The
+SwitchBoard::_post method accesses this name when it is dispatching a message,
+by calling SubscriberHookup::getSubscription.<p>
+Since the SubscriberHookup class does not know about the subscriber class it
+must rely on a subclass to bind the subscription to an object. This is
+implemented by the template subclass TSubscriberHookup, whose sole purpose is
+to keep a handle to the object (type is resolved during template
+specialization) and the method to call when a message is posted. The
+TSubscriberHookup template class appears in <A href="list3.htm">Listing 3</a>.
+<p>
+To subscribe to the SwitchBoard a class need only include the SubscriberHookup
+header and call the newSwitchBoardSubscription template function. The template
+function makes specializing a TSubscriberHookup template class easier and less
+problematic. It eliminates the need to specify the subscriber's class type, and
+the TSubscriberHookup template class, in the template specialization. (All this
+information is obtained when the template function is specialized.):</p>
+
+<pre>
+template&lt;class Subscriber&gt;
+TSubscriberHookup&lt;Subscriber&gt;*
+newSwitchBoardSubscribtion(
+  const char* subscription,
+  Subscriber* subscriber,
+  void (Subscriber::*method)())
+{
+  return(
+    new TSubscriberHookup&lt;Subscriber&gt;(
+      subscription, subscriber,
+      method));
+}
+</pre>
+<p>This
+template function lays the foundation for extending the number of delivery
+methods while preserving a consistent call interface. (See the section below on
+passing data through the SwitchBoard).<p>
+Using the above example, the PersonnelList class would look something like
+<A href="list4.htm">Listing 4</a>.
+<p>
+To post a message to all the subscribers, a class must include the SwitchBoard
+header and call SwitchBoard::post with the subscription name and the desired
+message. For example, here is how the ApplicationShell might ask all the
+persistent objects to save their data:</p>
+
+<pre>
+#include "SwitchBoard.h"
+void ApplicationShell::save()
+{
+  // code to save the application data
+  // goes here
+  // tell all the persistent objects to
+  // store themselves
+  SwitchBoard::post("saveYourself");
+}
+</pre>
+
+<h4><FONT COLOR="#000080">Passing Data Through the SwitchBoard</FONT></H4>
+
+<p>So
+far the only delivery mechanism (method signature) discussed has been void,
+which works fine in this case. To expand the number of delivery mechanisms, the
+SwitchBoard and SubscriberHookup classes must support a variety of post
+methods, such as post(const char*subscription) or post(const char*subscription,
+DATATYPE), via overloading. In addition, one new TSubscriberHookup subclass
+must be written to handle the new delivery signature (different number of
+parameters). Finally, newSwitchBoardSubscription must be overloaded for the new
+method signature, to specialize the appropriate template hookup.<p>
+Now the only question that remains is: which data types do we want to support?
+How about void and const char*? (To support all data types is an undertaking
+that is beyond the scope of this article). A diagram of the new object module
+appears in <A href="fig1.htm">Figure 1</a>.
+<p>
+After all the modifications have been done to the existing classes to support a
+const char * data type, only one new template subclass is required,
+TSimpleSubscriberHookup. This new subclass simply ignores the message parameter
+sent by post. An example of its behavior appears in <A href="list5.htm">Listing 5</a>.
+<p>
+When using this simplified approach you can either rely on the developers being
+careful in parameter passing (just like you do when using printf) or you can
+design a more elegant SwitchBoard using Run Time Type Information (RTTI) and
+dynamic_cast.</p>
+
+<h4><FONT COLOR="#000080">A Busyness Example</FONT></H4>
+
+<p>Many
+applications that do complex GUI processing can take advantage of a centralized
+application busyness management center using the SwitchBoard. The busyness
+management center is responsible for notifying all the GUI objects (application
+shell and dialogs) when to use the working or normal cursor, as well as
+updating and resetting the status bar. By reference counting degree of busyness
+each routine can independently control its busyness indication. You don't have
+to worry about prematurely ending the busy state of the application.
+Furthermore, objects can query the application to determine how busy it is and
+make decisions accordingly.<p>
+The example in <A href="list5.htm">Listing 5</a>
+expands on the PersonnelList by posting the
+busy/notBusy messages in PersonnellList::store and by implementing an
+ApplicationShell class to demonstrate how to handle and coordinate these new
+messages.<p>
+Notice that in the main routine that the ApplicationShell and the PersonnelList
+objects are instantiated separately and do not know anything about each other.
+After the objects have been constructed, main calls the ApplicationShell::save
+method. This method simply posts the busy message, then the saveYourself
+message, which calls the PersonnelList::store method.<p>
+PersonnelList::store also posts the busy/notBusy messages, thus incrementing
+and decrementing the busy reference count accordingly. Finally, the save method
+calls ApplicationShell::refresh, which posts its own busy/notBusy messages, as
+well as the last notBusy message. Several of the busy messages are posted with
+a status string to display in the status bar (to give the user some feedback as
+to what the application is doing). The last notBusy message results in
+restoring the status bar to what it looked like before all the work started.
+Running the program displays the status information to stdout:</p>
+
+<pre>
+Ready.
+Saving the application state...
+ PersonnelList - saving...
+ Refreshing...
+Ready.
+</pre>
+
+<h4><FONT COLOR="#000080">Other Potential Uses</FONT></H4>
+
+<p>Other
+quite useful applications for a SwitchBoard include:</p>
+<UL><LI>Dialogs opening themselves. For example, consider a Customer dialog that
+is open and, according to the design, is supposed to have access to the
+PersonAccount dialog. Typically the PersonAccount dialog would be included in
+the Customer implementation. As mentioned before, this leads to a cluttered
+object model and overly complex build rules. Using the SwitchBoard model as an
+alternative, the PersonAccount can subscribe to the openYourself message. Now
+the Customer dialog is not dependent on the PersonAccount &#151; it has only to
+send the openYourself message with the PersonAccount name as the message
+parameter.</LI>
+<LI>Dialogs instantiating themselves. The next layer of abstraction for the
+dialog is to completely remove dependency by allowing dialogs to instantiate
+themselves. This can be done by implementing a TSubscriberHookup for a function
+(not a method) that instantiates the dialog.</LI>
+</UL>
+
+<h4><FONT COLOR="#000080">Summary</FONT></H4>
+
+<p>The
+examples in this article used the SwitchBoard to notify persistent objects when
+they needed to save themselves, and to track the application busy state. The
+SwitchBoard model provides a transparent way of communicating between objects
+without having to know the specifics. By leveraging this design you can reduce
+compile time and simplify your object models.</p>
+
+<h4><FONT COLOR="#000080">Reference</FONT></H4>
+
+<p><a name="1"></a>[1]</a>
+Erich Gamma, Richard Helm, Ralph Johnson, John Vlissides. Design Patterns,
+Elements of Reusable Object-Oriented Software (Addison-Wesley, 1995).
+</p>
+<p><i>William L. Crowe is a consultant currently working for Northern Telecom
+in the Research Triangle Park, North Carolina. He is a software architect who
+specializes in Object-Oriented Design, GUI design, and Distributed Computing.
+Bill can be reached via email at crowe@ipass.net.
+</i></p>
+
+<h4><a href="../../../source/1998/jun98/crowe.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</body></html>

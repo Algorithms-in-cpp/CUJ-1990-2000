@@ -1,0 +1,378 @@
+<HTML>   
+     <HEAD>
+<TITLE>May 1999/The Journeyman's Shop</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocmay.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">The Journeyman's Shop: Initialization and Cleanup, Part 3</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Pete Becker</FONT></H3>
+
+<BLOCKQUOTE>
+<p>It's a simple rule: initialize objects before you use them and clean them up when you're done with them. But sometimes that takes pretty careful planning.</p>
+</BLOCKQUOTE>
+
+<HR>
+
+<BLOCKQUOTE>
+
+<p>This month we'll wrap up our discussion of initialization and cleanup. A summary of the topics we've covered appears in <A HREF="fig1.htm">Figure 1</A>.</p>
+<p>In the last two installments of The Journeyman's Shop we've looked at the mechanisms that C and C++ provide for initializing and cleaning up variables. Most of the time these mechanisms fit fairly closely to what we need to do. We use them almost without thinking, and our code works right. For example, it's fairly common to open a file, write some data to it, and close it. In C++ we often do this with an auto object:</p>
+
+<pre>
+#include &lt;fstream&gt;
+
+void write(const char *name)
+{
+std::ofstream out(name);
+out &lt;&lt; "Hello, world!\n";
+}
+</pre>
+
+<p>When program execution reaches the end of the function <B>write</B> the destructor for <B>out</B> is run. That closes the file, flushing any buffer that may have been created and assuring that the data has actually been written to the disk. In C there's a bit more work to do, because there are no destructors:</p>
+
+<pre>
+#include &lt;stdio.h&gt;
+
+void write(const char *name)
+{
+FILE *out = fopen(name, "w");
+fwrite(out, "Hello, world!\n");
+fclose(out);
+}
+</pre>
+
+<p>If you forget to close the file, the C runtime system will close it when the program terminates, but it's still good practice to close files whenever you're finished with them. If you don't, you run the risk of running out of file handles, preventing you from opening new files later in your program <a href="#1">[1]</a>. Forgetting to close the file explicitly isn't a major source of errors, because it's fairly easy to recognize a missing call to <B>fclose</B> when a file is used only in the function that opened it.</p>
+<p>Things get harder when you need to initialize an object that will be used from many different locations in the program. You then have two choices: 1) create the object in a function and pass a pointer or reference to it from that function into other functions that need it, or 2) create a global object and reference it directly from the places where it is needed. The first of these is preferable if the use of the object isn't too widespread. You can dispose of the object in the function that created it without doing any extra bookkeeping to make sure that you aren't disposing of it too early or that you haven't forgotten about disposing of it. However, passing extra arguments through a series of function calls adds overhead and complexity, and often the second alternative is a better choice. That's where C++'s destructors offer a much more powerful mechanism than C provides.</p>
+
+<pre>
+std::ofstream out("test.log");
+
+int main()
+{
+out &lt;&lt; "Hello, world!\n";
+return 0;
+}
+</pre>
+
+<p>Notice that I haven't written any code to close the file. C++ requires that the destructor for <B>out</B> be run after <B>main</B> has finished, and that destructor does the same thing as it did when out was an auto object: it closes the file after flushing any internal buffers. We can do something similar with global variables in C:</p>
+
+<pre>
+FILE *out;
+
+int main()
+{
+out = fopen("test.dat", "w");
+fwrite(out, "Hello, world!\n");
+return 0;
+}
+</pre>
+
+<p>But be careful: this works correctly only because the C language guarantees that any files that are open when the program terminates will be properly closed. There is no general cleanup mechanism in C, and if there is any possibility that a resource you have allocated in a global variable won't be cleaned up by the runtime system then you must clean it up yourself. In fact, the absence of a call to <B>fclose</B> in the example above bothers me enough that I'd put it in anyway:</p>
+
+<pre>
+FILE *out;
+
+int main()
+{
+out = fopen("test.dat", "w");
+fwrite(out, "Hello, world!\n");
+fclose(out);
+return 0;
+}
+</pre>
+
+<p>When you use global variables like this, <B>main</B> becomes primarily responsible for initializing and cleaning up the global variables. Do as little else as possible in <B>main</B>, and call a function to do the real work. That way you can look at initialization and cleanup of the global variables without being distracted by other code.</p>
+<p>There are times, though, when we don't want to have global variables automatically initialized like this. We may want to defer initialization to the first time a global variable is used. That way, if it is never used we don't need to initialize it at all. In C++ we may need to force initialization of a global variable at a particular time, to overcome the uncertainty of initialization order for globals. Although those cases require a bit more thought, they are fairly easy to handle.</p>
+
+<h4><FONT COLOR="#000080">Controlling Global Objects</FONT></H4>
+
+<p>The simplest way to defer initialization of a global object is to use some sort of a flag to indicate whether the object has been initialized. Any code that needs to use that object checks the flag, and if the object has not yet been initialized, the code initializes it and sets the flag to indicate that the object has been initialized. That's actually simpler than it sounds, particularly if the object to be initialized is a pointer. The pointer itself can be used as a flag, since it will be initialized to a null pointer when the program starts. By checking for a null pointer we can determine whether the pointer has been initialized.</p>
+
+<pre>
+FILE *out;
+
+void f()
+{
+if (out == NULL)
+    out = fopen("test.dat", "w");
+fwrite(out, "Called f\n");
+}
+
+void g()
+{
+if (out == NULL)
+    out = fopen("test.dat", "w");
+fwrite(out, "Called g\n");
+}
+
+void close_out()
+{
+if (out != NULL)
+    fclose(out);
+}
+
+int main()
+{
+atexit(close_out);
+f();
+g();
+return 0;
+}
+</pre>
+
+<p>This code pushes the responsibility for opening <B>out</B> down into the functions that use it. In a more complex program where <B>f</B> and <B>g</B> might not be called at all, this method avoids opening the file if it isn't actually used. This code is a bit verbose, however, and it might be worthwhile to provide a function to handle opening the file:</p>
+
+<pre>
+void open_out()
+{
+if (out == NULL)
+    out = fopen("test.dat", "w");
+}
+</pre>
+
+<p>Each function that uses <B>out</B> should call this function before attempting to use it. The responsibility for cleaning up any resources allocated by a function like this still lies with <B>main</B>: it must either close the file or register an <B>atexit</B> function to take care of any necessary cleanup.</p>
+
+<h4><FONT COLOR="#000080">Functions Returning Pointers or References</FONT></H4>
+
+<p>Another technique for deferring initialization is to write a function that returns a pointer or a reference to the object, and handle initialization inside that function. When we do that, we no longer need to make the name of the object itself visible throughout the program. All we need is the function itself.</p>
+
+<pre>
+static FILE *out_file;
+
+FILE *open_out()
+{
+if (out_file == NULL)
+    out_file =
+        fopen("test.dat", "w");
+return out_file;
+}
+</pre>
+
+<p>With this approach, functions that need to write to the file can either call the <B>open_out</B> function each time they need the <B>FILE</B> pointer or they can create a local variable to hold the pointer.</p>
+
+<pre>
+void f()
+{
+fwrite(open_out(), "Called f\n");
+}
+
+void g()
+{
+FILE *out = open_out();
+fwrite(out, "Called g\n");
+fwrite(out,
+    "Logging additional data\n");
+}
+</pre>
+
+<p>Another variation on this idea is to make the object a local static object rather than a global one, and let the compiler worry about checking whether the object has been initialized. This is particularly useful in C++, because it lets you defer running the constructor for an object:</p>
+
+<pre>
+std::ostream&amp; open_out()
+{
+static std::ofstream out("test.dat");
+return out;
+}
+</pre>
+
+<p>One drawback to this approach is that it involves a function call every time you need to use the object. That's often not as big a penalty as it might appear to be, because it avoids the risk that someone will forget to check whether the variable has been initialized before using it. That's the sort of problem that will hide from you until you're about to ship your product. Then some tester will come across it and you'll have to work late several nights to figure out what's going wrong. So in general this is a case where I'd be willing to accept the overhead of a function call. Of course, if you're writing in C++ you can always consider making this function inline <a href="#2">[2]</a>.</p>
+
+<h4><FONT COLOR="#000080">The Nifty Counter Trick</FONT></H4>
+
+<p>C++ programmers often run into problems with the initialization order of global objects. The rule that applies here is quite simple, but dangerous: global objects that are defined in the same translation unit are initialized in the order of their definitions. Programmers run into problems when they forget that this rule says nothing about the order of initialization of global objects defined in different translation units. It is up to the implementation to determine the order, and there is no requirement that this order be consistent from one compilation of your application to another, or even from one run of your application to another. In short, if your code depends on one global object being constructed before another global object is constructed then you must define the two objects in the same translation unit or take over management of construction yourself.</p>
+<p>Let's take a quick look at how this sort of problem can arise. Suppose you have a global file object like the one we've been looking at throughout this discussion. We've written code that uses this object only from within <B>main</B> or functions called from <B>main</B>. What happens when we try to use this object from the constructor of another global object?</p>
+
+<pre>
+// database.h
+#include &lt;iosfwd&gt;
+extern std::ofstream out;
+
+class database
+{
+public:
+    database()
+        {
+        out &lt;&lt; "Opening database\n";
+        }
+};
+
+// main.cpp
+#include "database.h"
+
+std::ofstream out("test.dat");
+database db;
+
+int main()
+{
+return 0;
+}
+</pre>
+
+<p>This code works fine. In <B>main.cpp</B> we define the object <B>out</B> before we define the object <B>db</B>. This means <B>out</B> will be constructed before <B>db</B> is constructed, and the use of <B>out</B> in <B>db</B>'s constructor will work correctly. If we reverse the order of the definitions of <B>out</B> and <B>db</B> in <B>main.cpp</B>, then <B>db</B>'s constructor will run first, and it will attempt to insert text into an uninitialized stream. Of course, that's not a good thing to do. It's easy to avoid in a case like this, because both objects are defined in the same file. But suppose we wanted to separate the details of our application's logging operations from the database itself; that is, suppose we wanted to put <B>out</B> into its own file? The obvious solution, simply moving the definition of <B>out</B>, doesn't work:</p>
+
+<pre>
+// datalog.h
+#include &lt;iosfwd&gt;
+extern std::ofstream out;
+
+// database.h
+#include "datalog.h"
+
+class database
+{
+public:
+    database()
+        {
+        out &lt;&lt; "Opening database\n";
+        }
+};
+
+// datalog.cpp
+#include "datalog.h"
+
+std::ofstream out("test.dat");
+
+// main.cpp
+#include "database.h"
+
+database db;
+
+int main()
+{
+return 0;
+}
+</pre>
+
+<p>Here we've defined <B>db</B> and <B>out</B> in two separate files, and it is up to our compiler to decide which of them to initialize first. This code may happen to work, if the compiler initializes <B>out</B> before it initializes <B>db</B>; or it may not work, if the compiler initializes <B>db</B> first. If your code has this sort of dependency, don't rely on the compiler's choice of order, even if it happens to work, and even if your compiler carefully documents the order in which it initializes objects. If you rely on this specific order of initialization you're deep into the realm of nonportable code. Take control, perhaps with one of the techniques we've already discussed <a href="#3">[3]</a>.</p>
+<p>There's another technique that you should be aware of. It's known as the &#145;&#145;nifty counter trick,'' and it has been used in many implementations of iostreams. Implementers of iostreams run into exactly the same problem we saw above: objects like <B>cout</B> are defined somewhere in the runtime library, and the C++ language does not guarantee that they will be constructed before they are used in other code. For example:</p>
+
+<pre>
+#include &lt;iostream&gt;
+
+class could_be_dangerous
+{
+public:
+    could_be_dangerous()
+    {
+    std::cout &lt;&lt; "Here I am!\n";
+    }
+};
+
+could_be_dangerous d;
+
+int main()
+{
+return 0;
+}
+</pre>
+
+<p>This sort of code is quite common, and library implementers must insure that <B>cout</B> is constructed before any code that uses it. None of the techniques we've discussed so far can be used here, because they would all require rewriting the code that uses <B>cout</B>, either by replacing <B>cout</B> with a function call or by adding a check for construction. Neither one is suitable here <a href="#4">[4]</a>.</p>
+<p>The nifty counter trick involves the creation of a static object in every file that uses the object that we need to initialize. The static object's constructor checks a flag, and if we haven't initialized <B>out</B> yet the constructor does the initialization and sets the flag. The static object's destructor takes care of cleanup. This is all accomplished by putting the definition of the static object into the header file that declares the object we're going to initialize. Like this:</p>
+
+<pre>
+// datalog.h
+#include &lt;iosfwd&gt;
+extern std::ofstream out;
+
+class out_initializer
+{
+public:
+    out_initializer()
+    {
+    if (init_count++ == 0)
+    init_out();
+    }
+
+    ~out_initializer()
+    {
+    if (--init_count == 0)
+    cleanup_out();
+    }
+private:
+    static int init_count;
+    static void init_out();
+    static void cleanup_out();
+};
+
+static out_initializer
+out_initializer_object;
+
+// datalog.cpp
+#include "datalog.h"
+
+std::ofstream out;
+
+static int out_initializer::init_count;
+
+void out_initializer::init_out()
+{
+new (&amp;out) std::ofstream("test.dat");
+}
+
+void out_initializer::cleanup_out()
+{
+out.close();
+}
+</pre>
+
+<p>Using this technique, our earlier example with the database would be unchanged:</p>
+
+<pre>
+// main.cpp
+#include "database.h"
+
+database db;
+
+int main()
+{
+return 0;
+}
+</pre>
+
+<p>The difference is that now it will work correctly. That's because the <B>#include</B> directive pulls in the contents of <B>database.h</B>, which in turn pulls in the contents of <B>datalog.h</B>, which defines a static object of type <B>out_initializer</B>. A translation unit cannot use the name <B>out</B> without using this header, so every translation unit that uses <B>out</B> will get a static object of type <B>out_initializer</B>, and the definition of that object will always come before the definition of any object whose constructor uses <B>out</B>. Thus, regardless of which translation unit the compiler initializes first, there will always be a static object constructed before the use of <B>out</B>, and the constructor for that static object will initialize <B>out</B>. This guarantees <B>out</B> will always be initialized before it is used.</p>
+<p>There are a couple of drawbacks to the nifty counter technique. First, you may have noticed that it uses placement <B>new</B> to construct an object of type <B>std::ofstream</B> on top of the object <B>out</B>. Somewhere along the line the compiler will also generate a call to construct the object <B>out</B>. The writer of a library that uses this trick must make sure that multiple constructor calls like this will leave the object in a sensible state. Typically that means writing the default constructor to do nothing, so that it won't change any of the initialization done by the call to placement <B>new</B>. And, of course, there's a corresponding destructor call as the program terminates. That could happen before the destructor for the last <B>out_initializer</B> object calls <B>close</B>. Again, the destructor must not do anything that makes this final call fail. This is tricky code to get right. Don't try this at home.</p>
+<p>The second drawback is that all those objects of type <B>out_initializer</B> must be constructed, even though only the first one actually performs the initialization of <B>out</B>. These multiple constructor calls are unavoidable, and although they don't look like much, they can be very expensive on a system that uses virtual memory: pages that wouldn't be used otherwise might be pulled in off the disk in order to execute those constructors. That could slow down program initialization considerably.</p>
+<p>In the form I've described the nifty counter trick can be used safely only by implementers of the standard library. They know their compiler's quirks, and can make sure that any peculiarities they rely on will not be changed in some future release. There is a slight variation of the nifty counter trick that's much more useful. It's more portable <a href="#6">[6]</a>, because it eliminates the compiler-generated constructor and destructor calls so you don't have to write tricky code to avoid their consequences. Instead of using an object named <B>out</B>, use a reference. Initialize it like this:</p>
+
+<pre>
+// datalog.cpp
+#include "datalog.h"
+
+static char out_data[sizeof(std::ofstream)];
+std::ofstream &amp;out = (std::ofstream)out_data;
+
+static int out_initializer::init_count;
+
+void out_initializer::init_out()
+{
+new (&amp;out_data) std::ofstream("test.dat");
+}
+
+void out_initializer::cleanup_out()
+{
+(&amp;out)-&gt;~ofstream();
+}
+</pre>
+
+<p>Here we have created an array of <B>char</B> named <B>out_data</B> consisting of enough bytes to hold an object of type <B>std::ofstream</B>. We've told the compiler to pretend that this array of <B>char</B> is actually an object of type <B>std::ofstream</B>, and we've initialized the reference <B>out</B> to refer to this chunk of memory. Since the chunk of memory is defined as an array of <B>char</B> the compiler won't generate any code to initialize it <a href="#5">[5]</a>, so we don't have to worry about multiple constructors or destructors. That tricky-looking expression in <B>cleanup_out</B> simply invokes the destructor for <B>ofstream</B> on the object we created.</p>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>Most of the time you can simply use the built-in mechanisms for initialization and cleanup of objects and they'll do just what you need. Occasionally you may run into a tricky situation where the built-in mechanisms don't provide enough flexibility, or are too flexible. In those cases you need to take control of initialization and cleanup yourself, using flags, local static objects, or counters to keep track of whether an object has been initialized, and acting accordingly. None of these techniques is particularly hard to implement. The hard parts are in recognizing that you need something other than what the compiler will give you and in deciding which of the available techniques is best suited to your application.</p>
+
+<h4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1]  Older versions of DOS used to limit programs to twenty file handles, and most compilers grabbed five handles for their own use. Having only fifteen handles available made programmers quite careful of how they used file handles.</p>
+<p><a name="2"></a>[2]  Even the version with the local static can be inlined. The C++ language definition says that each inline version of <B>open_out</B> refers to the same static object. That's a little tricky for the compiler to do, so I'd be a bit hesitant to rely on it. It's not something I'd avoid, but I'd make sure that it's on the list of porting issues for the code.</p>
+<p><a name="3"></a>[3]  Another possibility is to use compiler-specific mechanisms for controlling order of initialization. This often is easy to do, and if you can do it in a way that guarantees you'll get a compile-time error if you change to a compiler that doesn't support that mechanism you can do it safely. This technique only postpones the porting issue, though: once you move to another compiler you'll have to either come up with another nonportable technique for use with that compiler or write code that works with all compilers.</p>
+<p><a name="4"></a>[4]  In libraries that we write, however, we usually aren't constrained by this sort of prior usage. We can design the interface to our libraries to avoid this problem entirely, often by using a function call instead of an object, as we saw earlier. That's probably a good idea in most cases.</p>
+<p><a name="5"></a>[5]  The block does get initialized to all zeros, but that's always done before any constructors are run, so we don't have to worry about it getting in our way.</p>
+<p><a name="6"></a>[6]  I originally wrote "it's completely portable," but a sharp-eyed editor pointed out there can be alignment problems when you do this. I'll have more to say on this in a future column.
+
+<p><i>Pete Becker is Technical Project Leader for Dinkumware, Ltd. He spent eight years in the C++ group at Borland International, both as a developer and manager. He is a member of the ANSI/ISO C++ standardization committee. He can be reached by email at <B>petebecker@acm.org</B>.</i></p>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

@@ -1,0 +1,79 @@
+<HTML>   
+     <HEAD>
+<TITLE>May 1999/Portable Control of Multiple Daemon Processes</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocmay.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Cross-Platform Development</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Portable Control of Multiple Daemon Processes</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Joseph Kathan</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>The Unix and Windows process models are just different enough to present problems when writing portable code.</p>
+</BLOCKQUOTE>
+
+<HR>
+
+<BLOCKQUOTE>
+
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>Today many applications are being ported from Unix to Windows NT. Frequently the project guidelines require that all versions of the ported application use as many common algorithms and shared code sets as possible. My project to port several Unix daemon processes included this stipulation, which presented a number of significant challenges due to the many basic differences between the two operating systems.</p>
+<p>One of the main algorithms I had to port for these daemon processes was a common method of shutting them down. In the Unix version of this method, a program called the daemon killer sent a signal to each of the daemon processes. As each daemon received its signal, it would shut down. I had to retain this feature in the ported programs, but I faced a problem because Windows NT does not have Unix signals. NT does, however, have message handlers, and I found that I could adapt them to act like a signal handler. The net result is a common, portable method that can be used on either a Unix platform or a Win32 platform to control processes.</p>
+<p>A Word on terminology: in Unix, a daemon is a process that runs unattended in the background. These processes run for extended periods of time, handling such things as email, ftp connections, and administrative tasks. Windows NT has similar background processes to handle these tasks; however, in Windows jargon these processes are called services. For the sake of clarity, I refer to both as daemons throughout this article.</p>
+
+<h4><FONT COLOR="#000080">The Unix Implementation</FONT></H4>
+
+<p>The algorithm for shutting down the daemons requires each daemon process to have a signal handler. A signal handler is a function tasked with handling specific software interrupts (signals) that may occur while a given process is running. Unix has a wide variety of signals to indicate everything from arithmetic exceptions to program termination. All that is required to send a Unix process a signal is the process's identifier and the appropriate permissions <a href="#1">[1]</a>.</p>
+<p>The termination signal, <B>SIGTERM</B>, is the basis of the shutdown algorithm. The algorithm works as follows:</p>
+
+<UL><p>1.  As each daemon starts up, it logs its process identifier in a control list.<br>
+2.  The daemon then registers its <B>SIGTERM</B> signal handler with the operating system.<br>
+3.  When invoked, the daemon killer reads the process identifiers from the control list and sends each logged process a <B>SIGTERM</B> signal.<br>
+4.  The daemon's signal handler receives the signal and shuts down.</p></UL>
+
+<p><A HREF="list1.htm">Listing 1</A>, <B>dmnunix.c</B>, shows an example program that takes the role of the Unix daemon. Starting with function <B>main</B>, the first thing the daemon does is determine its process identifier through a call to the <B>getpid</B> function. The process identifier, or <B>PID</B>, is then passed to the <B>register_daemon</B> function for logging in the control list. In this implementation, I use a file for the control list, but the list could just as easily be held in a database table or shared memory structure.</p>
+<p>Next, the daemon registers its <B>SIGTERM</B> signal handler with the operating system through a call to the <B>signal</B> function. The first parameter of the call specifies that the daemon is interested in the <B>SIGTERM</B> signal. The second parameter indicates that control should be passed to the <B>sig_handler</B> function when <B>SIGTERM</B> is sent to the daemon. Once the signal handler is registered, the daemon sets an exit point for the signal handler through a call to <B>sigsetjmp</B>. When <B>sigsetjmp</B> is called, it returns a zero. However, when the signal handler transfers control to this point, the value returned by <B>sigsetjmp</B> will be one <a href="#2">[2]</a>. I save the return value of <B>sigsetjmp</B> in <B>kill_sig</B>; the daemon enters the exit block only when <B>kill_sig</B> is non-zero.</p>
+<p>The next thing the daemon does is set the <B>jmpok</B> flag to one. This indicates to the signal handler that everything is in place and ready for use. After this, the daemon does its work, which for this example is just an empty <B>for</B> loop.</p>
+<p>The daemon continues doing its work until the signal handler, <B>sig_handler</B>, receives a <B>SIGTERM</B> signal. When this signal arrives, the <B>sig_handler</B> function removes itself as the registered <B>SIGTERM</B> handler for the daemon through a call to <B>signal</B>. It executes the <B>siglongjmp</B> function to return control to the point in <B>main</B> specified by the earlier call to <B>sigsetjmp</B>. This time, <B>kill_sig</B> will be assigned a value of one and will enter the exit block. In practice, prior to exiting, the daemon would do any cleanup needed, such as freeing resources or closing files. In the example, the daemon has nothing to cleanup, so it just exits.</p>
+<p><A HREF="list2.htm">Listing 2</A>, <B>dkunix.c</B>, is an example of the Unix daemon killer. The daemon killer first opens the control list of process identifiers. For each process in the list, it invokes the <B>kill</B> function to send out the signal. The first parameter of the call is the process identifier that should be signaled; the second is the signal to send. After each process in the list has been signaled to shutdown, the daemon killer closes the control list and exits.</p>
+<p>I have tested both Unix examples on IBM AIX 4.2 and Redhat Linux 5.1. For the AIX test, the compiler was the C for AIX 3.1.4.0 compiler. For the Redhat test, I used the GNU Project C and C++ Compiler 2.7.2.3. To run the daemon example on each Unix platform, I invoked it with the <B>&amp;</B> on the command line to put the process in the background <a href="#3">[3]</a>. After several daemons were started, I invoked the daemon killer to signal each of the daemon instances to shut down.</p>
+
+<h4><FONT COLOR="#000080">The Windows Implementation</FONT></H4>
+
+<p>Windows NT does not use signals. Instead, Windows uses messages to inform processes of the asynchronous events that may occur during their process lifetimes. These messages inform the process about a wide range of conditions, as well as allow for a way to indicate that the process should terminate <a href="#4">[4]</a>. This termination message feature provides the way to port the shutdown algorithm to Windows NT.</p>
+<p>In the NT version of the algorithm, each daemon process must have a message handler to process the termination message when it arrives:</p>
+
+<UL><p>1.  As each daemon starts up, it logs its process identifier in a control list.<br>
+2.  The daemon then registers its message handler with the operating system.<br>
+3.  When invoked, the daemon killer reads the process identifiers from the control list. It then retrieves the handle of the process and passes it a terminate message.<br>
+4.  The daemon's message handler receives the message and shuts down.<br></UL>
+
+<p><A HREF="list3.htm">Listing 3</A>, <B>dmnwin.c</B>, shows the Win32 version of the daemon program. Just like in the Unix version, the first thing the daemon does in the <B>main</B> function is retrieve its process identifier through a call to <B>GetCurrentProcessID</B>. The process identifier returned is sent to the <B>register_daemon</B> function for logging in the control list.</p>
+<p>Next, the daemon installs its message handler through a call to <B>SetConsoleCtr Handler</B>. The parameters indicate all messages for the daemon should be sent to <B>MyHandler</B>. Once the message handler is in place, the daemon does its work, which for this example is just an empty <B>for</B> loop. The daemon continues doing its work until the message handler receives a message telling it to shutdown. The message handler gets its process handle through a call to <B>GetCurrentProcess</B>. Using the handle, the message handler retrieves the <B>exitcode</B> through a call to <B>GetExitCodeProcess</B>. Prior to exiting, a production daemon would do any cleanup needed at this point, such as freeing resources or closing files. In the example, the daemon has nothing to cleanup, so it just exits.</p>
+<p><A HREF="list4.htm">Listing 4</A>, <B>dkwin.c</B>, is an example of the Windows daemon killer. As in the Unix version, the daemon killer first opens the control list of process identifiers. For each process in the list, it finds the handle of the process through a call to <B>OpenProcess</B>. The first two parameters set the access level required, and the third indicates the process identifier of interest to the daemon killer. Once the handle is retrieved, the daemon killer sends the shutdown message through a call to <B>TerminateProcess</B>.</p>
+<p>I have tested both example Win32 programs on Windows 95 and Windows NT 4.0. The tests were carried out using the Microsoft Visual C++ 5.0 and 6.0 compilers. To run the daemon example on Windows 95 or Windows NT 4.0, I opened a DOS window for each instance of the daemon I executed. After several were started, I opened an additional DOS window and invoked the daemon killer to signal each of the daemon instances to shut down.</p>
+
+<h4><FONT COLOR="#000080">Concluding Details</FONT></H4>
+
+<p>When using this algorithm in production code, several other details will need to be considered. First and foremost, the account that runs the daemon killer must have the appropriate permissions to send the signals and messages to the processes to be terminated. What this generally means on a Unix box is that if these processes are running as multiple users, the account that runs the demon killer must have root access. Similarly, the log file may need certain permissions so that all the processes can read and write to it.</p>
+<p>A second consideration is that sometimes programs terminate unexpectedly, power goes out, or some other incident causes one or more of the entries in the control list to be invalid. In my production environments I handle this by having the control list reset every time the machine boots, cleaning out any old entries. Then, when my daemon killer is invoked, I have it check to make sure the process registered in the control list is the same one that is still running.</p>
+<p>The last detail is the desire to have common code across platforms. You can achieve this through conditional compilation. Conditional compilation can be easily added to the daemon killer program as shown in <A HREF="list5.htm">Listing 5</A>, <B>dkcombo.c</B>. It doesn't always make for pretty code, but it does get the job done.</p>
+
+<h4><FONT COLOR="#000080">Notes and References</FONT></H4>
+
+<p><a name="1"></a>[1]  For more information on Unix programming, including an entire chapter devoted to signal processing, check out <I>Advanced Programming in the UNIX Environment</I> by W. Richard Stevens, published by Addison-Wesley.</p>
+<p><a name="2"></a>[2]  <B>sigsetjmp</B> behaves similarly to the C <B>setjmp</B> function. For a discussion of <B>setjmp</B>, see Pete Becker's "Journeyman's Shop" column in the February 1999 issue of <I>CUJ</I>.</p>
+<p><a name="3"></a>[3]  I could have just as easily added a fork in the Unix code so each daemon would go in the background automatically. Fork, however, presents another porting issue because Windows NT does not have that function. The solution to the absence of fork in Windows NT is to create a service, but that is beyond the scope of this article. If you are interested in how to create a Windows NT service, you can refer to "A Wrapper Class for NT Services," by John T. Bell, in the August 1998 issue of <I>CUJ</I>.</p>
+<p><a name="4"></a>[4]  When it comes to information on Windows programming, I recommend the MSDN Library CD-ROMs published by Microsoft. Another good reference is <I>Advanced Windows</I> by Jeffery Richter, published by Microsoft Press.
+
+<p><i>Joseph Kathan is a Senior Software Engineer for Medic Computer Systems, Inc. He has worked extensively in Unix and Windows environments, and specializes in designing and developing interfaces between disparate applications in enterprise systems. He can be reached at <B>jgk@pagesz.net</B>.</i></p>
+
+<h4><a href="../../../source/1999/may99/kathan.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

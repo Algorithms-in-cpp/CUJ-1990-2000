@@ -1,0 +1,150 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>August 1998/A Windows NT Exception Class Library</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocaug.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Windows</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">A Windows NT Exception Class Library</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Eric Gufford</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Marrying Win32 exceptions with C++ exception handling takes a lot of work, but the payoff can be high &#151; particularly if most of the work has been done for you.</p></BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+<h4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>The purpose of this article is to explain an exception class library that was developed specifically for the Windows NT platform. It is designed to be the core of an exception-handling strategy that can be used by any application simply and effectively. It is also designed to scale well, from stand-alone applications all the way to industrial-strength systems consisting of many individual components. In fact, the latter is where the most benefit can be seen. It was developed over a number of years, and it is currently being used in several large-scale production systems.</p>
+
+<p>Before getting into the meat of the library, it is necessary to understand how Windows NT handles exceptions and error logging. Exception handling has never been an easy thing to incorporate into an application. Under Win32, things get even harder. While Windows NT supports ANSI style C++ exceptions, the core of the operating system is written using a mechanism Microsoft calls "structured exceptions." The former is designed to handle exceptional conditions in a consistent way and is, by definition, language specific. The latter is designed to allow applications to report errors to the operating system in a language-neutral form. Exceptions such as access violations, divide-by-zero faults, page-invalid faults and a plethora of other "hard" errors are handled in this fashion. In addition, all device drivers, operating-system components, and system services (such as OLE) are required to support this mechanism.</p>
+
+<p>Unfortunately, these two exception-handling mechanisms are oblivious to each other, which complicates life substantially for those programmers that need to support both methodologies. Use of third-party components &#151; such as libraries, DLLs, and OCXs &#151; complicates matters even more.</p>
+<h4><FONT COLOR="#000080">Windows NT Error Logging</FONT></H4>
+
+<p>In the days of yore, programmers wrote tracing functions that were used throughout the program. Calls to these tracing functions would be liberally sprinkled throughout the code, usually with some command-line parameters and/or preprocessor definitions to turn them off. This primitive mechanism for handling the persistent store of error conditions worked well for many years. However, the effectiveness of this mechanism was somewhat limited. Trace formats were, for the most part, inconsistent. Some applications even had multiple stores, each written by a different programmer for a different reason. With the advent of networks and distributed processing, this mechanism became even more unwieldy. Windows NT changed all that &#151; for the better, in my humble opinion.</p>
+
+<p>Windows NT introduces a mechanism for logging errors to a persistent store that allows, in fact enforces, a consistent reporting and presentation mechanism. This mechanism is called event logging, and is supported by the ubiquitous Event Viewer. Using the Event Viewer, administrators and other support personnel are able to peruse the event log on any machine in the network for which they have the appropriate privileges. Applications post specific messages to the log, while the operating system inserts the date and time, user data, and other pertinent information to the log. This log is available as long as the machine is turned on. There is no need for a user to be logged in. The advantages are obvious, and have been used to great effect by myself, as well as other programmers I've had the privilege (pardon the pun) to work with.</p>
+
+<p>The tradeoff, unfortunately, is that the mechanism is not very straightforward. It involves a series of steps, not all of which are strictly under the control of the individual programmer. First and foremost, the application needs a message table. This is a resource that exists within the executable code itself. In order to add one, a programmer has to code a text file to a specific format, a sample of which can be found in the file <B>Messages.mc</B>, <A HREF="fig1.htm">Figure 1</A>. The next step is to compile this text file with the Message Compiler, <B>mc.exe</B>. The resulting resource, header and <B>.bin</B> file are then inserted into the application by the linker. The header file contains symbolic names that represent the error codes, while the resource file and <B>.bin</B> file become resources of the application. Prior to linking in these files, the resource file produced must be merged into the application's existing resource files, as only one can be active in an application at any one time.</p>
+
+<p>Next, the application needs to be registered with the Event Viewer itself. This is done via the registry. If anything, this particular step is the Achilles' heel of the entire mechanism. If the application moves around (is copied or renamed, for example) the location becomes stale. This can become bothersome, since the Event Viewer needs to gain access to the executable to read the message table resources within it. In other words, without access to the application, the event logger is incapable of displaying the message data.</p>
+
+<p>Traditionally, applications that use message tables create one large resource DLL that is registered with the Event Viewer during installation. In general, these resource DLLs are installed in the Windows System directory and left there indefinitely. Creating these resource DLLs for any non-trivial application is quite labor intensive and error prone. Just getting the message compiler to handle the numerous message-table definition files is a chore. Even Windows NT components are designed with this mechanism. This also makes component sharing quite difficult, as these message table definitions have to be manually added to each project and built in.</p>
+
+<p>These are the issues this exception class library is designed to mitigate. The class library:</p>
+
+<UL><LI>provides a robust exception-class hierarchy that is infinitely extendable in both breadth and depth. This is accomplished by using facade classes <a href="#1">[1]</a> that encapsulate a single base class that does all the work.</LI>
+    <LI>handles NT structured exceptions &#151; floating-point errors, divide-by-zero, access violations, and both P0 and P1 faults &#151; about 20 different errors in all. These structured exceptions are then remapped into well-formed C++ exception objects that are based on the class hierarchy previously described.</LI>
+    <LI>handles NT message tables, simple error formatting, and Event Viewer reporting. As each component registers itself with the library &#151; this happens once for each component &#151; the message table resources become available to objects created by the library. These resources are used during the construction of the exception object, masking all implementation details from consuming objects.</LI>
+    <LI>registers applications with the Event Viewer automatically, at run time. The library updates the appropriate registry keys with the name, fully qualified path, and other particulars every time the application is run. This registration occurs only once in an application, and creates very little overhead.</LI>
+    <LI>overrides the "unhandled" exception, "unexpected" exception, termination, and "structured" exception handlers <a href="#2">[2]</a>. This allows the library to route NT's structured exceptions to C++ exceptions, and also allows the library to log unhandled exceptions and other unexpected events for later debugging.</LI>
+    <LI>provides a framework for different components (DLLs and executables) to understand each other's error codes and trap each other's exceptions. All exception objects inherit from a common base class, and the base class object contains all necessary member functions and variables. Therefore, an exception generated in one component can be caught and understood by another.</LI>
+    <LI>allows components to keep their message-table resources privately defined, yet accessible to all other components through the library. This allows components to be glued together into an application quickly and effectively, with no prior knowledge of these resources and no custom build scripting or manual intervention.</LI></UL>
+
+<p>The base class in the library is called <B>EXBase_c</B>. This class performs all the heavy lifting, including event-log registration, message decomposition, error code cracking (more on this later), and OS exception routing. This class cannot be instantiated directly &#151; all constructors are declared protected, to encourage users of the library to design their own exception class hierarchy, instead of relying on just this one class. Naturally, a well designed class hierarchy should be complemented by the use of exception specifications in all classes exposed by the component.</p>
+
+<p>To aid in the development of a robust class hierarchy, the exceptions header file <B>exceptions.h</B> contains a minimal set of exception classes that illustrate how this is accomplished. These classes are designed as facades, in that they serve no other purpose than to provide fine-grained exception classes for use in component development. In fact, the class declarations in this header can be used to form the basis of a component's hierarchy. Or an entirely new hierarchy can be created at the programmer's discretion.</p>
+<h4><FONT COLOR="#000080">Using the Exceptions Library</FONT></H4>
+
+<p>In order to use the Exceptions library, a component must register itself with the library at run time, as detailed in <B>sample.cpp</B>, <A HREF="fig2.htm">Figure 2</A>. The only heuristic here is that the fully qualified path name to the component must be known and supplied to the library. The Event Logger requires a fully qualified path name to the component to work. The registration process consists of:</p>
+
+<UL><LI>loading the component as a resource-only executable. This allows <B>EXBase_c</B> to gain access to the executable's resources for message composition and event logging.</LI>
+    <LI>placing the module handle in a collection that is indexed by the component's facility code. Facility codes must be unique to all components registering themselves within one process. Windows NT supports well over 4,000 facility codes in a process, so this should not be an undue burden.</LI></UL>
+
+<p>Facility codes must be unique within an application. If they are duplicated, unexpected behavior will result &#151; the last module registered with the library for a particular facility code will be the one used for message lookup and verification. This, in turn, can lead to a "message not found" condition, which will generate a generic error message. Since each component will create its own header file specific to its message table, ensuring unique facility codes should not be an undue burden.</p>
+
+<p>Component registration is the only run-time requirement of the library. Once registration is accomplished, the component can begin generating and catching exceptions. The design requirement is to provide a message table for the component. See the section on Windows NT Error Logging above for an overview of how this is done. Alternately, the code in <A HREF="fig1.htm">Figure 1</A> can be used as a starting point for all component message tables. Once the foregoing has been accomplished, the component may be freely moved around, as the library will re-register the component every time it is run. This prevents any stale path data from remaining in the registry.</p>
+
+<p>The following code fragment illustrates how to generate an exception using the exception-class hierarchy.</p>
+
+<pre>
+throw EXSystem_c(__LINE__, __FILE__, SOME_ERROR, EXBase_c::EXError);
+</pre>
+
+<p>The code fragment invokes the constructor of <B>EXSystem_c</B> that deals only with message-table identifiers. This constructor, in turn, will invoke the identical constructor of <B>EXBase_c</B>. While <B>EXBase_c</B> and its children have multiple constructor declarations, each supports at least the first two parameters, along with the last.</p>
+
+<p>All work with respect to message generation and event logging is performed during construction of <B>EXBase_c</B>. No additional work needs to be performed. All <B>EXBase_c</B> constructors expect to see certain formal parameters. Among these are the line number and file name in which the exception was generated, and the severity of the error (through a public typedef of <B>EXBase_c</B> called <B>Severity_e</B>). From there, each constructor specializes. One constructor takes a message string, another takes a message ID, and yet another takes both. <A HREF="fig3.htm">Figure 3</A> shows file <B>EXBase.h</B>, which contains the class declaration for <B>EXBase_c</B>, with all its constructor permutations.</p>
+
+<p>That's all there is to it. The above code fragment would create an instance of <B>EXSystem_c</B>, which would contain an instance of <B>EXBase_c</B>. The construction of <B>EXBase_c</B> would transpose the error code into a string message and log this message to the event log.</p>
+
+<p>The generated object can then be caught as follows:</p>
+
+<pre>
+Catch(EXSystem_c&amp; e)
+    {
+    int iStyle =
+        MB_OK | MB_ICONEXCLAMATION;
+    MessageBox(GetActiveWindow(),
+        e.Message.c_str(),
+        "An exception has occurred",
+        iStyle);
+    }
+</pre>
+
+<p>In situations where the actual exception type is not known, the following code fragment may be substituted.</p>
+
+<pre>
+Catch(EXBase_c&amp; e)
+    {
+    int iStyle =
+        MB_OK | MB_ICONEXCLAMATION;
+    MessageBox(GetActiveWindow(),
+        e.message.c_str(),
+        "An unknown exception has occurred",
+        iStyle);
+    }
+</pre>
+
+<p>The previous catch handler can be used in lieu of the standard catch-all (<B>catch (...)</B>) syntax. While catch-all syntax will work as advertised, you don't get any information about what was thrown or where. This information is readily accessible from <B>EXBase_c</B>.</p>
+
+<h4><FONT COLOR="#000080">Facade Classes</FONT></H4>
+
+<p>The facade classes contain only public and protected constructors, each of which does nothing. They exist to allow a developer to create exceptions that are as fine-grained as the component requires. You can see that the public constructors supply the typeid of the class, and that the protected constructors expect to see the typeid of the child. This allows the name of the class that generated the exception to become part of the actual message generated by the library. In this fashion, an exception-class hierarchy can be built that can be as deep and wide as the component requires, without adding undue overhead.</p>
+
+<p>All facades derived from <B>EXBase_c</B> should also require the same formal parameters, as these parameters are key to understanding not only what happened, but where it happened and how bad the problem is.</p>
+
+<h4><FONT COLOR="#000080">Meat of the Library</FONT></H4>
+
+<p>The declaration for class <B>EXBase_c</B> is a little unconventional. There are a series of static member functions that, at first glance, don't seem to belong. In point of fact, they don't. They were placed here as a design trade-off. They allow the class to remain self contained, without the need for namespaces or other naming mechanisms that would have made the library somewhat unwieldy. The net effect is that the library should have no undue effects on component code. In hindsight, a namespace could have been used to achieve the same effect. However, since not all compilers support namespaces correctly, it seemed better to stick with what currently works.</p>
+
+<p>As I stated earlier, the base class of the library is <B>EXBase_c</B>. It contains several protected constructors, as previously described. It also contains a series of private member objects, which are initialized during the construction of the object. They hold the message created by the class, the error code associated with it, the child class that was instantiated, the severity of the error, the source file where the exception was generated, the line number within this source file, and any user-supplied message string supplied at object creation. Each of these member objects is accessible via public member access functions. The only exception (pardon the pun) to this is the line number and file name. These items are already included in the message built during object creation.</p>
+
+<p>The exception specifications found in each function declaration show that no function will produce an exception. This is required behavior. If an exception class were to produce an exception itself, an unexpected-exception condition would result, whose default behavior is termination of the application, as required by the C++ Standard. Otherwise, the possibility of infinite recursion exists. In essence, then, it is crucial that this class never produce an exception itself. Please see the C++ Standard <a href="#3">[3]</a> for a full description of unexpected exceptions, and associated behavioral requirements.</p>
+
+<p>A series of static member functions are declared in <B>EXBase_c</B>. The <B>Initialize</B> and <B>DeInitialize</B> member functions set up the handlers for structured, unhandled, and unexpected exceptions, along with a termination handler. There is no need to explicitly call these member functions, as the Exceptions DLL will call them during thread attach and detach operations respectively. The <B>Register</B> and <B>UnRegister</B> functions are used by components to make them known to the library, the formal parameters of which have been covered above.</p>
+
+<p>The <B>WinException</B> function is responsible for rerouting structured exceptions to C++ exceptions. The layout of this function can be found in file <B>WinExImp.cpp</B>, <A HREF="fig4.htm">Figure 4</A>. Once the appropriate message for the structured exception has been found, this function will create an <B>EXSystem_c</B> exception that can be caught by other components. This function accepts an unsigned integer (which is unused), and a pointer to an <B>EXCEPTION_POINTERS</B> structure. This structure contains a pointer to an <B>EXCEPTION_RECORD</B> structure and a pointer to <B>CONTEXT</B> structure. The former contains processor-independent information regarding the exception, while the latter contains<br>processor-dependent data. The library makes use of only the <B>EXCEPTION_RECORD</B> structure.</p>
+
+<p>The data in this structure is used to identify the exception that occurred. This identifier is then mapped to the appropriate message ID. After this, the exception record is checked to see if the exception is recoverable. If not, an exception object is created to log the error, and the process is terminated. If the exception is recoverable, an exception object is thrown, thereby allowing an appropriate catch handler to recover from the error. The code in <A HREF="fig2.htm">Figure 2</A> shows how this feature can be used to recover from exceptional conditions that otherwise terminate the component ungracefully. It should be noted that the code in <A HREF="fig2.htm">Figure 2</A> is the code used to test the library.</p>
+
+<p>Another feature that should be noted is that, in the case of structured exceptions, the line number and file name are meaningless. The most important data is the hexadecimal address of where the exception occurred. This address can be used to map the exact line of assembly that produced the error, simplifying the debugging process substantially.</p>
+
+<p>This library contains a host of other capabilities and features that can't be covered in depth here, due to space limitations. The source code of the library should be thoroughly explored to see how it does the things it does. The code in there is not perfect, by any stretch of the imagination, but it does work effectively.</p>
+
+<h4><FONT COLOR="#000080">Tying It All Together</FONT></H4>
+
+<p>This library can be used as a core component in an overall exception and error-logging strategy for an application, from simple stand-alone applications to full-sized systems with dozens of components. If used consistently, it can provide programmers with rich debugging information and extensive recovery capabilities. It can also be extended to add other capabilities, such as SNMP trapping and the like, thereby bringing these capabilities to the entire development team with no additional work or training.</p>
+
+<p>Probably the most powerful aspect of the library is that it allows components written by different developers to interoperate with no additional work. Different component developers can take care of their own problems, knowing that when these components are finally combined they will work well together, at least from the perspective of error handling. As time progresses, and more components are developed that use the library, this interoperability gets easier and easier. This, in turn, facilitates both local and remote debugging, which helps increase component quality and reliability.</p>
+
+<p>In production systems where this library has been used by multiple components, the end result of an exceptional condition is usually an extensive series of entries into the event log, called an "event cascade." These entries provided a full program trace that shows how a particular condition developed. This has proved to be quite useful when trying to re-create the error.</p>
+
+<h4><FONT COLOR="#000080">Notes and References</FONT></H4>
+
+<p><a name="1"></a>[1]  Gamma, et al. <I>Design Patterns, Elements of Reusable Object-Oriented Software</I> (Addison-Wesley, 1995). ISBN 0201633612.</p>
+
+<p><a name="2"></a>[2]  I recently discovered that, due to an undocumented heuristic in MSVC++ 5.0, this code will work only when linked to Microsoft's multithreaded runtime libraries. For some reason the single-threaded version of function <B>set_se_handler</B> doesn't work correctly in a single-threaded process.</p>
+
+<p><a name="3"></a>[3]  C++ Standard, ISO/IEC FDIS 14882, November 1997.</p>
+
+<p><i>Eric Gufford is an independent consultant and the president of TRIAD Systems, Inc. He has been coding in C for 12 years, and C++ for eight years. His specialty is C++ infrastructure programming on Windows NT. Eric (representing his company) is a voting member of the ANSI C++ Technical Committee (J16), the ANSI Java Technical Committee (J22), and the ISO Java Study Group. He may be reached at <B>eric_gufford@acm.org</B>.</i></p>
+
+<h4><a href="../../../source/1998/aug98/gufford.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

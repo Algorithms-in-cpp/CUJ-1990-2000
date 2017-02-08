@@ -1,0 +1,225 @@
+<HTML>
+     
+     <HEAD>
+<TITLE>March 1999/C++ Theory and Practice</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocmar.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">C++ Theory and Practice: Trimming Excess Fat</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Dan Saks</FONT></H3>
+
+<BLOCKQUOTE>
+
+<p>Static members combine the lifetime of global objects and functions with the privacy of member names.</p>
+</BLOCKQUOTE>
+<HR>
+<BLOCKQUOTE>
+<p><I>Copyright &copy; 1999 by Dan Saks</I></p>
+<p>I continue this month with further refinements to the programming example that I began last month. The example provides a concrete basis for discussing alternative C++ programming techniques. (See "C++ Theory and Practice: Partitioning with Classes," <I>CUJ,</I> February 1999.)</p>
+<p>My example program is a cross-reference generator called xr. xr reads text from standard input and writes a cross-reference to standard output. The cross-reference output is an alphabetized list of the words (identifiers as in C++) that appeared in the input. Each line in the output contains one word followed by the sequence of unique line numbers on which that word appeared in the input.</p>
+<p>xr uses a binary tree to maintain the words in alphabetical order. Each node in the tree holds a word and its corresponding sequence of line numbers. More precisely, each node in the tree contains a pointer to the null-terminated character-array representation of a word, and pointers to the head and tail of a linked list representing the sequence of line numbers for that word.</p>
+<p>Last month, I created a class called <B>cross_reference_table</B>, which encapsulates that tree. As it stands now, the program consists of two source files and one header file:</p>
+
+<UL><LI><B>xr.cpp</B>: the main part of the application, including the input processing </LI>
+    <LI><B>table.h</B>: the <B>cross_reference_table</B> class and inline member function definitions </LI>
+    <LI><B>table.cpp</B>: the remaining definitions for the <B>cross_reference_table</B> class</LI></UL>
+
+<p>The tree implementation employs a structure type, <B>tree_node</B>, and two functions, <B>add_tree</B> and <B>put_tree</B>. The first version of the program declared <B>tree_node</B>, <B>add_tree</B>, and <B>put_tree</B> at global scope. Toward the end of last month's column, I observed that all three names represent implementation details that should be inaccessible outside the <B>cross_reference_table</B> class, and so I transformed them into private class members. The resulting class definition appears in <A HREF="list1.htm">Listing 1</A>. The corresponding member definitions appear in <A HREF="list2.htm">Listing 2</A>.</p>
+<p>I concluded last month by noting that declaring <B>add_tree</B> and <B>put_tree</B> as class members introduces a bit of unnecessary overhead into the program. You might want to take a moment and look at the listings to see if you can spot it, but you'd better hurry because I'm going to tell you what it is right now.</p>
+
+<h4><FONT COLOR="#000080">Doing Without this</FONT></H4>
+
+<p>The declaration for <B>add_tree</B> is:</p>
+
+<pre>
+tree_node *add_tree
+    (
+    tree_node *t,
+    char const *w,
+    unsigned n
+    );
+</pre>
+
+<p>That is, <B>add_tree</B> has a parameter list with three parameters. When it was declared globally, what you saw was what you got. That is, <B>add_tree</B> really had three parameters. However, as a class member, <B>add_tree</B> actually has four parameters &#151; the three you see, plus <B>this</B>.</p>
+<p>Normally, I would consider passing <B>this</B> a necessity. After all, the purpose of a member function is to apply some operation to a class object, the so-called <I>receiver</I> of the member function call. However, in this case, <B>add_tree</B> doesn't actually do anything with its receiver object.</p>
+<p>A little terminology will help me elaborate. An <I>explicit member access</I> is an expression of the form <B>x.m</B>, where <B>x</B> is an object of class <B>T</B> and <B>m</B> is a member of <B>T</B>. (<B>m</B> could be a data member, a member function, or even a member enumeration constant.) An explicit member access can also take the form <B>p-&gt;m</B>, where <B>p</B> is an expression of type <B>T *</B>.</p>
+<p>The definition for a member function <B>T::f</B> can refer to member <B>m</B> either by an explicit member access such as <B>x.m</B> or <B>p-&gt;m</B>, or by an <I>implicit member access</I> that's just plain <B>m</B>. The compiler interprets an implicit member access to member <B>m</B> as <B>this-&gt;m</B>.</p>
+<p>For example, the body of <B>cross_reference_table::add</B> in <A HREF="list1.htm">Listing 1</A> contains a single statement with no explicit member accesses:</p>
+
+<pre>
+root = add_tree(root, w, n);
+</pre>
+
+<p>However, it contains three implicit accesses. The equivalent statement with explicit accesses looks like:</p>
+
+<pre>
+this-&gt;root = this-&gt;add_tree
+        (this-&gt;root, w, n);
+</pre>
+
+<p>Now I can elaborate my point that <B>add_tree</B> doesn't actually do anything with its receiver object. Although, <B>add_tree</B> never explicitly mentions <B>this</B>, it does contain implicit member accesses. However, the only implicit accesses involve recursive calls such as:</p>
+
+<pre>
+t-&gt;left = add_tree(t-&gt;left, w, n);
+</pre>
+
+<p>which is equivalent to:</p>
+
+<pre>
+t-&gt;left = this-&gt;add_tree(t-&gt;left, w, n);
+</pre>
+
+<p>In other words, <B>add_tree</B> never does anything with <B>this</B> other than pass it to another call to <B>add_tree</B>. It never uses <B>this</B> to access the data member <B>root</B> nor to call any other member functions.</p>
+<p>The same can be said for <B>put_tree</B>: it makes no use of its <B>this</B> parameter other than to pass it to other calls to <B>put_tree</B>. Thus, the extra code and execution time associated with passing the extra parameter is a waste.</p>
+<p>If <B>add_tree</B> and <B>put_tree</B> don't operate on <B>cross_reference_table</B> objects, then why declare them as class members? As I mentioned earlier, <B>tree_node</B>, <B>add_tree</B>, and <B>put_tree</B> are implementation details that shouldn't be available to code outside the <B>cross_reference_table</B> class. The most straightforward way to confine them to the class is to declare them as private members. Unfortunately, declaring <B>add_tree</B> and <B>put_tree</B> as member functions incurs the slight performance penalty I just described. Fortunately, it's easy to eliminate that penalty by declaring them as static member functions.</p>
+
+<h4><FONT COLOR="#000080">Static Members</FONT></H4>
+
+<p>It's been a long time since I did anything in this column with static members, so here's a brief explanation of what they are.</p>
+<p>Suppose your application uses a class called <B>widget</B>, and you want to track the number of <B>widget</B> objects in existence at any given time in the execution of your program. Simply define a counter, initialized to zero, that counts the number of objects. Then, add a statement to each <B>widget</B> constructor to increment the counter, as in:</p>
+
+<pre>
+widget::widget()
+    {
+    ++counter;
+    // initialize the widget
+    }
+</pre>
+
+<p>and add a statement to the <B>widget</B> destructor to decrement the counter, as in:</p>
+
+<pre>
+widget::~widget()
+    {
+    // discard the widget's resources
+    --counter;
+    }
+</pre>
+
+<p>Now the question is: Where do you declare the counter? Clearly, you can't declare the counter as an ordinary data member of the <B>widget</B> class, as in:</p>
+
+<pre>
+class widget
+    {
+    widget();
+    ~widget();
+    // ...
+private:
+    int counter;
+    // ...
+    };
+</pre>
+
+<p>because then you'd get a separate counter for each <B>widget</B> object rather than one counter for all the <B>widget</B>s.</p>
+<p>The <B>counter</B> variable must be statically allocated and separate from every <B>widget</B> object so there's one and only one counter for all <B>widget</B> objects. Declaring the counter as a global variable will work (in a sense), but global variables increase the potential for name conflicts and subtle coupling among components. So let's forget that.</p>
+<p>Rather, declare the counter as a static data member, as in:</p>
+
+<pre>
+class widget
+    {
+    widget();
+    ~widget();
+    // ...
+private:
+    static int counter;
+    // ...
+    };
+</pre>
+
+<p>A static data member is in the scope of its class and is subject to access control (it can be <B>public</B>, <B>private</B>, or <B>protected</B>). Unlike an ordinary data member, a static data member is not a part of each class object; there's only one copy of the static member, separate from every object. That one copy has static storage duration and external linkage, so that all objects of the class type share the same static member.</p>
+<p>The declaration of a static data member inside a class is only a declaration. The definition (and initialization) of the static member appears elsewhere, typically in a source file along with other members of the class. For <B>widget::counter</B>, that definition looks like:</p>
+
+<pre>
+int widget::counter = 0;
+</pre>
+
+<p>If the counter were public, code outside the <B>widget</B> class could query the counter by using its fully-qualified name, <B>widget::counter</B>, as in:</p>
+
+<pre>
+if (widget::counter &gt; 0)
+    // some widgets are lying around
+</pre>
+
+<p>But then code outside the <B>widget</B> class could also modify <B>widget::counter</B> and invalidate the count. That's why the counter should be private.</p>
+<p>If you want to allow code outside the <B>widget</B> class to query the private <B>widget</B> counter, you must provide a public member function that returns the current counter:</p>
+
+<pre>
+int widget::how_many()
+    {
+    return counter;
+    }
+</pre>
+
+<p>However, this function has a problem &#151; it has a <B>this</B> pointer that it doesn't use and therefore doesn't need. Sound familiar? <B>how_many</B> doesn't need <B>this</B> to locate <B>widget::count</B> because <B>widget::count</B> is not in a <B>widget</B> object. Passing the address of a receiver object wastes code and execution time.</p>
+<p>This problem goes away if you declare <B>how_many</B> as a static member function:</p>
+
+<pre>
+class widget
+    {
+public:
+    widget();
+    ~widget();
+    static int how_many();
+    // ...
+private:
+    int counter;
+    // ...
+    };
+</pre>
+
+<p>A static member function does not have a <B>this</B> pointer parameter, so it cannot access ordinary data members. It can access static data members and call other static member functions. Thus, you don't need a <B>widget</B> object to call <B>how_many</B>. You simply call it by its full name, as in:</p>
+
+<pre>
+if (widget::how_many() &gt; 0)
+    // some widgets are lying around
+</pre>
+
+<p>If you wish, you can still use an explicit member access expression to call <B>how_many</B>, as in:</p>
+
+<pre>
+if (w.how_many() &gt; 0)
+    // some widgets are lying around
+</pre>
+
+<p>where <B>w</B> is a <B>widget</B> object, or in:</p>
+
+<pre>
+if (p-&gt;how_many() &gt; 0)
+    // some widgets are lying around
+</pre>
+
+<p>where <B>p</B> is a pointer to a <B>widget</B> object. In either case, the translator uses <B>w</B> or <B>p</B> only to determine the class type of the static member; it does not bind a <B>this</B> pointer to the object as part of the call.</p>
+
+<h4><FONT COLOR="#000080">Static Members vs. const Members</FONT></H4>
+
+<p><A HREF="list3.htm">Listing 3</A> shows the <B>cross_reference_table</B> class definition with <B>add_tree</B> and <B>put_tree</B> as static member functions. When I added the keyword <B>static</B> at the beginning of the function declarations, I made one other change: I removed the keyword <B>const</B> at the end of the declaration of <B>put_tree</B>. Here's why.</p>
+<p>In <A HREF="list1.htm">Listings 1</A> and <A HREF="list2.htm">2</A>, <B>put</B> is a const member function because writing a cross-reference table to <B>cout</B> shouldn't change the table's contents. A const member function must treat its receiver object as a const object.</p>
+<p>Inside a const member function, the compiler must reject any attempt to modify the receiver object. Specifically, it must reject any attempt to alter a member of the receiver object. It must also reject any attempt to pass the receiver to another function as a non-const object.</p>
+<p>The only statement in the body of <B>put</B> is:</p>
+
+<pre>
+put_tree(root);
+</pre>
+
+<p>which, after converting the implicit member accesses to explicit member accesses, is equivalent to:</p>
+
+<pre>
+this-&gt;put_tree(this-&gt;root);
+</pre>
+
+<p>This call passes <B>put</B>'s receiver object as <B>put_tree</B>'s receiver object. If <B>put_tree</B> were a non-const member function, the compiler would reject the call as an attempt to pass a const object as a non-const object. Therefore, <B>put_tree</B> had to be a const member function.</p>
+<p>But that was then. <B>put_tree</B> is now a static member function &#151; it doesn't have a receiver object. Yet the <B>const</B> in the heading of a const member function modifies the type of the receiver. Therefore a member function cannot be both static and const. Now that <B>put_tree</B> is static, it cannot be const.</p>
+
+<h4><FONT COLOR="#000080">Miles to Go</FONT></H4>
+<p>Using static members offers just one way to organize this program so that all details of the tree structure are inaccessible outside the <B>cross_reference_table</B> class. I'll consider alternatives at some time in the future.</p>
+
+<p><i>Dan Saks is the president of Saks &amp; Associates, which offers training and consulting in C++ and C. He is active in C++ standards, having served nearly seven years as secretary of the ANSI and ISO C++ standards committees. Dan is coauthor of <I>C++ Programming Guidelines</I>, and codeveloper of the Plum Hall Validation Suite for C++ (both with Thomas Plum). You can reach him at 393 Leander Dr., Springfield, OH 45504-4906 USA, by phone at +1-937-324-3601, or electronically at <B>dsaks@wittenberg.edu</B>.</i></p>
+
+<h4><a href="../../../source/1999/mar99/saks.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

@@ -1,0 +1,952 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>March 1996/The Column that Needs a Name</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><A href="../tocmar.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          <FONT COLOR="#FF0000">Columns</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">The Column that Needs a
+          Name</FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">Dan Saks</FONT></H3>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">Parsing C++ Declarations,
+          Part 2</FONT></H3>
+          
+          <BLOCKQUOTE>
+               
+               <P>You can gain lots of insight into C++ by writing a program to
+                    analyze C++ source code. Dan constructs such a program and
+                    kicks off his C++ parser project.</P></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <p><BR>
+                     This is the second of two articles that describe the design
+                    and implementation of a program that translates C++
+                    declarations into English. In the first part (CUJ, February
+                    1996), I explained the program's general behavior and its
+                    high-level design. I also described in detail the interface
+                    to the character scanning functions. This month, I'll show
+                    the implementation of the scanning functions and, of course,
+                    the design and implementation of the parser itself.</p>
+               
+               <p> A brief recap is probably in order.
+                    My decl program reads a sequence of zero or more C++
+                    declarations from the standard input. It checks each
+                    declaration for proper syntax, and if the syntax is correct,
+                    writes the English translation of the declaration to the
+                    standard output. For example, given the declaration:</p>
+
+<PRE>
+const char *a[10];
+</PRE>
+               
+               <p></p>
+               
+               <p>decl responds with:</p>
+               
+               <p></p>
+
+<PRE>
+a is ...
+array with 10 elements of type...
+pointer to ...
+const char
+</PRE>
+               
+               <p></p>
+               
+               <p>and given the input:</p>
+               
+               <p></p>
+
+<PRE>
+int T::*pm;
+</PRE>
+               
+               <p></p>
+               
+               <p>decl responds with:</p>
+               
+               <p></p>
+
+<PRE>
+pm is ...
+pointer to member of T with type ...
+int
+</PRE>
+               
+               <p><BR>
+                     decl recognizes object and function declarations that
+                    satisfy the syntax for simple-declaration, as defined by the
+                    EBNF in <A href="table1.htm">Table 1</a>.
+ EBNF is the
+                    Extended Backus-Naur Form, which I described several months
+                    ago (see "A Sensible Grammar Notation," CUJ,
+                    October 1995). The EBNF grammar for the corresponding tokens
+                    appears in <A href="table2.htm">Table 2</a>.
+ Since I'm
+                    using decl to illustrate how declarations synthesize types,
+                    the grammar omits parts of genuine C++ declarations, such as
+                    initializers and storage-class-specifiers, that do not
+                    participate in forming types.</p>
+               
+               <p> decl imposes a few other simplifying
+                    restrictions on its input. It accepts type keywords, such as
+                    char, int, and double, but not adjectives, such as long,
+                    short, signed, and unsigned. It also accepts user-defined
+                    type names; however, type names must begin with an uppercase
+                    letter (see the rule for name in <A href="table2.htm">Table
+                         2</a>)
+.</p>
+               
+               <p> For example,</p>
+
+<PRE>
+X f();
+</PRE>
+               
+               <p></p>
+               
+               <p>is okay, but</p>
+               
+               <p></p>
+
+<PRE>
+x f();
+</PRE>
+               
+               <p></p>
+               
+               <p>is not, because the type-specifier x
+                    begins with a lowercase letter. As I explained in Part 1,
+                    the case of the first letter in an identifier gives decl a
+                    simple way to distinguish names (previously-declared
+                    identifiers) from other (as yet undeclared) identifiers.
+                    This avoids the need to maintain a symbol table.</p>
+               
+               <p>decl does not accept a parameter list
+                    between the parentheses of a function declarator. (The rule
+                    for function-suffix in <A href="table1.htm">Table 1</A>
+                    refers to the non-terminal parameter-clause, but the grammar
+                    nevers defines parameter-clause.) decl does accept an array
+                    dimension in an array declarator, but the dimension must be
+                    a single integer, as in a[10], or a single name, as in a[N].
+                    The dimension cannot be a full-blown expression, as in
+                    full-blown C++. Again, the name in the dimension, if any,
+                    must begin with an uppercase letter.</p>
+               
+               <p> decl is built from two primary
+                    components, a scanner and a parser. The scanner is a
+                    stream-like class that reads characters from the input,
+                    filters out the whitespace characters, and partitions the
+                    remaining characters into tokens. The parser acquires tokens
+                    from the scanner, pieces them into declarations, and
+                    translates them into English.</p>
+               
+               <p> <A href="listing1.htm">Listing 1</A>
+                    shows scanner.h, the header that defines the scanner and
+                    token classes. The scanner's public interface consists of
+                    four functions. The constructor attaches a scanner to an
+                    istream. get returns the next token scanned from that
+                    istream. unget "pushes" the current token back
+                    into the scanner (to be returned by a future call to get),
+                    and sets the current token to its prior value. current
+                    simply returns the current token.</p>
+               
+               <p> A token object is a pair of values.
+                    The token class has public member functions for inspecting
+                    those values: text returns the token as a string object, and
+                    kind returns an enumeration that categorizes the token. The
+                    public nested type token::category enumerates the different
+                    categories.</p>
+               
+               <p> The token class has a public default
+                    constructor so that the parser can declare tokens to hold
+                    objects returned from scanner::get. It also has a copy
+                    constructor and a copy assignment operator, both
+                    compiler-generated and public.</p>
+               
+               <p> The token class has a third
+                    constructor</p>
+
+<PRE>
+token(category, const string &amp;);
+</PRE>
+               
+               <p></p>
+               
+               <p>for manufacturing new token objects.
+                    This constructor is only for the scanner's use. Therefore,
+                    the token class declares the constructor private and then
+                    grants the scanner friendship, just so the scanner can
+                    access that one private constructor.</p>
+               
+               <p>scanner.h also defines one global
+                    function, image, which converts a value of type
+                    token::category to a null-terminated character string,
+                    primarily for display purposes.</p>
+               
+               <p> scanner.h in <A href="listing1.htm">Listing
+                         1</a>
+is identical to the one from Part 1 except for
+                    one detail previously missing from the scanner class. The
+                    scanner now explicitly declares a copy constructor:</p>
+               
+<pre>scanner(const scanner &amp;);</pre>
+               
+               <p>and a copy assignment operator:</p>
+
+<PRE>
+scanner &amp;operator=(const scanner &amp;);
+</PRE>
+               
+               <p>as private members. There's a risk
+                    that the compiler might generate these functions, and in so
+                    doing, sneak some nasty surprises into my program. Since the
+                    decl program doesn't need these copy operations, the safest
+                    course is to stifle the compiler's urge to create them.</p>
+               
+               <p>In this particular instance, the
+                    private declarations aren't really necessary. The scanner
+                    class has a data member in_stream of type istream &amp;. C++
+                    does not generate a copy constructor and a copy assignment
+                    for any class that has a data member with a reference type.
+                    However, I think it's better style to disable the copy
+                    operations explicitly, rather than rely on such a subtle
+                    rule.</p>
+               
+               <h4><FONT COLOR="#000080">Token Look Ahead</FONT></H4>
+               
+               <p><A href="listing2.htm">Listing 2</A>
+                    contains scanner.cpp, which defines the non-inline member
+                    functions and static data members for the scanner class. The
+                    private member scan does the bulk of the work. The get and
+                    unget functions add a thin layer of code to support one
+                    token lookahead. Let's look at get and unget first.</p>
+               
+               <p> In nearly all cases, decl can make
+                    its parsing decisions based on the category of the current
+                    token. However, there is one place where the parser needs to
+                    know about the token beyond the current token in order to
+                    make up its mind about the current token. In this case, the
+                    parser gets the next token, peeks at it, and then ungets it
+                    (puts it back). The parser can then finish processing the 
+                    current token, and then get the next token for keeps.</p>
+               
+               <p> The decl parser needs to look at most
+                    one token ahead. I opted for a simple implementation that
+                    would meet that requirement, rather than a more general
+                    scheme to support further lookahead. The scanner has three
+                    private token objects, previous_token, current_token, and
+                    next_token. The scanner constructor (<A href="listing1.htm">Listing
+                         1</a>)
+ initializes all of these to the token::NO_VALUE
+                    category by default.</p>
+               
+               <p> If the parser never calls unget, then
+                    the scanner never uses next_token, and next_token is always
+                    the NO_VALUE token. Thus, in the "normal" case,
+                    get (<A href="listing2.htm">Listing 2</a>)
+ skips to its
+                    else-part, which simply copies current_token to
+                    previous_token, and scans a new current_token from the input
+                    stream.</p>
+               
+               <p> Calling unget backs up the scanner by
+                    one token. It copies current_token to next_token, and copies
+                    previous_token to current_token. Thus, the next call to get
+                    won't scan the input stream, but rather will use the
+                    previously "ungot" token sitting in next_token as
+                    the current token.</p>
+               
+               <p> This unget mechanism is adequate to
+                    let the parser look ahead one token, but no more. In
+                    particular, the mechanism does not work properly if the
+                    parser calls unget twice without an intervening call to get.
+                    Although I probably should build in some defense against
+                    consecutive unget calls, I don't want to get sidetracked on
+                    that right now. I may return to this issue in a future 
+                    article.</p>
+               
+               <h4><FONT COLOR="#000080">Scanning Characters</FONT></H4>
+               
+               <p>The scan function does most of the
+                    scanner's work. It reads the characters one at a time from
+                    in_stream (the scanner's private istream object), pieces
+                    them into strings, and categorizes the resulting token.</p>
+               
+               <p> As I explained in Part 1, not all the
+                    productions (grammar rules) in <A href="table2.htm">Table
+                         2</a>
+represent complete tokens. A production in<A href="table2.htm">
+                         Table 2</a>
+represents a token only if its
+                    left-hand-side also appears on the right-hand-side of a
+                    production in <A href="table1.htm">Table 1</a>.
+ Thus,
+                    integer-literal, identifier, name, type-keyword, and
+                    cv-qualifier are token categories. The other productions &#151;
+                    digit, letter, lowercase-letter, and uppercase-letter &#151;
+                    define sets of characters used in composing tokens.</p>
+               
+               <p> The tokens in <A href="table2.htm">Table
+                         2</a>
+do not cover all the token categories. Each of
+                    the operators appearing as a quoted string in
+                    <A href="listing1.htm">Listing 1</a>,
+ namely</p>
+
+<PRE>
+,  (  )  [  ]  &amp;  ::  *
+</PRE>
+               
+               <p></p>
+               
+               <p>is also its own category, as is the
+                    EOF character.</p>
+               
+               <p>Tokens may be separated by whitespace
+                    characters, so the scan function begins by reading and
+                    skipping characters until it finds a non-space character.
+                    Then it selects a preliminary category for the token based
+                    on that first non-space character. For example, the only
+                    tokens that can begin with a digit are integer-literals, and
+                    the only tokens that can begin with an uppercase letter are 
+                    names. Therefore, the algorithm of the scan function looks
+                    something like:</p>
+
+<PRE>
+c = the first non-space character
+if (c is a digit)
+    scan an integer-literal
+else if (c is an uppercase letter)
+   scan a name
+else ...
+</PRE>
+               
+               <p><BR>
+                     All of the keywords (type-keywords and cv-qualifiers) match
+                    the rule for identifiers. A token with the structure of an
+                    identifier is truly an identifier only if it does not match
+                    one of the keywords. The scanner distinguishes keywords by
+                    table lookup. That is, it scans a string that begins with a
+                    lowercase letter as if it were an identifier, and then hunts
+                    for that string in the keyword table to see if it's really a
+                    keyword. Thus, the trailing else ... in the scan algorithm
+                    above is really</p>
+
+<PRE>
+else if (c is a lowercase letter)
+    scan an identifier or keyword
+else ...
+</PRE>
+               
+               <p><BR>
+                     The istream class offers a choice of functions and
+                    operators for reading characters from an istream. scan uses</p>
+
+<PRE>
+int istream::get();
+</PRE>
+               
+               <p></p>
+               
+               <p>which behaves much like fgetc and
+                    getchar from &lt;stdio.h&gt;. That is, if it successfully
+                    reads a character, get returns that character as an int;
+                    otherwise it returns EOF.</p>
+               
+               <p>Using istream::get and the standard
+                    isdigit function, a lexical rule such as</p>
+
+<PRE>
+integer-literal =
+    digit { digit } .
+</PRE>
+               
+               <p>translates fairly directly into C++
+                    code:</p>
+
+<PRE>
+if (isdigit(c))
+    {
+    // set the category to integer-literal
+    // do something with c
+    c = in_stream.get();
+    while (isdigit(c))
+        {
+        // do something with c
+        c = in_stream.get();
+        }
+    }
+</PRE>
+               
+               <p><BR>
+                     The loop reads one character too many. It can't tell that
+                    it has read an entire integer-literal until it has read a
+                    character that is not a digit. The scanner must therefore
+                    put that character back into the input stream so that the
+                    next call to scan will resume scanning at the first
+                    character after the integer-literal. If it did not put that
+                    character back, the next call to scan would blindly get
+                    another character, and thus ignore the character after the
+                    integer-literal.</p>
+               
+               <p> The draft C++ Standard offers a
+                    choice of functions for putting characters back into an
+                    input stream.</p>
+
+<PRE>
+istream &amp;istream::unget();
+</PRE>
+               
+               <p></p>
+               
+               <p>simply backs an istream up by one
+                    character without altering the contents of the istream.</p>
+               
+               <p></p>
+
+<PRE>
+istream &amp;istream::putback(char c);
+</PRE>
+               
+               <p></p>
+               
+               <p>puts any character c back into the
+                    istream, not necessarily a character that was actually read
+                    from that istream. For this application, unget is more
+                    appropriate. However, neither of the compilers that I used
+                    to test this program (Borland C++ 4.5 and Watcom C++ 10.5)
+                    has an istream with an unget member. Therefore, I had to use
+                    putback.</p>
+               
+               <p>In the code above, "do something
+                    with c" is simply tacking character c to the end of the
+                    string that is the text image of the token. You can append a
+                    single character to a string using</p>
+
+<PRE>
+string &amp;string::operator+=(char);
+</PRE>
+               
+               <p></p>
+               
+               <p>Inside the scan function, c has type
+                    int. Although there's a standard conversion from int to
+                    char, the compilers I used complained of ambiguities, so I
+                    added a cast:</p>
+               
+               <p></p>
+
+<PRE>
+text += char(c);
+</PRE>
+               
+               <p></p>
+               
+               <p>I don't mind using a cast here; it's
+                    probably better style anyway. I only wish I could have used
+                    the new cast notation:</p>
+               
+               <p></p>
+
+<PRE>
+text += static_cast&lt;char&gt;(c);
+</PRE>
+               
+               <p></p>
+               
+               <p>However, of the compilers I used, only
+                    Borland supports this notation. I prefer the comfort of
+                    compiling my code with more than one compiler, so I stayed
+                    with the old-style cast.</p>
+               
+               <p>Combining all these pieces together,
+                    the code to scan an integer-literal looks like:</p>
+
+<PRE>
+if (isdigit(c))
+    {
+    kind = token::INT_LITERAL;
+    text += char(c);
+    c = in_stream.get();
+    while (isdigit(c))
+        {
+        text += char(c);
+        c = in_stream.get();
+        }
+    in_stream.putback(c);
+    }
+</PRE>
+               
+               <p></p>
+               
+               <p>In this code, the statements inside
+                    the loop also appear just above the loop. Therefore, I did a
+                    little optimization by hand by converting the while loop to
+                    a do-while loop. The resulting code appears in<A href="listing2.htm">
+                         Listing 2</a>.
+</p>
+               
+               <p>It turns out that the code to scan an
+                    identifier and the code to scan a name share a fair amount
+                    of common code. Rather than implement them as distinct paths
+                    through the scan function, I folded them into one, as shown
+                    in <A href="listing2.htm">Listing 2</a>.
+</p>
+               
+               <p> If scan determines that the first
+                    non-space character is neither a letter nor a digit, then it
+                    checks for operators. If the character is a colon, then scan
+                    gets another character in the hope of finding another colon.
+                    If that next character is not a colon, the scanner puts it
+                    back, and categorizes the token as NO_SUCH (an
+                    unrecognizable token).</p>
+               
+               <p> If the first non-space character is
+                    not a colon, scan checks to see if it's some other operator.
+                    scan uses</p>
+
+<PRE>
+strchr("*&amp;[]();,", c)
+</PRE>
+               
+               <p></p>
+               
+               <p>to test if c is amember of the set of
+                    operators. strchr returns non-zero if character c appears
+                    somewhere in the string literal. If c is indeed one of the
+                    operators, scan computes its token category by simply
+                    casting c to the category type using:</p>
+               
+               <p></p>
+
+<PRE>
+kind = token::category(c);
+</PRE>
+               
+               <p></p>
+               
+               <p>As I explained in Part 1, this little
+                    trick works because type token::category (<A href="listing1.htm">Listing
+                         1</a>)
+ explicitly defines the category for each
+                    operator with the value of the character for that operator.
+                    Here again, I'd prefer to use a static_cast.</p>
+               
+               <p>If the first non-whitespace character
+                    is not an operator, then scan checks it against EOF. If that
+                    fails, then the character is an unrecognizable token, and
+                    scan sets the category to NO_SUCH. At the very end, scan
+                    uses the private token constructor to glue the string and
+                    category into a single token object, which it returns.</p>
+               
+               <h4><FONT COLOR="#000080">Parsing Functions</FONT></H4>
+               
+               <p>The parser is the main part of the
+                    program. It acquires tokens from the scanner, verifies that
+                    they form syntactically correct declarations, translates the
+                    declarations into English, and writes the translations to
+                    the output.</p>
+               
+               <p> The parser shares many similarities
+                    with the scanner. The rules for transforming syntax rules
+                    into parsing functions are essentially the same as the rules
+                    for transforming lexical rules into scanning functions. The
+                    key difference is that the parser gets tokens from a scanner
+                    object while the scanner gets characters from an istream.
+                    The parser calls its scanner object input.</p>
+               
+               <p> There are more syntax rules than
+                    lexical rules, and the syntax rules are a bit more
+                    complicated, so the parser is larger than the scanner.
+                    Whereas the lexical rules map into different alternatives in
+                    a cascade of if-else statements, each syntax rule maps
+                    more-or-less into a distinct parsing function.</p>
+               
+               <p> I say "more-or-less"
+                    because some productions are so simple they don't merit
+                    their own parsing function. Often, folding several simple
+                    productions into a single production reduces the overall
+                    complexity of the parser by reducing the number of parsing
+                    functions.</p>
+               
+               <p> For example, you can replace
+                    constant-expression in</p>
+
+<PRE>
+array-suffix =
+    "["[constant-expression]"]".
+</PRE>
+               
+               <p></p>
+               
+               <p>with the right-hand-side of</p>
+               
+               <p></p>
+
+<PRE>
+constant-expression =
+    name | integer-literal .
+</PRE>
+               
+               <p></p>
+               
+               <p>to yield the single production</p>
+               
+               <p></p>
+
+<PRE>
+array-suffix =
+    "["[name|integer-literal]"]".
+</PRE>
+               
+               <p><BR>
+                     Similarly, you can fold both</p>
+
+<PRE>
+simple-declaration =
+    decl-specifier-seqdeclarator-list.
+</PRE>
+               
+               <p></p>
+               
+               <p>and</p>
+               
+               <p></p>
+
+<PRE>
+declarator-list =
+    declarator{","declarator}.
+</PRE>
+               
+               <p></p>
+               
+               <p>into just one rule:</p>
+               
+               <p></p>
+
+<PRE>
+simple-declaration=
+    decl-specifier-seq declarator{","declarator}.
+</PRE>
+               
+               <p><BR>
+                     Recall that, by the time the scanner reaches the first of
+                    the if statements corresponding to a lexical rule, the first
+                    character of the token is already available. Similarly, by
+                    the time the parser enters the body of a given parsing
+                    function, the first token of the corresponding rule is
+                    already available. Therefore, a parsing function doesn't
+                    start by getting a token; it starts by acting on the current
+                    token.</p>
+               
+               <p> For example, the body of the parsing
+                    function for</p>
+
+<PRE>
+array-suffix =
+    "[" [ name | integer-literal ] "]" .
+</PRE>
+               
+               <p></p>
+               
+               <p>begins with something like</p>
+               
+               <p></p>
+
+<PRE>
+token t = input.current();
+if (t.kind() == token::LEFT_BRACKET)
+    input.get();
+else
+    error("'[' expected");
+</PRE>
+               
+               <p></p>
+               
+               <p>In other words, the parser is
+                    expecting a [ at this point. If it sees one, it just goes on
+                    to the next token. If not, it reports an error. Tests of
+                    this sort occur so often in the parser, I wrote a function,
+                    must_be, to do the job.</p>
+               
+               <p>Thus, the body of the parsing function
+                    for array-suffix becomes something like</p>
+
+<PRE>
+must_be(token::LEFT_BRACKET);
+token t = input.current();
+if (t.kind() == token::NAME)
+    // do something with the name
+else if (t.kind() == token::INT_LITERAL)
+    // do something with the literal
+must_be(token::RIGHT_BRACKET);
+</PRE>
+               
+               <p></p>
+               
+               <p>The if-else if statement in the middle
+                    does not end with</p>
+               
+               <p></p>
+
+<PRE>
+else
+    error("name or integer expected");
+</PRE>
+               
+               <p><BR>
+                     because the name or integer-literal is optional. It is not
+                    an error if neither is present.</p>
+               
+               <p> The body of the parsing function for</p>
+
+<PRE>
+simple-declaration =
+    decl-specifier-seq declarator "," declarator}.
+</PRE>
+               
+               <p></p>
+               
+               <p>looks something like</p>
+               
+               <p></p>
+
+<PRE>
+decl_specifier_seq();
+declarator();
+while (input.current().kind() == token::COMMA)
+    {
+    input.get();
+    declarator();
+    }
+</PRE>
+               
+               <p></p>
+               
+               <p>Here, the reference to
+                    decl-specifier-seq on the right-hand-side of the syntax rule
+                    translates to the call to the parsing function for
+                    decl-specifier-seq (ditto for declarator). The iterative
+                    part of the rule (the part enclosed in braces) translates
+                    into a while statement, whose body calls the declarator
+                    parsing function.</p>
+               
+               <p>There is only one place where the
+                    parser must look ahead at an extra token and then back up
+                    (using scanner::unget). If the decl-specifier-seq parsing
+                    function encounters a type-name, it must look at the token
+                    after that name to see if it's a ::. A type-name followed by
+                    a :: is not part of the decl-specifier-seq; a type-name
+                    followed by anything other than a :: is. Whether or not 
+                    there's a ::, the parser must back up and finish processing
+                    the type-name.</p>
+               
+               <p> For example, in the declaration</p>
+
+<PRE>
+const T n;
+</PRE>
+               
+               <p></p>
+
+<PRE>
+T is part of the decl-specifier-seq, and n is an object of type const T. But in
+</PRE>
+               
+               <p></p>
+
+<PRE>
+const T::*p;
+</PRE>
+               
+               <p></p>
+               
+               <p>T is part of a pointer-to-member
+                    declarator. p has type "pointer to member of T of type
+                    const int" (because of that darned "implicit int"
+                    rule). The :: after the type-name has a dramatic effect on
+                    the parse.</p>
+               
+               <h4><FONT COLOR="#000080">Translating into
+               English</FONT></H4>
+               
+               <p>Each parsing function returns a string
+                    containing the English translation of the portion of the
+                    declaration that it parsed. Each parsing function that calls
+                    other parsing functions must splice those strings together
+                    to form the complete translation. The parser uses the string
+                    operators + and += to do the splicing.</p>
+               
+               <p> For example, the body of the
+                    simple-declaration parsing function is:</p>
+
+<PRE>
+string d = decl_specifier_seq();
+string sd = declarator() + d + '\n';
+while (input.current().kind() == token::COMMA)
+    {
+    input.get();
+    sd += declarator() + d + '\n';
+    }
+return sd;
+</PRE>
+               
+               <p></p>
+               
+               <p>Given the input</p>
+               
+               <p></p>
+
+<PRE>
+const int *p, f();
+</PRE>
+               
+               <p></p>
+               
+               <p>the call to decl_specifier_seq returns
+                    the string</p>
+               
+               <p></p>
+
+<PRE>
+const int
+</PRE>
+               
+               <p></p>
+               
+               <p>which becomes the value of d. The
+                    first call to declarator (above the loop) returns</p>
+               
+               <p></p>
+
+<PRE>
+p is ...
+pointer to ...
+</PRE>
+               
+               <p></p>
+               
+               <p>simple_declaration appends d and a
+                    newline to this string, and stores the result</p>
+               
+               <p></p>
+
+<PRE>
+p is ...
+pointer to ...
+const int
+</PRE>
+               
+               <p></p>
+               
+               <p>in sd. The next call to declarator
+                    (inside the loop) returns</p>
+               
+               <p></p>
+
+<PRE>
+f is ...
+function returning ...
+</PRE>
+               
+               <p></p>
+               
+               <p>simple_declaration appends this
+                    string, another copy of d, and a newline to sd. The result
+                    is</p>
+               
+               <p></p>
+
+<PRE>
+p is ...
+pointer to ...
+const int
+f is ...
+function returning ...
+const int
+</PRE>
+               
+               <p></p>
+               
+               <h4><FONT COLOR="#000080">Starting the Parser</FONT></H4>
+               
+               <p>I packaged the entire parser as class
+                    parser. The parser class definition appears near the top of
+                    <A href="listing3.htm">Listing 3</a>.
+ The parser's only
+                    explicitly defined public member is its constructor. All of
+                    the other parsing functions are private. The parser also has
+                    two private data members: input is the scanner object from
+                    which it gets tokens, and output is the ostream object to
+                    which it writes the translations.</p>
+               
+               <p> The parser constructor embodies all
+                    the work of the decl program. Not only does it attach input
+                    and output streams to the parser, it also executes the parse
+                    and translation. I considered writing a separate public
+                    function to run the parse, but I couldn't see any real
+                    reason to do it. I believe using a constructor to initiate
+                    an entire process is an established idiom, and it seems to 
+                    work well in this case. I may change my mind later, but
+                    right now I like it.</p>
+               
+               <h4><FONT COLOR="#000080">Coping with Syntax
+               Errors</FONT></H4>
+               
+               <p>decl does a decent, but not
+                    outstanding, job of detecting and reporting syntax errors.
+                    Some of the error messages are right on the money. Others
+                    are a bit vague. It's the nature of C and C++. I invite you
+                    to study the error messages and I welcome suggestions for
+                    improvement.</p>
+               
+               <p> One way to improve the messages would
+                    be to display a marker in the output under the offending
+                    symbol. This requires a more elaborate scanner &#151; one that
+                    would keep track of each token's column position, so that
+                    the error reporting routines could place the marker
+                    properly.</p>
+               
+               <p> To put it mildly, this version of
+                    decl does not recover from errors very well. In fact, it
+                    stops dead in its tracks. It would be better if the program
+                    could continue to accept more declarations after an error.
+                    There are various ways to do this, one of which uses
+                    exception handling. That sounds like a fun topic for next
+                    month.</p>
+               
+               <p><I>Dan Saks is the president of Saks &amp;Associates,
+                    which offers consulting and training in C++ and C. He is
+                    secretary of the ANSI and ISO C++ committees. Dan is
+                    coauthor of C++ Programming Guidelines, and codeveloper of
+                    the Plum Hall Validation Suite for C++ (both with Thomas
+                    Plum). You can reach him at 393 Leander Dr., Springfield OH,
+                    45504-4906, by phone at (513)324-3601, or electronically at
+                    dsaks@wittenberg.edu.</I></p> 
+
+<h4><a href="../../../source/1996/mar96/saks.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+     </BODY>
+</HTML>

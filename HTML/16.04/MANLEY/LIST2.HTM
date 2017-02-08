@@ -1,0 +1,114 @@
+
+
+
+<HTML><HEAD>
+
+<TITLE>April 1998/General-Purpose Threads with I/O Completion Ports/Listing 2</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4>
+<A name="HEADING1">Listing 2: Class CWorkerThread definition and implementation</A></h4>
+
+
+<pre>
+//
+// partial listing of worker.h
+//
+class CThreadPool ;
+typedef unsigned ( __stdcall * PFNTHREAD )( void * );
+const int STOP_WORKER_THREAD = 1;
+
+class CWorkerThread  {
+public:
+    CWorkerThread( CThreadPool* pPool );
+    virtual ~CWorkerThread();
+
+    CThreadPool* GetThreadPool() const;
+    BOOL Start();
+    BOOL IsThreadRunning() const;
+    HANDLE GetThreadHandle() const;
+    DWORD GetThreadID() const;
+
+    virtual void OnReceivedCompletionPacket( BOOL bResult,
+        DWORD dwNumberOfBytesTransferred, DWORD dwKey,
+        LPOVERLAPPED lpOverlapped ) = 0;
+
+protected:
+    static int ThreadEntryProc( LPVOID pPooledThread );
+    void Reset();
+    virtual void ThreadMain();
+
+ protected:
+     CThreadPool* m_pThreadPool ;
+    HANDLE    m_hThread;
+    HANDLE    m_hStartEvent;
+    DWORD    m_dwThreadID ;
+    BOOL    m_bRunning;
+};
+
+/ -------------------------------------------------------------------
+// Partial listing of worker.cpp
+
+BOOL CWorkerThread::Start(void)
+{
+    if( IsThreadRunning() ) {
+        return FALSE ;
+    } // if
+
+    assert( m_hStartEvent == INVALID_HANDLE_VALUE );
+    m_hStartEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+    m_hThread = reinterpret_cast&lt;HANDLE&gt;( 
+        _beginthreadex( NULL, 0, 
+            (PFNTHREAD)(CWorkerThread::ThreadEntryProc), this, 0,
+            reinterpret_cast&lt;unsigned int*&gt;(&amp;m_dwThreadID) ));
+
+    WaitForSingleObject( m_hStartEvent, INFINITE );
+    return TRUE ;
+}
+
+int CWorkerThread::ThreadEntryProc( LPVOID pThreadClass )
+{
+    assert(pThreadClass != NULL);
+    ULONG nResult = 0;
+    CWorkerThread* pThread = 
+        static_cast&lt;CWorkerThread*&gt;(pThreadClass);
+
+    assert( pThread-&gt;m_hStartEvent != INVALID_HANDLE_VALUE );
+    pThread-&gt;m_bRunning = TRUE;
+    SetEvent( pThread-&gt;m_hStartEvent );
+ 
+    try {
+        pThread-&gt;ThreadMain();
+    } catch(...) {
+        nResult = 1;
+    } // catch
+
+    pThread-&gt;m_bRunning = FALSE;
+    _endthreadex( nResult );
+
+    return 0 ;
+}
+
+void CWorkerThread::ThreadMain()
+{
+    while( TRUE ) {
+        DWORD dwNumBytesTransferred = 0 ;
+        DWORD dwKey = 0 ;
+        LPOVERLAPPED lpOverlapped = NULL ;
+
+        BOOL bResult = GetThreadPool()-&gt;GetQueuedCompletionStatus(
+            &amp;dwNumBytesTransferred, &amp;dwKey, &amp;lpOverlapped, 
+            INFINITE );
+
+        if( bResult == TRUE &amp;&amp; dwKey == STOP_WORKER_THREAD ) {
+            break ;
+        } else {
+            OnReceivedCompletionPacket( 
+                bResult, dwNumBytesTransferred, dwKey, lpOverlapped);
+        } // else
+    } // while
+}
+
+/* End of File */
+</pre>
+</body></html>

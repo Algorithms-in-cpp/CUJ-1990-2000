@@ -1,0 +1,495 @@
+<HTML><HEAD>
+<TITLE>May 1995/Dynamic Client/Server-Based Image Processing/Listing 3</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 3<I> The client program</I></A></h4>
+<pre>/*
+ * Listing 3 - demo_client.c
+ */
+
+#include &lt;stdio.h&gt;
+#include &lt;rpc/rpc.h&gt;
+#include &lt;malloc.h&gt;
+#include &lt;string.h&gt;
+#include &lt;fcntl.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;ctype.h&gt;
+#include &lt;sys/time.h&gt;
+#include "ips.h"
+
+/* Prototypes */
+char                                    *get_file();
+void                                    image_release();
+void                                    upcase();
+void                                    help_text();
+
+/* Globals */
+static unsigned long    image_id=-1;
+static struct timeval   Timeout = { 10000, 0 };
+
+void
+main(argc, argv)
+int argc;
+char **argv;
+{
+       int done = 0;
+       CLIENT *cl;
+       char cmd[256];
+       Packet *request, *reply;
+       int id;
+       char command[256];
+       
+       request = (Packet *) malloc(sizeof(Packet));
+       
+       if(argc &lt; 2) {
+              printf("Usage: %s server\n", argv[0]);
+              exit(0);
+       }
+       
+       if(!(cl = clnt_create(argv[1], IPSPROG, IPSVERS,
+                    "tcp"))) {
+              clnt_pcreateerror(argv[1]);
+              exit(1);
+       }
+       
+       clnt_control(cl, CLSET_TIMEOUT, (char *)&amp;Timeout);
+       
+       request-&gt;op = IPS_INIT;
+       reply = ips_1(request, cl);
+       
+       if(reply)
+              printf("\n%s\n\n",
+                     reply-&gt;Packet_u.hello_string);
+       
+       while(!done) {
+              printf("(? for help)&gt;&gt;");
+              fflush(stdout);
+              gets(cmd);
+              
+              if(strcmp(cmd, "help") == 0 ||
+                           strcmp(cmd, "?") == 0)
+                     help_text();
+              
+              else if(strcmp(cmd, "send") == 0)
+                     decode(cl);
+              
+              else if(strcmp(cmd, "get") == 0)
+                     encode(cl);
+              
+              else if(strcmp(cmd, "process") == 0)
+                     process(cl);
+              
+              else if(strcmp(cmd, "operators") == 0)
+                     get_operators(cl);
+              
+              else if(strcmp(cmd, "loaders") == 0)
+                     get_loaders(cl);
+              
+              else if(strcmp(cmd, "savers") == 0)
+                     get_savers(cl);
+              
+              else if(strcmp(cmd, "quit") == 0) {
+                     image_release(cl);
+                     done = 1;
+              }
+              printf("\n");
+       }
+}
+
+
+int
+encode(cl)
+CLIENT *cl;
+{
+       char buf[256];
+       char filename[256];
+       char format[40];
+       Packet *reply, *request;
+       
+       
+       request = (Packet *) malloc(sizeof(Packet));
+       
+       printf("\nIPS Send Image:\n\n");
+       
+       printf("Enter image filename (abort to quit): ");
+       fflush(stdout);
+       gets(filename);
+       if(strcmp(filename, "abort") == 0)
+              return 1;
+       
+       printf("Enter format (abort to quit): ");
+       fflush(stdout);
+       gets(format);
+       if(strcmp(format, "abort") == 0)
+              return 1;
+       
+       upcase(format);
+       
+       request-&gt;op = IPS_REQUEST_IMAGE;
+       request-&gt;Packet_u.send_ops.id           = image_id;
+       request-&gt;Packet_u.send_ops.format       = format;
+       request-&gt;Packet_u.send_ops.argc         = 0;
+       request-&gt;Packet_u.send_ops._argv.name   = "test";
+       request-&gt;Packet_u.send_ops._argv.next   = NULL;
+       
+       reply = ips_1(request, cl);
+       
+       if(!reply) {
+              puts("Reply error or timeout.");
+              exit(1);
+       }
+       
+       if(reply-&gt;op == IPS_SEND_IMAGE) {
+              FILE *fp;
+              
+              fp = fopen(filename, "w");
+              fwrite(reply-&gt;Packet_u.img.data.data_val, 1,
+                     reply-&gt;Packet_u.img.data.data_len, fp);
+              fclose(fp);
+              
+              printf("\"%s\" Received.\n", filename);
+       
+       } else if(reply-&gt;op == IPS_IMAGE_NOT_AVAIL)
+              printf("IPS_IMAGE_NOT_AVAIL recevied.\n");
+       
+       else if(reply-&gt;op == IPS_UNSUPPORTED_FORMAT)
+              printf("IPS_UNSUPPORTED_FORMAT received\n");
+       
+       else {
+              printf("Error in encoding.\n");
+              return 1;
+       }
+       
+       free(request);
+       if(reply) xdr_free(xdr_Packet, reply);
+       
+       return 0;
+}
+
+
+int
+decode(cl)
+CLIENT *cl;
+{
+       FILE *fp;
+       long size;
+       char buf[256];
+       char buf2[256];
+       char *filename;
+       unsigned char *raw_img;
+       Packet *reply, *request;
+       
+       
+       request = (Packet *) malloc(sizeof(Packet));
+       
+       if((filename = get_file()) == NULL) {
+              printf("Error or aborted.\n");
+              return 1;
+       }
+       
+       printf("Please enter image format: ");
+       fflush(stdout);
+       scanf("%s", buf2);
+       
+       upcase(buf2);
+       
+       image_release(cl);
+       
+       sprintf(buf, "%s", filename);
+       
+       fp = fopen(buf, "r");
+       fseek(fp, 0, 2);
+       size = ftell(fp);
+       
+       fseek(fp, 0, 0);
+       
+       raw_img = (unsigned char *) malloc(size);
+       fread(raw_img, 1, size, fp);
+       fclose(fp);
+       
+       request-&gt;op = IPS_DECODE;
+       request-&gt;Packet_u.raw_img.filename = filename;
+       request-&gt;Packet_u.raw_img.format = strdup(buf2);
+       request-&gt;Packet_u.raw_img.data.data_len = size;
+       request-&gt;Packet_u.raw_img.data.data_val =
+              (char *) raw_img;
+       
+       reply = ips_1(request, cl);
+       
+       if(!reply) {
+              puts("Timeout.");
+              exit(1);
+       }
+       
+       if(reply-&gt;op == IPS_OK_ID) {
+              image_id = reply-&gt;Packet_u.id;
+       } else {
+              printf("Error in decoding.\n\n");
+              return 1;
+       }
+       
+       free(raw_img);
+       free(request);
+       xdr_free(xdr_Packet, reply);
+       
+       return 0;
+}
+
+
+int
+process(cl)
+CLIENT *cl;
+{
+       int              i,
+                     retval;
+       list             *nlp, *cp;
+       char             buf[256];
+       Packet           *reply = NULL,
+                            *request;
+       int                      nitems;
+       char             *items[10];
+       
+       if(image_id == -1) {
+              printf("No image sent to server.\n");
+              return;
+       }
+       
+       /*
+       For this article, nitems will be 0, but
+       this allows you to send arguments to the
+       operator program. For example, if you
+       were executing a SCALE program, you would
+       have to send the new width and height.
+       */
+       
+       nitems = 0;
+       
+       request = (Packet *) malloc(sizeof(Packet));
+       
+       printf("Please enter processing command: ");
+       fflush(stdout);
+       scanf("%s", buf);
+       
+       upcase(buf);
+       
+       request-&gt;op                          = IPS_PROCESS;
+       request-&gt;Packet_u.proc.id            = image_id;
+       request-&gt;Packet_u.proc.command       = strdup(buf);
+       request-&gt;Packet_u.proc.argc          = nitems;
+       
+       if(nitems == 0) {
+              request-&gt;Packet_u.proc.argv.name = "\0";
+              request-&gt;Packet_u.proc.argv.next = 0;
+              
+              } else {
+                     nlp     = &amp;request-&gt;Packet_u.proc.argv;
+                     for(i=0;i&lt;nitems;i++) {
+                            nlp-&gt;name = strdup(items[i]);
+                            cp = nlp;
+                            nlp-&gt;next = (list *) malloc(sizeof(list));
+                            nlp = nlp-&gt;next;
+              }
+              cp-&gt;next = nlp = NULL;
+       }
+       
+       reply = ips_1(request, cl);
+       
+       free(request);
+       
+       if(!reply) {
+              puts("Encode timeout.");
+              return -1;
+       }
+       
+       if(reply-&gt;op == IPS_PROCESS_OK)
+              retval = 0;
+       else {
+              puts("There was an error processing.\n");
+              retval = -1;
+       }
+       
+       xdr_free(xdr_Packet, reply);
+       
+       return retval;
+}
+
+
+int
+get_loaders(cl)
+CLIENT *cl;
+{
+       list   *nlp;
+       Packet *reply, *request;
+       
+       
+       request = (Packet *) malloc(sizeof(Packet));
+       
+       request-&gt;op = IPS_REQUEST_LOADERS;
+       reply = ips_1(request, cl);
+       
+       switch(reply-&gt;op) {
+              case IPS_SEN_LOADERS:
+                     printf("\nIPS Load Formats:\n\n");
+                     for(nlp = &amp;reply-&gt;Packet_u.operators;
+                        nlp != NULL;
+                        nlp = nlp-&gt;next)
+                        printf(" %s\n", nlp-&gt;name);
+                     printf("\n");
+                     break;
+              
+              case ERROR:
+                     printf("get_loaders failed.\n");
+                     return 1;
+       }
+       
+       free(request);
+       xdr_free(xdr_Packet, reply);
+       
+       return 0;
+}
+
+int
+get_savers(cl)
+CLIENT *cl;
+{
+       list *nlp;
+       Packet *reply, *request;
+       
+       
+       request = (Packet *) malloc(sizeof(Packet));
+       
+       request-&gt;op = IPS_REQUEST_SAVERS;
+       reply = ips_1(request, cl);
+       
+       switch(reply-&gt;op) {
+              case IPS_SEND_SAVERS:
+                     printf("\nIPS Save Formats:\n\n");
+                     for(nlp = &amp;reply-&gt;Packet_u.operators;
+                        nlp != NULL;
+                        nlp = nlp-&gt;next)
+                           printf(" %s\n", nlp-&gt;name);
+                     printf("\n");
+                     break;
+              
+              case ERROR:
+                     printft"get_savers failed.\n");
+                     return 1;
+       }
+       
+       free(request);
+       xdr_free(xdr_Packet, reply);
+       
+       return 0;
+}
+
+
+int
+get_operators(cl)
+CLIENT *cl;
+{
+       list   *nlp;
+       Packet *reply, *request;
+       
+       
+       request = (Packet *) malloc(sizeof(Packet));
+       
+       request-&gt;op = IPS_REQUEST_OPS;
+       reply = ips_1(request, cl];
+       
+       switch(reply-&gt;op) {
+              case IPS_SEND_OPS:
+                     printf("\nIPS Processing Tools:\n\n");
+                     for(nlp = &amp;reply-&gt;Packet_u.operators;
+                        nlp != NULL;
+                        nlp = nlp-&gt;next)
+                           printf(" %s\n", nlp-&gt;name);
+                     printf("\n");
+                     break;
+              case ERROR:
+                     printf("get_operators failed.\n");
+                     return 1;
+       }
+       
+       free(request);
+       xdr_free(xdr_Packet, reply);
+       
+       return 0;
+}
+
+
+char *
+get_file()
+{
+       int status;
+       char filename[1024], command[1024];
+       
+       printf("\nIPS Receive Image:\n\n");
+       printf("Type 'abort' to cancel. Filename: ");
+       fflush(stdout);
+       gets(filename);
+       
+       if(strcmp(filename, "abort") == 0)
+              return NULL;
+       
+       if(access(filename, R_OK) == 0)
+              return strdup(filename);
+       
+       return NULL;
+}
+
+
+void
+image_release(cl)
+CLIENT *cl;
+{
+    Packet *request, *reply;
+    
+    request = (Packet *) malloc(sizeof(Packet));
+    
+    if(image_id != -1) {
+       request-&gt;op             = IPS_IMAGE_RELEASE;
+       request-&gt;Packet_u.id   = image_id;
+       reply                   = ips_1(request, cl);
+              
+              if(reply-&gt;op == IPS_RELEASE_OK)
+                     printf("Release of %d ok.\n", image_id);
+    }
+       free(request);
+}
+
+
+void
+upcase(text)
+char *text;
+{
+       char *p = text;
+       
+       while(*p != NULL) {
+              *p = toupper(*p);
+              p++;
+       }
+}
+
+
+void
+help_text()
+{
+       printf("\n");
+       printf("  Cmd           Description\n");
+       printf("-------    -----------------------\n");
+       printf(" send      send an image to the IPS\n");
+       printf(" get       receive an image from IPS\n");
+       printf("           in a certain format\n");
+       printf(" process   process an image\n");
+       printf(" loaders   list all available loaders\n");
+       printf(" savers    list all available savers\n");
+       printf(" operators list all avail. operators\n");
+       printf(" quit      exit this client\n");
+       printf("\n");
+}
+
+/* End of File */
+</pre>
+</BODY>
+</HTML>

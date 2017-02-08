@@ -1,0 +1,459 @@
+<HTML><HEAD>
+<TITLE>June 1995/Map Projections in C++/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1 <I>A simple class for handling vectors</I></A></h4>
+<pre>//
+//  Vector.hpp
+//
+//  This class is intended to provide a bare minimum for handling vectors
+//  in order to avoid cluttering up the example with the implementation
+//  of a robust Vector class.
+//
+
+class Vector {
+protected:
+   double v[2];
+public:
+   // constructor for use with initial values
+   Vector ( double a = 0.0, double b = 0.0 )
+      { v[0] = a; v[1] = b; }
+   // copy operator
+   Vector &amp;operator = ( Vector &amp;source )
+      {
+         v[0] = source[0]; v[1] = source[1];
+         return *this;
+      }
+   // subscript operator (abstract)
+   double &amp;operator [] ( int index )
+      {
+         return (index &gt;= 0 &amp;&amp; index &lt;2) ? v[index] : v[0];
+      }
+};
+
+//
+//  The following class enforces a convention for using a Vector as
+//  a spherical coordinate.
+//
+typedef double Degrees;
+enum SphereIndex { LON = 0, LAT };
+class Spherical : public Vector {
+public:
+   // subscript operator
+   Degrees &amp;operator [] ( SphereIndex index )
+      {
+          return v[index];
+      }
+};
+
+//
+//  The following class enforces a convention for using a Vector as
+//  a planar coordinate.
+//
+typedef double Inches;
+enum PlaneIndex { X=0, Y };
+class Planar : public Vector {
+public:
+   // subscript operator
+   Inches &amp;operator [] ( PlaneIndex index )
+      {
+          return v[index];
+      }
+};
+
+//
+//  Projection Mathematics
+//
+//      Author - David T. Lowerre   ;{
+//              8/27/93
+//
+
+#include "vector.hpp"
+
+enum { CLARKE = 0, WGS72, WGS84 };            // Geodetic Models
+
+//
+//  Projection Class
+//
+//   The projection class is ABSTRACT which means that you cannot
+//   declare an object of this class. You can only derive a new
+//   class from this one. To make the new class useable, you must
+//   override the virtual methods LatLontoXY() and XYtoLatLon().
+//
+class Projection {
+protected:
+   int Model;
+   double e, e2;          // eccentricity and eccentricity squared
+   Planar xyResult;
+   Spherical llResult;
+
+public:
+
+   Projection( int model );
+
+   virtual Planar &amp;XY( Spherical &amp;ll ) = 0;
+   virtual Spherical &amp;LatLon( Planar &amp;xy ) = 0;
+};
+
+//
+//  This class converts from latitude and longitude to X and Y
+//  coordinates using Mercator's Cylindrical projection. The system
+//  must be set up by specifying the borders of the area in latitude
+//  and longitude and the scale at the true scale latitude
+//
+//
+//                                max(lat, lon)
+//        -----------------------------
+//        |                           | 
+//        |                           | 
+//        |                           | 
+//        |...........................|  true scale latitude
+//        |                           |
+//        |                           |
+//        |                           |
+//        |                           |
+//        -----------------------------
+/    min(lat,lon)
+//
+//  Now, given a point p(lat, lon), we can find the corresponding X and Y
+//  coordinates.
+//
+class Mercator : public Projection
+{
+   Spherical MinLL, MaxLL;
+   double Scale;
+   double Fmin;
+
+   double F( double lat );
+   void NewScale( double lat, double scale );
+
+public:
+
+   // constructors
+   Mercator( int model,               // geodetic model
+           Spherical &amp;min,          // minimum lat and lon
+           Spherical &amp;max,          // maximum lat and lon
+           double scale );          // scale at true scale latitude
+   Mercator( int model,               // geodetic model
+           Spherical &amp;origin,       // center/origin lat and lon
+           double scale );          // scale at origin
+
+   // initialization methods
+   void SetBounds( Spherical &amp;min, Spherical &amp;max, double scale );
+   void SetOrigin( Spherical &amp;origin, double scale );
+
+   // conversion methods
+   Planar &amp;XY( Spherical &amp;ll );
+   Spherical &amp;LatLon( Planar &amp;xy );
+};
+
+//
+//  Projection Mathematics
+//
+//      Author - David T. Lowerre     ;{
+//              8/27/93
+//
+//
+//  Projection Mathematics were derived from the formulas and descripions
+//  in
+//      American Practical Navigator, Bowditch
+//      Conformal Projections in Geodesy and Cartography, Thomas
+//              Map Projections-a Working Manual, Snyder
+//
+#include "maproj.hpp"
+#include &lt;math.h&gt;
+
+/* conversion from degrees to radians */
+const double toDeg = 180.0 / M_PI;
+#define RAD(x) ((x)/toDeg)
+/* conversion from radians to degrees */
+#define DEG(x) ((x)*toDeg)
+
+// Geodetic Models
+//  These models differ primarily by their measurement of the polar
+//  and equatorial radius of the earth
+//
+static struct {
+   double P, Q;   // Polar and Equatorial Radii
+} Radius[] =
+{
+   3432.275, 3443.950,    // Clarke 1866
+   3432.370, 3443.917,    //WGS-72
+   3432.371, 3443.918,    //WGS-84
+};
+
+Projection::Projection( int model )
+{
+   Model = model;
+   double p = Radius[Model].P;
+   double q = Radius[Model].Q;
+
+   // for most projection mathematics, we need the 'eccentricity' and
+   // the eccentricity squared. So we compute them once when the
+   // projection is constructed.
+   e2 = 1 - (p * p) / (q * q); // eccentricity squared
+   e = sqrt( e2 );                         // eccentricity of spheroid
+}
+
+//  These functions convert from latitude and longitude to X and Y
+//  coordinates using Mercator's Cylindrical projection. The system
+//  must be set up by specifying the borders of the area in latitude
+//  and longitude and the scale at the true scale latitude
+//
+//
+//                                   max(lat, lon)
+//         -------------------------------
+//         |                             |
+//         |                             |
+//         |                             |
+//         |.............................|  true scale latitude
+//         |                             |
+//         |                             |
+//         |                             |
+//         |                             | 
+//         -------------------------------
+//    min(lat,lon)
+//
+//  Now, given a point p(lat, lon), we can find the corresponding X and Y
+//  coordinates.
+//
+
+Mercator::Mercator( int model, Spherical &amp;min, Spherical &amp;max,
+                 double scale ) :
+   Projection( model )
+{
+   SetBounds( min, max, scale );
+}
+
+Mercator::Mercator( int model, Spherical &amp;origin, double scale ) :
+   Projection( model )
+{
+   SetOrigin( origin, scale );
+}
+
+void Mercator::NewScale( double lat, double scale )
+{
+   // compute scale factor
+   double sinLat = sin(RAD(lat));
+
+   double Kpt = sqrt( 1.0 -
+      e2 * sinLat * sinLat) / cos(RAD(lat) );
+
+   double So = scale * Kpt;
+
+   // Conversion factor for radians to inches
+   Scale =
+      72913.2 *               // number of inches in a nautical mile
+         Radius[Model].Q /               // equatorial radius
+            So;
+}
+
+//
+// SetBounds - Change the parameters for the projection
+//
+void Mercator::SetBounds( Spherical &amp;min, Spherical &amp;max, double scale )
+{
+   // save the extrema
+   MinLL = min;
+   MaxLL = max;
+
+   // recalculate the scale
+   NewScale( (MinLL[LAT] + MaxLL[LAT]) / 2, scale );
+
+   Fmin = F(RAD(MinLL[LAT]));   // compute once for later use
+}
+
+//
+// SetOrigin - Change the origin for the projection
+//
+void Mercator::SetOrigin( Spherical &amp;origin, double scale )
+{
+
+   // save the origin
+   MinLL = origin;
+   MaxLL = origin;
+
+   // calculate the scale
+   NewScale( origin[LAT], scale );
+
+   Fmin = F(RAD(MinLL[LAT]));   // compute once for later use
+}
+
+//
+// F(lat) converts from latitude to an unscaled Y value.
+//  This is used both in transforming
+//  from lat/lon to X/Y and X/Y to lat/lon.
+//  latitude must be supplied in RADIANS
+//             --                                             --
+//             |  1+sin( |lat| )  -- 1 - e sin ( |lat| ) -- e  |
+//  Y = 0.5 ln |  --------------  |  -------------------  |    |
+//             |  1-sin( |lat| )  -- 1 + e sin ( |lat| ) --    |
+//             --                                             --
+double Mercator::F( double lat )
+{
+   double SinLat = sin( fabs(lat) );
+
+   double eSinLat = e * SinLat;
+
+   double Ym = log( (1+SinLat)/(1-SinLat) *
+                    pow((1-eSinLat)/(1+eSinLat), e) );
+   Ym *= 0.5
+
+   // result must assume the sign of the input latitude
+   if( (lat &lt; 0 &amp;&amp; Ym &gt; 0) ||
+      (lat &gt; 0 &amp;&amp; Ym &lt; 0 ) )
+      Ym = -Ym;
+
+   return Ym;
+}
+
+Planar &amp;Mercator::XY( Spherical &amp;ll )
+{
+   // X is easy, its just the delta in longitude times the scale
+   xyResult[X] = RAD(ll[LON] - MinLL[LON]);
+   xyResult[X] *= Scale;
+
+   // Y is harder
+   xyResult[Y] = F(RAD(ll[LAT])) - Fmin;
+   xyResult[Y] *= Scale;
+
+   return xyResult;
+}
+
+Spherical &amp;Mercator::LatLon( Planar &amp;xy )
+{
+   // Once again, X is easy.  Compute the longitude delta
+   llResult[LON] = DEG( xy[X] / Scale );   // un-scale the X value
+   llResult[LON] += MinLL[LON];            // add minimum longitude
+
+   // As you might suspect, Latitude is harder. We must use
+   // successive approximations to approach a suitable answer
+   double Ym = xy[Y] / Scale + Fmin;
+   double t = exp( -Ym );
+
+   // initial latitude approximation
+   double lat[2];
+   lat[1] = M_PI_2 - 2.0 * atan( t );
+
+   do {
+      // save the old latitude
+      lat[0] = lat[1];
+
+      // Use old latitude to compute a more accurate answer
+      double eSinLat = e * sin( lat[0] );
+      double f = pow((1-eSinLat)/(1+eSinLat), e/2 );
+      lat[1] = M_PI_2 - 2.0 * atan( t * f );
+
+     // continue until the difference is acceptably small
+   } while( fabs(lat[1]-lat[0]) &gt; 0.1e-5 );
+
+   // convert from radians to degrees
+   llResult[LAT] = DEG(lat[1]);
+
+   return llResult:
+}
+
+//
+//  Compile this code with MAIN = 1 to build the following test code.
+//
+
+#if MAIN
+
+#include &lt;stdio.h&gt;
+
+//
+// Get a spherical coordinate from the user
+//
+Degrees GetCoord( char *val )
+{
+   double deg, min;
+   printf( "Enter %s in Degrees/Minutes: ", val );
+   scanf( "%lf %lf", &amp;deg, &amp;min );
+   if( deg &lt; 0 )
+      min = -min;
+   return deg + min/60.0;
+}
+
+//
+//  Get a planar coordinate from the user
+//
+Inches GetInches( char *val )
+{
+   double res;
+
+   printf( "Enter %s in inches: ", val );
+   scanf( "%lf", &amp;res );
+
+   return res;
+}
+
+void main()
+{
+
+   Spherical min, max, ll;
+   Planar xy;
+
+   double scale, dummy;
+
+   printf( "\nMercator Transform\n\n" );
+
+   printf( "Enter Map Scale 1:" );
+   scanf( "%lf", &amp;scale );
+
+   min[LAT] = GetCoord( "True Scale Latitude" );
+
+   min[LON] = GetCoord( "Minimum Longitude" );
+
+   Mercator *Merc = new Mercator( 2, min, scale );
+
+   int done = 0;
+   while( !done )
+   {
+      flushall();
+
+      printf( "\n Choose:\n"
+             "  1. Convert LAT/LON to X/Y\n"
+             "  2. Convert X/Y to LAT/LON\n"
+             "  3. Exit\n"
+             "&gt; " );
+
+      switch( getchar() )
+      {
+      case '1':
+         // convert from Lat/Lon in degrees/minutes to X/Y in inches
+         ll[LAT] = GetCoord( "Point Lat" );
+         ll[LON] = GetCoord( "Point Lon" );
+
+         xy = Merc-&gt;XY( ll );
+
+         printf( "X = %f Y = %f\n\n",
+            xy[X], xy[Y] );
+         break;
+
+      case '2':
+         // convert from X/Y in inches to Lat/Lon in degrees/minutes
+         xy[X] = GetInches( "Point X" );
+         xy[Y] = GetInches( "Point Y" );
+
+         ll = Merc-&gt;LatLon( xy );
+         printf( "Lat = %d %5.2f  Lon = %d %5.2f\n\n",
+            (int)ll[LAT], fabs(modf( ll[LAT], &amp;dummy ) * 60.0),
+            (int)ll[LON], fabs(modf( ll[LON], &amp;dummy ) * 60.0) );
+         break;
+
+      case '3':
+         done = 1;
+         break;
+
+      default:
+         break:
+      }
+   }
+}
+
+#endif
+// End of File</pre>
+
+</BODY>
+</HTML>

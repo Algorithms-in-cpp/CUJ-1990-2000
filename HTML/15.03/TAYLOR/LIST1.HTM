@@ -1,0 +1,345 @@
+
+
+
+
+<HTML><HEAD>
+
+<TITLE>March 1997/Interrupt Thunking/Listing 1</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4>Listing 1:	Thunk code and test stub</h4>
+<p></p>
+
+<pre>
+// ISRTHUNK.C
+// Thunking code for interrupts.
+// D.G. Taylor 1996.
+// Borland C++ V3.1
+
+#include   &lt;dos.h&gt;
+#include   &lt;mem.h&gt;
+#include   &lt;stdlib.h&gt;
+#include   &lt;isrthunk.h&gt;
+#ifdef DEBUG
+#include   &lt;stdio.h&gt;
+#endif
+
+// Note : The address mode used by the MOV instruction is Direct
+// which requires the address bytes follow the op code and address mode
+// bytes in the order &lt;low order&gt;&lt;highorder&gt;. These are not displacement
+// bytes but addresses relative to the CS value. Which will be the
+// start of the THUNK. The prefix byte of 0x2E is the segment prefix
+// override byte since the code is addressing data relative to the
+// code segment.
+static unsigned char ISRThunkCode[0x40] = {
+       0x2E,0x8C,0x16,0x31,0x00, // mov  [CS:THCurrentSS],ss
+       0x2E,0x89,0x26,0x2F,0x00, // mov  [CS:THCurrentSP],sp
+       0x2E,0x8E,0x16,0x35,0x00, // mov  ss,[CS:THisrSS]
+       0x2E,0x8B,0x26,0x33,0x00, // mov  sp,[CS:THisrSP]
+       0x2E,0xFF,0x36,0x39,0x00, // push [DWORD PTR CS:ThisrObject]
+       0x2E,0xFF,0x36,0x37,0x00, // The second word
+       0x9C,                     // pushf
+       0x2E,0xFF,0x1E,0x3B,0x00, // call [DWORD PTR CS:THisrAddress]
+       0x2E,0x8E,0x16,0x31,0x00, // mov  ss,[CS:THCurrentSS]
+       0x2E,0x8B,0x26,0x2F,0x00, // mov  sp,[CS:THCurrentSP]
+       0xCF };                   // iret
+// Variables follow here. The are defined as offsets obtained
+// from the assembler listing.
+#define   THCurrentSP    0x2F
+#define   THCurrentSS    0x31  // The current stack.
+#define   THisrSP        0x33
+#define   THisrSS        0x35  // The new stack
+#define   THisrObject    0x37  // The client's this pointer.
+#define   THisrObjectSeg 0x39  // Object segment.
+#define   THisrAddress   0x3B  // Pointer to the client's ISR.
+
+#define   SEGMENTSIZE    16    // Bytes per segment.
+
+// Local Prototypes.
+static void huge *Normalise(void *p);
+
+//==================================================================
+#ifdef THUNKTEST
+#include &lt;stdio.h&gt;
+#include &lt;conio.h&gt;
+typedef struct {
+        long TickCount;
+        int  Quit;
+        int  SecElapsed;
+        int  Seconds;
+        } TICKINFO;
+
+void interrupt Ticker(THUNKARGS);
+
+void main()
+{
+ISRTHUNK *pthunk;
+TICKINFO *pInfo;
+
+if ( HeapAlloc((void **)&amp;pInfo,sizeof(TICKINFO)) == FALSE )
+    return;
+pInfo-&gt;TickCount  =  0L;
+pInfo-&gt;Quit       =  0;
+pInfo-&gt;SecElapsed = 0;
+pInfo-&gt;Seconds    = 0;
+#ifdef DEBUG
+printf("Object address is %lx\n",(void far *)pInfo);
+printf("Handler address is %lx\n",Ticker);
+#endif
+
+if ( ISRThunkCreate(&amp;pthunk,0x1C,Ticker,pInfo,2048) == FALSE )
+    {
+    printf("Error opening thunk.\n");
+    return;
+    }
+ISRThunkActivate(pthunk);
+while ( pInfo-&gt;Quit == 0 &amp;&amp; kbhit() == 0 )
+    {
+    if (pInfo-&gt;SecElapsed == 1 )
+        {
+        pInfo-&gt;SecElapsed = 0;
+        printf(".");
+        }
+    }
+ISRThunkSuspend(pthunk);
+printf("\nSeconds Elapsed are %d\n",pInfo-&gt;Seconds);
+ISRThunkDestroy(pthunk);
+HeapFree(pInfo);
+}
+//------------------------------------------------------------------
+#pragma argsused
+void interrupt Ticker(THUNKARGS)
+{
+TICKINFO *ptick = (TICKINFO *)pobject; // conversion from far to near.
+ASSERT(HeapValidPointer(ptick,sizeof(TICKINFO)));
+ptick-&gt;TickCount++;
+if ( ptick-&gt;TickCount%18 == 0 )
+    {
+    ptick-&gt;SecElapsed = 1;
+    ptick-&gt;Seconds++;
+    }
+if ( ptick-&gt;Seconds == 10 )
+    ptick-&gt;Quit = 1;     // quit.
+}
+#endif
+//------------------------------------------------------------------
+// INTERFACE
+//==================================================================
+// Name:    ISRThunkCreate()
+// Action:  Create a thunk object, for a specified interrupt number.
+// Parameters:    ppThunk - pointer to a pointer to a ISRTHUNK.
+//        If successful *ppThunk now points to the new ISRTHUNK
+//        object.
+//        uIntno -       The interrupt number.
+//        pfISRHandler - pointer to the client's interrupt function
+//        pISRObject -   pointer passed to the client's interrupt
+//                       function
+//        uStacksize -   The size of stack required for the
+//                       client's handler.
+// Returns:  TRUE if memory allocation successful, otherwise FALSE.
+BOOL ISRThunkCreate(ISRTHUNK **ppThunk,
+         unsigned uIntno,void interrupt (*pfISRHandler)(__CPPARGS),
+         void *pISRObject,unsigned uStacksize)
+{
+void     *pvTemp;
+unsigned uThunkSegment;  // for readability.
+unsigned char huge *phThunkCode; // for readability.
+ISRTHUNK *pThunk;
+
+// Allocate memory.
+if (  HeapAlloc((void **)&amp;pThunk,sizeof(ISRTHUNK)) == FALSE )
+    return FALSE;
+// Allocate memory for the Code+Data+Stack. Code must be aligned
+// on a segment boundary, so allow 1 segment extra.
+if ( HeapAlloc((void **)&amp;(pThunk-&gt;pbCodeDataStack),
+        sizeof(ISRThunkCode)+uStacksize+SEGMENTSIZE) == FALSE )
+    {
+    HeapFree(pThunk);
+    return FALSE;
+    }
+pThunk-&gt;uIntNumber = uIntno;
+pThunk-&gt;bActivated = FALSE;
+
+// Find the next segment boundary.
+uThunkSegment = FP_SEG(Normalise(pThunk-&gt;pbCodeDataStack))+1;
+phThunkCode   = (unsigned char huge *)MK_FP(uThunkSegment,0);
+pThunk-&gt;pfThunkHandler = (void interrupt (*)())phThunkCode;
+// The previous or old interrupt handler is not known until the
+// ISRThunkActivate() is called.
+
+// Copy in the Thunk code from the array above.
+_fmemcpy(phThunkCode,(void huge *)ISRThunkCode,sizeof(ISRThunkCode));
+
+// Assign the thunk stack. Note that for the small models the stack
+// is relative to the current SS, for the large models the SS is set
+// to the start of the thunk code.
+#if defined(__COMPACT__) || defined(__LARGE__) || defined(__HUGE__)
+   *(unsigned huge *)(phThunkCode+THisrSS) = uThunkSegment;
+   *(unsigned huge *)(phThunkCode+THisrSP) =
+            (unsigned)(sizeof(ISRThunkCode)+uStacksize-2);
+   *(unsigned long huge *)(phThunkCode+THisrObject)  =
+                    (unsigned long)pISRObject;
+#else  // small models
+   {
+   struct   SREGS segs;
+   segread(&amp;segs);
+   *(unsigned huge *)(phThunkCode+THisrSS)=segs.ss;
+   *(unsigned huge *)(phThunkCode+THisrSP)=
+        ((uThunkSegment-segs.ss)&lt;&lt;4)
+        +sizeof(ISRThunkCode)+uStacksize-2;
+   *(unsigned huge *)(phThunkCode+THisrObjectSeg)=segs.ds;
+   *(unsigned huge *)(phThunkCode+THisrObject)=(unsigned)pISRObject;
+   }
+#endif
+#ifdef DEBUG
+printf("Thunk Stack Segment : %x, Thunk Stack Pointer : %x",
+        *(unsigned huge *)(phThunkCode+THisrSS),
+        *(unsigned huge *)(phThunkCode+THisrSP));
+#endif
+*(unsigned long huge *)(phThunkCode+THisrAddress) =
+                    (unsigned long)pfISRHandler;
+
+*ppThunk = pThunk;
+return TRUE;
+}
+//------------------------------------------------------------------
+// Name: ISRThunkActivate()
+// Action: Switches interrupt vectors, causing subsequent interrupts
+//       to be sent to the clients interrupt function. The current
+//       interrupt vector is saved in the thunk object.
+// Parameters: The thunk pointer.
+// Returns: Nothing.
+
+void      ISRThunkActivate(ISRTHUNK *pThunk)
+
+{
+ASSERT(HeapValidPointer(pThunk,sizeof(ISRTHUNK)));
+ASSERT(pThunk-&gt;bActivated == FALSE);
+
+pThunk-&gt;pfPrevHandler = getvect(pThunk-&gt;uIntNumber);
+setvect(pThunk-&gt;uIntNumber,pThunk-&gt;pfThunkHandler);
+pThunk-&gt;bActivated = TRUE;
+}
+//------------------------------------------------------------------
+// Name: ISRThunkSuspend()
+// Action: Switches interrupt vectors, causing the saved interrupt
+//       vector to be reinstated. The client's interrupt function
+//       will no longer be called.
+// Parameters: The thunk pointer.
+// Returns: Nothing.
+
+void      ISRThunkSuspend(ISRTHUNK  *pThunk)
+{
+ASSERT(HeapValidPointer(pThunk,sizeof(ISRTHUNK)));
+ASSERT(pThunk-&gt;bActivated == TRUE );
+
+setvect(pThunk-&gt;uIntNumber,pThunk-&gt;pfPrevHandler);
+pThunk-&gt;bActivated = FALSE;
+}
+//------------------------------------------------------------------
+// Name: ISRCallOldISR()
+// Action: Call the previous interrupt subroutine.
+//       This function can only be called after the thunk has been
+//       activated.
+// Parameters: The thunk pointer.
+// Returns: Nothing.
+
+void      ISRCallOldISR(ISRTHUNK *pThunk)
+{
+ASSERT(HeapValidPointer(pThunk,sizeof(ISRTHUNK)));
+ASSERT(pThunk-&gt;bActivated == TRUE);
+pThunk-&gt;pfPrevHandler();
+}
+//------------------------------------------------------------------
+// Name: ISRChainOldISR()
+// Action: This function can only be called from within
+//        the client's interrupt function passed to ISRThunkCreate()
+//        It does not return. After the old interrupt subroutine has
+//        returned, the THUNK will switch stacks and return to
+//        the current program.
+// Parameters: The thunk pointer.
+// Returns: Nothing.
+
+void     ISRChainOldISR(ISRTHUNK *pThunk)
+{
+ASSERT(HeapValidPointer(pThunk,sizeof(ISRTHUNK)));
+ASSERT(pThunk-&gt;bActivated == TRUE);
+
+_chain_intr(pThunk-&gt;pfPrevHandler);
+}
+//------------------------------------------------------------------
+// Name: ISRThunkDestroy()
+// Action: Checks for whether a thunk is currently active, and if so
+//       suspends it. The memory used by the THUNK is freed.
+// Parameters: The thunk pointer.
+// Returns: Nothing.
+
+void      ISRThunkDestroy(ISRTHUNK *pThunk)
+{
+ASSERT(HeapValidPointer(pThunk,sizeof(ISRTHUNK)));
+
+if ( pThunk-&gt;bActivated == TRUE )
+    ISRThunkSuspend(pThunk);
+HeapFree(pThunk-&gt;pbCodeDataStack);
+HeapFree(pThunk);
+}
+//==================================================================
+// IMPLEMENTATION
+//------------------------------------------------------------------
+// Name: Normalise()
+// Action: Take a pointer of the current memory model and convert it
+//       to a nomalised huge pointer.
+// Parameters: The void pointer to be converted to a huge pointer.
+// Returns:  The huge pointer equivalent of the void pointer passed
+//         as the argument.
+static void huge *Normalise(void *pv)
+{
+// convert to a 20 bit address, and then take the most significant
+// 16 bits as the segment.
+void huge *ph;
+unsigned long ulAddress;
+
+ph = (void huge *)pv;     // converts to huge but does not normalise
+// This is one of the few occasions where mixing arithmetic
+// and bit operations appears justified.
+ulAddress = ((unsigned long)FP_SEG(ph)&lt;&lt;4) + FP_OFF(ph);
+ph = MK_FP((unsigned)(ulAddress&gt;&gt;4),(unsigned)ulAddress&amp;0xF);
+return ph;
+}
+//------------------------------EOF isrthunk.c----------------------
+
+//    Hmemory.c
+//    Allocation of heap memory.
+//    Interface suggested in the book
+//    "Writing Solid Code" by Steve Macquire, Microsoft Press.
+
+#include  &lt;hmemory.h&gt;
+
+//----------------------------------------------------------------
+BOOL HeapAlloc(void **ppv,size_t size)
+{
+BYTE  **ppb = (BYTE **)ppv;
+ASSERT(size &gt; 0);
+ASSERT(ppb != (BYTE **)0);
+*ppb = (BYTE *)malloc(size);
+return (*ppb != (BYTE *)0);
+}
+//---------------------------------------------------------------
+void HeapFree(void *pv)
+{
+ASSERT(pv != (void *)0);
+free(pv);
+}
+//---------------------------------------------------------------
+// HeapValidPointer() : Check the validity of a memory pointer.
+// Put in your own code for this or see the code in Steve Macquire's book.
+BOOL HeapValidPointer(void *pv,size_t size)
+{
+pv =pv;
+size=size;
+return TRUE;
+}
+//=========================EOF hmemory.c ==========================
+
+//End of File
+</pre>
+</body></html>

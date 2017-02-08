@@ -1,0 +1,103 @@
+
+
+
+
+<HTML><HEAD>
+
+<TITLE>May 1996/Handling Multiple TCP Connections in C++/Listing 4</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4>
+<A name="HEADING1">Listing 4: Relay loop with a finite state machine</A></h4>
+
+
+<pre>
+
+class PacketRelay
+{
+  StreamSocket&amp; sock1;
+  StreamSocket&amp; sock2;
+
+  char sock1_name[80];                  // Socket names for easy reference
+  char sock2_name[80];                  // (name cache)
+
+  char * buffer;
+  enum { IO_buffer_size=12000 };
+
+  BOOL done;
+
+  static PacketRelay * the_PacketRelay;
+
+  void intr_enable(void);
+  void intr_disable(void);
+                                // Finite State Machine "Actors"
+  enum StatusCode {OK=0, NoData, Eof, Failed};  // what Actors return
+  enum SOCK_ID { id_sock1, id_sock2 };
+  typedef StatusCode (*Actor)(PacketRelay * _this, const SOCK_ID id);
+
+                                        // Meaning write to another socket  and
+                                        // keep the log
+  StatusCode relay_socket(const SOCK_ID id);
+  BOOL done_loop;
+  StatusCode is_loop_done(const SOCK_ID id)    { return done_loop ? Eof : OK; }
+  StatusCode set_loop_done(const SOCK_ID id)   { done_loop = TRUE; return OK; }
+  StatusCode reset_loop_done(const SOCK_ID id) { done_loop = FALSE; return OK;}
+  StatusCode set_finished(const SOCK_ID id)    { done = TRUE; return OK;}
+                                // Relay Finite State Machine
+  struct FSMAction { Actor   actor;
+                     SOCK_ID socket_to_use;
+                     short   next_state[Eof+1]; };
+  static FSMAction FSMProgram [];
+
+public:
+  PacketRelay(StreamSocket&amp; _sock1, StreamSocket&amp; _sock2);
+  ~PacketRelay(void);
+  BOOL q_done(void) const       { return done; }
+  static int relay(void);               // That's what relays (if anything)
+};
+
+PacketRelay * PacketRelay::the_PacketRelay = 0;
+
+                                // Here is the FSM relay program
+PacketRelay::FSMAction PacketRelay::FSMProgram [] =
+{
+ /* 0 */ {0,    id_sock1,       {0,0,0}},       // Dummy (stop) state
+
+//  State       What to do     on which socket   OK ND EOF
+ /* 1 */ { (Actor)&amp;relay_socket,  id_sock1,     {2,  3,  5} },  // start state
+ /* 2 */ { (Actor)&amp;relay_socket,  id_sock2,     {1,  4,  6} },
+ /* 3 */ { (Actor)&amp;set_loop_done, id_sock1,     {2, -1, -1} },
+ /* 4 */ { (Actor)&amp;is_loop_done,  id_sock1,     {1,  0,  0} },
+ /* 5 */ { (Actor)&amp;relay_socket,  id_sock2,     {5,  7,  7} },
+ /* 6 */ { (Actor)&amp;relay_socket,  id_sock1,     {6,  7,  7} },
+ /* 7 */ { (Actor)&amp;set_finished,  id_sock1,     {0,  0,  0} }
+};
+
+                                    // This is where it relays: the Finite
+                                    // State Machine
+                                    // Start with the state #1, do the action and
+                                    // pick up the next state based on the action's
+                                    // return code. Keep doing it until hit the
+                                    // stop state (pc=0)
+int PacketRelay::relay(void)
+{
+  PacketRelay&amp; me = *the_PacketRelay;
+  if( me.done )
+    return 0;
+
+  int pc;                           // "Program" counter
+  for(pc=1; pc != 0; )
+  {
+    assert( pc &gt; 0 );
+    const FSMAction&amp; action = FSMProgram[pc];
+    StatusCode result = action.actor(&amp;me,action.socket_to_use);
+    if( result == Failed )
+      return me.done = TRUE, 0;
+    pc = action.next_state[result];
+  }
+  return 0;
+}
+
+//End of File
+</pre>
+</body></html>

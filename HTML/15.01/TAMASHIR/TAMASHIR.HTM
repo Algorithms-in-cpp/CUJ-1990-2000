@@ -1,0 +1,338 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>January 1997/Three Printing Techniques for Windows 95 Console Applications</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><A href="../tocjan.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          <FONT COLOR="#FF0000">Features</FONT></H2>
+          
+          <HR>
+          <CENTER>
+          
+          <H2><FONT COLOR="#800000"> Three Printing Techniques for Windows 95
+          Console Applications</FONT></H2>
+          
+          <H4><FONT COLOR="#800000">David Tamashiro</FONT></H4></CENTER>
+          
+          <BLOCKQUOTE>
+               
+               <p>Printing under Windows 95 isn't as
+                    easy as under DOS, but it doesn't have to be all that hard
+                    either, if properly encapsulated.</p></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <p>Creating Windows 95 console mode
+                    applications is a quantum leap in ease of design over Win
+                    3.1 and MS-DOS. Without having to understand complicated
+                    Windows programming techniques (e.g., callback routines,
+                    window messages, etc.), scientists, engineers, and
+                    programmers can take full advantage of the best features of
+                    the Win32 environment. These include the ubiquitous stdio 
+                    library (printf, scanf, etc.), the 32-bit flat memory model,
+                    and multithreaded execution. One such feature that is not
+                    well documented is console mode printing. </p>
+               
+               <p> In this article, I describe three
+                    techniques &#151; ranging from simple file I/O to the
+                    traditional GDI "drawing" approach &#151; that allow
+                    you to easily print ASCII data from a Win95 console
+                    application. I then encapsulate these techniques in an
+                    abstract printer class, so that you can make full use of the
+                    Win32 programming environment without getting bogged down in
+                    the details of the device-independent printer programming
+                    model. These techniques are not limited to the Win95 console
+                    model: they will work equally well in Win95 GUI
+                    applications. </p>
+               
+               <p> The code examples presented in the
+                    article are excerpted from larger files. Those files are
+                    available via the CUJ code disk and online sources. (See p.
+                    3 for details.)</p>
+               
+               <h4><FONT COLOR="#000080">Technique 1: File I/O
+               Printing</FONT></H4>
+               
+               <p>The first technique (and by far the
+                    easiest) is to write to the printer as though it were a
+                    file. This technique, from exam1.cpp, should be familiar to
+                    DOS programmers since it is the same method used in DOS:</p>
+
+<PRE>
+#include &lt;stdio.h&gt;
+void main(void);
+{
+char *PortName = "LPT1:";
+FILE *fPrinter =   fopen(PortName, "wb");
+fprintf(fPrinter,     "Hello Printer \r\n");
+fclose(fPrinter);
+}
+</PRE>
+               
+               <p>Printing to different ports is
+                    accomplished by substituting "LPT2:", "LPT3:",
+                    "PRN:", etc., for "LPT1:" in the
+                    assignment to *PortName. There are a few drawbacks to this
+                    method. First, this program skips around the Win95 printing
+                    mechanism, so Win95 will not be able to "see" and
+                    queue the program output. In the absence of a queuing
+                    mechanism, the program will remain locked up until all its
+                    data is fed to the printer. Further, the program will bomb
+                    out if another program is currently using the printer.
+                    Finally, the program prints only to printers directly
+                    connected to your computer's printer ports (LPT1, LPT2,
+                    etc.); you will not be able to print to networked printers.</p>
+               
+               <h4><FONT COLOR="#000080">Technique 2: The GDI
+               Pass-Through</FONT></H4>
+               
+               <p>The next technique remedies many of
+                    the problems of technique 1 by blasting raw print data
+                    through the GDI. Using the GDI makes it possible to print to
+                    any local or network printer that has been configured in
+                    Win95. </p>
+               
+               <p> Technique 2 begins by using the
+                    EnumPrinters API to find the names of the configured
+                    printers. In the code sample here, from exam2.cpp, the
+                    FindPrinters function queries the names of the available
+                    printers and stores them in the PrinterNames array. Note
+                    that function EnumPrinters must be called twice: once to
+                    calculate the buffer size for the PRINTER_INFO_5 structure
+                    array *pPrnInfo; then once more to fill it with the printer
+                    attributes (including the printer names). The printer names
+                    are copied into the PrinterNames array during the second
+                    call to EnumPrinters.</p>
+
+<PRE>
+...
+char PrinterNames[MAX_NUM][];
+...
+void FindPrinters(void)
+{
+EnumPrinters(PRINTER_ENUM_LOCAL,NULL,
+    5, NULL,0,&amp;dwSize, &amp;dwPrinters);
+pbuf = new BYTE[dwSize];
+EnumPrinters(PRINTER_ENUM_LOCAL,
+             NULL,5,pbuf,dwSize,
+             &amp;dwSize, &amp;dwPrinters);
+
+PRINTER_INFO_5 * pPrnInfo =
+    (PRINTER_INFO_5 *) pbuf;
+for (NumPrinters=0;
+     NumPrinters &lt; dwPrinters;
+     NumPrinters++,pPrnInfo++)
+   strcpy(PrinterNames[NumPrinters],
+          pPrnInfo-&gt;pPrinterName);
+
+delete[] pbuf;
+}
+</PRE>
+               
+               <p>Once the printer names are known, only
+                    a few more steps are necessary to send output to the
+                    printer:</p>
+
+<PRE>
+...
+DOC_INFO_1 DocAttrib;
+HANDLE hPrinter;
+
+OpenPrinter(PrinterNames[Pindex],
+            &amp;hPrinter,NULL);
+DocAttrib.pDocName =
+    "Dave's Example 2";
+DocAttrib.pOutputFile=NULL;
+DocAttrib.pDatatype= "RAW";
+// Specify DOC_INFO_1 data structure
+StartDocPrinter(hPrinter,1,
+                (LPBYTE) &amp;DocAttrib);
+
+// Start of "Page"
+StartPagePrinter(hPrinter);
+
+// Print page 1
+WritePrinter(hPrinter,
+             "Hello, Page 1\r\n\f",
+             16,&amp;Count);
+
+//Print Page 2
+WritePrinter(hPrinter,
+             "Hello, Page 2\r\n\f",
+             16,&amp;Count);
+
+//End of "Page"
+EndPagePrinter(hPrinter);
+
+EndDocPrinter(hPrinter);
+ClosePrinter(hPrinter);
+...
+</PRE>
+               
+               <p>The GDI is set to the "transparent"
+                    pass-through mode by setting DocAttrib.pDatatype = "RAW".
+                    StartPagePrinter and EndPagePrinter are GDI helper functions
+                    that are typically used to enclose each page of output. The
+                    GDI normally uses these functions to determine how many
+                    pages will be printed. In RAW mode, however, the GDI doesn't
+                    have to know how many pages are to be printed. Thus,
+                    StartPagePrinter and EndPagePrinter need only be called
+                    once, at the start and end of the program. The function
+                    WritePrinter sends the data to the printer. It is called
+                    with a pointer to a string array and a string length. It
+                    returns a true if successful, false otherwise. It will also
+                    return the amount of data transferred to the printer. If
+                    everything goes well, this will equal your string length.</p>
+               
+               <p>Technique 2 should be adequate for
+                    most of your textual printing needs. Sometimes, however, you
+                    may wish to use some of the GDI's more sophisticated print
+                    features (e.g., True Type scalable fonts, symbol fonts,
+                    etc.). This leads to the third, and last, example.</p>
+               
+               <h4><FONT COLOR="#000080">Technique 3:
+               Traditional GDI Drawing</FONT></H4>
+               
+               <p>Technique 3, in the excerpt below from
+                    exam3.cpp, is the method described in most Windows
+                    programming textbooks. It is the most flexible, and,
+                    therefore, the most complex of the three:</p>
+
+<PRE>
+//  Get Device Context for printer
+hDC = CreateDC(NULL,
+               PrinterNames[Pindex],
+               NULL,NULL);
+
+// Set up DOCINFO print parameters
+ZeroMemory(&amp;di,sizeof(DOCINFO));
+di.cbSize = sizeof(DOCINFO);
+di.lpszDocName =
+    "- Dave's Example 3 -";
+GetTextMetrics(hDC,&amp;tm);
+FontYSize = tm.tmHeight +
+            tm.tmExternalLeading;
+
+StartDoc(hDC,&amp;di)
+StartPage(hDC)
+
+//Print three lines
+TextOut(hDC,0,0,"Hello,Line 1",12);
+TextOut(hDC,0,FontYSize * 1,
+        "Hello,Line 2",12);
+TextOut(hDC,0,FontYSize * 2,
+        "Hello,Line 3",12);
+
+EndPage(hDC);
+EndDoc(hDC);
+DeleteDC(hDC);
+</PRE>
+               
+               <p>In this method, the output page is
+                    considered one large bitmapped "canvas." Output is
+                    "drawn" onto the printer, in a fashion similar to
+                    drawing text on the video screen. To space the lines
+                    properly, the code must calculate the size of the default
+                    font. This is accomplished by creating a device context and
+                    using the function GetTextMetrics to retrieve the font
+                    attributes. StartDoc and StartPage open the document and
+                    page, then TextOut is used to print three lines of text.</p>
+               
+               <h4><FONT COLOR="#000080">Applied Techniques</FONT></H4>
+               
+
+               <p><a href="fig1c.htm">Figure
+                    1</a> summarizes the three techniques discussed here. The
+                    classes &#151; Direct, WinDirPrinter, and WinGDIPrinter &#151;
+                    demonstrate the file I/O, raw GDI, and traditional GDI
+                    drawing methods. All three classes are derived from the
+                    abstract base class BasePrinter. The functions PrintLine,
+                    EjectPaper, and SetFontPointSize are declared to be virtual
+                    to abstract out the printing functions. This hierarchical
+                    organization allows you to design an application without
+                    worrying about which printing technique will be used. All
+                    printing techniques are hidden behind the BasePrinter class.
+                    </p>
+               
+               <p> Because the details of printing are
+                    hidden away, adding printing capability to an application is
+                    a trivial matter. <A href="list1.htm">Listing 1</A>
+                    presents a small program that demonstrates the use of the
+                    three printer objects. It begins by querying the user to
+                    determine which printing technique (object) is desired. It
+                    next selects the font size using SetFontPointSize. This
+                    function is only interesting if choice (3) is selected.
+                    Choices (1) and (2) do not support scalable fonts and so
+                    they ignore this function. Finally, the output is sent to
+                    the printer using the PrintLine function. For the file I/O
+                    method (choice 1), the output is sent to LPT1:. Otherwise,
+                    the output is sent to whatever printer Win95 has selected as
+                    the default printer. Notice how the use of the base class
+                    pointer variable printer abstracts the printing process. It
+                    does not matter which child class printer points to (hence 
+                    printing technique). Thus, it does not matter which printing
+                    technique is being used. You simply call printer-&gt;PrintLine
+                    and everything gets taken care of.</p>
+               
+               <h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+               
+               <p>This article has detailed three
+                    printing techniques for Windows 95, ranging from the simple
+                    to the complex. File I/O is the simplest, but cannot make
+                    use of the Win95 print queue. Next is raw GDI, which is not
+                    as complicated as the traditional GDI drawing approach, but
+                    cannot use any of Win95's scalable fonts. The traditional
+                    GDI drawing approach is the most complicated, but also the 
+                    most flexible, in that it allows the use of all the GDI's
+                    advanced functionality. </p>
+               
+               <p> The full set of listings and
+                    makefiles is available electronically (see p. 3 for
+                    details). The programs were compiled using Borland C++ 5.0
+                    for Windows 95. I did not use the OWL C++ Frameworks in any
+                    of my examples, so it should be a trivial task to compile
+                    these examples with other compilers, such as Microsoft's
+                    Visual C++. </p>
+               
+               <p> One last note: if you want these
+                    examples to work with Windows NT, you will probably have to
+                    tweak things a bit. You definitely will have to change some
+                    of the data structures in the Win32 API functions, since
+                    they are different in Win95 and WinNT. (For example, the
+                    data structure PRINTER_INFO_5 would have to be replaced with
+                    PRINTER_INFO_4 in EnumPrinters.) o</p>
+               
+               <h4><FONT COLOR="#000080">Bibliography</FONT></H4>
+               
+               <p>Borland. "An Example of Printing
+                    in Windows." Borland Technical Paper 1783, File:
+                    til1783.html. </p>
+               <p>Crain, Dennis. "EZPrint: No-Frills Printing in Visual
+                    Basic and C." MicroSoft Development Library CD. </p>
+               <p>Microsoft Corp. "How to Send Raw Data to a Printer
+                    using the Win32 API." Article ID: Q138594, Microsoft
+                    Knowledge Base. </p>
+               <p>Prosise, Jeff. "Programming Windows 95 with MFC, Part
+                    VIII: Printing and Print Previewing." Microsoft Systems
+                    Journal, April 1996. </p> </BLOCKQUOTE>
+
+<P><I><P><I>David Tamashiro holds a BSEE from Santa Clara University. In addition to his engineering positions, he has had opportunity to hold many interesting jobs, including positions at a bank and at a hospital. He currently works as a software engineer for Adtech in Honolulu, Hawaii. He can be reached at davidt@aloha.net. </FONT></I></P></FONT></I></P>
+                     
+<h4><a href="../../../source/1997/jan97/tamashir.zip">Get Article Source Code</a></h4>
+
+
+     </BODY>
+</HTML>

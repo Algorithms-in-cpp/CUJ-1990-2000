@@ -1,0 +1,47 @@
+<HTML>   
+     <HEAD>
+<TITLE>August 2000/A Lightweight Window Wrapper</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocaug.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Windows</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">A Lightweight Window Wrapper</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Steve Hanov</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Even the simplest aspects of window management can benefit from a bit of encapsulation.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<p>Recently, I faced the task of writing a small Windows application. I didn't need the bulkiness of MFC, or the complexity of WTL. The application consisted of a status window and a few dialogues. It seemed natural to code it using only the Windows API &#151; no fancy frameworks required. I pulled out a few books to refresh my memory on window creation, and found myself staring at C code, without an object to be found. Programming half of the application without objects would have crippled my design. I needed an inheritable window wrapper.</p>
+<p>In Windows, there are two steps to creating a window. First, you call the Windows function <B>RegisterClassEx</B>, which inputs a structure that specifies a class name for the window, as well as other attributes. (Don't confuse a Windows "class" with a C++ class; they're not the same thing.) <B>RegisterClassEx</B> associates the class name with a callback procedure, which is also specified in the structure. Next, you create the window by calling <B>CreateWindowEx</B> with the registered class name and more specific properties, such as the title and size.</p>
+<p>The problem in creating a wrapper is the callback procedure, the function that Windows calls to process messages. If it is a member function, this callback procedure must be static, because Windows needs its address when its class name is registered. Unfortunately, static member functions cannot access other non-static members without a <B>this</B> pointer, and most importantly, they cannot be virtual.</p>
+<p>The solution to this problem is to somehow provide the callback procedure with a pointer to the object to which it belongs. This must be arranged for during the creation process, since there is no window before creation, and if it is left until later, clients will miss dozens of important messages sent during creation. Luckily, Windows allows the caller of <B>CreateWindowEx</B> to pass a void pointer as the last parameter. This pointer is included in the <B>CREATESTRUCT</B> structure that accompanies a <B>WM_CREATE</B> or <B>WM_NCCREATE</B> message &#151; a couple of the earliest messages Windows sends to a new window. Of the two, <B>WM_NCCREATE</B> is sent first, so my static windows procedure intercepts this message and grabs the pointer from it. Once it has the pointer, the static message handler stores it in the window as user data with a call to the Windows function <B>SetWindowLongPtr</B>. The pointer can then be retrieved for handling subsequent messages using <B>GetWindowLongPtr</B>. <B>SetWindowLongPtr</B> and <B>GetWindowLongPtr</B> were introduced in a recent Microsoft Platform SDK for 64-bit Windows. If you have not yet downloaded it, you can remove the <B>Ptr</B> suffix and replace <B>GWLP_USERDATA</B> with <B>GWL_USERDATA</B> in the calls to get it to compile.</p>
+
+<H4><FONT COLOR="#000080">Dealing with Inheritance</FONT></H4>
+
+<p>In C++ Windows programs, new window types are typically created by deriving them from a base window class. Somehow the derived-class window must implement its own behavior in response to Windows messages; it usually can't rely on the behavior of the base class. MFC deals with this problem using a complex system of message maps. Every child class contains an array that maps messages to the functions that handle them. The idea of implementing a system of maps and macros wasn't appealing to me, so I chose a different tactic &#151; let C++ do the work!</p>
+<p>In the files <B>Wndobj.h</B> and <B>BaseWnd.cpp</B> (<a href="list1.htm">Listings 1</a> and <a href="list2.htm">2</a>), I define the class <B>CWindow</B>, which declares two window procedures. One of the procedures is static, and the other is virtual. The static function <B>CWindow::BaseWndProc</B> is the only one that is called by Windows. <B>BaseWndProc</B> calls the virtual function <B>WindowProc</B>, which takes an additional parameter <B>pbProcessed</B>, a pointer to a Boolean. <B>WindowProc</B> passes back a flag through this parameter to indicate whether or not it processed the message. <B>WindowProc</B> should be overridden by all derived classes to provide message processing.</p>
+<p>The idea behind this design is that each child-class <B>WindowProc</B> first calls the <B>WindowProc</B> of its base class, to let it process the message, then handles the message itself. If either the child class or the base class handles the message, the child-class <B>WindowProc</B> should pass the value <B>TRUE</B> through <B>pbProcessed</B>; otherwise it should pass back <B>FALSE</B>. If neither the child or parent handles the message, <B>BaseWndProc</B> hands it back to Windows.</p>
+<p><B>CWindow</B> has a style of <B>NULL</B>, so it won't work by itself. To create a usuable window from <B>CWindow</B>, do the following:</p>
+
+<p>1.  Derive a class from <B>CWindow</B> (or a derived class).</p>
+<p>2.  In the constructor, set <B>_pszClassName</B> to a unique string, and optionally set <B>_pszTitle</B> and <B>_dwStyle</B>. Base classes are constructed first, so you can override these changes in the constructors of derived classes. You may also add <B>Get</B> and <B>Set</B> methods to take care of items such as the window title.</p>
+<p>3.  Create or override virtual message handlers. The Microsoft include file <B>windowsx.h</B> is a good source of prototypes.</p>
+<p>4.  If the handler for a message you want to process does not exist in any of the parent classes, override <B>WindowProc</B> and call it from there. Make sure you call the base class's <B>WindowProc</B> before handling any messages. If you do not handle the message, return the <B>LRESULT</B> obtained from the base class's <B>WindowProc</B>. Set <B>*pbProcessed</B> to <B>TRUE</B> if you handle the message. (Doing so prevents it from being passed on to the Windows default handler, <B>DefWindowProc</B>.)</p>
+
+<H4><FONT COLOR="#000080">Sample Application</FONT></H4>
+
+<p><a href="list3.htm">Listings 3</a> and <a href="list4.htm">4</a> show a sample application of the wrapper class. The code uses the method described above to create a frame window, <B>CMainWindow</B>. <B>CChildWindow</B> inherits the style attributes from <B>CMainWindow</B>'s class, and overrides <B>WindowProc</B> to draw in the client area. To save typing, I used the message cracker macros provided in <B>windowsx.h</B>.</p>
+<p>Note that <B>RegisterClassEx</B> can be called more than once per Windows class. It will fail on each call after the first, but the window will still be created. For the sake of simplicity, my code does not attempt to prevent multiple registrations. If this concerns you, you can use the Windows functions <B>AddAtom</B> and <B>FindAttom</B> to keep track of whether the class name was registered. If the registration fails for some reason (such as a duplicate class name), <B>CWindow::Create</B> will return <B>NULL</B>. In this implementation, it is the responsibility of the caller to check the value returned by <B>CWindow::Create</B>.</p>
+<p>Problems can also occur if you need to use the window's user data for something else. Real MDI (Multiple Document Interface) windows, for example, need the last <B>void *</B> parameter of <B>CreateWindowEx</B> for extra data of their own. For situations like this, you will have to use a static data structure to map the window handles to the pointers to the objects that handle them.</p>
+<p>I have used the method described in this article for everything from wrapping dialogs and property sheets to building custom controls and entire applications. It combines the benefits of inheritance and object-oriented programming with the raw power of the Win32 API.</p>
+
+<p><i><B>Steve Hanov</B> currently works at Quack.com and is a candidate for a BMath in Computer Science at the University of Waterloo, Ontario. He is creating a skin framework for Windows applications in his spare time. When he's not pushing the limits of Win32, he enjoys developing for Linux. Feel free to contact Steve at <B>smhanov@uwaterloo.ca.</B></i></p>
+
+<h4><a href="../../../source/2000/aug00/hanov.zip">Get Article Source Code</a></h4>
+
+</blockquote></body></html>

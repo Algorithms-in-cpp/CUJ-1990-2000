@@ -1,0 +1,264 @@
+
+
+
+
+<HTML><HEAD>
+
+<TITLE>June 1997/Tracking Down Resource Leaks with HandleTracker/Listing 2</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4>Listing 2:	Implements class HandleTracker</h4>
+
+<pre>
+#ifdef _DEBUG
+
+#include &lt;afx.h&gt;
+
+// ********************
+// HandleTracker class:
+// ********************
+
+class HandleTracker
+{
+public:
+
+    HandleTracker();
+    ~HandleTracker();
+
+    BOOL Add(LPCTSTR szFile,
+            int nLine,
+            HANDLE handle, 
+            LPCTSTR szMsg);
+    
+    BOOL Remove(LPCTSTR szFile, 
+              int nLine, 
+              HANDLE handle);
+
+private:
+
+    CPtrArray myHandleStringPairs;
+    HANDLE    myMutex;
+};
+
+// ***********************
+// HandleStringPair class:
+// ***********************
+
+class HandleStringPair
+{
+public:
+
+    HandleStringPair
+    (HANDLE handle, 
+     LPCTSTR szMsg) : 
+     myHandle(handle),
+     myString(szMsg) {}
+        
+    HANDLE GetHandle() 
+    { return myHandle; }
+        
+    const CString&amp; GetString() 
+    { return myString; }
+
+private:
+
+    HANDLE  myHandle;
+    CString myString;
+};
+
+// *****************************
+// HandleTracker implementation:
+// *****************************
+
+HandleTracker::HandleTracker()
+{
+    myMutex = 
+    CreateMutex
+    (0, // default security.
+     FALSE, // not owned.
+     NULL); // no name.
+}
+
+HandleTracker::~HandleTracker()
+{
+    WaitForSingleObject
+    (myMutex, INFINITE);
+
+    if(myHandleStringPairs
+       .GetSize())
+    {
+        TRACE
+        ("Detected resource"
+         "leaks!\n");
+
+        int nNumEntries = 
+        myHandleStringPairs
+        .GetSize();
+        
+        HandleStringPair *phsp;
+
+        for(int i = 0; 
+            i &lt; nNumEntries; 
+            i++)
+        {
+            phsp = 
+            static_cast
+            &lt;HandleStringPair*&gt;
+            (myHandleStringPairs
+             .GetAt(i));
+
+            if(phsp)
+            TRACE("%s\n", 
+            (LPCTSTR)phsp
+             -&gt;GetString());
+            delete phsp;
+        }
+    }
+    else
+        TRACE
+        ("No resource leaks "
+         "detected\n");
+
+    ReleaseMutex(myMutex);
+    CloseHandle(myMutex);
+}
+
+BOOL HandleTracker::Add
+    (LPCTSTR szFile, 
+     int nLine,
+     HANDLE handle, 
+     LPCTSTR szFunction)
+{
+    char szMsg[MAX_PATH + 32];
+    
+    sprintf(szMsg, "%s(%d) : "
+        "created in %s",
+        szFile, nLine, 
+        szFunction);
+
+    HandleStringPair *phspToAdd;
+
+    try
+    {
+        phspToAdd = 
+        new HandleStringPair
+            (handle, szMsg);
+    }
+    catch(CMemoryException *pMX)
+    {
+        pMX-&gt;Delete();
+        return FALSE;
+    }
+
+    WaitForSingleObject
+        (myMutex, INFINITE);
+
+    myHandleStringPairs
+        .Add(phspToAdd);
+    
+    ReleaseMutex(myMutex);
+    
+    return TRUE;
+}
+
+BOOL HandleTracker::Remove
+    (LPCTSTR szFile, 
+     int nLine,
+     HANDLE handle)
+{
+    WaitForSingleObject
+    (myMutex, INFINITE);
+
+    int nNumEntries = 
+        myHandleStringPairs
+        .GetSize();
+    
+    HandleStringPair *phsp;
+
+    for(int i = 0; 
+        i &lt; nNumEntries; 
+        i++)
+    {
+        phsp = 
+        static_cast
+        &lt;HandleStringPair*&gt;
+        (myHandleStringPairs
+         .GetAt(i));
+        
+        if(phsp &amp;&amp; 
+           phsp-&gt;GetHandle() 
+           == handle)
+        {
+            myHandleStringPairs
+                .RemoveAt(i);
+            myHandleStringPairs
+                .FreeExtra();
+
+            delete phsp;
+            break;
+        }
+    }
+
+    ReleaseMutex(myMutex);
+
+    if(i &gt;= nNumEntries)
+    {
+        TRACE
+        ("HandleTracker::Remove"
+         " - Couldn't find"
+         " handle 0x%x, closed"
+         " in %s, line %d\n", 
+          handle, szFile, nLine);
+
+        return FALSE;
+    }    
+    
+    return TRUE;
+}
+
+// *********************
+// Create one static 
+// HandleTracker object:
+// *********************
+
+static HandleTracker 
+      TheHandleTracker;
+
+// *************************
+// Function implementations:
+// *************************
+
+HANDLE DEBUG_CREATE_MUTEX
+(LPCTSTR szFile, int nLine,
+ LPSECURITY_ATTRIBUTES lpsa,
+ BOOL bInitiallyOwned,
+ LPCTSTR szMutexName)
+{
+    HANDLE hMutex = 
+    CreateMutex(lpsa, 
+              bInitiallyOwned, 
+              szMutexName);
+
+    if(hMutex)
+    {
+        TheHandleTracker.Add
+        (szFile, nLine, hMutex, 
+         "CreateMutex");
+    }
+    return hMutex;
+}
+
+BOOL DEBUG_CLOSE_HANDLE
+(LPCTSTR szFile,
+ int nLine,
+ HANDLE handle)
+{
+    TheHandleTracker.Remove
+    (szFile, nLine, handle);
+
+    return CloseHandle(handle);
+}
+
+#endif // _DEBUG
+//End of File
+</pre>
+</body></html>

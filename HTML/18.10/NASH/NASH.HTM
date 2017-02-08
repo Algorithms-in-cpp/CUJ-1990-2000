@@ -1,0 +1,431 @@
+<HTML>   
+     <HEAD>
+<TITLE>October 2000/Introduction to Function Try Blocks</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tococt.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Introduction to Function Try Blocks</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Alan Nash</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Exceptions can occur in the darndest places. Fortunately, try blocks can also be written in most of those places.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<p>Most C++ programmers are familiar with the concept of using a try block to catch exceptions thrown within a function. However, unless you followed the C++ Standard closely, you may not be aware of a feature that was introduced in 1995. This feature was added in reply to the question, "how do you catch an exception thrown in a constructor initializer?"</p>
+<p>Before answering this question, let's review two relevant topics: exception handling and constructor initializers. (If you are already familiar with these topics, skip the next two sections.)</p>
+<p>The "additional considerations" portion of this article was inspired by Herb Sutter's Guru of the Week #66 <a href="#ref3">[3]</a>, which treats the those considerations in more detail.</p>
+
+<H4><FONT COLOR="#000080">Exceptions</FONT></H4>
+
+<p>C++ provides the keywords <B>throw</B>, <B>try</B>, and <B>catch</B> to handle situations that require bypassing the normal flow of execution (exceptions). For example:</p>
+
+<pre>
+class Error;
+
+void f()
+{
+   C c;
+   throw Error(12);
+}
+
+void g()
+{
+   try
+   {
+      A a;
+      {
+         B b;
+         f();
+      }
+   }
+   catch(Error &amp;e)
+   {
+      cerr &lt;&lt; e;
+   }
+   catch(AnotherError &amp;ae)
+   {
+      ...
+   }
+   ...
+}
+</pre>
+
+<p>Here, evaluation of the throw expression <B>throw Error(12)</B> starts the process of stack unwinding (defined below). A throw expression consists of the keyword <B>throw</B> followed by an expression. The expression is usually a temporary object of a user-defined class (<B>Error</B>, in the example).</p>
+<p>Stack unwinding consists of exiting blocks one by one, from the inside out, as their local objects are destroyed. In the example, the outermost block of <B>f()</B> is exited first, and <B>c</B> is destroyed. Next comes the block enclosing the call to <B>f()</B> and <B>b</B> is destroyed. Finally <B>a</B> is destroyed. Stack unwinding continues until the program is terminated, or until a try block with an appropriate handler is found.</p>
+<p>A try block consists of a compound statement preceded by the keyword <B>try</B> and followed by one or more handlers. Each of the blocks starting with <B>catch</B>, plus the catch clause itself, is a handler. A handler looks similar to a function that has a single parameter and no return type. The handlers of a try block are examined in order. If no matching handler is found, stack unwinding continues.</p>
+<p>If a handler that matches the type of the throw expression is found, execution resumes within that handler. In the example, that is the handler starting with <B>catch(Error &amp;e)</B>. There, <B>e</B> will have the value <B>Error(12)</B> and an appropriate output operator will be invoked to output this error (assuming such an operator has been defined).</p>
+<p>When the end of the handler is reached, execution continues after the try block (that is, after the last handler). Handlers can themselves throw exceptions and, in particular, they can "rethrow" the exception they are handling. This is done with a throw statement (<B>throw</B> immediately followed by semicolon) and is used to do partial handling of an exception. If an exception is rethrown, stack unwinding continues until an outer try block with an appropriate handler is found.</p>
+
+<H4><FONT COLOR="#000080">Constructor Initializers</FONT></H4>
+
+<p>Imagine we have a class with at least one base class or member class object, something like this:</p>
+
+<pre>
+class C: public B
+{
+   ...
+};
+</pre>
+
+<p>or something like this:</p>
+
+<pre>
+class C
+{
+   M m;
+   ...
+};
+</pre>
+
+<p>Every time an object of type <B>C</B> is constructed, an object of type <B>B</B> or <B>M</B> needs to be constructed first. This means that every constructor of <B>C</B> must call some constructor of class <B>B</B> or <B>M</B>. If we don't use a constructor initializer, the compiler will insert a call to the default constructor of <B>B</B> or <B>M</B> inside our <B>C</B> constructor.</p>
+<p>But what if we need to call a non-default construct of <B>B</B> or <B>M</B>? We can't do this inside the body of our <B>C</B> constructor, since the <B>B</B> or <B>M</B> sub-objects are already constructed by the time we get there. Furthermore, constructors can't be called like regular functions:</p>
+
+<pre>
+class C: public B
+{
+   M m;
+   C(int &amp;n)
+   {
+      B(n);  // won't work
+      m(n);  // won't work
+   }
+
+}
+</pre>
+
+<p>And what if the constructor needs to initialize a reference?</p>
+
+<pre>
+class C
+{
+   int &amp;r;
+   C(int &amp;n)
+   {
+       r = n; // won't work!
+   }
+};
+</pre>
+
+<p>Constructor initializers were introduced specifically to handle these cases. This is how it is done:</p>
+
+<pre>
+C::C(int &amp;n)
+   : B(n),r(n),m(n)
+{
+   ...
+}
+</pre>
+
+<p>The second line here is a constructor initializer. A constructor initializer is a list of comma-separated initializers (calls to constructors) starting with a colon. A constructor initializer can be used only immediately before the brace that starts the body of a constructor, hence the name.</p>
+<p>The constructors in the list are not executed in the order they are listed, but rather in the order in which they appear in the class declaration, base classes first. Watch out for this in case you depend on construction order (generally a very bad idea).</p>
+<p>This is the end of the review, and time to get back to our initial question.</p>
+
+<H4><FONT COLOR="#000080">Function Try Blocks</FONT></H4>
+
+<p>So, how do we catch an exception thrown in a constructor initializer? By using a function try block. Function try blocks were introduced in the April 1995 Draft C++ Standard specifically to address this problem. This is what a function try block looks like (the first line is not part of it):</p>
+
+<pre>
+C::C(int n)
+try
+   : r(n),B(n),M(n)
+{
+   ...
+}
+catch(Error &amp;e)
+{
+   ...
+}
+catch(AnotherError &amp;ae)
+{
+   ...
+}
+</pre>
+
+<p>As you can see, a function try block is similar to a regular try block, but it does not go inside the braces of a function definition. Instead, it encloses the whole function definition and the constructor initializer, if present.</p>
+<p>Any exception thrown &#151; directly or indirectly &#151; by the execution of any of the constructors in the constructor initializer will be caught by the handler(s) of the function try block. Of course, exceptions thrown inside the braces after try will also be caught by the same handlers.</p>
+<p>Function try blocks can be used on any function, but they are needed only for constructors that have initializers that may throw. Elsewhere, they can be replaced by a regular try block and an extra pair of braces. That is, for any function <B>f</B> which does not have constructor initializers:</p>
+
+<pre>
+f(...)
+try
+{
+   ...
+}
+catch(Error &amp;e)
+{
+   ...
+}
+</pre>
+
+<p>can always be replaced with:</p>
+
+<pre>
+f(...)
+{
+   try
+   {
+      ...
+   }
+   catch(Error &amp;e)
+   {
+      ...
+      #if &lt;constructor/destructor&gt;
+         throw;
+      #else
+         return;
+      #endif
+   }
+}
+</pre>
+
+<p>to obtain exactly the same results.</p>
+
+<H4><FONT COLOR="#000080">Details</FONT></H4>
+
+<p>The "try" part is straightforward. Except for the fact that certain exceptions will be caught, it works pretty much like a regular function block.</p>
+<p>The "catch" part (the handler) is more interesting. An easy way to understand it is to keep the replacement shown above in mind. As you can see, inside the handlers the parameters to the constructor are visible, but names local to the "try" part are not. For example:</p>
+
+<pre>
+C::C(int n)
+try
+   : r(n),B(n),M(n)
+{
+    X x;
+    ...
+}
+catch(Error &amp;e)
+{
+   f(n); // OK
+   f(x); // Error
+}
+</pre>
+
+<p>If the end of a handler is reached, the function rethrows (constructors and destructors) or returns (all other functions).</p>
+<p>This much can be seen directly from the replacement above, but there are several further restrictions. You can't jump into the handler of a function try block or out of one, not even using return. The only way out of a handler is to reach its end or to throw an exception (and this includes rethrowing the original exception). So the handler of a constructor or destructor always exits with an exception. For example:</p>
+
+<pre>
+C::C(int n)
+try
+   : r(n),B(n),M(n)
+{
+body:
+   ...
+   goto handler; // Error
+}
+catch(Error &amp;e)
+{
+handler:
+   goto body; // Error
+   return;    // Error
+   throw;     // OK
+   throw AnotherError(10); // OK
+}
+</pre>
+
+<p>Any member or base class sub-objects that have been constructed are destroyed before entry into the handler. Furthermore, inside a handler you are not allowed to refer to nonstatic members or base classes. Taken together, these rules make it impossible to attempt a recovery of the failed construction. This is intentional.</p>
+
+<pre>
+C::C(int n)
+try
+   : r(n),B(n),M(n)
+{
+   ...
+}
+catch(Error &amp;e)
+{
+   if(...)
+   {
+// silly attempts to reconstruct m
+      m(20);     // Error
+      m = M(20); // Error
+   }
+}
+</pre>
+
+<p>In case you are wondering, you cannot catch construction exceptions of namespace-scope objects, or destruction exceptions on static objects, by using a function try block on <B>main</B>, like this:</p>
+
+<pre>
+M m;
+
+main()
+try
+{
+   ...
+}
+catch(Error &amp;e)
+{
+   // won't catch exceptions from construction
+   // or destruction of m
+   ...
+}
+</pre>
+
+<p>The standard explicitly says that this can't be done. After all, <B>main</B> is neither a constructor nor a destructor. There is no way to catch such exceptions.</p>
+<p>Finally, keep in mind that handlers in function try blocks are processed strictly sequentially (like regular try blocks). This makes it possible to write handlers that will never be entered. In particular, if you have a handler starting with <B>catch (...)</B> you should put it at the end of the try block.</p>
+
+<pre>
+C::C(int n)
+try
+   : r(n),B(n),M(n)
+{
+    ...
+}
+catch(...)
+{
+   ...
+}
+catch(Error &amp;e)
+{
+   // never reached
+}
+</pre>
+
+<H4><FONT COLOR="#000080">Recommended Use</FONT></H4>
+
+<p>When should you use function try blocks? First, remember that you can't return a value inside a function-try-block handler. So it makes no sense to use a function try block for a non-void function.</p>
+
+<pre>
+int f()
+try
+{
+   ...
+}
+catch(Error &amp;e)
+{
+   // oops, can't return int from here!
+}
+</pre>
+
+<p>Second, it is generally recommended that destructors not throw exceptions. There is no way to get out of a handler of a function try block of a destructor, except by throwing or re-throwing. So don't use function try blocks in destructors, unless you really know what you are doing.</p>
+
+<pre>
+C::~C()
+try
+{
+   ...
+}
+catch(Error &amp;e)
+{
+   // will rethrow!
+}
+</pre>
+
+<p>Third, function try blocks are not essential in the absence of constructor initializers. Therefore, you can use function try blocks for void functions and constructors without initializers if you feel like it, but you won't accomplish anything new. As we saw above, we <I>must</I> use function try blocks to catch exceptions in constructor initializers. Of course, we have the option of simply letting any such exception go through, uncaught.</p>
+<p>When should we catch, then? Notice that we can't suppress the throwing of an exception. We can either re-throw the original exception, or throw another one. This is just as well, because there is no other good way to notify the rest of the program that construction has failed.</p>
+<p>Now let's look at things in more detail. We find ourselves in the handler of a function try block. If we got here due to a statement in the body of the constructor, but we need to recover, we are here by mistake. Instead, we should have wrapped that statement with a regular try block (possibly inside a function try block).</p>
+<p>So, let's assume we got here due to an exception thrown &#151; directly or indirectly &#151; by a constructor invoked in the initializer list. It might seem that we could have at this point a partially constructed object. It would be difficult to determine what parts had been and what parts had not been constructed (and remember that the initializer list is not generally executed in the order given). The C++ Standard explicitly rules all of this out. Instead, it dictates that whatever has been constructed will be destroyed before we get into the handler. So whatever has been constructed has already been destroyed. Nothing remains.</p>
+<p>Furthermore, within the handler we can't refer to non-static members or base classes, so we can't attempt to recover any part of our object. Construction fails and we must throw. All we can do is replace the exception thrown with another one (perhaps to indicate that the larger construction has failed) and possibly create some useful side effects. Perhaps the best example of a useful side effect is to log the failure or to produce some debugging output.</p>
+
+<pre>
+C::C(int n)
+try
+   : r(n),B(n),M(n)
+{
+   ...
+}
+catch(Error &amp;e)
+{
+   cerr &lt;&lt; "C(int n): ";
+   cerr &lt;&lt; e;
+   // let it rethrow!
+}
+</pre>
+
+<p>In summary, function try blocks are not intended to "recover" and attempt to reconstruct the object. All we can do is replace the exception and cause side effects.</p>
+<p>Finally, keep in mind that initialization of built-in types never throws and that constructors with the exception-specification <B>throw()</B> never throw either.</p>
+<p>If after reading all this you are still uncertain of when to use function try blocks, you can follow these guidelines:</p>
+<p>(a)  Use function try blocks only around a constructor initializer list that includes a call to at least one user-defined constructor that could throw.</p>
+<p>(b)  In such a try block, don't try to "absorb" the thrown exception; you can't.</p>
+
+<H4><FONT COLOR="#000080">Additional Considerations</FONT></H4>
+
+<p>If you want to have objects whose construction succeeds even when the construction of some of their parts fails (a dubious proposition), don't use member or base sub-objects. Use something else: pointers to additional objects, standard containers of those objects, etc. Let those pointers, containers, or whatever speak for themselves. For example, let a null pointer or an empty vector indicate that the associated objects have not been constructed. Thus, all member and base sub-objects will be fully constructed, but may be null pointers, empty containers, etc., indicating that that certain associated objects have not been constructed.</p>
+
+<pre>
+class C : public B
+{
+   M *pm;
+   ...
+};
+
+C::C(int n)
+try
+   : r(n),B(n)
+{
+   try
+   {
+      pm = new M(n);
+   }
+   catch(...)
+   {
+      pm = 0;
+      ...
+   }
+}
+catch(Error &amp;e)
+{
+   cerr &lt;&lt; "C(int n): ";
+   cerr &lt;&lt; e;
+   // let it rethrow!
+}
+</pre>
+
+<p>Finally, whenever possible use "resource acquisition is initialization" (see Stroustrup, page 366). If you must acquire resources in another fashion, don't do it in the constructor initializer. It will be difficult (usually impossible) to release them properly. Do it in the body of the function using a regular try block.</p>
+
+<pre>
+C::C(int)
+try
+   : B(new int[n]) // horrible!
+{
+   ...
+}
+catch(Error &amp;e)
+{
+   // can't delete that int[] here!
+}
+</pre>
+
+<H4><FONT COLOR="#000080">Current Status</FONT></H4>
+
+<p>The C++ Standard was approved in 1998, but like any major piece of software, it is not free of bugs. Currently, bugs are being collected by the committee and will eventually result in publication of a corrected C++ Standard. Therefore, it is good to know that there are currently no outstanding bugs reported for function try blocks. (There is a minor correction that affects both kinds of try blocks.)</p>
+<p>I haven't done much compiler testing to say how standard-conforming most compilers are at this point. I did notice, however, non-standard behavior in gcc 2.95.2 This program compiles okay:</p>
+
+<pre>
+struct S
+{
+   S();
+   void f();
+};
+S::S() try {} catch(int) {}
+void f() try {} catch(int) {}
+int main(){}
+</pre>
+
+<p>but this one doesn't:</p>
+
+<pre>
+struct S
+{
+   S() try {} catch(int) {}
+   void f() try {} catch(int) {}
+};
+int main(){}
+</pre>
+
+<p>I get a parse error right after the function try block, but according to the C++ Standard, both programs are valid.</p>
+<p>So it seems that gcc does not like function try blocks directly inside a class definitions, although it accepts them outside. This makes me wonder whether other compilers have similar problems and whether, in general, function try blocks are fully supported.</p>
+
+<H4><FONT COLOR="#000080">References</FONT></H4>
+
+<p><a name="ref1">[1]</a>  ISO/IEC 14882, <I>Programming Languages &#151; C++</I></p>
+<p><a name="ref2">[2]</a>  Bjarne Stroustrup. <I>The C++ Programming Language, 3rd ed.</I> (Addison-Wesley, 1997).</p>
+<p><a name="ref3">[3]</a>  Herb Sutter. "Guru of the Week #66," <B>www.peerdirect.com/Resources/gotw066.html</B>. Also watch for Herb Sutter's article, <a href="../../18.11/sutter/sutter.htm">"Sutter's Mill: Constructor Failures (or The Objects That Never Were)"</a> in the November 2000 issue of <I>CUJ</I>.</p>
+
+<p><i><B>Alan Nash</B> is an independent consultant with 18 years of industry experience. He is the co-author of <I>The Elements of C Programming Style</I> and the co-editor of <I>The Best of Byte</I>. He has been systems manager and systems architect at Merrill Lynch, CEO at Tesuji, and Chief Scientist at Systran Software. His interests include C++, Linux, Unicode, compilers and interpreters, natural language processing, databases, and mathematical logic. He can be reached at <B>anash@san.rr.com</B>.</i></p>
+
+</blockquote></body></html>

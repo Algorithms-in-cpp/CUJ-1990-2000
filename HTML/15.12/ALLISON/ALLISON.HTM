@@ -1,0 +1,532 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>December 1997/Error Handling with C++ Exceptions, Part 2</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><A href="../tocdec.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          <FONT COLOR="#FF0000">Features</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">Error Handling with C++
+          Exceptions, Part 2</FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">Chuck Allison</FONT></H3>
+          
+          <BLOCKQUOTE>
+               
+               <P>Exceptions help you unwind from errors without losing track
+                    of resources, provided you use them with a proper
+                    discipline.</P></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <p>Last month I introduced C++ exception
+                    handling in the larger context of error handling in general.
+                    I conclude this month by investigating the problem of
+                    resource failure in the presence of exceptions, and share a
+                    useful strategy for handling all errors in C++.</p>
+               
+               <p> While stack unwinding takes care of
+                    destroying automatic variables, there may still be some
+                    cleanup left to do. For example, the file opened in
+                    <A href="list1.htm">Listing 1</a>
+will not get closed if
+                    you throw an exception in the middle of f. One way to
+                    guarantee that a resource will be deallocated is to catch
+                    all exceptions in the function where the deallocation takes
+                    place. The handler in f in <A href="list2.htm">Listing 2</A>
+                     closes the file and then passes whatever exception occurred
+                    on up the line by re-throwing it. (That's what throw without
+                    an argument does.) This technique could be tedious, however,
+                    if you use the same resource in many places.</p>
+               
+               <p> A better method is to arrange things
+                    so that stack unwinding will deallocate the resource
+                    automatically. In <A href="list3.htm">Listing 3</a>,
+ I
+                    create a class File whose constructor opens the file and
+                    whose destructor closes it. Since the File object x is
+                    automatic, its destructor is guaranteed to execute as the
+                    stack unwinds. You can use this technique, which Bjarne
+                    Stroustrup has named "Resource  Allocation is
+                    Initialization," to safely handle any number of resources.</p>
+               
+               <p> One of the motivations for adding
+                    exceptions to the language was to compensate for the fact
+                    that constructors have no return value. Before exceptions,
+                    it was very awkward to handle a resource error in a
+                    constructor. For example, what happens if the call to fopen
+                    fails in <A href="list3.htm">Listing 3</A>? One solution
+                    uses an internal state variable which you test before using
+                    the resource. The  program in <A href="list4.htm">Listing
+                         4</a>
+uses the file pointer returned from fopen to
+                    determine if the resource is available or not. The void*
+                    conversion operator returns a nonzero pointer value if all
+                    is well, so you can test the state like this:</p>
+
+<PRE>
+if (x)
+    // All is well
+else
+    // Resource unstable
+</PRE>
+               
+               <p>Having to test an object before each
+                    use can be quite tedious. As<A href="list5.htm"> Listing 5</A>
+                    illustrates, it may be more convenient to throw an exception
+                    directly from the constructor.</p>
+               
+               <p> Everything is fine as long as all
+                    your File objects are automatic, but what if you allocate
+                    one from the free store? As the program in
+                    <A href="list6.htm">Listing 6</a>
+illustrates, since a
+                    File* is just a pointer, no destructor is called. Since
+                    allocating dynamic objects is so common in C++, the standard
+                    library supplies a smart pointer that solves this problem.
+                    auto_ptr is a template class, declared  in &lt;memory&gt;,
+                    with the following interface:</p>
+
+<PRE>
+template&lt;class T&gt; class auto_ptr
+{
+  public:
+    explicit auto_ptr(T* = 0);
+    auto_ptr(auto_ptr&lt;T&gt;&amp;);
+    void operator=(auto_ptr&lt;T&gt;&amp; r);
+    // calls delete on underlying pointer
+    ~auto_ptr();
+    // calls T::operator*
+    T&amp; operator*();
+    // calls T::operator-&gt;
+    T* operator-&gt;();
+    // returns the underlying pointer
+    T* get() const;
+    // loses pointer
+    T* release();
+    // releases old owner first
+    T* reset(T* = 0);
+};
+</PRE>
+               
+               <p>As you can see in <A href="list7.htm">Listing
+                         7</a>
+you can "wrap" the result of a new expression
+                    in an auto_ptr object. auto_ptr's operator* and operator-&gt;
+                    members forward the respective operations on to the
+                    underlying pointer, so you can use it normally. Since the
+                    auto_ptr object itself resides on the stack, its destructor
+                    is called, which in turn deletes the T* object it owns.
+                    There is a one-to-one relationship between each auto_ptr and
+                    each pointer owned by any auto_ptr.</p>
+               
+               <p> Recall that when you create an object
+                    on the free store, as in</p>
+
+<PRE>
+T* p = new T;
+</PRE>
+               
+               <p>the system calls operator new to
+                    allocate the memory for the new object before initializing
+                    it. If the constructor T() throws an exception, you don't
+                    need to be concerned about a memory leak &#151; the runtime
+                    system calls operator delete to free the memory that the
+                    call to operator new allocated. C++ always cleans up
+                    partially created objects when an exception occurs. (Note: 
+                    Not all compilers support this feature yet.)</p>
+               
+               <h4><FONT COLOR="#000080">Memory Management</FONT></H4>
+               
+               <p>Before exceptions, if a new operation
+                    failed to allocate an object, it returned a null pointer,
+                    just like malloc does in C:</p>
+
+<PRE>
+T *tp = new T;
+if (tp)
+    // Use new object
+</PRE>
+               
+               <p>C++ now stipulates that a memory
+                    allocation failure throws a bad_alloc exception. The draft
+                    Standard C++ library as well as third-party libraries may
+                    make generous use of the free store. Since a memory
+                    allocation request can occur when you least expect it, most
+                    any program you write should be prepared to handle a
+                    bad_alloc exception. The obvious way is to supply a handler:</p>
+
+<PRE>
+#include &lt;new&gt;
+catch(const bad_alloc&amp; x)
+{
+    cerr &lt;&lt; "Out of memory: " &lt;&lt; x.what() &lt;&lt; endl;
+    abort();
+}
+</PRE>
+               
+               <p>Depending on your application, you may
+                    be able to do something more interesting than this handler
+                    does, such as recover some memory and return to some stable
+                    state to try again.</p>
+               
+               <p> If you prefer the classic behavior of
+                    returning a null pointer, you can use placement new with the
+                    predefined object nothrow, as follows:</p>
+
+<PRE>
+#include &lt;new&gt;
+// ...
+    T* tp = new (nothrow) T;
+    if (tp)
+        // use tp...
+</PRE>
+               
+               <p>Yet another way of handling
+                    out-of-memory conditions is to replace parts of the memory
+                    allocation machinery itself. When a memory allocation fails,
+                    C++ calls the default new handler, which in turn throws a
+                    bad_alloc exception. You can provide your own handler by
+                    passing its address to set_new_handler, much as I did with
+                    set_terminate in last month's article (see Listing 3 of that
+                     article).</p>
+               
+               <h4><FONT COLOR="#000080">Exception
+               Specifications</FONT></H4>
+               
+               <p>You can enumerate the exceptions that
+                    a function will throw with an exception specification:</p>
+
+<PRE>
+class A;
+class B;
+     
+void f() throw(A,B)
+{
+    // Whatever
+}
+</PRE>
+               
+               <p>This definition states that while f is
+                    executing, only exceptions of type A or B will be thrown
+                    (and not caught inside f). Besides being good documentation,
+                    exception specifications ensure that only the allowable
+                    types of exceptions propagate out of f, whether they occur
+                    directly in f or indirectly from deeper down the call chain.
+                    In the presence of any other exception, control passes to 
+                    the standard library function unexpected, which by default
+                    terminates the program. The definition of f above,
+                    therefore, is equivalent to:</p>
+
+<PRE>
+void f()
+{
+    try
+    {
+        // Whatever
+    }
+    catch(const A&amp;)
+    {
+        throw;       // rethrow
+    }
+    catch(const B&amp;)
+    {
+        throw;       // rethrow
+    }
+    catch(...)
+    {
+        unexpected();
+    }
+}
+</PRE>
+               
+               <p>You can provide your own unexpected
+                    handler by passing a pointer to it to the standard library
+                    function set_unexpected (see<A href="list8.htm"> Listing 8</a>)
+.
+                    The definition:</p>
+
+<PRE>
+void f() throw()
+{
+    // Whatever
+}
+</PRE>
+               
+               <p>disallows any exceptions while f is
+                    executing; that is, it is equivalent to:</p>
+
+<PRE>
+void f()
+{
+    try
+    {
+        // Whatever
+    }
+    catch(...)
+    {
+        unexpected();
+    }
+}
+</PRE>
+               
+               <p>A function without an exception
+                    specification can throw any exception.</p>
+               
+               <p> The challenge with exception
+                    specifications is that f may call other functions that throw
+                    other exceptions. You must know what exceptions are possible
+                    and either include them in the specification for f or handle
+                    them explicitly within f itself. This can be a problem if a
+                    future version of the services f uses adds new exceptions.
+                    If those new exceptions are derived from A or B, you don't 
+                    have a problem, but that is not likely to happen with
+                    commercial libraries.</p>
+               
+               <p> A good rule of thumb: if a function f
+                    calls another function which does not have an associated
+                    exception specification, then don't declare one for f. Also,
+                    since template parameters can usually be of almost any type,
+                    you may not be able to predict which exceptions might occur
+                    from that type's member functions. Bottom line: templates
+                    and exception specifications don't mix.</p>
+               
+               <h4><FONT COLOR="#000080">An Error-Handling
+               Strategy</FONT></H4>
+               
+               <p>There is one category of errors I
+                    haven't yet discussed, which I like to refer to as My Stupid
+                    Mistakes. The first person possessive adjective is
+                    significant here. Whether you know it or not (but I hope you
+                    do), all developers make logical assumptions as they
+                    construct software. For example, there are many times when I
+                    can say, "this pointer can't be null here," and I know it 
+                    will always be true, if I have crafted things the way I
+                    intended. To make the assertion explicit and enforceable, I
+                    insert the following statement to say so:</p>
+
+<PRE>
+assert(p);
+</PRE>
+               
+               <p>The assert macro, defined in &lt;assert.h&gt;,
+                    will abort the program with an error message indicating the
+                    offending line number and file name if the expression in
+                    parentheses evaluates to zero. When I use the assert macro,
+                    it means that I have control over the conditions that govern
+                    the assert expression. Other developers like to use
+                    assertions to check for user errors, or even for
+                    pre-conditions on a parameter, but I think this is a
+                    mistake. An assertion is just that, an assertion, and if I
+                    have no control over the assertion, I shouldn't make it. A
+                    more involved example might help to illustrate.</p>
+               
+               <p> Consider the following function from
+                    an object-oriented persistence framework that writes an
+                    object's data record to a database:</p>
+
+<PRE>
+bool Update::Write()
+{
+    CRecordset* pRS = m_pTableX-&gt;GetRecordset();
+    assert(pRS);
+    if (!pRS-&gt;CanUpdate())
+        Throw2(PFX,UPDATE_ERROR,
+               "Database not updatable");
+     
+    bool status;
+    try
+    {
+        status = pRS-&gt;Update();
+    }
+    catch (CDBException *ep)
+    {
+        string msg =
+            ep-&gt;m_strError + ep-&gt;m_strStateNativeOrigin;
+        ep-&gt;Delete();
+        Throw2(PFX,UPDATE_ERROR,msg);
+    }
+     
+    return status;
+}
+</PRE>
+               
+               <p>The function GetRecordset returns a
+                    pointer to a recordset, a Microsoft Foundation Class library
+                    abstraction for doing relational database I/O. I have
+                    designed this system so that pRS can't be null. If it is,
+                    then my software is broken. On the other hand, I have no
+                    control over whether the connection to the database that you
+                    have provided is updatable. So I throw an exception instead 
+                    (I'll explain the Throw2 macro shortly). This gives you, my
+                    client, an opportunity to fix things at run time, if you
+                    plan ahead, instead of having to quit your program and have
+                    your user start over. I look upon input arguments to a
+                    function the same way. So, my first suggestions for error
+                    handling are:</p>
+               
+               <p>1. Make assertions liberally, but only
+                    for things you have first-hand control over.</p>
+               
+               <p> 2. Throw exceptions for all other
+                    errors, including invalid arguments.</p>
+               
+               <p>Notice that in the example above I
+                    handle database errors by throwing my own brand of
+                    exception. That's because my clients don't need to know
+                    about the underlying mechanism I use to access the database.
+                    All they know is that they are using my component, and my
+                    component can throw exceptions. All they have to do, then,
+                    is to catch the exceptions I throw, or that the Standard C++
+                     library might (like memory failure, which I don't catch),
+                    like this:</p>
+
+<PRE>
+try
+{
+    // call one of my functions here:
+    p-&gt;Write();
+}
+catch (PFX_Exception&amp; x)
+{
+    // Do whatever you have to; here I just print a message:
+    cout &lt;&lt; "PFX exception: " &lt;&lt; x.what() &lt;&lt; endl;
+}
+catch (exception&amp; x)
+{
+    cout &lt;&lt; "C++ exception: " &lt;&lt; x.what() &lt;&lt; endl;
+}
+catch (...)
+{
+    cout &lt;&lt; "Unknown exception" &lt;&lt; endl;
+}
+</PRE>
+               
+               <p>My persistence component has a number
+                    of classes, but it has only one exception class, which
+                    derives from exception (see <A href="list9.htm">Listings 9</A>
+                    and <A href="list10.htm">10</a>)
+. Having more than one
+                    exception class per component just makes things complicated
+                    for clients. In addition, I have all my exceptions include
+                    in their what message the file name and line number where
+                    the exception was thrown from, since that  important
+                    information is not otherwise available. To do this, I borrow
+                    a preprocessor trick that assert uses. The Throw macro in
+                    <A href="list11.htm">Listing 11</a>
+transforms a call such
+                    as:</p>
+
+<PRE>
+Thow(PFX,LOCK_ERROR);
+</PRE>
+               
+               <p>into the statement:</p>
+
+<PRE>
+throw PFX_Exception(???);
+</PRE>
+               
+               <p>where ??? represents a string argument
+                    that includes the current file name and line number, using
+                    the predefined macros __FILE__ and __LINE__, respectively.
+                    PFX_Exception derives from exception and supplies predefined
+                    strings corresponding to integer error codes (like
+                    LOCK_ERROR) to the exception constructor. The stringizing
+                    preprocessor operator # in <A href="list11.htm">Listing 11</A>
+                    effectively puts  quotes around its argument, and the
+                    token-pasting operator ## combines its arguments into a
+                    single preprocessor token. Since this isn't an article on
+                    the preprocessor, I'll let you stare at the definition of
+                    Throw and hope it makes sense. Throw2 allows you to add
+                    extra text at the throw point. For example, if you caught an
+                    exception thrown by the expression:</p>
+
+<PRE>
+Throw2(PFX,RECORDSET_ERROR,"Extra Text");
+</PRE>
+               
+               <p>then the what string for the exception
+                    might be:</p>
+
+<PRE>
+Recordset Open Error:Extra Text:txcept.cpp:Line 18
+</PRE>
+               
+               <h4><FONT COLOR="#000080">Summary</FONT></H4>
+               
+               <p>Perhaps the most important thing to
+                    say about exceptions is that you should use them only in
+                    truly exceptional circumstances. Like setjmp and longjmp,
+                    they interrupt the normal control flow of a program. There
+                    should be relatively few exception handlers compared to the
+                    number of functions in a typical program. In addition,
+                    exceptions have been designed for synchronous events only, 
+                    so beware; exceptions and signals don't mix. As far as
+                    efficiency is concerned, experience so far suggests that
+                    exceptions bloat your code size by 5 - 10% for each try
+                    block and its associated nested functions. You typically pay
+                    in speed, though, only if exceptions get thrown.</p>
+               
+               <p> I end with a few guidelines:</p>
+               
+               <p>
+               <UL><LI>Don't use setjmp and longjmp in the
+                       presence of objects that have constructors and destructors.
+                       Use exceptions instead. When an exception is thrown, all
+                       automatic objects on the stack are destroyed up to the catch
+                       point.</LI>
+                   <LI>Exceptions allow separate program components to
+                       communicate about error conditions.</LI>
+                   <LI>You should provide a handler for any exception that may
+                       be thrown in a program.</LI>
+                   <LI>Handlers are chosen by matching the type of the object
+                       thrown.</LI>
+                   <LI>Arrange adjacent handlers from the most specific to the
+                       least specific type handled.</LI>
+                   <LI>If you use the standard library, be prepared to catch
+                       exceptions in the standard hierarchy (at the very least, of
+                       the base type exception).</LI>
+                   <LI>Wrap resource allocation in automatic objects to ensure
+                       that destructors get called as needed.</LI>
+                   <LI>Wrap the result of a new expression in an auto_ptr to
+                       guarantee that the destructor is called properly.</LI>
+                   <LI>You can use exception specifications to document and
+                       enforce the types of exceptions that your functions can
+                       throw.</LI>
+                   <LI>Use assertions to guard against your mistakes only, where
+                       "you" refers to the immediate developer.</LI>
+                   <LI>Define one exception class per component, derived from
+                       exception (or one of its derived classes, such as
+                       runtime_error or logic_error, if applicable).</LI></UL></p>
+               
+               <p>This article is based on material from
+                    the author's forthcoming book, C and C++ Code Capsules: A
+                    Guide for Practitioners, Prentice-Hall, 1998. o </p>
+               <p><i>Chuck Allison is Consulting Editor and a former columnist with CUJ. He is
+                    the owner of Fresh Sources, a company specializing in object-oriented software
+                    development, training, and mentoring. He has been a contributing member of J16,
+                    the C++ Standards Committee, since 1991, and is the author of C and C++ Code
+                    Capsules: A Guide for Practitioners, Prentice-Hall, 1998. You can email Chuck
+                    at cda@freshsouces.com.</i></p>
+
+<h4><a href="../../../source/1997/dec97/allison.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+     </BODY>
+</HTML>

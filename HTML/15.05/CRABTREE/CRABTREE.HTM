@@ -1,0 +1,551 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>May 1997/A Reusable Directory Walk Class</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><A href="../tocmay.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          <FONT COLOR="#FF0000">Features</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">A Reusable Directory Walk
+          Class</FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">Chris Crabtree</FONT></H3>
+          
+          <BLOCKQUOTE>
+               
+               <P>Walking a directory tree is a common operation that's not
+                    easy to get right, particularly in a multithreaded
+                    environment.</P></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <h4><FONT COLOR="#000080">A Good Walk Spoiled</FONT></H4>
+               
+               <p>One thing I repeatedly have need of in
+                    my programs is a method for recursing down a directory tree
+                    and processing some of the files found along the way.
+                    However, up until now I've never implemented this behavior
+                    in quite a general enough way to just reuse my previously
+                    developed code. Thus I have several different versions of
+                    directory recursion written in C for MS-DOS. Until recently 
+                    I could get by hacking on some of the code to make it fit
+                    the new problem, or figuring out a way to let someone else's
+                    code do it (e.g. the MS-DOS DIR command). But the old
+                    reliable 16-bit MS-DOS executables just don't cut it under
+                    Windows 95/NT. I lament the lack of long filename support,
+                    and things seem slower than they should be. So now I've
+                    handled the general case conclusively with a C++ class:
+                    DirWalk. </p>
+               
+               <p> DirWalk eliminates a lot of tedious,
+                    repetitive work in recursing directories. With any luck
+                    DirWalk will keep you from scavenging old source files and
+                    from continually rewriting code to solve a problem that
+                    ought to be solvable once and for all. DirWalk also enables
+                    you to do thread-safe recursion, which I demonstrate with an
+                    example. This article presents an overview of how DirWalk 
+                    works, and presents a few examples of its use. The full
+                    source code is available electronically (see p. 3 for
+                    details).</p>
+               
+               <h4><FONT COLOR="#000080">Doing it in C</FONT></H4>
+               
+               <p>Before we dive into DirWalk, it's
+                    instructive to study how this type of directory recursion
+                    can be implemented under Win32, using just a C function:</p>
+
+<PRE>
+
+typedef char TCHAR;
+typedef const char* LPCTSTR;
+typedef unsigned long DWORD;
+typedef void* HANDLE;
+
+void OldSchool_Recurse() {
+  WIN32_FIND_DATA fd;
+  HANDLE hFind =
+    FindFirstFile("*",&amp;fd);
+
+  BOOL bFoundAnother =
+    (hFind!=INVALID_HANDLE_VALUE);
+
+  while(bFoundAnother) {
+    /* begin do whatever with file */
+    printf("%s\n",fd.cFileName);
+    /* end do whatever with file */
+    if((fd.dwFileAttributes &amp;
+        FILE_ATTRIBUTE_DIRECTORY)&amp;&amp;
+          (fd.cFileName[0]!='.')) {
+      SetCurrentDirectory(
+        fd.cFileName);
+      OldSchool_Recurse();
+      SetCurrentDirectory("..");
+    }
+    bFoundAnother =
+      FindNextFile(hFind,&amp;fd);
+  }
+  FindClose(hFind);
+}
+</PRE>
+               
+               <p>The first argument passed to
+                    FindFirstFile is a pointer to a null-terminated string. It
+                    follows standard wildcard formatting rules, and specifies
+                    what filenames the caller wants to find. FindFirstFile's
+                    second argument is a pointer to a struct of type
+                    WIN32_FIND_DATA. The WIN32_FIND_DATA structure contains
+                    relevant information about the last file found upon return
+                    from FindFirstFile or FindNextFile. </p>
+               
+               <p> FindFirstFile returns a HANDLE,
+                    hFind. Win32 uses HANDLE objects throughout, but this
+                    particular HANDLE contains information that the system uses
+                    to remember its place in the directory it's searching.
+                    FindNextFile subsequently uses hFind to know where to look
+                    for the next file. hFind also stores the search
+                    specification being used. Once you've called FindFirstFile,
+                    you cannot change the search specification associated with
+                    that handle without calling FindFirstFile again.
+                    FindFirstFile returns INVALID_HANDLE_VALUE if it can't find
+                    any files matching the search specification. FindNextFile
+                    returns FALSE for the same reason. </p>
+               
+               <p> After a successful call to
+                    FindFirstFile, the function shown above just loops, calling
+                    FindNextFile until there are no more matching files. The
+                    code invokes a new instance of OldSchool_Recurse to walk any
+                    subdirectories found along the way. Nothing too fancy here.
+                    </p>
+               
+               <p> This code looks sensible enough, but
+                    it is not well suited for reuse. The truly overwhelming
+                    problem with this code is that if you want to do something
+                    different with the files you find, you must (manually) copy
+                    the code and (manually) make changes to the relevant
+                    portions. Copy-and-paste may be the most prevalent method of
+                    code reuse, but it is not the best. A design that forces you
+                     to resort to copy-and-paste to accomplish some minor
+                    behavior modification is simply not a good design. As with a
+                    misspelled tattoo, so with this code &#151; resistance to change
+                    is the real difficulty. </p>
+               
+               <p> To make this function more general in
+                    C, you might modify it to accept a function pointer as an
+                    argument, and have OldSchool_Recurse call the user-defined
+                    function whenever it finds a file, passing the
+                    WIN32_FIND_DATA information on each call. But there are
+                    problems with this approach as well. Most members of
+                    WIN32_FIND_DATA are not in an immediately usable format, so
+                    the user-defined function must implement its own means of
+                    making sense of the data. Also, some programmers have
+                    trouble with callback functions and avoid them at all costs.
+                    Finally, the whole design is just aesthetically less
+                    pleasing than the C++ implementation. </p>
+               
+               <p> As far as C is concerned, having an
+                    OldSchool_Recurse function accept a function pointer
+                    argument is, I think, the most reusable solution available.
+                    But this solution is not the most natural expression of this
+                    behavior in C++. In this particular case, C++ inheritance
+                    enables the creation of cleaner and more reusable code.</p>
+               
+               <h4><FONT COLOR="#000080">DirWalk &#151; A Solution
+               in C++</FONT></H4>
+               
+               <p>In this implementation of directory
+                    recursion, a base class provides all the non-changing
+                    functionality, and the derived classes vary from case to
+                    case, implementing only the parts that change. This design
+                    follows the recommendations of Bruce Eckel, who says, "separate
+                    things that change from things that stay the same" [<A href="#REF1">1</a>]
+.
+                    To see which are the things that stay the same, examine
+                    <A href="list1.htm">Listing 1</a>,
+ the header file for the
+                    pure abstract base class DirWalk. All the member definitions
+                    in this class remain the same from case to case &#151; at least,
+                    so far I have not had to change anything. </p>
+               
+               <p> I overload the constructors and use
+                    defaulted arguments wherever it makes sense, to make the
+                    derived class constructor as simple as possible. The options
+                    that can be specified in the constructors affect the
+                    behavior of the object when a user calls the Walk function.
+                    RecurseSubDirs specifies whether the Walk should venture
+                    into all subdirectories or none at all (just walking the 
+                    starting directory). ListSubDirs controls whether the
+                    subdirectory names themselves should cause calls to
+                    FoundFile (the function that is called to apply a process
+                    across the specified files). It's frequently unnecessary to
+                    process subdirectory names, even though all the files in a
+                    subdirectory may be of interest. For instance, if you're
+                    generating a checksum for a tree of files, it doesn't make
+                    sense to checksum the directory names, so there's no point
+                    in having them prompt a call to FoundFile. The ListSubDirs
+                    parameter just saves having to implement separate control
+                    flow in your derived FoundFile if you don't need directory
+                    names. </p>
+               
+               <p> SearchSpec is that standard wildcard
+                    specification that DirWalk will use to decide whether a
+                    given file should cause a call to your derived FoundFile
+                    function. Note that if RecurseSubDirs is TRUE, a walk will
+                    visit all subdirectories, regardless of the SearchSpec.
+                    </p>
+               
+               <p> Walk is the public function that
+                    starts the journey from file to file and down into the lower
+                    depths of the file hierarchy on a given drive. It basically
+                    saves the process's current directory, calls Recurse, and
+                    then sets the current directory back to what it was before
+                    Recurse was invoked. </p>
+               
+               <p> As mentioned earlier, you override
+                    FoundFile to implement the specific behavior you need when a
+                    file or subdirectory meets the SearchSpec criteria.
+                    FoundFile gets called once each time Walk (called by the
+                    user) finds a file that meets the existing search criteria.
+                    Keep the following things in mind when overriding FoundFile:</p>
+               <UL><LI> The process's current directory
+                         must be the same upon exiting FoundFile as it was when
+                         FoundFile was entered. </FONT></LI>
+                    <LI> You can count on the current
+                         file being in the process's current directory. </FONT></LI>
+                    <LI> All of DirWalk's protected
+                         members are available if you need to obtain information
+                         about the current file. </FONT></LI>
+                    <LI> You should have no reason to
+                         call the base class version of FoundFile.</FONT></LI>
+               </UL>
+               
+               <h4><FONT COLOR="#000080">Other Protected
+               Members</FONT></H4>
+               
+               <p>Depth returns an int representing the
+                    tree depth of the current file. Files in the starting
+                    directory will have a depth of one; files in a subdirectory
+                    of the starting directory will have a depth of two, and so
+                    on. </p>
+               
+               <p> mFA is a member variable of type
+                    FileAttributes. <A href="list2.htm">Listing 2</a>
+shows a
+                    portion of this class's header. The main purpose of this
+                    class is to provide member functions for getting and setting
+                    all of the attributes a file can have in Win32 (directory,
+                    archive, compressed, hidden, normal, read-only, system, and
+                    temporary). FileAttributes is purely a convenience class &#151;
+                    to me it's easier to remember to call mFA.IsDirectory than
+                    FindData.dwFileAttributes &amp; FILE_ATTRIBUTE_DIRECTORY. If
+                    you need to get at the actual DWORD file attributes value
+                    itself, FileAttributes provides the Value member function.
+                    </p>
+               
+               <p> mCreationTime, mLastAccessTime, and
+                    mLastWriteTime are all FileTime objects (see
+                    <A href="list3.htm">Listings 3</a>
+and
+                    <A href="list4.htm">4</a>)
+. FileTime is one of the more
+                    convenient features of DirWalk. Normally, you must make a
+                    couple of function calls to get the data from a
+                    WIN32_FIND_DATA structure into a usable form. To get this
+                    data into a convenient string representation requires more
+                    work still. </p>
+               
+               <p> A FileTime object provides many ways
+                    to get the data in the format needed. FileTime can provide
+                    any part of the date, from the year to the day of the week,
+                    as a numerical value or as a string. The components of time
+                    are similarly available. FileTime also provides the
+                    formatted full date or time as a string, and allows you to
+                    specify different separation and fill characters for any of 
+                    the string-returning functions if you don't like the
+                    defaults. </p>
+               
+               <p> DirWalk's ShortFilename function
+                    returns the 8.3 name of the current file, even if it's the
+                    same as the long filename. The API functions do not fill the
+                    short filename member of WIN32_FIND_DATA unless the short
+                    filename is distinct from the long filename. I find this
+                    really annoying; if I need the short filename, I need the
+                    short filename, regardless of what the long filename is 
+                    doing. This function shields you from such silliness.</p>
+               
+               <H4><FONT COLOR="#000080">Function Recurse</FONT></H4>
+               
+               <p>The heart of class DirWalk is the
+                    private member function Recurse (<A href="list5.htm">Listing
+                         5</a>)
+. It is within Recurse that DirWalk's constructor
+                    options come into play. Recurse also feeds all the member
+                    variables (which in turn feed the protected member
+                    functions) with fresh data pertaining to each file
+                    encountered, and Recurse calls the overridden FoundFile
+                    function, allowing the derived class to do whatever it needs
+                    for each file. </p>
+               
+               <p> Recurse's first action is to
+                    increment the mDepth variable. By definition, if Recurse has
+                    just been invoked, DirWalk is one level deeper than before.
+                    The mDepth variable feeds the protected Depth member
+                    function. </p>
+               
+               <p> Next, Recurse calls FindFirstFile,
+                    passing it the search specification set up in the
+                    constructor, and the address of the mFindData variable. If
+                    FindFirstFile finds a match, it enters a while loop and
+                    begins to assign the file-specific member variables their
+                    values for this file. Code in this loop sets variables
+                    representing the file's size, attributes, creation time,
+                    last access time, and last write time, making all of these
+                    values available to an overridden FoundFile. At this point,
+                    Recurse calls FoundFile for any non-directory files. (A
+                    separate loop processes directories to allow for the search
+                    specification to apply to files but not directories.) The
+                    loop closes with a call to FindNextFile, and the loop
+                    continues executing until FindNextFile returns FALSE,
+                    indicating that there are no more files in the current
+                    directory meeting the search criteria. </p>
+               
+               <p> Before the subdirectory loop begins,
+                    Recurse closes the HANDLE object (hFind) used for the file
+                    search. Recurse closes this handle so that the subdirectory
+                    search loop can reuse the HANDLE object with a different
+                    search specification, which for subdirectories is always "*".
+                    If the mRecurse variable is FALSE (it was set in the
+                    constructor), then at this point the function decrements the
+                    mDepth variable and returns. No subdirectory recursion
+                    happens. If, however, mRecurse is TRUE, then...well, read
+                    on. </p>
+               
+               <p> Actually, the subdirectory loop is
+                    only a little more involved than the file loop discussed
+                    above. The loop structure is the same, except that instead
+                    of calling FindFirstFile and FindNextFile, this loop calls
+                    on the member functions FindFirstChildDir and
+                    FindNextChildDir (these functions use FindFirstFile and
+                    FindNextFile internally, of course). The code here sets all 
+                    the appropriate member variables just as for a non-directory
+                    file. Of course, a directory's size is always zero, but I
+                    set it too for the sake of completeness. </p>
+               
+               <p> Now for the tricky stuff. Recurse
+                    changes the process's current directory down into the
+                    subdirectory at hand. If the constructor parameter specified
+                    that subdirectories should count as file hits, then Recurse
+                    calls FoundFile at this point, with all of the data again
+                    available through the protected member functions. After
+                    calling FoundFile, Recurse calls itself and that instance 
+                    runs through the new current directory (the one just changed
+                    into). Once that instance of Recurse returns, the current
+                    instance changes the process's current directory back up to
+                    the original directory (using ".." as the relative
+                    path to change to), so that now the current directory is
+                    again the same as when this instance was first called, and
+                    it can continue looking for additional subdirectories of
+                    this directory.</p>
+               
+               <p>This loop ends by calling
+                    FindNextChildDir, and, as before, the loop will continue
+                    until FindNextChildDir returns FALSE. After the subdirectory
+                    loop ends, the code closes the find HANDLE, and decrements
+                    mDepth.</p>
+               
+               <h4><FONT COLOR="#000080">Thread-Safe and Sound</FONT></H4>
+               
+               <p>What I've presented so far is an
+                    accurate description of how DirWalk works and how you can
+                    use it for single-threaded applications. DirWalk will work
+                    in multithreaded applications as well. Since a Win32 process
+                    has one and only one current directory, it's no mean trick
+                    to do directory recursion in a multithreaded application,
+                    where any thread can set the current directory for the 
+                    entire process at any time. </p>
+               
+               <p> DirWalk shields you from all the
+                    excessively nasty details, but there are still a few new
+                    wrinkles in how you use DirWalk for multithreaded
+                    applications. (For readability's sake, <A href="list5.htm">Listing
+                         5 </A>shields you from the nasty details as well &#151; the
+                    conditionally compiled multithreading sections are not
+                    shown.) You can't use the same DirWalk-derived object to do
+                    simultaneous walks in different threads. In other words, you
+                    can't create one instance of such an object, and then from
+                    more than one thread call Walk for that one instance. You
+                    can, however, create separate DirWalk objects in as many
+                    threads as you like, and they will all perform as expected.
+                    </p>
+               
+               <p> You should link the multithreaded
+                    libraries into your executable, of course. DirWalk itself
+                    does not use any functions that require the multithreaded
+                    libraries, but since a derived class might, it is the safest
+                    approach. The multithreading DirWalk object is larger and
+                    slightly slower than the single-threaded version. I could
+                    have simplified the implementation a bit by providing only 
+                    the thread-safe class, but I didn't think it right to impose
+                    the size, performance, and convenience penalties on
+                    single-threaded users. Thus, through the magic of
+                    conditional compilation macros, DirWalk only multithreads if
+                    you have told your compiler to link in the multithreaded
+                    libraries (which defines the preprocessor symbol _MT in
+                    Microsoft compilers and __MT__ in Borland compilers).
+                    </p>
+               
+               <p> You should be aware of the following
+                    considerations when using FoundFile in a multithreading
+                    environment:</p>
+               <UL><LI>There is no longer any
+                         restriction that the process's current directory be the
+                         same upon exiting FoundFile as it was upon entry.</FONT></LI>
+                    <LI>You cannot count on the current
+                         file being in the current directory of the process.
+                         Thus it can be difficult to get the full path name of
+                         such a file. The multithreaded version of DirWalk
+                         supplies a FullPathName function to handle this
+                         difficulty.</FONT></LI>
+                    <LI>All the protected members of
+                         DirWalk are still available to get information about
+                         the current file.</FONT></LI>
+                    <LI>There is still no reason to call
+                         the base class version of FoundFile.</FONT></LI>
+               </UL>
+               
+               <p>Under the hood, the difference between
+                    the two versions is that where the single-threaded version
+                    just changes the process's current directory into the
+                    directory it needs to work with, the multithreaded version
+                    keeps up with the directories using internal object storage
+                    and some additional temporary heap storage for each instance
+                    of Recurse. This lets DirWalk operate without relying on the
+                    process's current directory, which might be changed by other
+                    threads. Fortunately, FindFirstFile accepts an argument
+                    specifying both a directory name and a wildcard
+                    specification. You can see what happens here specifically by
+                    looking at the portions of DirWalk source code surrounded by
+                    #if defined(_MT). </p>
+               
+               <p> And that's about it. Not too bad, eh?
+                    If you're lost at all, I provide an ample multithreaded
+                    example below.</p>
+               
+               <h4><FONT COLOR="#000080">Some Examples</FONT></H4>
+               
+               <p>The examples presented here are all
+                    Win32 Console applications. Of course, DirWalk is not
+                    console-specific, but for example purposes, a console app is
+                    great because it carries much less baggage than a normal
+                    Windows app. Note that the examples take advantage of the
+                    standard C++ exception handling that is used throughout
+                    DirWalk. </p>
+               
+               <p> Suppose you want to recurse down the
+                    directory tree beginning with the current directory, and
+                    just print out the files and directories you find along the
+                    way. </p>
+               
+               <p> <A href="list6.htm">Listing 6 </A>shows
+                    how it's done. Yes, it's true that DirWalk declares
+                    FoundFile as a pure virtual function, but nevertheless
+                    <A href="list6.htm">Listing 6</a>
+is correct. It turns out
+                    that you can provide a definition for a pure virtual
+                    function, but since it is pure virtual, only a derived class
+                    may call such a function. DirWalk provides a definition for
+                    FoundFile that just prints out the file or directory names,
+                    indented to indicate tree depth. It's nice to have this
+                    functionality in the base class, so that during debugging 
+                    you can drop a call to DirWalk::FoundFile inside your
+                    FoundFile implementation and have it show you what files are
+                    being visited. The base class FoundFile sends its output to
+                    cout, so it's only useful to you if you're working in a
+                    console app, or have redirected cout in some way. </p>
+               
+               <p> The next example (<A href="list7.htm">Listing
+                         7</a>)
+ is more typical of the uses you'll find for
+                    DirWalk. The PowerWalk class puts the full path names of the
+                    files it finds in a member variable that is an STL vector of
+                    string objects. The PrintFiles function lists the contents
+                    of the vector. </p>
+               
+               <p> The last example demonstrates
+                    DirWalk's multithreaded capabilities. The program in
+                    <A href="list8.htm">Listing 8</a>
+takes four directory
+                    names as arguments. The program starts a thread for each
+                    directory name, and each thread creates an object of type
+                    TheWalk, and then begins the walk. For each file that
+                    TheWalk finds, TheWalk prints its own ID (unique for each
+                    object &#151; so you can tell which thread is doing the
+                    printing), and the full path name of the file. There are a
+                    couple of issues obfuscating what's going on in this code:
+                    differences between Borland and Microsoft compilers, and the
+                    use of the CRITICAL_SECTION object and related API
+                    functions. The portability issues receive coverage in the
+                    <A href="sidebar.htm">sidebar</a>
+accompanying this text.</p>
+               
+               <h4><FONT COLOR="#000080">Summary</FONT></H4>
+               
+               <p>With class DirWalk, you can create
+                    objects that will recurse through directory structures in a
+                    thread-safe fashion. These objects can call a function of
+                    your own design every time they encounter a file or
+                    subdirectory matching a wildcard specification. I've
+                    presented a few example uses of DirWalk, ranging from simple
+                    directory printout to a multithreading application. These 
+                    examples show just how little effort you must expend to make
+                    class DirWalk pay off. </p>
+               
+               <p> It's almost enough to prompt singing
+                    in a ridiculous falsetto voice (with apologies to the Bee
+                    Gees):</p>
+               
+               <p>"You can tell by the way I reuse
+                    my Walk,
+                    <BR>I'm an O-O man; I've got time to talk."</p>
+               
+                 
+               
+               <h4><FONT COLOR="#000080">Reference</FONT></H4>
+               
+               <p>[<A name="REF1">1]</a>
+Bruce Eckel.
+                    Thinking in C++ (Prentice-Hall, 1995). Appendix B, p. 771,
+                    Programming Guideline #9. </p>
+               
+               <p><I>Chris Crabtree received a BS in
+                    Computer Science from the University of Tennessee in 1994.
+                    He works for Shoney's, Inc. in Nashville, Tennesee, where he
+                    develops software for use in the POS systems of the
+                    company's restaurants, and is therefore becoming an expert
+                    in UI design for novice computer users, as well as in
+                    programming super-reliable Win32 applications. His other
+                    computer-related interests include the navigation of large
+                    information spaces, the art and science of development
+                    management, and the relative merits of venture capital
+                    versus other forms of startup funding. His email address is
+                    crabtree@nashville.net. </I></p>
+     
+<h4><a href="../../../source/1997/may97/crabtree.zip">Get Article Source Code</a></h4>
+
+ </BLOCKQUOTE>
+     </BODY>
+</HTML>

@@ -1,0 +1,123 @@
+<HTML><HEAD>
+<TITLE>February 1995/Programming Flash Memory/Listing 4</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 4 <I>Status Routines</A></I></h4>
+<pre>/***********************************************************************
+Provides information about protected sectors in the chips. FMInfo and pBase
+are assumed to be initialized. Leaves the chips in AutoSelect mode.
+***********************************************************************/
+
+static void fm_protected(pFirstProt, pNumProt)
+int *pFirstProt, *pNumProt;    /* see the FMINFO struct for details */
+
+{
+       unsigned volatile short *ptr;  /* ptr into flash space */
+       unsigned short val;            /* value read back */
+       int sect;                      /* iterates thru the sectors */
+
+       /* init our pointer to the magic offset in the last sector: */
+       ptr = pBase + ((FMInfo. TotalSize &gt;&gt; 1) + FM_AO_PROT_SECT);
+       ptr -= FMInfo.SectorSize &gt;&gt; 1;
+
+       /* command the chip to read back the protected sector data: */
+       fm_cmd(FMCMD_AUTOSEL);
+
+       /* initialize these to mean "no protected sectors found": */
+       *pNumProt = 0;
+       *pFirstProt = -1;
+
+       /* loop checking each sector: */
+       for (sect = FMInfo.NumSect; --sect &gt;= 0; )
+       {
+
+              /* bit set indicates sector is protected: */
+              val = *ptr &amp; FM_PROT_SECT_MASK;
+              if (val)
+              {        /* if both devices don't agree, error out: */
+                     if (val!= FM_PROT_SECT_MASK)
+                     {      *pNumProt = -2;
+                           return;
+
+                     }
+
+                     /* if protection is non-continuous error out: */
+
+                     if (*pFirstProt != -1 &amp;&amp; *pFirstProt != sect + 1)
+                     {      *pNumProt = -1;
+                           return;
+                     }
+
+                     /* set index to this sector and bump the count: */
+                     *pFirstProt = sect;
+                     ++*pNumProt;
+              }
+
+              /* bump pointer to the magic location in the next sector: */
+              ptr -= FMInfo.SectorSize &gt;&gt; 1;
+       }
+}
+
+/*********************************************************************
+Resets and returns data about the flash chips. Fills in our local
+FMInfo structure, and optionally fills in an FMINFO structure for the
+caller. Leaves the chip(s) in the normal ROM state. Zero is returned
+on error and fm_err contains failure data.
+*********************************************************************/
+
+fm_status(pbase, pFMInfo)
+unsigned short *pbase;  /* must point to the *base* of the Flash memory */
+FMINFO *pFMInfo;        /* may be NULL */
+{
+       unsigned short mfr, dev;        /* IDs read back from devices */
+       FMINFO *pDev;                   /* traverses the DevTable[] */
+
+       /* share this with other routines in this module: */
+       pBase = pbase;
+
+       /* clear out error structure: */
+       memset(&amp;fm_err, 0, sizeof(fm_err));
+
+       /* reset the chip: */
+
+       fm_reset();
+
+       /* send down command to read back the embedded data: */
+       fm_cmd(FMCMD_AUTOSEL);
+
+       /* read back the codes: */
+       mfr = *(pBase + FM_AO_MANUF);
+       dev = *(pBase + FM_AO_DEVID);
+       /* check for known devices: */
+
+       pDev = DevTable + ARRAY_LEN(DevTable);
+       while (--pDev &gt;= DevTable)
+              if (pDev-&gt;MfrID_== mfr &amp;&amp; pDev-&gt;DevID_ == dev)
+              {       memcpy(&amp;FMInfo, pDev, sizeof(FMInfo));
+                     break;
+              }
+
+       /* if not found in our table, return error: */
+       if (pDev &lt; DevTable)
+       {       /* (could also be mismatched, missing, or fried devices) */
+              fm_reset();
+              fm_error(pBase, mfr, dev, 1);
+              return 0;
+       }
+
+       /* go get &amp; fill in protected sector information: */
+       fm_protected(&amp;FMInfo.FirstProt, &amp;FMInfo.NumProt);
+
+       /* fill in structure for caller if they want us to: */
+       if (pFMInfo)
+              memcpy(pFMInfo, &amp;FMInfo, sizeof(FMINFO));
+
+       /* exit readback mode and we're done: */
+       fm_reset():
+       return 1;
+}
+/* End of File */
+</pre>
+</BODY>
+</HTML>

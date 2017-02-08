@@ -1,0 +1,466 @@
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+<TITLE>April 1998/Disk-Based Container Objects</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<H2><A href="../tocapr.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+<FONT COLOR="#FF0000">Object-Oriented Programming</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Disk-Based Container Objects</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Tom Nelson</FONT></H3>
+
+<BLOCKQUOTE><p>A container that's very large, or that must persist between programs, really
+needs to live on disk.</p></BLOCKQUOTE><hr>
+<BLOCKQUOTE>
+<p>C++ container class libraries have become a staple item in many programmers'
+toolkits. The introduction of templates has made these libraries notably robust
+and simple to use. However, their transient (memory-based) nature still imposes
+certain restrictions on their use. First, they cannot grow to arbitrary size if
+needed; second, they lack persistence, hence they disappear when the program
+shuts down.<p>
+The second restriction is usually easier to cure than the first. To make a
+transient container "hold water," the container class could use a persistent
+streams facility to write the essential data members of each contained object
+to a disk file before shutting down. The next program invocation need only
+initialize another transient container, then sequentially extract each object
+from the persistent store and add it to the new container.<p>
+In some cases, though, you can't guarantee that your run-time storage
+requirements won't overflow available memory. A priority or scheduling queue,
+for example, might need to process and store an unanticipated quantity of
+incoming data. You could write some objects to disk to free space in the
+container. However, to effectively process additions and deletions, a transient
+container normally requires the presence of all contained objects in memory at
+one time. When you write contained objects to a file, the logical structure of
+the container (pointers, state info, etc.) is lost. One solution consists of
+moving the entire container out to a disk file so that it becomes, in effect, a
+database, or "Containerized Database."<p>
+This article will demonstrate techniques for building and using such disk-based
+container classes. They allow you to employ container objects of virtually any
+size regardless of memory constraints, which you can maintain indefinitely.
+Even when persistence is not necessary, the technique still permits arbitrary
+growth of the containers by storing overflow in temporary files, restricted
+only by available disk space. I will concentrate here on developing disk-based
+implementations for three fundamental structure types (lists, vectors, and
+binary trees). I discuss a few abstract types derived from them, and provide an
+example of a disk-based binary tree sort.</p>
+
+<h4><FONT COLOR="#000080">Design and Performance Considerations</FONT></H4>
+
+<p>The
+public interface and behavior of member functions in a disk- based container
+class are nearly identical to a comparable transient container, making its use
+almost transparent to the programmer. There are, of course, a few instances
+where you need to be aware of its disk-based nature, such as supplying a
+container filename to a class constructor (if you need persistence, that is).
+Other considerations important for transient containers &#151; for instance,
+specifying an upper limit for the size of a vector &#151; usually drop out of the
+picture entirely. Disk-based containers are essentially open ended.<p>
+I used templates to implement most aspects of the container classes provided
+here. While templates introduce added complexity for the uninitiated, their use
+greatly simplifies coding for direct containers types. Disk-based containers
+are implemented as direct containers, since you will need to store actual
+objects. Using indirect containers, which maintain (void *) pointers to other
+objects in memory, would introduce unnecessary complexity. When using
+templates, you will encounter other important considerations such as increased
+code size and compilation times. Each template instance will have its own
+private copy of nearly identical code that operates on different data types.<p>
+Due to their disk-based nature, these containers also impose a variable degree
+of speed penalty. Instead of memory addresses, disk-based containers use file
+offsets, most commonly a long or unsigned long integer value. To process
+additions and deletions to the container file (primarily for list containers),
+one or more nodes must be read into memory, the pointers adjusted, and the
+updated nodes written out again.</p>
+
+<h4><FONT COLOR="#000080">Container File Access</FONT></H4>
+
+<p>A
+few factors make this procedure less cumbersome and disk- intensive than it
+first appears. Contemporary operating systems have a system-wide disk cache
+that stores recently used disk sectors in memory. The operating system inspects
+cache memory before initiating a physical disk access. A disk-based container
+can also employ a private cache that stores recently used objects in memory.
+You may find this important when working in a multitasking environment. The
+system cache may encounter heavy use at times from other programs currently
+running.<p>
+Class DirectFile (in dfile.h, available online) defines a direct file
+management scheme. Member functions access container file contents directly
+from the disk via the system cache. You will probably find that most disk-based
+containers can make effective use of this simpler method of access with little
+performance penalty. For other situations, such as those noted earlier,
+disk-based containers can also use class CachedFile (in cfile.h and cfile.cpp).
+CachedFile implements a most-recently-used object cache independent of the
+system cache. (For more info on disk caching, see my article "Memory Caching
+for Disk-Based Objects," CUJ, October 1996, p. 59.) The public interfaces for
+both DirectFile and CachedFile are identical, which makes access to objects of
+either class transparent to higher-level classes. I also padded the argument
+list for constructor DirectFile to match the somewhat longer list for the
+CachedFile class constructor. This enables you to call either constructor
+transparently using compile-time #defines.<p>
+The constructor DirectFile takes an unsigned size argument and a filename. The
+size argument corresponds to the width of data (in bytes) to be stored in the
+container file. Note that this width must also include node pointer data for
+list container implementations, in addition to the user's object data. In
+contrast, vector container files store only the user's data in cells without
+need for node pointers.<p>
+The filename argument for DirectFile defaults to a null pointer. If null (or a
+null string), the constructor assumes that you want a temporary container file.
+A temporary file lacks persistence, since the class destructor deletes it when
+you destroy a DirectFile object. However, a temporary file still permits a
+practically unlimited container size. If you supply an actual filename, the
+container file will act as a persistent store.</p>
+
+<h4><FONT COLOR="#000080">Vector Container Management</FONT></H4>
+
+<p>A
+persistent, disk-based container keeps data secure between successive program
+invocations and thus needs to maintain data about itself, as well as user data,
+on file. The container keeps such state data inside a special header block
+always located at offset 0 in the container file.<p>
+Class TDVectorManager (in vectman.h) mediates access to container files for
+higher-level vector classes. The class takes two template arguments (within the
+angle brackets): a user data type T and a file manager type FM. Type FM can be
+either class DirectFile or CachedFile. In abbreviated form, the class looks
+like this:</p>
+
+<pre>
+template &lt;class T, class FM &gt;
+class TDVectorManager
+{
+    FM *p;  //-&gt; file manager
+    struct header {
+            char id_string[16];
+            int zero;    //ensures asciiz
+            long start;  //offset to 0th cell
+            unsigned long count;  //# active cells
+    };
+public:
+    TDVectorManager(const char* fname, int, int);
+    ~TDVectorManager();
+    ...
+    int WriteHeader();
+    ...
+};
+</pre>
+
+<p>I
+locate all container state data in a single nested header object so that I can
+read and write it to the container file as a single block. The header data
+struct carries an ID string that defaults to "VECTOR". The string helps you
+identify the correct container file for a persistent application. To ensure
+type safety, the ID string might carry the name of the data type contained
+therein. You may want to augment this capability with other data, such as an ID
+or file version number.</p>
+<p>The macro quantity BEG_OFFSET (see <A href="list1.htm">Listing 1</a>)
+ defaults to the size of the
+header struct, which will locate the first (zeroth) vector cell immediately
+after the header. Reset BEG_OFFSET before compiling to place the zeroth cell at
+any desired offset into the container file. You may find this useful if you
+must keep other implementation-specific data in the container.<p>
+The member function WriteHeader, as the name implies, writes container state
+data in the file header to the container file. It skips this operation if
+you're using only a temporary container file.<p>
+You must also take into consideration when and how often to write an updated
+header to disk. Your requirements may call for a conservative,
+transaction-oriented approach. This write-through strategy requires you to call
+WriteHeader after every modification made to the container file. You could also
+add a Commit facility that physically updates the disk file and its directory
+entry. This approach helps protect your data against (among other things) an
+unscheduled loss of power. Any database designer must contend with the same set
+of problems.<p>
+I have taken a somewhat more efficient approach here, but one with less
+built-in safety. This strategy delays a physical update until the last possible
+moment. You save the time because the code does not write the container header
+block every time it changes. The destructor ~TDVectorManager only calls
+WriteHeader just before it destroys the object.</p>
+
+<h4><FONT COLOR="#000080">List Container Management</FONT></H4>
+
+<p><A href="list1.htm">Listing 1</a>
+(listman.h) presents class TDListManager. It performs much the same services
+as TDVectorManager, but for list-type containers. List containers store nodes,
+which consist of one or more pointers to other nodes, in addition to user data.
+TDListManager can work with any type of fundamental data structure that uses
+nodes, including tree-structured containers.<p>
+<A href="list1.htm">Listing 1</a>
+defines three types of nodes that a list container can utilize. You
+must specify a node type as the first template argument to TDListManager. You
+can use these to implement containers for single- and double-linked lists, and
+for binary trees. You may need other node types for special requirements.
+TDListManager isn't limited to just the three node types defined here.<p>
+If you do define other node types, TDListManager requires only that you include
+a free pointer (called Free) as a data member in the node definition. A node
+can be in one of two states. When a node is in use, its Free pointer contains
+the offset address of its own node (offset to the first byte of that node).
+When you deallocate a node, it becomes part of a free node list. The node is
+added to the head of the free list and its Free pointer is set to the offset of
+the next node in the free list (previously the head). The data member _Hdr.Free
+always points to the first node in the free list. This strategy keeps track of
+deallocated nodes so you can reuse the space. TDListManager member functions
+GetFree and PutFree manage node allocation and the free node list.<p>
+Like TDVectorManager, TDListManager locates all container state data in a
+single header struct (_Hdr). _Hdr.Head points to the first node in a list, or
+the root node of a binary tree. _Hdr.Tail points to the end of a list. You may
+or may not use a tail pointer, depending on your application. For example,
+trees and single-linked lists won't use a tail pointer. _Hdr should ideally
+include an ID string or other identification data as described earlier for
+TDVectorManager, but I omitted this for clarity.<p>
+_Hdr.ItemCount holds the number of active nodes in the list that currently
+store user data. _Hdr.NodesAllocated contains the total number of nodes. This
+total includes both active and inactive (free) nodes. As indicated earlier for
+TDVectorManager, you can modify the macro constant BEG_OFFSET to control the
+placement of the first list node. This node by default occurs immediately after
+the header block.</p>
+
+<h4><FONT COLOR="#000080">Implementing Vector Containers</FONT></H4>
+
+<p>The
+following snippet presents class TDVector (in vector.h), a basic vector
+implementation. It uses container file management services provided by
+TDVectorManager. You can use TDVector as a base class to implement more
+specialized container types that use a vector as the primary implementation.
+Like transient vectors, a disk-based vector stores each object at consecutive
+locations starting at index 0.</p>
+
+<pre>
+template &lt;class T&gt; class TDVectorIterator;
+template &lt;class T&gt; class TDVector
+{
+    TDVectorManager&lt;T,FM&gt; *p;
+            //FM = file mngr type
+public:
+    TDVector( const char *fname = 0 );
+    ~TDVector();
+    friend TDVectorIterator&lt;T&gt;;
+    void CellCount( ulong n );
+    int Add( const T&amp; item );
+    int ReplaceAt( const T&amp; t, ulong n );
+    int ItemAt( T&amp; t, ulong n ) const;
+    void ForEach( int (*)(T&amp;, void *), void *);
+    ...
+    int operator() (const T&amp; t, ulong n);
+    T operator() (ulong n) const;
+};
+</pre>
+
+<p>Class
+TDVector differs in certain crucial respects from its transient cousin.
+Transient vector/array containers usually have the ability to insert or delete
+objects at a given index. An insertion moves all cells above that index up one
+place. A deletion copies all cells above a given index down one place. A
+disk-based vector could incorporate the same capability, but at a price. This
+would at best be a disk-intensive operation, particularly when performing
+repeated insertions or deletions. I have compromised by allowing additions and
+deletions only at the end of the vector, and disallowing insertions completely.
+You can call member function CellCount(ulong n) to reset the vector's range to
+0 . . . n-1. Member function Add will place the next item at index n.<p>
+Note that CellCount(ulong n) can also extend the range to virtually any length,
+whether or not valid data exists within that range. ReplaceAt will safely store
+an object at any index within or beyond the current end of vector, extending
+the vector's range to compensate if necessary. ItemAt returns the contents of
+any cell within the vector's range whether or not the cell contains valid
+data.<p>
+Transient vectors and arrays can also make use of the subscript operator [].
+This operator generates an in-memory reference to the object contained at the
+subscripted index. You can use this to intuitively access or replace an object
+in the container using normal C syntax.<p>
+Unfortunately, the [] operator doesn't work as easily for disk- based vector
+containers. You can overload [], but it's difficult to isolate lvalue from
+rvalue usage. Both require reading the object at the specified index into
+memory. You must precede this access by writing any previously accessed object
+(occupying the same storage location) to the container file, just in case you
+changed it. The overload function then returns a reference to the new item just
+accessed. This means every access will always be preceded by an update to the
+container file, whether or not an actual assignment has occurred. There's no
+easy way to tell without added execution overhead.<p>
+I've settled for a less satisfactory approach to the problem. The function call
+operator() can take a variable number of arguments. This allows me to write one
+overloaded function that provides object assignment (&amp;item, index), and
+another that grants access only (index). It avoids unnecessary disk activity,
+but it's sometimes difficult to remember which function does what.<p>
+The associated vector class TDVectorIterator (in vector.h) defines a simple
+iterator for TDVector objects. Member function Current returns the item at the
+current index. operator++ doesn't return the current object like some iterators
+do, but only increments the current index pointer. You can also use
+TDVector::ForEach as a built-in iterator. It calls the supplied callback
+function for each object in the container file. If you modify an object, your
+callback should return non-zero. ForEach will then write the modified object
+back to the container file.</p>
+
+<h4><FONT COLOR="#000080">A Binary Tree Container</FONT></H4>
+
+<p><A href="list2.htm">Listing 2</a>
+(bintree.h) presents class TDBinarySearchTree. This is a simplified binary
+tree representation constructed for searching and sorting. A binary tree is an
+example of an ordered or sorted container. For now, the public interface
+consists of only two primary member functions. Function Add places new items in
+the tree and doesn't check for duplicates. Function ForEach acts as a simple
+iterator. Just for kicks, I've also overloaded operator&lt;&lt; so it lets you
+add objects to the binary tree as if you were using an iostreams inserter.<p>
+Function ForEach performs only an in-order traversal of the tree to access each
+object in sorted order. ForEach declares a temporary TDStackAsVector object (a
+stack derived from TDVector; see vector.h) to store the file offset addresses
+of each tree node it visits. You needn't concern yourself with size limitations
+here. TDStackAsVector is essentially open-ended, limited only by available disk
+space.<p>
+<A href="list3.htm">Listing 3</a>
+(bsort.cpp) combines many of the foregoing concepts to create a
+simple utility that sorts words in a text file of virtually any size. It reads
+words from an input stream and adds them to the binary tree. ForEach then
+traverses the tree to access each word in ascending order. The program also
+computes and stores the byte offset of each word. You could use this offset
+value to build a text concordance. A concordance lists each word in sorted
+order along with a sample of the text surrounding that word as it appears in
+the document.<p>
+I offer no test results to show how this binary tree sort compares to others. A
+binary tree sort is generally classed as an internal sort. The one I offer here
+might instead have more in common with an external merge sort. Like external
+sorting, there's no requirement that all objects exist in memory at one time,
+in contrast to a quick sort. Quick sorts and binary tree sorts are both classed
+as relatively efficient (N log N) sorts. However, a binary tree sort has the
+added overhead of traversing the tree to produce the sorted output. Even so,
+you may find it surprisingly efficient, considering the relatively small amount
+of code required compared to external merge sorts.</p>
+
+<h4><FONT COLOR="#000080">Containing Complex and Derived Classes</FONT></H4>
+
+<p>With
+simple classes &#151; that is, classes containing no embedded pointers or virtual
+functions &#151; it's easy to determine what will be written to the disk.  For
+instance, the previous example in <A href="list3.htm">Listing 3</a>
+created a specialized database for
+objects of class WordSort. Each node in the binary tree container stores one
+instance of all the data members defined within class WordSort. The amount of
+user data stored within each node is thus sizeof(WordSort) bytes in width.<p>
+A more complex class might also include a pointer to a virtual function table
+as well as pointers to in-memory buffers or other objects. Adding objects of
+this class to a container means you store the whole banana, not just the object
+state data you want. When you restore such an object, the old run-time data
+kept on disk comes along with it, which will probably invalidate your object.
+Virtual function calls probably won't work as you expect. Other pointers are
+likely to be left dangling.<p>
+The data you store in a disk-based container should consist only of the data
+necessary to restore an object's state. A customized assignment operator or
+copy constructor arranged for deep copy won't usually work here. Any
+object-copy operation leaves the virtual table pointer intact (if one exists).
+Also, whether or not you copy all the data, the copy operation still either
+creates or expects space for all the data &#151; including the data you shouldn't
+place in persistent storage. The size of the destination object remains the
+same as the source object, regardless of which you parts you copy.<p>
+A partial solution consists of putting all state data members into a struct
+nested within your class definition. You pass references to the nested struct
+object, instead of its parent class object, when you call container functions.
+This ensures that only the data you want goes into the container. I used this
+method for the container management classes TDVectorManager and TDListManager
+(<A href="list1.htm">Listing 1</a>)
+. Unfortunately, this simple method won't work for derived classes.
+You can't incorporate additional member data from a derived class into a nested
+struct in a base class.<p>
+The technique I've adopted is similar to persistent object streaming.
+Persistent streaming allows insertion and extraction of base and derived member
+data from a persistent (file) stream. You must write specific member functions
+to insert and extract only the member data you choose. However, the disk-based
+containers I present here depend on storing and retrieving data in a contiguous
+block. You can't easily work with them in stream-like fashion.<p>
+My method uses a "packed object format" instead of object streaming. This is a
+rather quick-and-dirty method, but also somewhat easier to implement than most
+object streaming techniques. You must define a packed format struct that
+duplicates all data members you want to save from the working version of your
+class(es):</p>
+
+<pre>
+struct PackedData {   //packed data type
+    int i, j;  //base class data
+    int ii, jj;  //derived class data
+};
+</pre>
+
+<p>For
+the base and each derived class, you need to write a Save member function that
+assigns member data to the packed format struct. You then write data in packed
+format to the container file. A Restore function for each class should perform
+the inverse operation:</p>
+
+<pre>
+class Base  {   public:
+    int i,j; char *pbuf;   //pointer not saved
+    Base(): i(1), j(2), pbuf(0) {}
+    void Save( PackedData &amp; p )
+    { p.i = i; p.j = j;  }
+    void Restore( PackedData &amp; p)
+    { i = p.i; j = p.j; }
+};
+class Derived : public Base  {  public:
+    int ii, jj; PFOOTYPE *pb;
+    Derived(): ii(3), jj(4), pb(0) {}
+    void Save( PackedData &amp;p )
+    {  p.ii = ii; p.jj = jj;
+       Base::Save(p);
+    }
+    void Restore( PackedData &amp;p )
+    {  ii = p.ii; jj = p.jj;
+       Base::Restore(p);
+    }
+};
+</pre>
+
+<p>Remember
+that you must initialize the container object with the packed format type, not
+your working (transient) class type.</p>
+<p>Whenever you derive a new class from an existing base, add a data member in
+the packed format definition that corresponds to a data member you want to save
+from the derived class. Both Save and Restore functions in the derived class
+should call the equivalent functions in the parent class(es). Adding to the
+packed format struct should not break existing code (if names remain the same),
+but will force a recompilation. This procedure will also invalidate the
+associated container file. You can read data from the old container file into
+the new packed format if you've maintained data members in the same order. Then
+add data in the new format to a new container. You could also use this
+simplified technique for persistent object streaming by inserting data in
+packed format to an fstream.</p>
+
+<h4><FONT COLOR="#000080">Other Container Implementations</FONT></H4>
+
+<p>CUJ
+online code sources include two additional list container implementations,
+classes TDStackAsList and TDQueueAsDoubleList. Both illustrate uses for single-
+and double-linked list nodes. I present TDStackAsList as a demonstration only,
+since there's no real reason to code a disk-based stack as a list. Both list-
+and vector-based stacks can grow to any desired size, but the list version must
+adjust node pointers, which adds execution overhead. You might well find
+practical uses for TDQueueAsDoubleList, however. You could derive a sorted
+version of it (as TDSortedQueueAsDoubleList) for use as a persistent priority
+queue, for example.<p>
+Any disk-based container that freely permits additions, insertions, and
+deletions at any point in the container will be more efficient when implemented
+as a list, since it can reuse space for deleted nodes more effectively. A
+vector requires more disk activity (as outlined earlier) to perform the same
+operations. A list also works directly with file offset values rather than
+vector cell indices. Each access to a vector cell thus requires an intervening
+conversion to a file offset. A vector, however, might be used as the base for a
+more specialized container file. A vector cell can be any practical size and
+accommodate data of any structure; for example, blocks for a btree index file.
+Each vector cell would then contain a number of key/pointer nodes. o
+</p>
+<p><i>Tom Nelson is an independent programmer and technical writer. His current
+interests include OOP design and systems programming for Intel-based PCs. He
+may be reached at 5004 W. Mt. Hope Rd., Lansing, MI 48917, 517-322-2559, or via
+email at tnelson@x2.alliance.net. All source code presented here or referred to
+in this article Copyright &#169; 1996 T.W. Nelson. Permission is hereby granted
+to use this code in any manner provided this copyright notice is displayed
+appropriately.
+</i></p>
+
+<h4><a href="../../../source/1998/apr98/nelson.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</body></html>

@@ -1,0 +1,317 @@
+
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+
+          
+          <TITLE>October 1997/Using Motif Callbacks in C++</TITLE>
+     </HEAD>
+     
+     <BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+          
+          <H2><A href="../tococt.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+          <FONT COLOR="#FF0000">Features</FONT></H2>
+          
+          <HR>
+          
+          <H2 ALIGN="center"><FONT COLOR="#800000">Using Motif Callbacks in
+          C++</FONT></H2>
+          
+          <H3 ALIGN="center"><FONT COLOR="#800000">Gerald Gay</FONT></H3>
+          
+          <BLOCKQUOTE>
+               
+               <P>Templates provide the glue between C-style callback functions
+                    and the C++ member functions you really want to call.</P></BLOCKQUOTE>
+          <HR>
+          <BLOCKQUOTE>
+               
+               <h4><FONT COLOR="#000080">A Marriage Made in
+               Heaven &#151; Almost</FONT></H4>
+               
+               <p>Odds are, if you've ever written
+                    graphical applications for the X Window System, you've used
+                    Motif at some point. Motif is a collection of graphical
+                    elements (widgets) that are built on top of the X Toolkit
+                    Intrinsics (Xt) library. Motif includes all the standard GUI
+                    elements: Push Buttons, Radio Buttons, Text Fields, Labels,
+                    Scrollbars, Lists, etc. </p>
+               
+               <p> Motif, although written in C, is
+                    object oriented in design. It has a primitive widget class
+                    from which all other widgets descend. It provides container
+                    classes that can hold other widgets and lay them out in
+                    specific ways. And widgets obey the same inheritance
+                    structure as you would expect in C++. Since XmPrimitive
+                    defines a foreground color property, all widgets inherit it.
+                     XmPushButton derives from XmLabel, inheriting label type
+                    and value, among other properties, from XmLabel. </p>
+               
+               <p> What all this means is that writing a
+                    C++ class library to encapsulate the Motif widgets is almost
+                    trivial. All you need do is create an XmPrimitive class,
+                    define the required resources, and follow the hierarchy up
+                    from there. The problems start when you want these objects
+                    to actually begin interacting.</p>
+               
+               <h4><FONT COLOR="#000080">The Problem With
+               Callbacks</FONT></H4>
+               
+               <p>All modern GUI environments are event
+                    driven. X and Motif are no exception. A typical Motif
+                    application creates all the widgets for its main screen,
+                    displays (realizes) them, and goes into an endless loop
+                    waiting for events. If an application wants to be notified
+                    of a user's actions, it registers callback functions for
+                    those events. For example, to be notified when the user 
+                    presses the OK button in a dialog, the application registers
+                    the callback using code similar to <A href="list1.htm">Listing
+                         1</a>.
+ </p>
+               
+               <p> The button is created in the main
+                    function and a callback (okCallback) assigned.
+                    XmNactivateCallback specifies what happens when the button
+                    is "activated." </p>
+               
+               <p> This method of assigning callbacks
+                    works very well in C. You can have a separate callback
+                    function for every different event, or you can have only a
+                    few functions and distinguish between events using the extra
+                    pointer that Xt allows you to pass through each callback.
+                    </p>
+               
+               <p> I wanted to have this same
+                    flexibility in C++. A first attempt might look like
+                    <A href="list2.htm">Listing 2</a>.
+ I create a class that
+                    encapsulates my Print Dialog. I create all my controls and
+                    assign all the callback functions. It looks good, but it
+                    doesn't work. The problem is, XtAddCallback is a C function
+                    that takes a pointer to a C function prototyped like this:</p>
+
+<PRE>
+void (*XtCallbackProc)(Widget, XtPointer, XtPointer);
+</PRE>
+               
+               <p>The function I am trying to pass to
+                    XtAddCallback is a C++ class member function. The C function
+                    that will eventually try to call my callback has no
+                    knowledge of C++'s hidden this pointer and so, even if this
+                    would compile, it wouldn't work. My second attempt looks
+                    something like <A href="list3.htm">Listing 3</a>.
+ I make
+                    okCallback a static function so that it doesn't have a
+                    hidden this parameter. No  this pointer is passed in. Now
+                    the constructor compiles but the callback function doesn't.
+                    </p>
+               
+               <p> okCallback must have access to one of
+                    PrintDialog's data members, but since okCallback is now
+                    static, it no longer has access to any non-static data. So
+                    the next step might be to make all the data static too. By
+                    the time I'm done, I might as well have written the
+                    application in C. The program can't have more than one
+                    instance of PrintDialog because I've made all its data 
+                    static. Every copy will then access the same data. This is
+                    not what I'm looking for. </p>
+               
+               <p> The usual way around this problem is
+                    to use the user_data pointer to pass in the pointer to the
+                    user's object. This technique produces code similar to
+                    <A href="list4.htm">Listing 4</a>.
+ The application can now
+                    get at the proper data because XtAddCallback stores the
+                    pointer to the PrintDialog object along with the callback.
+                    </p>
+               
+               <p> This last method can break down very
+                    easily. Consider a simple calculator program. The program
+                    provides a TextField to display the current result and a
+                    grid of numeric and function buttons. Any implementor of
+                    this program would want to have just one callback that
+                    applies to all the numbers. But the user_data pointer cannot
+                    be used to tell the callback which button was pressed; it's 
+                    being used to pass in the object pointer. It's possible to
+                    write separate callbacks for each button: OneCallback,
+                    TwoCallback, ThreeCallback, etc. Not a very pleasant
+                    thought. I might avoid separate callbacks by getting the
+                    name of the current Widget: "1", "2", "=".
+                    People have been very creative in finding ways to work
+                    around this problem. What I really want is to be able to
+                    have Xt and Motif call a non-static member function of
+                    whatever class I choose.</p>
+               
+               <h4><FONT COLOR="#000080">Object-Oriented
+               Thunking</FONT></H4>
+               
+               <p>The solution is to "thunk"
+                    from the procedural world of C to the object world of C++.
+                    Writing such a thunk function requires having a pointer to
+                    the object, a pointer to the function, and knowing the
+                    number and type of expected arguments. The argument list is
+                    predefined by the standard Xt callback signature:
+                    XtCallbackProc(Widget, XtPointer, XtPointer). In C, the
+                    function pointer is an argument to XtAddCallback, so it
+                    seems logical that the C++ version should provide not only
+                    the function pointer, but the object pointer as well. Note
+                    that the following code compiles without warning on my Unix
+                    system:</p>
+
+<PRE>
+class Foo;
+
+typedef (Foo::*foo_callback)(Widget, XtPointer, XtPointer);
+
+void callFoo(Foo *obj, foo_callback foo_func)
+{
+    Widget w;
+
+    (obj-&gt;*foo_func)(w, NULL, NULL);
+}
+</PRE>
+               
+               <p>What I've done here is tell the
+                    compiler that there is some class Foo for which I have a
+                    pointer and a member function pointer. The function callFoo
+                    gets these parameters from somewhere and uses them to call
+                    one of Foo's member functions (see the end of this article
+                    for some caveats). Since callFoo isn't a member function of
+                    any class, I could potentially use it as an XtCallbackProc.
+                    </p>
+               
+               <p> This technique works, but it's
+                    inflexible. If I create a version of XtAddCallback that
+                    takes a Foo object pointer, I'll have to write a whole new
+                    version to add a callback to another class, such as
+                    PrintDialog. What I need is a function that takes a pointer
+                    to an object, a pointer to a member function of that object,
+                    and some other ancillary data. What I need is templates.</p>
+               
+               <h4><FONT COLOR="#000080">The Template Solution</FONT></H4>
+               
+               <p><A href="list5.htm">Listing 5</a>
+is
+                    Callback.h. It defines a template structure that captures
+                    all the information needed about a particular object,
+                    widget, and callback. Template function addCallback is
+                    similar to XtAddCallback. addCallback creates a CallbackInfo
+                    structure specialized on the object that calls it.
+                    addCallback calls registerCallback, which is defined in
+                    <A href="list6.htm">Listing 6</a>,
+ Callback.C. </p>
+               
+               <p> Callback.C uses an approach similar
+                    to the one shown above with class Foo. Callback.C provides a
+                    class tag (FakeObj) that is used throughout the file.
+                    Nothing is defined about FakeObj, and if you look carefully
+                    at registerCallback and callbackHandler, you will see that
+                    neither function needs to know anything about FakeObj to do
+                    its work. Everything is done through pointers. Neither 
+                    function needs to make any temporaries so no constructor
+                    calls are needed. The only function that gets called is
+                    passed in through a function pointer. </p>
+               
+               <p> The solution as applied to class
+                    PrintDialog appears in <A href="list7.htm">Listing 7</a>.
+
+                    This time, I use addCallback to register the callback
+                    function. I can now use a regular non-static member function
+                    with full access to all the object's data.</p>
+               
+               <h4><FONT COLOR="#000080">How Everything Works</FONT></H4>
+               
+               <p>When an object calls addCallback, a
+                    CallbackInfo structure is allocated and all the necessary
+                    information is saved. registerCallback is called with a
+                    pointer to a CallbackInfo structure. registerCallback then
+                    casts the pointer to one of type FakeObj only because it
+                    needs some tag to reference the structure. When the real
+                    XtAddCallback function is called, the function that is 
+                    provided to Xt for the callback is actually callbackHandler.
+                    callbackHandler is the only function ever called by Xt and
+                    Motif. Notice that the user data passed in to XtAddCallback
+                    isn't the data that was given to addCallback. Instead, the
+                    program stores that data inside CallbackInfo and passes in
+                    the pointer to the CallbackInfo structure. callbackHandler
+                    will get the CallbackInfo  structure and cast it to FakeObj
+                    as well. callbackHandler can now dissect the structure and
+                    call the real callback without ever knowing what kind of
+                    object it's calling. </p>
+               
+               <p> Using this technique, any object can
+                    receive a callback. The callback function doesn't have to be
+                    static &#151; actually, it can't be static! And because of the
+                    template definition, it's impossible to call addCallback
+                    with a pointer to one type of object, and a pointer to some
+                    other object's member function. Also, the user data pointer
+                    is once again available to pass any information through the
+                    callback that is needed.</p>
+               
+               <h4><FONT COLOR="#000080">Caveats and
+               Portability</FONT></H4>
+               
+               <p>The only real caveat to using these
+                    routines is that there is nothing in the current draft C++
+                    Standard that says a global C++ function has to have the
+                    same calling convention as a C function. In other words, C++
+                    programs are allowed to call C functions, but the only way
+                    to guarantee the reverse is to declare the global C++
+                    function extern "C". However, no compilers I
+                    currently know of use a different calling convention for
+                    global C++ functions than they use for C functions. </p>
+               
+               <p> I've compiled this code on SunOS 4.1,
+                    Solaris 2.5, and Linux without any problems. I've also
+                    tested it with the Motif and Xt calls stubbed out using
+                    Borland C++ 4.0. The one problem I've seen was on the
+                    SGI/Irix 6.2 using SGI MipsPro7.0.1 and also with Watcom C++
+                    10.0 on MS-DOS. These environments don't like dereferencing
+                    pointers to incomplete types, even though the pointer is not
+                     really being dereferenced. If you have trouble compiling
+                    Callback.C, try completing the definition of FakeObj like
+                    this:</p>
+
+<PRE>
+class FakeObj {};
+</PRE>
+               
+               <h4><FONT COLOR="#000080">Finishing Touches</FONT></H4>
+               
+               <p>The callback mechanism was written as
+                    part of the Xarm C++ wrapper library for Motif. The full
+                    source to Xarm as well as on-line documentation can be found
+                    at http://soback.kornet.nm.kr/ ~glgay/ The source is also
+                    located at ftp://sunsite.unc.edu/ pub/Linux/libs/X/c++libs/
+                    </p>
+               
+               <p> The complete implementation does a
+                    little more work. It adds a destroy callback so that when
+                    the widget goes away, the CallbackInfo structure gets freed
+                    as well. Also, all the callbacks are stored in an internal
+                    STL vector so that the application can remove selected
+                    callbacks if necessary while ensuring that the dynamic
+                    memory gets cleaned up. There are actually six different 
+                    types of callbacks in Xt and Motif. By far the most common
+                    is the type I've shown here, but all six are accounted for
+                    in the complete code. (This code is also available on the
+                    CUJ ftp site. See p. 3 for downloading instructions.) o
+                    </p>
+               
+               <p><I>Gerald Gay is a Software Engineer
+                    in charge of development and integration for a division of
+                    Sterling Software overseas. He can be reached at
+                    glgay@soback.kornet.nm.kr. </I></p>
+     
+<h4><a href="../../../source/1997/oct97/gay.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+     </BODY>
+</HTML>

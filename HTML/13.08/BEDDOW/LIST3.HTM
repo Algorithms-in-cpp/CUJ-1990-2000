@@ -1,0 +1,197 @@
+<HTML><HEAD>
+<TITLE>August 1995/Remote Procedure Calls Using NetBios/Listing 3</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 3 <I>NetBios API related functions</A></I></h4>
+<pre>/* NetBIOS call via 0x5C interrupt with auto retry */
+net_bios_call(ncbptr)
+struct Ncb *ncbptr;
+{ struct SREGS SegRegs ;
+  union REGS InRegs, OutRegs ;
+  struct Ncb far *1_ptr ;
+
+  1_ptr = (struct Ncb far *) ncbptr ;
+  segread(&amp;SegRegs) ;
+  SegRegs.es = FP_SEG(1_ptr) ;
+  InRegs.x.bx = FP_OFF(1_ptr) ;
+  InRegs.x.ax = 0x400 ;
+
+  int86x(0x5c, &amp;InRegs, &amp;OutRegs, &amp;SegRegs);
+
+  return(OutRegs.h.al);
+}
+
+/* Check for netbios : return FALSE if found */
+chk_net_bios()
+{ struct SREGS SegRegs ;
+  union REGS InRegs, OutRegs ;
+  struct Ncb far *1_ptr ;
+  struct Ncb test_ncb ;
+
+/* First check Int 0x5c is loaded */
+  InRegs.x.ax = 0x355c ;
+  int86x( 0x21, &amp;InRegs, &amp;OutRegs, &amp;SegRegs) ;
+  if (SegRegs.es == 0 || SegRegs.es == 0xf000)
+    return(1) ;
+
+/* Make an illegal Ncb request to double check */
+  memset(&amp;test_ncb, 0, sizeof(struct Ncb)) ;
+  test_ncb.NCB_command = 0x7f;
+  l_ptr = (struct Ncb far *) &amp;test_ncb ;
+  segread(&amp;SegRegs) ;
+  SegRegs.es = FP_SEG(l_ptr) ;
+  InRegs.x.bx = FP_OFF(l_ptr) ;
+  InRegs.x.ax = 0 ;
+
+  int86x(0x5c, &amp;InRegs, &amp;OutRegs, &amp;SegRegs) ;
+
+  if (OutRegs.h.al)
+    return(0) ;
+  else
+    return(1) ;
+}
+
+/* Get Net bios error message */
+char *get_neterrmess(int error)
+{ static char *mess1 = "Command not complete" ;
+  static char *mess2 = "Reply timeout" ;
+  static char *mess3 = "Hardware error" ;
+  static char *mess4 ="" ;
+
+  if (error == 0xff)
+    return(mess1) ;
+  if (error == NETTIMEOUTERR)
+    return(mess2) ;
+  if (error &gt;= 0x40 &amp;&amp; error &lt;= 0xfe)
+    return(mess3) ;
+  if (error &lt;= 0x26)
+    return(neterrmess[error]    ;
+  return(mess4) ;
+}
+
+/* ************************ */
+/* Handle the name commands */
+net_name_command(int command, char *name, PROC post, struct Ncb *ncbptr)
+{
+  init_ncb(ncbptr) ;
+
+  if (post == NULL)
+    ncbptr-&gt;NCB_command = command ;
+  else
+    ncbptr-&gt;NCB_post = (FARPROC)post ;
+  ncbptr-&gt;NCB_lana_num = 0 ;
+  set_ncb_name(name, ncbptr) ;
+
+  return(net_bios_call(ncbptr)) ;
+}
+
+/* **************************** */
+/* Handle the datagram commands */
+net_dgram_command(int command, int num, char *callname, void *buf, int buflen,
+              FARPROC post, struct Ncb *ncbptr)
+{
+  init_ncb(ncbptr) ;
+  ncbptr-&gt;NCB_command = command ;
+  ncbptr-&gt;NCB_post = post ;
+  ncbptr-&gt;NCB_lana_num = 0 ;
+  if (callname != NULL)
+    set_ncb_callname(callname, ncbptr) ;
+  ncbptr-&gt;NCB_num = num ;
+  ncbptr-&gt;NCB_buffer = (char far *)buf ;
+  ncbptr-&gt;NCB_length = buflen ;
+
+  return(net_bios_call(ncbptr)) ;
+}
+
+/* ************** */
+/* Cancel command */
+net_command_cancel(struct Ncb *ncbcancelptr, struct Ncb *ncbptr)
+{ init_ncb(ncbptr) ;
+  ncbptr-&gt;NCB_command = NCBCANCEL ;
+  ncbptr-&gt;NCB_lana_num = 0 ;
+  ncbptr-&gt;NCB_buffer = (char far *)ncbcancelptr ;
+  ncbcancelptr-&gt;NCB_post = NULL ;
+  return(net_bios_call(ncbptr)) ;
+}
+
+
+/* ****************************************************** */
+/* Utility functions                                      */
+
+/* ********************************** */
+/* Initialise a Netbios control block (NCB) */
+init_ncb(struct Ncb *ncbptr)
+{ int cnt = sizeof(struct Ncb) ;
+  char *c = (char *)ncbptr ;
+  while(cnt)
+    { *c++ = 0 ;
+      cnt-- ;
+    }
+}
+
+/* ****************************************************************** */
+/* Copy a name string into an NCB name and pad string with spaces to 16 chars */
+set_ncb_name(char *name, struct Ncb *ncbptr)
+{ int i ;
+  char *s ;
+
+  strncpy((char *)ncbptr-&gt;NCB_name, name, 16) ;
+  s = (char *)(ncbptr-&gt;NCB_name) + strlen(name) ;
+  for (i = strlen(name); i &lt; 16; i++)
+   *s++ = ' ' ;
+}
+
+/* ****************************************************************** */
+/* Copy a name string into an NCB call name and pad string with spaces to 16 chars */
+set_ncb_callname(char *name, struct Ncb *ncbptr)
+{ int i ;
+  char *s ;
+
+  strncpy((char *)ncbptr-&gt;NCB_callname, name, 16) ;
+  s = (char *)(ncbptr-&gt;NCB_callname) + strlen(name) ;
+  for (i = strlen(name); i &lt; 16; i++)
+     *s++ = ' ' ;
+}
+
+/* ****************************************************************** */
+/* Copy a NCB call name to a string, removing spaces at end of call name */
+char *ret_ncb_callname(char *name, struct Ncb *ncbptr)
+{ int i = 16 ;
+  unsigned char *s = ncbptr-&gt;NCB_callname ;
+
+  while (i-- &amp;&amp; *(s + i) == ' ') ;
+  i++ ;
+  strncpy(name, (char *)ncbptr-&gt;NCB_callname, i) ;
+  *(name + i) = 0 ;
+
+  return(name) ;
+}
+
+
+/* *********************************************************** */
+/* Net name list search functions */
+
+/* ******************************************************** */
+/* Search the net name descriptor list for an entry by name */
+struct netrpcserver *netname(char *name)
+{  struct netrpcserver *srchptr ;
+
+   srchptr = netrpcserverlist ;
+   while (strcmp(srchptr-&gt;name, name) &amp;&amp; (srchptr = srchptr-&gt;prev) != NULL) ;
+   return(srchptr) ;
+}
+
+/* ****************************************************** */
+/* Search the net name descriptor list for an entry by id */
+struct netrpcserver *netid(int id)
+{  struct netrpcserver *srchptr ;
+
+   srchptr = netrpcserverlist ;
+   while (srchptr-&gt;id != id &amp;&amp; (srchptr = srchptr-&gt;prev) != NULL) ;
+   return(srchptr) ;
+}
+/* End of File */
+</pre>
+</BODY>
+</HTML>

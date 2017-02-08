@@ -1,0 +1,339 @@
+<HTML>   
+     <HEAD>
+<TITLE>December 1999/The Journeyman's Shop</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocdec.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">The Journeyman's Shop: Containing Heterogeneous Types</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Pete Becker</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Run-time type identification is a powerful, but expensive, mechanism. It should be used sparingly.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<p>A few years ago, when most people thought that "object oriented" meant "whatever Smalltalk does," it was fairly common for new C++ programmers to ask how to implement heterogeneous containers, that is, containers that could hold any type of item. When pressed for details on what such a thing could be used for, one common response was that it would be just like a pencil holder on your desk &#151; even though it's called a pencil holder, you can put anything you want into it. The problem with this reasoning, as with all analogies when they are pushed too far, is that it omits an important factor: if your pencil holder is filled with things that aren't pencils, you have to rummage through its contents when you need a pencil.</p>
+<p>In software this means that objects that you put into a container cannot be arbitrary types, because at a minimum you have to know something about their types in order to do anything useful with them. In Smalltalk, type information is entwined deep in the structure of every object. Smalltalk already supports run-time type queries, so you don't have to write any extra code to keep track of the types of the objects that you put into a container. C++, however, was designed so that you don't pay for what you don't need. So if you want to ask about the type of an object at run time you must write some code to support run-time type inquiries.</p>
+<p>C++ doesn't have a universal mechanism for run-time type inquiries. The closest thing is <B>typeid</B> <a href="#1">[1]</a>, part of C++'s RTTI (Run-Time Type Identification) mechanism. But in order for you to use <B>typeid</B> or RTTI in general, the compiler must know a little bit about the actual type of the object. If you have only a pointer to <B>void</B>, <B>typeid</B> can't tell you anything about the actual type of the object pointed to. If you have a pointer to a type that has no virtual functions, <B>typeid</B> can tell you the type that the pointer is declared to point to. But it cannot tell you whether the pointed-to object actually has a type that is derived from the declared type of the pointer. In order to fully use run-time type queries you must use pointers to types that have virtual functions. That's not a significant limitation, however. To get run-time type checking like that provided in Smalltalk, you need only derive all of your classes from a single base type that has at least one virtual function. Once you've done that, you can write heterogeneous containers that are pretty much like the ones in Smalltalk.</p>
+<p>In general, though, having a common base class for all the classes in a C++ application is a symptom of overdesign. It's a result of trying too hard to generalize, without taking into account the cost in size and speed that generality imposes. In languages like Smalltalk and Java, where the common base is imposed by the language, the compiler and run-time system can be tuned to minimize the resulting overhead. Still, the ability to identify all types at run time is not free. In the kinds of applications Smalltalk is designed for the cost is usually acceptable. In the kinds of applications that C++ is designed for the cost may well be prohibitive.</p>
+<p>On the other hand, C++ offers several lower-cost alternatives to universal type queries. By carefully choosing a technique that's appropriate to the problem at hand, we can minimize the cost of writing code that handles different data types. These techniques aren't as convenient as universal type identification &#151; they have to be planned, and incorporated into your application's design. But by focusing on the areas where type identification is actually needed we can produce solutions that are smaller and faster than the approaches taken by languages like Smalltalk, where type identification is available for every object, whether it's needed or not.</p>
+<p>Most C++ programmers' first brush with heterogeneous containers occurs through the use of polymorphism. One of the most common beginner's examples of polymorphism involves a base class with a name like <B>screen_object</B>, a member function to set that object's position on the screen, and a virtual member function to draw it. Derived classes such as circle, rectangle, and triangle override the draw function in obvious ways to provide behavior appropriate to their type. Once we've decided on the design of the class <B>screen_object</B>, we can create a container that holds pointers to objects whose types are derived from <B>screen_object</B>. We then know that we can draw all of the objects held in our container. We can also go one step further, and make our container a drawable object. We'd do this by deriving it from <B>screen_object</B>, and giving our container a member function that overrides <B>draw</B> and iterates through all of the items that it holds, calling <B>draw</B> on each of them &#151; like this:</p>
+
+<pre>
+class screen_object
+{
+public:
+   virtual void draw() = 0;
+};
+
+class figure : public screen_object
+{
+public:
+   figure() : num(0) {}
+   void add(screen_object *obj)
+   { items[num++] = obj; }
+   void draw();
+private:
+   int num;
+   screen_object *items[10];
+};
+
+void figure::draw()
+{
+for (int i = 0; i &lt; num; ++i)
+   items[i]-&gt;draw();
+}
+</pre>
+
+<p>I've left out many details of the classes <B>screen_object</B> and <B>figure</B>: there's no screen position stored anywhere in these objects; <B>items</B> should be a pointer to <B>screen_object</B> rather than a hard-coded array, so that it can be dynamically resized; there should be a mechanism to draw the contained objects at positions relative to the position of <B>figure</B>; and so on. Those are important details when you are writing the application, but for our purposes they aren't important. The key to understanding this type of container is that it holds objects whose types are derived from <B>screen_object</B>. This lets us rely on polymorphism without any need for run-time type checking.</p>
+<p>Compare this with a similar class, written in Java, that uses a heterogeneous container:</p>
+
+<pre>
+interface ScreenObject
+{
+public abstract void draw();
+}
+
+class Figure
+   extends ScreenObject
+{
+public void add(ScreenObject o)
+   { items.add(o); }
+public void draw()
+   {
+   for (int i = 0;
+        i &lt; items.length(); ++i)
+      ((ScreenObject)items.
+           elementAt(i)).draw();
+   }
+private Vector items;
+}
+</pre>
+
+<p>Superficially this looks very much like the C++ code. The one critical design difference is revealed by the cast that is used within <B>Figure</B>'s <B>draw</B> member. That cast is necessary to enable us to call <B>draw</B> on objects held by the container. The cast does a run-time type check, and will throw an exception if the type of the item we're calling it on is not derived from <B>ScreenObject</B>. That run-time type check takes time, slowing down the code that uses this container <a href="#2">[2]</a>.</p>
+<p>The next form of heterogeneous container that C++ programmers are exposed to is the container template. Of course, a container template is heterogeneous only in a limited sense: the same template code can be used to create different containers that each hold a different type. The container's source code, properly written, is heterogeneous; the container itself, instantiated from the template, is not. Still, a template is often the right answer when we need a general-purpose container. Since the type of the elements in a container template is specified at compile time, we avoid the overhead of run-time type checks.</p>
+<p>When we write a container template it helps to start conservatively. C++ programmers often get themselves into trouble when they first start writing container templates because they try to do everything at once, writing the implementation code for the container while simultaneously trying to generalize it. That can be difficult. It's usually better to write container templates in two steps: first write the container, then turn it into a template.</p>
+<p>For example, we've already written a container that can hold pointers to objects of type <B>screen_object</B>. That's a good starting point for a container template that can hold pointers to an arbitrary type. First let's remove <B>screen_object</B> as a base and add an index operator so that we can look at the pointers in the container:</p>
+
+<pre>
+class container
+{
+public:
+   container() : num(0) {}
+   void add(screen_object *obj)
+      { if (num != 10)
+           items[num++] = obj; }
+   screen_object *operator[](int pos)
+      { return num &lt;= pos ?
+          0 : items[pos]; }
+private:
+   int num;
+   screen_object *items[10];
+};
+</pre>
+
+<p>Of course, in an actual application the function <B>add</B> would return a value to indicate whether it actually added the pointer, and the container would probably also have code to remove a pointer.</p>
+<p>The limit of ten items is in some ways artificial. I used it to make the code simpler. In most applications we'd want to be able to change the size of the <B>array</B> automatically when an add would run off the end. On the other hand, there are also situations where a fixed-size array is appropriate, so we'll stick with a fixed-size array.</p>
+<p>Once we have all the code working correctly we can think about how to generalize the code. One obvious generalization is to allow the user to determine the size of the array. Instead of hard-coding its size as 10 we can turn the class into a template and specify the size as a template argument:</p>
+
+<pre>
+template&lt;size_t sz&gt; class container1
+{
+public:
+   container1() : num(0) {}
+   void add(screen_object *obj)
+      { if (num != sz)
+           items[num++] = obj; }
+   screen_object *operator[](int pos)
+      { return num &lt;= pos ?
+           0 : items[pos]; }
+private:
+   int num;
+   screen_object *items[sz];
+};
+
+typedef container1&lt;10&gt; container;
+</pre>
+
+<p>If we replace our original definition of <B>container</B> with this code, any other code we've written that used container should continue to work, and new code can take advantage of the possibility of using a larger array.</p>
+<p>The obvious next step in generalizing this template is to allow the user to specify the type of object that will be put into the container. This is a simple change, too:</p>
+
+<pre>
+template&lt;class T, size_t sz&gt;
+class container2
+{
+public:
+   container2() : num(0) {}
+   void add(T *obj)
+      { if (num != sz)
+           items[num++] = obj; }
+   T *operator[](int pos)
+      { return num &lt;= pos ?
+           0 : items[pos]; }
+private:
+   int num;
+   T *items[sz];
+};
+
+typedef container2&lt;screen_object, 10&gt;
+   container;
+</pre>
+
+<p>Here, too, if we replace our original definition of <B>container</B> with this code, any other code that used <B>container</B> will still work. If we were thinking ahead we didn't release the code for <B>container1</B> to anyone, so we don't have to maintain compatibility with it. If we do have to provide support for users of <B>container1</B> we've got a bit more work to do &#151; we need to provide a template named <B>container1</B> that takes only a size argument and uses our new code. There's no simple way to do this. We have to write a wrapper template. That's easy to do in this case:</p>
+
+<pre>
+template&lt;class sz&gt; class container1
+   : public container2&lt;screen_object, sz&gt;
+{
+};
+</pre>
+
+<p>Now users of our old version won't have to change any of their code to upgrade to our new version <a href="#3">[3]</a>.</p>
+<p>We're still not done, though. Much of the code that the compiler produces for containers that hold different types will actually be identical. Although you often hear that this is merely an optimization issue and that compilers will soon be smart enough to reuse code that doesn't change when you create a different template instance, no compiler that I know of that actually does that. If overall code size is important in our application we've got to handle code merging ourselves. In the case of a container that holds pointers, it's easy: go back to a template like our <B>container1</B>, and modify it to handle only pointers to <B>void</B>. Use that to implement each of the type-specific template instances.</p>
+
+<pre>
+template&lt;size_t sz&gt; class void_array
+{
+protected:
+   void_array() : num(0) {}
+   void add(void *obj)
+      { if (num != sz)
+           items[num++] = obj; }
+   void *operator[](int pos)
+      { return num &lt;= pos ?
+          0 : items[pos]; }
+private:
+   int num;
+   void *items[sz];
+};
+
+template&lt;class T, size_t sz&gt;
+class container3
+   : private void_array&lt;sz&gt;
+{
+public:
+   void add(T *obj)
+      {return
+          void_array&lt;sz&gt;::add(obj);}
+   T *operator[](int pos)
+      { return static_cast&lt;T*&gt;(
+           void_array&lt;sz&gt;::
+              operator[](pos)); }
+};
+</pre>
+
+<p>The member functions in the template <B>container3</B> handle the pointer type conversions needed to go to and from the implementation of the container that uses pointers to void. These conversions have no overhead, so there is no run-time cost involved in implementing a typesafe container in this way.</p>
+<p>Java, of course, does not have templates, so we can't use the same approach there. What we can do, as we saw earlier, is write a single container that will hold objects of any type, and use that to implement a container that holds objects of a more restrictive type, by cutting, pasting and editing the definition of that container as needed.</p>
+
+<pre>
+class Container4
+{
+public void add(MyType obj)
+   { vec.add(obj); }
+public MyType elementAt(int pos)
+   { return
+        (MyType)vec.elementAt(pos); }
+private Vector vec;
+};
+</pre>
+
+<p>However, Java has nothing analogous to C++'s <B>static_cast</B>, so there's no way to say in the source code that we know that the cast in <B>Container4.elementAt</B> is always safe. The compiler will always check that the conversion is valid.</p>
+<p>As I said earlier, if you really need to create a heterogeneous container in C++, you can write a base class with a virtual function, so that you can use RTTI, and derive your classes from the base class &#151; like this:</p>
+
+<pre>
+class ident
+{
+public:
+   virtual ~ident() {}
+};
+
+class int_val : public ident
+{
+public:
+   int_val(int i) : val(i) {}
+   int get() { return val; }
+private:
+   int val;
+};
+
+class long_val : public ident
+{
+public:
+   long_val(long i) : val(i) {}
+   long get() { return val; }
+private:
+   long val;
+};
+</pre>
+
+<p>Now you can write a container that holds objects of type <B>int_val</B> and <B>long_val</B>, and you can determine which is which:</p>
+
+<pre>
+class values
+{
+public:
+   void add(int_val *iv)
+      { data.add(iv); }
+   void add(long_val *lv)
+      { data.add(lv); }
+   int_val *operator[](int pos)
+      { return dynamic_cast&lt;int_val*&gt;
+                  (data[pos]); }
+   long_val *operator[](int pos)
+      { return dynamic_cast&lt;long_val*&gt;
+                  (data[pos]); }
+private:
+   container3&lt;ident, 10&gt; data;
+};
+</pre>
+
+<p>Since objects of type <B>ident</B> have a virtual function, we can use <B>dynamic_cast</B> to do a checked conversion on the pointers that we get from <B>data</B>. With the minimal interface that I've given here, you can ask for an <B>int_val</B> pointer or a <B>long_val</B> pointer stored at any location, and if the pointer in that location points to an object of some other type you'll get back a null pointer.</p>
+<p>Finally, although it's not strictly speaking a container at all, you can use a variable argument list to pass around objects of distinct types. Just as in all our previous examples, you have to be able to figure out the actual type of the object that you're dealing with. If you've ever used <B>printf</B> you're familiar with one way of passing type information around, by putting a type marker into an array. We'll use the same technique here:</p>
+
+<pre>
+typedef enum
+{
+end,    /* end-of-data marker	  */
+b_int,	/* built-in int type	  */
+b_long,	/* built-in long type	  */
+u_int,	/* user-defined int type  */
+u_long	/* user-defined long type */
+} arg_type;
+</pre>
+
+<p>We can store these type information values in an array, and pass that array to a function that will use it to interpret the types of the elements in our variable argument list:</p>
+
+<pre>
+#include &lt;stdio.h&gt;
+#include &lt;stdarg.h&gt;
+
+void show(arg_type *types, ...)
+{
+va_list ap;
+va_start(ap, types);
+for (;;)
+   switch(*types++)
+      {
+      case end:
+         va_end(ap);
+      return;
+      case b_int:
+         printf("%d\n",
+            va_arg(ap, int));
+         break;
+      case b_long:
+         printf("%ld\n",
+            va_arg(ap, long));
+         break;
+      case u_int:
+         printf("%d\n",
+            va_arg(ap, int_val).
+               get());
+         break;
+      case u_long:
+        printf("%ld\n",
+            va_arg(ap, long_val).
+               get());
+        break;
+      }
+}
+</pre>
+
+<p>To see this code in action, try something like this:</p>
+
+<pre>
+int main()
+{
+int i = 1;
+long l = 2;
+int_val iv(3);
+long_val lv(4);
+arg_type types[] =
+   { b_int, b_long, u_int, u_long,
+     end };
+show(types, i, l, iv, lv);
+return 0;
+}
+</pre>
+
+<p>Now, I'll admit that this is a somewhat facetious example. It's primary point, though, is one that I've made throughout this column: you have to know what type of object you're dealing with. There are no truly heterogeneous containers, just containers with varying degrees of homogeneity.</p>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>In C++, the two primary mechanisms for writing code that handles different types of objects are templates and polymorphism. When you use a template you specify the type that it handles at the time that you compile your code. When you use polymorphism you specify a limited set of types that can be used interchangeably, and the compiler generates efficient code that masks the differences. I have yet to run into a programming problem involving containers that couldn't be solved efficiently with one of these two techniques. If you're tempted to write a universal base class so that you can have a single type of container for all of your objects, think carefully about the overhead. Those dynamic casts are expensive, and they may well make the difference between an application that works well and an application that is too slow to use. Object-oriented programming is much more than what Smalltalk does, and containers are much less.</p>
+
+<h4><FONT COLOR="#000080">References</FONT></H4>
+
+<p><a name="1"></a>[1]  In practice, we'd often use <B>dynamic_cast</B> rather than <B>typeid</B>, but the underlying principle is the same, and the underlying mechanism is usually the same.</p>
+<p><a name="2"></a>[2]  Of course, that run-time check can be avoided in the Java code by changing items from a <B>Vector</B> to an array of <B>ScreenObject</B>s, just as in the C++ code. The purpose of the example is to illustrate the differences in the implementation techniques, not to present optimized Java code. And we'll see cases later on where it simply isn't possible to write Java code that parallels the C++ code.</p>
+<p><a name="3"></a>[3]  This version of <B>container1</B> is especially simple because <B>container2</B> has only a default constructor and the compiler-generated copy constructor. If it had any other constructors we'd have to provide constructors in our definition of <B>container1</B> with the same signatures. These would simply be inline calls from their counterparts in <B>container2</B>, so although there is visual clutter and potential for coding errors, there would be no run-time overhead.</p>
+
+<p><i><B>Pete Becker</B> is Technical Project Leader for Dinkumware, Ltd. He spent eight years in the C++ group at Borland International, both as a developer and manager. He is a member of the ANSI/ISO C++ standardization committee. He can be reached by email at <B>petebecker@acm.org</B>.</i></p>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

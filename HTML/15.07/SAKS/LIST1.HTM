@@ -1,0 +1,335 @@
+
+
+
+
+<HTML><HEAD>
+
+<TITLE>July 1997/C++ Theory and Practice/Listing 1</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4>Listing 1:	newexpr.cpp -- translate C++ new expressions into English</h4>
+
+<pre>
+//
+// Copyright (C) 1996, 1997 by Dan Saks.
+// May be copied for private, non-commercial use,
+// provided this copyright notice remains intact.
+// All other rights reserved.
+//
+
+#include &lt;iostream&gt;
+
+#include "scanner.h"
+
+using namespace std;
+
+class parser
+    {
+public:
+    parser(istream &amp;, ostream &amp;);
+private:
+    enum declarator_category { ABSTRACT, CONCRETE, EITHER, NEW };
+    enum type_category
+        {
+        SIMPLE, SIZED_ARRAY, UNSIZED_ARRAY, FUNCTION, POINTER,
+        REFERENCE
+        };
+    struct recoverable_error { };
+    scanner input;
+    ostream &amp;output;
+    string indent;
+
+    void error(const string &amp;);
+    void must_be(token::category);
+    string array_suffix(type_category &amp;);
+    string cv_qualifier_seq();
+    string declarator
+        (declarator_category, type_category &amp;, type_category &amp;);
+    string direct_declarator
+        (declarator_category, type_category &amp;, type_category &amp;);
+    string expression_list();
+    string function_suffix();
+    string new_expression();
+    string parameter_declaration();
+    string parameter_list();
+    string ptr_operator(type_category &amp;);
+    string type_specifier_seq();
+
+    parser(parser const &amp;);
+    parser &amp;operator=(parser const &amp;);
+    };
+
+...
+
+//
+// array-suffix =
+//     "[" [ constant-name | integer-literal ] "]" .
+//
+string parser::array_suffix(type_category &amp;outer)
+    {
+    must_be(token::LEFT_BRACKET);
+    string as = "array with ";
+    token::category tc = input.current().kind();
+    if (tc == token::NAME || tc == token::INT_LITERAL)
+        {
+        outer = SIZED_ARRAY;
+        as += input.current().text() + ' ';
+        input.get();
+        }
+    else
+        {
+        outer = UNSIZED_ARRAY;
+        as += "unspecified number of ";
+        }
+    as += "elements of type...\n";
+    must_be(token::RIGHT_BRACKET);
+    return indent + as;
+    }
+
+...
+
+//
+// declarator =
+//     direct-declarator | ptr-operator declarator .
+//
+string parser::declarator
+    (declarator_category dc, type_category &amp;inner,
+     type_category &amp;outer)
+    {
+    token::category tc = input.current().kind();
+    if (tc == token::AMPERSAND || tc == token::STAR
+    || tc == token::NAME)
+        {
+        type_category ptc;
+        string p = ptr_operator(ptc);
+        type_category in, out;
+        string d = declarator(dc, in, out);
+        if (ptc == REFERENCE)
+            {
+            if (out == SIZED_ARRAY || out == UNSIZED_ARRAY)
+                error("can't have array of reference");
+            if (out == POINTER)
+                error("can't have pointer to reference");
+            if (out == REFERENCE)
+                error("can't have reference to reference");
+            }
+        if ((inner = in) == SIMPLE)
+            inner = ptc;
+        outer = ptc;
+        return d + p;
+        }
+    else
+        return direct_declarator(dc, inner, outer);
+    }
+
+//
+// direct-declarator =
+//     [ declarator-id | "(" declarator ")" ]
+//         { array-suffix | function-suffix } .
+//
+string parser::direct_declarator
+    (declarator_category dc, type_category &amp;inner,
+     type_category &amp;outer)
+    {
+    string dd;
+    token::category tc = input.current().kind();
+    if (tc == token::IDENTIFIER)
+        {
+        if (dc == ABSTRACT || dc == NEW)
+            error("can't have declarator-id in "
+                "abstract- or new-declarator");
+        dd = indent + input.current().text() + " is ...\n";
+        input.get();
+        inner = outer = SIMPLE;
+        }
+    else if (tc == token::LEFT_PAREN &amp;&amp; dc != NEW)
+        {
+        bool its_grouping = false;
+        input.mark();
+        tc = input.get().kind();
+        if (tc == token::IDENTIFIER
+        || tc == token::AMPERSAND || tc == token::STAR
+        || tc == token::LEFT_BRACKET || tc == token::LEFT_PAREN
+        || (tc == token::NAME &amp;&amp; input.get().kind()
+               == token::SCOPE))
+            its_grouping = true;
+        input.backup();
+        if (its_grouping)
+            {
+            input.get();
+            dd = declarator(dc, inner, outer);
+            must_be(token::RIGHT_PAREN);
+            }
+        }
+    if (dd == "")
+        {
+        if (dc == CONCRETE)
+            error("declarator-id missing or obscured"
+                " by something before it");
+        dd = indent + "&lt;type&gt; is ...\n";
+        inner = outer = SIMPLE;
+        }
+    for (;;)
+        {
+        tc = input.current().kind();
+        if (tc == token::LEFT_BRACKET)
+            {
+            if (outer == FUNCTION)
+                error("can't have function returning array");
+            type_category tc;
+            dd += array_suffix(tc);
+            if (tc == UNSIZED_ARRAY)
+                {
+                if (dc == NEW)
+                    error("can't allocate array"
+                        " with unspecified dimension");
+                if (outer == SIZED_ARRAY || outer == UNSIZED_ARRAY)
+                    error("only 1st dimension can be unspecified");
+                }
+            if (inner == SIMPLE)
+                inner = tc;
+            outer = tc;
+            }
+        else if (tc == token::LEFT_PAREN &amp;&amp; dc != NEW)
+            {
+            if (outer == SIZED_ARRAY || outer == UNSIZED_ARRAY)
+                error("can't have array of function");
+            if (outer == FUNCTION)
+                error("can't have function returning function");
+            dd += function_suffix();
+            if (inner == SIMPLE)
+                inner = FUNCTION;
+            outer = FUNCTION;
+            }
+        else
+            break;
+        }
+    return dd;
+    }
+
+//
+// expression-list = expression { "," expression } .
+//
+string parser::expression_list()
+    {
+    token::category tc = input.current().kind();
+    if (tc != token::INT_LITERAL &amp;&amp; tc != token::IDENTIFIER)
+        error("identifier or literal expected in expression list");
+    string el = input.current().text();
+    while (input.get().kind() == token::COMMA)
+        {
+        tc = input.get().kind();
+        if (tc != token::INT_LITERAL &amp;&amp; tc != token::IDENTIFIER)
+          error("identifier or literal expected in expression list");
+        el += ", " + input.current().text();
+        }
+    return el;
+    }
+
+...
+
+//
+// new-expression =
+//     "new" ( "(" type-specifier-seq new-declarator ")" |
+//         type-specifier-seq abstract-declarator ) "(" ")" .
+//
+string parser::new_expression()
+    {
+    declarator_category dc;
+    type_category inner, outer;
+    string lookup;
+    if (input.current().kind() == token::SCOPE)
+        {
+        input.get();
+        lookup = "using a global allocation function\n";
+        }
+    else
+        {
+        lookup = "using an allocation function"
+            " selected by member lookup\n";
+        }
+    must_be(token::NEW);
+    bool its_placement = false;
+    string pl;
+    if (input.current().kind() == token::LEFT_PAREN)
+        {
+        input.mark();
+        token::category tc = input.get().kind();
+        if (tc == token::INT_LITERAL || tc == token::IDENTIFIER)
+            its_placement = true;
+        input.backup();
+        }
+    if (its_placement)
+        {
+        input.get();
+        pl = "allocated with placement arguments: "
+            + expression_list() + '\n';
+        must_be(token::RIGHT_PAREN);
+        }
+    if (input.current().kind() == token::LEFT_PAREN)
+        {
+        dc = ABSTRACT;
+        input.get();
+        }
+    else
+        dc = NEW;
+    string d = type_specifier_seq();
+    string ne = declarator(dc, inner, outer) + d + '\n';
+    if (inner == FUNCTION)
+        error("cannot allocate function type");
+    if (inner == REFERENCE)
+        error("cannot allocate reference type");
+    if (inner == UNSIZED_ARRAY)
+        error("cannot allocate array of unspecified dimension");
+    if (dc == ABSTRACT)
+        must_be(token::RIGHT_PAREN);
+    if (input.current().kind() == token::LEFT_PAREN)
+        {
+        input.get();
+        if (input.current().kind() == token::RIGHT_PAREN)
+          ne += "with an explicitly empty initializer list\n";
+        else if (inner == SIZED_ARRAY || inner == UNSIZED_ARRAY)
+          error("array type cannot have non-empty initializer list");
+        else
+          ne += "with initializer list: " + expression_list() + '\n';
+        must_be(token::RIGHT_PAREN);
+        }
+    else
+        ne += "without an initializer list\n";
+    return ne + pl + lookup;
+    }
+
+...
+
+//
+// parser =
+//     { new-expression ";" } .
+//
+parser::parser(istream &amp;is, ostream &amp;os)
+:   input(is), output(os)
+    {
+    for (;;)
+        try
+            {
+            while (input.get().kind() != token::NO_MORE)
+                {
+                string s = new_expression();
+                if (input.current().kind() != token::SEMICOLON)
+                    error("';' expected");
+                else
+                    output &lt;&lt; s;
+                }
+            break;
+            }
+        catch (recoverable_error const &amp;)
+            {
+            }
+    }
+
+int main()
+    {
+    parser declarations(cin, cout);
+    return 0;
+    }
+//End of File
+</pre>
+</body></html>

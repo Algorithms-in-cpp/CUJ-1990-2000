@@ -1,0 +1,171 @@
+<HTML>   
+     <HEAD>
+<TITLE>July 2000/Browser-Based Directory Access through LDAP and COM</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocjul.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Browser-Based Directory Access through LDAP and COM</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Marco Morana</FONT></H3>
+
+<BLOCKQUOTE>
+<p>You can do a lot with LDAP &#151; once you get all the glue right.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<p>Note: this article assumes a basic knowledge of COM programming, and familiarity with the concept of scripting.</p>
+
+<H4><FONT COLOR="#000080">Introduction</FONT></H4>
+
+<p>LDAP (Lightweight Directory Access Protocol) is a protocol for accessing specialized databases known as directory services. A directory service serves as a central repository for searching, adding, deleting, and modifying resources. User information is an example of managed resources that can benefit from using directory services. One of the best examples of a popular directory service is the Active Directory that ships with Windows 2000.</p>
+<p>By implementing the LDAP API a client can perform several operations, such as connection to the directory service, authentication, query, and data reads and writes. If such operations are packaged in a COM component, directory services become accessible to browser-based clients as well.</p>
+<p>This article shows how to package an existing LDAP C SDK into such a COM component. It also introduces the peculiar features of directory services and the information model used by the LDAP protocol, and briefly describes existing LDAP software libraries. Finally, I present a simple ASP (Active Server Pages <a href="#1">[1]</a>) Javascript page that uses my LDAP COM API, and I show a browser-based user interface for operating on directory service data.</p>
+
+<H4><FONT COLOR="#000080">Basics of Directory Services</FONT></H4>
+
+<p>As stated previously, a directory service serves as a central repository for managing resources. The typical scenario that would be better handled via a directory service is one where user information is stored in multiple data stores, such as Windows NTDS, Windows registry, email servers, and MS SQL servers. When such information is spread across heterogeneous data stores, it is prone to spurious duplication and inconsistent updating. A directory service solves these problems by locating user resources in a network-accessible database that serves as a central repository for the organization.</p>
+<p>The basic features of a directory service can be summarized as follows <a href="#2">[2]</a>:</p>
+
+<UL><LI>   central resource management &#151; resources can be distributed geographically or within the confines of an organization.
+<LI>   data replication &#151; resources can be replicated for performance and redundancy.
+<LI>   flexibility &#151; the format of the stored information and the data schema can be extended.
+<LI>   interoperability &#151; different vendor-specific directory services can share information.
+<LI>   open standards &#151; there is no proprietary ownership or control of the directory protocols.
+<LI>   server referral &#151; servers can refer to other servers to fulfill requests for resources not found locally.
+<LI>   security &#151; directory services provide security on the client-server communication channel as well as on the access of resources.
+<LI>   scalability &#151; directory services can scale from a small business with few entries to a large corporation with 100,000 employees.</UL>
+
+<p>Directory services use special databases that are optimized for many reads and few writes. The number of read operations generally exceeds the number of write operations by at least an order of magnitude.</p>
+
+<H4><FONT COLOR="#000080">The LDAP Protocol</FONT></H4>
+
+<p>LDAP is the industry standard protocol that defines how to access a directory service through TCP/IP <a href="#2">[2]</a>. It is a simplification of the X.500 DAP (Directory Access Protocol) that was designed for the seven-layer OSI protocol stack. LDAP is not a string-based protocol like HTTP; commands are not sent to the client in string format. In LDAP, all data types, such as integers and strings, and data structures (sets and sequences) are encoded in system-independent fashion using BER (Binary Encoding Rules) and ASN (Abstract Syntax Notation). The name LDAP is a misnomer since the standard includes more than a protocol &#151; it also defines an information model. The information model includes the data model that defines how LDAP entries are stored in the directory service and a functional model that defines basic operations on directory service data.</p>
+
+<H4><FONT COLOR="#000080">The Information Model</FONT></H4>
+
+<p>In the LDAP information model, data is organized as <I>entries</I> that belong to DITs (Directory Information Trees). Each entry belongs to a <I>namespace</I> and can be distinguished from other entries through a DN (Distinguished Name). The <I>schema</I> of the directory defines the allowed entries and attributes.</p>
+<p>The entry is the atomic data entity of LDAP. An entry is an object that holds persistent information about a resource, such as the name of a device that belongs to a company, and its location. Each entry has a unique name known as its distinguished name. An entry has a collection of attributes, such as email address, IP address, etc. For each attribute there is an associated type that can hold one or more values. Most value types are string types, but binary types are also allowed for some attributes. For example, a <B>jpegPhoto</B> type attribute of a <B>person</B> entry may contain a picture in binary JPEG/GIF format.</p>
+<p>Here is an example of a <B>person</B> entry in a directory service. The entry holds information about the real person Bryan Jensen. It has the following attributes-value pairs:</p>
+
+<pre>
+cn:               Bryan Jensen
+o:                Ace Inc.
+ou:               Engineering
+mail:             bjensen@ace.net
+telephoneNumber:  770-555-1212
+</pre>
+
+<p>Attributes have names such as <B>cn</B> for common name, <B>o</B> for organization, <B>ou</B> for organization unit, etc. In addition to its name, each attribute has a data type that defines its syntax (e.g., case ignore string) and its multiplicity (e.g., single-valued or multi-valued). The set of attributes that characterizes an entry is defined in the directory service schema. The schema defines an <B>objectClass</B> attribute for each entry. The <B>objectclass</B> defines the parent class, as well as which attributes are required and which are optional. The LDAP schema definition is vendor specific and depends on the LDAP vendor's implementation. Novell, Microsoft, Sun/Netscape, HP, and IBM/Lotus all provide directory services that have different schemas. Different types are used to describe similar entries by different directory services vendors. For example, the <B>iphost</B> entry in the Netscape DS schema corresponds roughly to a <B>computer</B> entry in Microsoft Active Directory schema.</p>
+<p>In an LDAP directory, entries are organized in hierarchy tree structures. The tree structure can conform to the geographical view of the data, the organizational view of the company, or some user-defined functional boundaries.</p>
+<p>An example of a hierarchy tree structure with three entries, one root and two leaf nodes, appears in <a href="fig1.htm">Figure 1</a>.</p>
+<p>Every entry has a unique location in the tree. The DN is used to uniquely locate the entry. Entries with the same relative name (e.g. Bryan Jensen) can be located in different parts of the tree. This is similar to the way in which a file path uniquely identifies the location of a file in a directory tree. At every level of the tree it is possible to identify the position of the entry relative to its parent. This position is the entry's Relative Distinguished Name, or RDN. By concatenating the RDNs of all the parent entries up to the root of the tree we get the distinguished name for the entry. For example, the DN for the entry Bryan Jensen in Ace's engineering department is: <B>cn=Bryan Jensen, ou=Engineering, o=Ace.net</B></p>
+
+<H4><FONT COLOR="#000080">Client/Server Model</FONT></H4>
+
+<p>To facilitate its role as a global repository, a directory service can store redundant copies of data in different directory servers. Every LDAP client can use a nearby server to locate data distributed across the company network. Replication keeps data consistent across servers, though temporary inconsistencies can exist.</p>
+<p>The LDAP directory service is based on a client/server model. LDAP supports basic operations for the client such as connecting to the server, querying the directory server for an entry, and updating the directory entry (adding, deleting, and modifying). In the case of search operations, search filters can be used to selectively search for entries that match some search criteria specified by the filter. LDAP provides methods for the client to authenticate or to provide user credentials for the connection to the server. A secure connection can be established using SSL (Secure Socket Layer). Besides authentication, each LDAP server implements vendor-specific access control associated with the entries in the directory to determine who has access to what information. This is typically done through a mechanism similar to Windows NT's Access Control Lists.</p>
+
+<H4><FONT COLOR="#000080">Creating a COM LDAP API</FONT></H4>
+
+<p>A programmer who wants to develop a web-based LDAP client has three choices of common implementations:</p>
+
+<UL><LI>   Microsoft ADSI and Active Server Pages
+<LI>   Java LDAP SDK and Java Applets
+<LI>   CGI application built with a C API, the Perl API, or shell commands</UL>
+
+<p>A fourth choice is to package an existing LDAP C SDK, such as the Netscape SDK or the University of Michigan LDAP SDK, into a COM software component and use ASP. This is the approach presented in this article. (For a description of Microsoft's ADSI, the Java LDAP SDK, and the Netscape SDK, see the <a href="sidebar.htm">sidebar</a>.)</p>
+
+<H4><FONT COLOR="#000080">The COM Dual Interface</FONT></H4>
+
+<p>As stated previously, I assume that readers of this article have a basic knowledge of COM. However, before presenting the implementation, I give a quick review of dual interfaces in COM. (If you want to read up on COM, I encourage you to consult the previous <I>CUJ</I> articles [<a href="#3">3</a>, <a href="#4">4</a>] or Rogerson's book <a href="#5">[5]</a>. Of particular significance, the article by Brill <a href="#4">[4]</a> explains the concept of dual interfaces.)</p>
+<p>COM supports two kinds of interfaces &#151; Automation-based interfaces, and vtable-based interfaces. An interface that supports Automation is derived from the type <B>IDispatch</B>. An object that implements the <B>IDispatch</B> interface can have all its methods invoked by the client through the name of the method at run time. The client need not know the name of the method, or the types of its parameters, at compile time.</p>
+<p>In a vtable-based interface, the client calls the interface methods through a vtable, which is an array of method pointers associated with the interface. In C++ this is accomplished by deriving the interface from an abstract class. Unlike the Automation interface, clients that invoke methods on the vtable-based interface must know the method names and parameter types at compile time.</p>
+<p>In the COM LDAP component presented here, the interface functionality is similar to that of the LDAP API documented in the LDAP specification (RFC 1823 <a href="#6">[6]</a>). The type of interface required (Automation or vtable) depends on the type of client that needs to communicate with the component. Since the web client for this example uses scripting, it requires access to the COM component through an Automation interface. All the data passed through Automation interfaces use a self-describing data type called the <B>VARIANT</B> <a href="#7">[7]</a>.</p>
+<p>The LDAP API interface presented here, <B>ILDAPConnection</B>, inherits from a <I>dual</I> interface, which is an interface that provides both the Automation and vtable methods of invocation. This interface and its methods are described in an IDL (Interface Description Language) file, which is not shown here but is available on the <I>CUJ</I> website (<B>www.cuj.com/code</B>).</p>
+<p>I made the following architectural design choices in implementing the COM LDAP API:</p>
+<p>1)  Method calls have the same names and return the same types as those in a twin COM API written in Java using the Netscape Java LDAP SDK.</p>
+<p>2)  The design uses a simple COM model that consists of one component and one interface.</p>
+<p>Although I don't show the Java version here, I use similar error handling logic in both the Java and C++ versions of the LDAP COM API. For the C++ COM implementation, I could have designed the methods to return value as <B>HRESULT</B>s, which are predefined constants that indicate success, failure, and various error conditions. Since this would not be possible with Java-based COM objects, the C++ implementation returns error flags as boolean output parameters (of type <B>VARIANT_BOOL</B>).</p>
+<p>The packaging of the C API into the COM API also put other constraints on the coding. All parameter types must be converted from COM types such as <B>BSTR</B> to ANSI C types such as <B>char *</B>. I avoided use of array types, since Javascript treats arrays differently than VBScript. With Javascript, an array declared in ASP is passed to COM like an object that implements the interface <B>IDispatch</B>, whereas VBScript passes a special COM type called <B>SAFEARRAY</B>. For this reason, I construct arrays in the LDAP COM API as a concatenated string of input parameters.</p>
+<p>I built the LDAP COM API using Microsoft ATL (Abstract Template Library <a href="#8">[8]</a>) in a DLL. The DLL is dynamically linked with the Netscape DLL <B>nsldapssl32v30.DLL</B>, which exports the LDAP functionality defined in the header <B>LDAP.h</B>. The class is generated using the ATL Object Wizard provided by the Microsoft Visual C++ Integrated Development Environment.</p>
+
+<H4><FONT COLOR="#000080">The CLDAPConnection Class</FONT></H4>
+
+<p>The LDAP COM component consists of the class <B>CLDAP Connection</B> (see <a href="fig2.htm">Figure 2</a>), which inherits from three ATL-generated template classes:</p>
+
+<UL><LI>   <B>CcomObjectRootEx</B> handles object reference count management.
+<LI>   <B>CcomCoClass</B> defines the class factory and aggregation model for the component.
+<LI>   <B>IdispatchImpl</B> implements the <B>IDispatch</B> portion of the dual interface.</UL>
+
+<p>The class definition also contains the following macros:</p>
+
+<UL><LI>   <B>DECLARE_REGISTRY_RESOURCEID</B> implements script-based registry support.
+<LI>   <B>BEGIN_COM_MAP</B>, <B>END_COM_MAP</B> define the COM interface map. A client that has a reference to the object map can get its COM interfaces using the <B>QueryInterface</B> method.</UL>
+
+<p>The class also defines the following member variables:</p>
+
+<UL><LI>   <B>LDAP *ld</B> &#151; the handle to the LDAP session, as returned by Netscape SDK's <B>ldap_init</B> and <B>ldap_open</B> functions
+<LI>   <B>LDAPMessage *result</B> &#151; An LDAP operation result, as returned by Netscape SDK function <B>ldap_search_s</B></UL>
+
+<p>The methods of the interface are declared using the macro <B>STDMETHOD</B>, which wraps up the <B>stdcall</B> calling convention, the <B>virtual</B> keyword, and the <B>HRESULT</B> return type (which is not used).</p>
+
+<H4><FONT COLOR="#000080">API and Local Methods</FONT></H4>
+
+<p>The <B>CLDAPConnection</B> class provides two different sets of methods. The first set is the API methods that implement the <B>ILDAPConnection</B> interface to be exposed by the LDAP COM object. These methods are exposed to ASP and provide the LDAP API functionality. They are defined both in IDL and in the class definition. The second set is a set of local methods. They do not implement the interface; they belong only to the class. The list of the methods and the tasks they perform is shown in <a href="tab1.htm">Table 1</a>.</p>
+<p>The methods exposed by the LDAP COM API are implemented by wrapping the Netscape LDAP SDK C API functions. An example appears in <a href="fig3.htm">Figure 3</a>, which shows the <B>connectAnonymously</B> method. The purpose of this method is to establish an anonymous connection to the LDAP directory by calling the LDAP SDK API <B>ldap_init</B>, which initializes the LDAP connection with the server. The function parameter types are converted from double-byte character type <B>BSTR</B> (a Microsoft-specific type similar to Unicode) to a single-byte type <B>char *</B> before to passing them to the C API.</p>
+<p>In the case of an SSL connection to the server, the certificate credentials are authenticated by the initialization function <B>ldapssl_init</B>. The server certificate credentials are stored in the file <B>Cert7.db</B>, which is located by the <B>GetCert7dbPath</B> local function. The Netscape API returns the LDAP connection handle, which is a pointer to an LDAP structure containing information about the connection to the LDAP server. The connection handle identifies the LDAP session and is used by other methods of the <B>LDAPConnection</B> class to perform LDAP operations such as search, creation, deletion, and modification of entries. The connection handle is released by calling the <B>disconnect</B> method once the LDAP session is finished.</p>
+<p>Another example of LDAP API wrapping appears in <a href="fig4.htm">Figure 4</a>. The method <B>createEntry</B> takes the parameters of the distinguished name of the entry to be created and the attribute-value pair string.</p>
+<p>The format of attribute-value pair string is as follows (broken to fit column):</p>
+
+<pre>
+attr1=value1&lt;,&gt;value2&lt;,&gt;value3&lt;;
+&gt;attr2=value&lt;;&gt;...
+</pre>
+
+<p>In the above string, <B>&lt;;&gt;</B> is shown as the delimiter between attribute-value pairs, and <B>&lt;,&gt;</B> is shown as the delimiter between the individual values of a multi-valued attribute.</p>
+<p>After the <B>createEntry</B> function converts input string values from <B>BSTR</B> to <B>char *</B> and parses the attribute entry-value pairs, it calls the method <B>allocateMods</B> to allocate memory for an <B>LDAPMods</B> structure (used for creating and modifying entries in the Netscape LDAP SDK). <B>createEntry</B> initializes the elements of the <B>LDAPMods</B> structure by calling the local method <B>initializeMods</B> and and then calls the Netscape LDAP SDK function <B>ldap_add_ext_s</B> to modify the entry. The <B>createEntry</B> method returns a true value if the entry creation/modification succeeded and false otherwise.</p>
+
+<H4><FONT COLOR="#000080">An ASP Application</FONT></H4>
+
+<p><a href="fig5.htm">Figure 5</a> shows the ASP page with the basic LDAP COM API calls using Javascript. The sequence of LDAP API operations consists of 1) opening the LDAP connection, 2) searching for the entry of interest, 3) creation of an entry, 4) modification, 5) deletion of the entry, and 6) disconnection from the LDAP directory.</p>
+
+<H4><FONT COLOR="#000080">A Web-Based LDAP Browser</FONT></H4>
+
+<p>The LDAP COM API can be used to build web applications that perform basic LDAP operations. In <a href="fig6.htm">Figure 6</a>, the user interface for selecting the LDAP operation is shown on the left panel while the form with the required LDAP search input data is shown on the right panel. The LDAP outcome for the search is shown in <a href="fig7.htm">Figure 7</a>.</p>
+
+<H4><FONT COLOR="#000080">Conclusions and Recommendations</FONT></H4>
+
+<p>Enterprise wide corporations can manage user resources more efficiently by deploying directory services and LDAP enabled web clients. Directory services and LDAP are still relatively new in commercial software but will became more popular with usage of Windows 2000 Active Directory. Several APIs are already available to application developers who want to build client applications that use LDAP. In the case of LDAP-enabled web clients, the LDAP COM API implementation described here requires less code overhead than Microsoft's ADSI COM <a href="#9">[9]</a>, which is designed to support multiple namespaces (e.g. <B>WinNT</B> and <B>LDAP</B>). I have successfully tested the LDAP COM API using LDAP from both Netscape and Microsoft browsers and by accessing data from both Microsoft's Active Directory (e.g., Windows 2000 RC 2) and Netscape Directory servers.</p>
+<p>The current LDAP COM API provides basic LDAP functionality that could be improved in the following ways:</p>
+
+<UL><LI>   Use of Collections and Enumerators objects to parse the search data <a href="#8">[8]</a>. The reduction in required scripting is noteworthy when using collections and enumerators in ASP <a href="#11">[11]</a>.
+<LI>   Use of ATL smart types such as <B>CComBSTR</B> and <B>CComVARIANT</B> <a href="#10">[10]</a> to encapsulate <B>BSTR</B> and <B>VARIANT</B> types to provide memory management similar to C++ smart pointers <a href="#11">[11]</a>.
+<LI>   Use of <B>ComException</B> interfaces to package C/C++ exceptions into COM exceptions <a href="#7">[7]</a> to provide more error message information.
+<LI>   Design of a LDAP COM API based on multiple components (i.e. DLLs) to provide ASP with COM objects that are instantiated only when they are needed.</UL>
+
+<H4><FONT COLOR="#000080">Acknowledgements</FONT></H4>
+
+<p>I would like to thank Dr. John Hammer of Internet Security Systems for supporting the writing of this article, Mr. Bryan Williams for which I share credit for the API software design architecture, and Mr. Steve Millar for the development of the LDAP browser and his mentoring of COM.</p>
+
+<H4><FONT COLOR="#000080">Notes &amp; References</FONT></H4>
+
+<p><a name="1"></a>[1]  Alex Federov, et al. <I>ASP 2.0 Programmer's Reference</I> (Wrox Press Ltd., 1999).</p>
+<p><a name="2"></a>[2]  Timothy A. Howes, et al. <I>Understanding And Deploying LDAP Directory Services</I> (Macmillan Technical Publishing, 1999).</p>
+<p><a name="3"></a>[3]  Gregory Brill. "An Introduction to COM," <I>C/C++ Users Journal,</I> January 1998.</p>
+<p><a name="4"></a>[4]  Gregory Brill. "Writing COM Clients with Late and Early Binding," <I>C/C++ Users Journal,</I> October 1998.</p>
+<p><a name="5"></a>[5]  Dale Rogerson. <I>Inside COM</I> (Microsoft Press, 1997).</p>
+<p><a name="6"></a>[6]  Timothy A. Howes and Mark C. Smith. <I> LDAP Programming Directory-Enabled Applications with Lightweight Directory Access Protocol</I> (Macmillan Technical Publishing, 1997).</p>
+<p><a name="7"></a>[7]  Don Box. <I>Essential COM</I> (Addison-Wesley, 1998).</p>
+<p><a name="8"></a>[8]  Dr. Richard Grimes and Alex Stockton. <I>Beginning ATL COM Programming</I> (Wrox Press Ltd., 1998).</p>
+<p><a name="9"></a>[9]  Steven Hahn. <I>ADSI ASP Programmer's Reference</I> (Wrox Press Ltd., 1998). For an overview of Microsoft ADSI you can also visit Microsoft's ADSI URL: <B>http://www.microsoft.com/adsi</B>.</p>
+<p><a name="10"></a>[10]  Jim Springfield, Brent Rector, and Chris Sells. <I>ATL Internals</I> (Addison-Wesley, 1999).</p>
+<p><a name="11"></a>[11]  Stan Lippman and Jos&eacute;e Lajoie. <I>C++Primer, Third Edition</I> (Addison-Wesley, 1998). </p>
+
+<p><i><B>Marco Morana</B> works as a software engineer for Internet Security Systems Inc. in Atlanta, Georgia, specializing in the development of enterprise applications that enable use of computers with intrusion detection capabilities. In more than 10 years of software development experience as an application programmer, he has contributed to the design of commercial software applications for the aerospace, insurance, real estate, and data security industry. Marco was honored with the NASA Space Act Award in 1999 for developing NASA's Secure E-mailing Plugin. He holds a BSME from University of Padova, Italy and MSCE from Northwestern Polytechnic University. He is a member of IEEE and the Computer Society.</i></p>
+
+<h4><a href="../../../source/2000/jul00/morana.zip">Get Article Source Code</a></h4>
+
+</blockquote></body></html>

@@ -1,0 +1,209 @@
+<HTML><HEAD>
+<TITLE>December 1998/An OpenGL Wrapper for Win32/Figure 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Figure 2: Implementations of classes COpenGLCtrl and COpenGLCtrls</A></h4>
+<pre>
+// File OGLCtrl.cpp
+
+#include "stdafx.h"
+#include "OGLCtrl.h"
+
+COpenGLCtrl::COpenGLCtrl()
+            :m_hRC(NULL),m_hDC(NULL)
+{
+    RegisterOpenGLWindowClass();
+}
+
+BOOL COpenGLCtrl::PreCreateWindow(CREATESTRUCT&amp; cs) 
+{
+    cs.style |= WS_CLIPSIBLINGS | WS_CLIPCHILDREN;
+    return CWnd::PreCreateWindow(cs);
+}
+
+void COpenGLCtrl::PreSubclassWindow() 
+{
+   ModifyStyle(0,WS_CLIPSIBLINGS|WS_CLIPCHILDREN);
+   ASSERT((GetClassLong(m_hWnd,GCL_STYLE)&amp;CS_PARENTDC)==0);
+   InitializeOpenGLWindow();
+
+   CRect Rect;
+   GetClientRect(&amp;Rect);
+
+   // If we are subclassing an existing window 
+   // we might have missed the WM_SIZE message
+   if (!Rect.IsRectEmpty())
+      ResizeOpenGLWindow(Rect.Width(),Rect.Height());
+
+   CWnd::PreSubclassWindow();
+}
+
+void COpenGLCtrl::OnSize(UINT nType, int cx, int cy) 
+{
+    CWnd::OnSize(nType, cx, cy);
+    if (cx&gt;0 &amp;&amp; cy&gt;0)
+       ResizeOpenGLWindow(cx,cy);
+}
+
+void COpenGLCtrl::OnPaint() 
+{
+    CPaintDC DC(this);
+    RedrawOpenGLWindow();
+}   
+
+BOOL COpenGLCtrl::OnEraseBkgnd(CDC* pDC) 
+{
+    return TRUE; // Don't clear background, OpenGL will
+}
+
+void COpenGLCtrl::OnDestroy() 
+{
+    UninitializeOpenGLWindow();
+    CWnd::OnDestroy();
+}
+
+void COpenGLCtrl::SetupPixelFormat(HDC hDC)
+{
+    PIXELFORMATDESCRIPTOR pfd = 
+    {
+        sizeof(PIXELFORMATDESCRIPTOR),// size of this pfd
+        1,                      // version number
+        PFD_DRAW_TO_WINDOW      // support window
+        | PFD_SUPPORT_OPENGL    // support OpenGL
+        | PFD_DOUBLEBUFFER      // double buffered 
+        , PFD_TYPE_RGBA,        // RGBA type
+        24,                     // 24-bit color depth
+        0, 0, 0, 0, 0, 0,       // color bits ignored
+        0,                      // no alpha buffer
+        0,                      // shift bit ignored
+        0,                      // no accumulation buffer
+        0, 0, 0, 0,             // accum bits ignored
+        32,                     // 32-bit z-buffer
+        0,                      // no stencil buffer
+        0,                      // no auxiliary buffer
+        PFD_MAIN_PLANE,         // main layer
+        0,                      // reserved
+        0, 0, 0                 // layer masks ignored
+    };
+
+    // Let user change the pfd structure
+    CustomizePixelFormat(&amp;pfd);
+
+    // Set the pixel format
+    int pixelformat=ChoosePixelFormat(hDC, &amp;pfd);
+    SetPixelFormat(hDC,pixelformat,&amp;pfd);
+}
+
+void COpenGLCtrl::InitializeOpenGLWindow()
+{
+    // Get the DC and set its pixel format
+    m_hDC=::GetDC(m_hWnd);
+    SetupPixelFormat(m_hDC);
+
+    // Create the Rendering Context and make it current
+    m_hRC=wglCreateContext(m_hDC);
+    wglMakeCurrent(m_hDC,m_hRC);
+
+    // Let user do his one-time initialization
+    OnPrepareRC();
+}
+
+void COpenGLCtrl::UninitializeOpenGLWindow()
+{
+    // Delete the RC
+    if (m_hRC)
+    {   
+        OnDestroyRC(); // Let derived classes clean up
+        wglMakeCurrent(NULL,NULL);
+        wglDeleteContext(m_hRC);
+        m_hRC=NULL;
+    }
+    // Release the DC
+    if (m_hDC)
+    {
+        ::ReleaseDC(m_hWnd,m_hDC);
+        m_hDC=NULL;
+    }
+}
+
+void COpenGLCtrl::ResizeOpenGLWindow(int cx, int cy) 
+{
+    // Let user set his viewport transformation
+    OnViewport(cx, cy);
+    // Select Projection matrix and initialize it
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    // Get the aspect ratio and set perspective transform
+    GLdouble AspectRatio=(GLdouble)cx/(GLdouble)cy;
+    OnProjection(AspectRatio);
+    // Select ModelView matrix and initialize it
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity(); 
+    // Let user set his viewing transformation
+    OnViewing();
+}
+
+void COpenGLCtrl::RedrawOpenGLWindow() 
+{
+    glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT); 
+    glPushMatrix();
+    OnRender(); // Draw your scene
+    glPopMatrix();
+    glFinish();
+    SwapBuffers(m_hDC);
+}
+
+//... Other members implement the default scene
+
+//==================================================
+
+COpenGLCtrls::COpenGLCtrls()
+{
+}
+
+void COpenGLCtrls::InitializeOpenGLWindow()
+{
+    COpenGLCtrl::InitializeOpenGLWindow();
+    wglMakeCurrent(NULL,NULL);
+    ::ReleaseDC(m_hWnd,m_hDC);
+    m_hDC=NULL;
+}
+
+void COpenGLCtrls::UninitializeOpenGLWindow()
+{
+    m_hDC=::GetDC(m_hWnd);
+    wglMakeCurrent(m_hDC,m_hRC);
+    COpenGLCtrl::UninitializeOpenGLWindow();
+}
+
+void COpenGLCtrls::BeginOpenGLDrawing()
+{
+    m_hDC=::GetDC(m_hWnd);
+    wglMakeCurrent(m_hDC,m_hRC);
+}
+
+void COpenGLCtrls::EndOpenGLDrawing()
+{
+    wglMakeCurrent(NULL,NULL);
+    ::ReleaseDC(m_hWnd,m_hDC);
+    m_hDC=NULL; 
+}
+
+void COpenGLCtrls::ResizeOpenGLWindow(int cx, int cy) 
+{
+    BeginOpenGLDrawing();
+    COpenGLCtrl::ResizeOpenGLWindow(cx,cy);
+    EndOpenGLDrawing();
+}
+
+void COpenGLCtrls::RedrawOpenGLWindow() 
+{
+    BeginOpenGLDrawing();
+    COpenGLCtrl::RedrawOpenGLWindow();
+    EndOpenGLDrawing();
+}
+//End of File
+</pre>
+</BODY>
+</HTML>

@@ -1,0 +1,293 @@
+<HTML><HEAD>
+<TITLE>March 1999/Portable Run-Time Multilanguage Support with Lingua/Listing 4</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 4: Module ui_text.c, to be linked with application code requiring multi-language support</A></h4>
+<pre>
+/* -------------------------------------------------------*\
+| ui_text.c (version 1.4) Copyright (C) SichemSoft 1995/98 |
+| Roghorst 160, 6708 KS Wageningen, Netherlands. Module    |
+| for language independent applications                    |
+| author: Anneke Sicherer-Roetman, date: 950804            |
+\* -------------------------------------------------------*/
+
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;ctype.h&gt;
+#include "lingua.h"
+#include "files.inc"
+
+/* --------------------------------------------*/
+
+char **ui_text;                
+/* pointers into memory text buffer */
+
+unsigned _ui_memcount,_ui_filcount;  
+/* undocumented global variables */
+
+static char *ui_textbuffer;        
+/* memory text buffer */
+
+static unsigned long *ui_file;      
+/* pointers into file */
+
+static char *ui_filebuffer;        
+/* file text buffer */
+
+static char **ui_fileptr;         
+/* pointers into array from file */
+
+static unsigned itemchecksum=0;     
+/* for checksumming file items */
+
+/* --------------------------------------------*/
+
+/* converts string to all lower 
+   case (common ANSI extension) */
+static char *strlwr(char *s)
+{
+  char *p;
+  for (p=s; *s; s++) 
+    if (isupper(*s)) 
+      *s=tolower(*s);
+  return p;
+} /* strlwr */
+
+/* --------------------------------------------*/
+
+/* decrypts text and computes checksum */
+static unsigned decrypt(char *buffer,
+                        unsigned long size)
+{
+  register unsigned long offset;
+  unsigned checksum;
+  char *q;
+
+  for (offset=0,checksum=0,q=buffer; 
+      offset&lt;size; offset++,q++) {
+    *q^=UIT_ENCRYPT; 
+    checksum+=(unsigned char)(*q);
+  }
+  return checksum;
+} /* decrypt */
+
+/* --------------------------------------------*/
+
+/* loads text from file into ui_filebuffer */
+static char *loadtext(unsigned long pos,
+                      unsigned size)
+{
+  static unsigned long oldpos=(unsigned long)(-1L);
+
+  if (pos==oldpos) 
+    return ui_filebuffer;
+  if (!fileseek(pos)) 
+    return NULL;
+  if (ui_filebuffer) 
+    free(ui_filebuffer);
+  ui_filebuffer=(char *)malloc(size*sizeof(char));
+  if (!ui_filebuffer) 
+    return NULL;
+  if (!fileread(ui_filebuffer,size*sizeof(char))) 
+    return NULL;
+  itemchecksum=decrypt(ui_filebuffer,size);
+  oldpos=pos; /* next time only load if necessary */
+  return ui_filebuffer;
+} /* loadtext */
+
+/* --------------------------------------------*/
+
+/* loads text (no array) 
+   from file into ui_filebuffer */
+/* note: the programmer should not 
+   call this routine directly */
+#pragma warn -sig
+char *ui_filetext(unsigned pos)
+{
+  return loadtext(ui_file[pos],
+                  ui_file[pos+1]-ui_file[pos]);
+} /* ui_filetext */
+
+/* --------------------------------------------*/
+
+/* loads text array from file 
+   into ui_filebuffer */
+/* note: the programmer should not 
+   call this routine directly */
+char **ui_filearray(unsigned pos)
+{
+  unsigned size; 
+  register int i;
+
+  if (!fileseek(ui_file[pos])) 
+    return NULL;
+  if (!fileread(&amp;size,sizeof(size))) 
+    return NULL;
+  if (!loadtext(filetell(),
+                ui_file[pos+size]-
+                ui_file[pos]-sizeof(size)))
+    return NULL;
+  if (ui_fileptr) 
+    free(ui_fileptr);
+  ui_fileptr=(char **)malloc(size*sizeof(char*));
+  if (!ui_fileptr) 
+    return NULL;
+  ui_fileptr[0]=ui_filebuffer;
+  for (i=1; i&lt;size; i++)
+    ui_fileptr[i]=ui_filebuffer+ui_file[pos+i]-
+                  ui_file[pos]-sizeof(size);
+  return ui_fileptr;
+} /* ui_filearray */
+
+/* --------------------------------------------*/
+
+/* opens file, loads text and 
+   offsets into memory */
+/* call this routine at the very 
+   beginning of the application */
+int ui_loadtext(char *fname,
+                char *vers)
+/* fname is name of desired .etf 
+   file without extension
+   vers is optional version 
+   number, may also be "" */
+{
+  char *q;
+  unsigned len,i;
+  unsigned checksum,checksum1=0,checksum2=0;
+  char buf[256],file[81];
+  unsigned long offset,size;
+
+  if (ui_text || ui_file) 
+    return FALSE;
+
+  /* open encrypted text file */
+  strcpy(file,fname);
+  if (!strchr(file,'.')) 
+    strcat(file,".etf");
+  if (!fileopen(file)) 
+    return FALSE;
+
+  /* read file header */
+  if (!vers) vers="";
+  q=strrchr(file,dirsep); 
+  if (q) 
+    q++; 
+  else 
+    q=file;
+  len=strlen(q)+strlen(vers);
+  if (!fileread(buf,(len+1)*sizeof(char))) 
+    return FALSE;
+  strlwr(buf); 
+  strlwr(q); 
+  strlwr(vers);
+  if (strncmp(buf,q,strlen(q))) 
+    return FALSE;
+  if (strncmp(buf+strlen(q),vers,strlen(vers))) 
+    return FALSE;
+
+  /* read number of items */
+  if (!fileread(&amp;checksum,sizeof(checksum))) 
+    return FALSE;
+  if (!fileread(&amp;_ui_memcount,sizeof(_ui_memcount))) 
+    return FALSE;
+  if (!fileread(&amp;_ui_filcount,sizeof(_ui_filcount))) 
+    return FALSE;
+  if (!fileread(&amp;size,sizeof(size))) 
+    return FALSE;
+  if (_ui_memcount) {
+    /* reserve space */
+    ui_text=
+      (char **)malloc(_ui_memcount*sizeof(char *));
+    if (!ui_text) 
+      return FALSE;
+    ui_textbuffer=(char *)malloc(size*sizeof(char));
+    if (!ui_textbuffer) 
+      return FALSE;
+
+    /* read offsets and compute pointers */
+    for (i=0; i&lt;_ui_memcount; i++) {
+      if (!fileread(&amp;offset,sizeof(offset))) 
+        return FALSE;
+      ui_text[i]=ui_textbuffer+offset;
+    }
+  }
+
+  if (_ui_filcount) {
+    /* reserve space */
+    ui_file=(unsigned long *)malloc
+            ((_ui_filcount+1)*sizeof(unsigned long));
+    if (!ui_file) 
+      return FALSE;
+
+    /* read offsets of file items */
+    for (i=0; i&lt;_ui_filcount+1; i++) {
+      if (!fileread(&amp;offset,sizeof(offset))) 
+        return FALSE;
+      ui_file[i]=offset;
+    }
+  }
+
+  if (_ui_memcount) {
+    /* read text lines and decrypt */
+    if (!fileread(ui_textbuffer,size*sizeof(char))) 
+      return FALSE;
+    checksum1=decrypt(ui_textbuffer,size);
+  }
+
+  if (_ui_filcount) {
+    /* read file items and decrypt for checksumming */
+    for (i=0; i&lt;_ui_filcount; i++) {
+      q=ui_filetext(i); 
+      if (!q) 
+        return FALSE;
+      checksum2+=itemchecksum;
+    }
+  }
+
+  /* close file if no file items present */
+  if (!_ui_filcount) 
+    fileclose();
+
+  /* succesful load if checksum is ok */
+  return (checksum==checksum1+checksum2);
+} /* ui_loadtext */
+#pragma warn .sig
+
+/* --------------------------------------------*/
+
+/* frees all space and closes file if necessary */
+/* call this routine at the 
+   very end of the application */
+void ui_unloadtext(void)
+{
+  if (ui_text) { 
+    free(ui_text); 
+    ui_text=NULL; 
+  }
+  if (ui_textbuffer) { 
+    free(ui_textbuffer);  
+    ui_textbuffer=NULL; 
+  }
+  if (ui_file) { 
+    free(ui_file); 
+    ui_file=NULL; 
+  }
+  if (ui_filebuffer) { 
+    free(ui_filebuffer); 
+    ui_filebuffer=NULL; 
+  }
+  if (ui_fileptr) { 
+    free(ui_fileptr); 
+    ui_fileptr=NULL; 
+  }
+  fileclose();
+} /* ui_unloadtext */
+
+/* --------------------------------------------*/
+
+- End of Listing -
+</pre>
+</BODY>
+</HTML>

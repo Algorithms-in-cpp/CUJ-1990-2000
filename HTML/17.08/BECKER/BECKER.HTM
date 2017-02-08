@@ -1,0 +1,463 @@
+<HTML>   
+     <HEAD>
+<TITLE>August 1999/The Journeyman's Shop</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocaug.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">The Journeyman's Shop: Memory and Object Management, Part 2</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Pete Becker</FONT></H3>
+
+<BLOCKQUOTE>
+<p>How do you make a sophisticated memory manager? One step at a time.</p>
+</BLOCKQUOTE>
+
+<HR>
+
+<BLOCKQUOTE>
+<p>The Suzuki method for teaching music emphasizes performing. Every student always has a recital piece ready. For the youngest students the recital piece is usually "Twinkle, Twinkle, Little Star;" This can lead to rather tedious recitals, but for the parents of students that age, seeing their children perform is more important than assessing the aesthetic merits of their work.<P>
+<p>The same approach can be applied to software development. Here at The Journeyman's Shop we believe that it is much more important to get something working early on than to polish and extend code that isn't yet known to work. That's the brilliance of "Hello, world." Getting a compiler and library to the point where "Hello, world" works is a significant accomplishment, even though there's a great deal more work to be done to produce a fully functional compiler and library <a href="#1">[1]</a>.</p>
+<p>This month we're going to continue our discussion of memory management techniques by looking at how to develop a memory manager for a linked list. We'll start with a very simple version, and make sure that it works. We'll work our way up to an industrial-strength memory manager in small steps, eventually producing a couple of C++ templates for a deceptively simple but powerful memory manager. By starting out with simple C code rather than templates, we'll avoid dealing with templates and their complexities (including compiler quirks) until we know that our underlying implementation is sound. We'll resist the temptation to do everything at once, because we know from experience that it's much easier to add in a few carefully chosen features after we've built a solid foundation.</p>
+
+<h4><FONT COLOR="#000080">The Requirements</FONT></H4>
+
+<p>Let's say that we've been asked to help improve the performance of a customer's application. It's too slow, and it uses too much memory. They've identified their linked-list manager as the most likely culprit, and they've asked us to write a memory manager to sit underneath their linked-list manager. Their application manages several linked lists of complex numbers, and during a typical run of the application there can be as few as a couple of hundred elements in use to as many as a couple hundred thousand elements. They've been using <B>malloc</B> and <B>free</B> to allocate and release list nodes, but they're willing to find all the places where the linked-list manager calls these two functions and replace the calls with calls to our code, with whatever arguments we need. That makes our job quite a bit easier: we don't have to fit into a pre-defined interface, which means that we can give our memory manager whatever information we need. We'll write two functions, one to allocate a list element, and one to free it.</p>
+
+<h4><FONT COLOR="#000080">Why Are We Writing a Memory Manager?</FONT></H4>
+
+<p>Before we start designing our code we need to be sure that we understand the nature of the problem we're trying to solve. In the case of a memory manager there are two common problems: the current memory manager is too slow, and it wastes too much space. These problems often arise because the memory manager that comes with a C compiler is designed to work reasonably well for most applications, which means that it implements a compromise between speed and space efficiency. This compromise is often unimportant, but sometimes it becomes the primary cause of performance problems.</p>
+<p>Most memory managers for C and C++ maintain a linked list of available memory blocks, known as a "free list," sorted by the addresses of the blocks. The function <B>malloc</B> walks through the free list, looking for a suitable block. In pseudo-code:</p>
+
+<pre>
+typedef struct mem_b
+{
+size_t size;
+struct mem_b *prev, *next;
+} mem_block;
+
+void *malloc(size_t sz)
+{
+mem_block *cur = free_list_head;
+
+/* adjust for header; see below */
+sz += sizeof(size_t);   
+while (cur &amp;&amp; cur-&gt;size &lt; sz)
+    cur = cur-&gt;next;
+}
+</pre>
+
+<p>If <B>malloc</B> reaches the end of the free list without finding a large enough block, it usually asks the operating system for more memory. If that fails, <B>malloc</B> can't allocate the requested memory, so it returns <B>NULL</B>. If it finds a suitable block, and if the entire block is needed to satisfy the allocation request, <B>malloc</B> unlinks the block from the free list and returns its address. Otherwise <B>malloc</B> carves off a portion that's large enough to satisfy the allocation request and returns the address of that portion. Like this:</p>
+
+<pre>
+if (cur-&gt;size == sz)
+    {       /* unlink block */
+    cur-&gt;next-&gt;prev = cur-&gt;prev;
+    cur-&gt;prev-&gt;next = cur-&gt;next;
+    return cur;
+    }
+else
+    {  /* carve out needed amount */
+    mem_block res;
+    cur-&gt;size -= sz;
+    res = (char *)cur + cur-&gt;size;
+    res-&gt;size = sz;
+    return
+       (char *)res + sizeof(size_t);
+    }
+</pre>
+
+<p>Notice that in the <B>else</B> block, the returned block is taken from the upper end of the block pointed to by <B>cur</B>. This saves having to unlink the free block from the list. All that's needed is to adjust the size of the free block to reflect the amount that we've removed. In addition, the code adjusts the returned pointer to point past the stored size. That's why the earlier code increased the amount requested by <B>sizeof(size_t)</B> <a href="#2">[2]</a>. You'll see why we need to keep this size inside the allocated block when we get to freeing a block. The function <B>free</B> also walks through the free list, this time looking for the location in the list where the block being freed should go. That's easy to do, if the C compiler supports comparison of arbitrary memory addresses. In pseudo-code, it looks like this:</p>
+
+<pre>
+void free(void *p)
+{
+mem_block *cur = free_list_head;
+mem_block *ptr =
+    (mem_block *)((char *)p
+        - sizeof(size_t));
+while (cur &lt; ptr)
+    cur = cur-&gt;next;
+</pre>
+
+<p>Now <B>free</B> knows where to insert the block being freed. The next step is to decide whether to merge that block with either of its neighbors in the list. That is, if the block being freed occupies memory that's adjacent to the block that comes before it or after it in the list, then the adjacent blocks should be combined into one block. Otherwise we'd end up with lots of little blocks, and have a hard time satisfying allocation requests for large blocks. That's part of a general problem known as "fragmentation." The merge code is fairly simple:</p>
+
+<pre>
+if ((char *)ptr + ptr-&gt;size == cur)
+    {     /* merge with successor */
+    cur-&gt;next-&gt;prev = cur-&gt;prev;
+    cur-&gt;prev-&gt;next = cur-&gt;next;
+    ptr-&gt;size += cur-&gt;size;
+    cur = cur-&gt;next;
+    }
+if (ptr == (char *)cur-&gt;prev
+        + cur-&gt;prev-&gt;size)
+    { /* merge with precedessor */
+    cur-&gt;prev-&gt;size += ptr-&gt;size;
+    }
+else
+    {       /* insert */
+    cur-&gt;prev-&gt;next = ptr;
+    ptr-&gt;prev = cur-&gt;prev;
+    cur-&gt;prev = ptr;
+    ptr-&gt;next = cur;
+    }
+</pre>
+
+<p>The code that handles merging with a successor block removes the successor block from the free list then adjusts the size of the block being freed by the size of the successor block. That way, the code that follows doesn't have to be duplicated to deal with a block that needs to be merged with both adjacent blocks.</p>
+<p>There are two things to note in these functions. The first is that both walk through the free list until they find the location where they need to work. So the time they take is proportional to the length of the free list. Even with merging of adjacent blocks, the free list can become fairly long, so this search can take a long time. The second is that the block that <B>malloc</B> returns is larger than the size requested. That's because we need to store the size of the block within the block, for future reference.</p>
+
+<h4><FONT COLOR="#000080">Starting Simply</FONT></H4>
+
+<p>If we didn't have to merge adjacent free blocks, <B>free</B> wouldn't have to walk through the free list looking for the right place to insert a block. Merging blocks is important if our memory manager has to handle blocks of different sizes. If we know that we're going to be dealing with blocks of a single size, we can eliminate that code. That's the key to a fast allocator for a linked list: all the blocks in the list are the same size, so we don't need to worry about merging blocks. We can eliminate that code by writing our own free list manager. Let's assume that our customer's complex numbers are represented as two <B>double</B> values:</p>
+
+<pre>
+typedef struct list_el
+{
+struct list_el *next, *prev;
+double re, im;
+} list_element;
+</pre>
+
+<p>Our functions for allocating and freeing elements of this type look like this:</p>
+
+<pre>
+list_element *free_list = NULL;
+
+list_element *alloc_element(void)
+{
+if (free_list != NULL)
+    {  /* allocate from free list */
+    list_element *res = free_list;
+    free_list = free_list-&gt;next;
+    return res;
+    }
+else
+    return
+       malloc(sizeof(list_element));
+}
+
+void
+free_element(list_element *elem)
+{
+elem-&gt;next = free_list;
+free_list = elem;
+}
+</pre>
+
+<p>And, finally, here's a simple test harness:</p>
+
+<pre>
+int main()
+{
+list_element *elt = alloc_element();
+free_element(elt);
+return 0;
+}
+</pre>
+
+<p>This memory manager will be considerably faster than the version of <B>malloc</B> and <B>free</B> that we looked at above. However, it has a potentially serious cost. Consider what happens if the application starts out by creating a hundred thousand nodes, then settles into a steady state where it uses only ten thousand or so. We've got ninety thousand nodes in our free list, and no way of making that memory available to the rest of the application. We should consider setting a maximum length for the free list. It doesn't take much code:</p>
+
+<pre>
+#define MAX_SIZE 10000
+int nelems = 0;
+
+list_element *alloc_element(void)
+{
+if (free_list != NULL)
+    {  /* allocate from free list */
+    list_element *res = free_list;
+    free_list = free_list-&gt;next;
+    &#151;nelems;
+    return res;
+    }
+else
+    return
+       malloc(sizeof(list_element));
+}
+
+void
+free_element(list_element *elem)
+{
+if (MAX_SIZE &lt;= nelems)
+    free(elem);
+else
+    {
+    elem-&gt;next = free_list;
+    free_list = elem;
+    ++nelems;
+    }
+}
+</pre>
+
+<p>One thing we haven't done so far is eliminate the extra space that <B>malloc</B> and <B>free</B> imposed. We're still allocating an extra few bytes for each block, even though our memory manager doesn't need that information. The answer to this problem is to use <B>malloc</B> to allocate blocks that can hold several of our nodes, and parcel out the nodes ourselves. This is known as "suballocation." The allocator now looks like this:</p>
+
+<pre>
+#define BLOCK_SIZE \
+    (sizeof(list_element) * 40)
+char *block = NULL;
+unsigned avail = 0;
+
+list_element *free_list = NULL;
+
+list_element *alloc_element()
+{
+if (free_list != NULL)
+    {  /* allocate from free list */
+    list_element *res = free_list;
+    free_list = free_list-&gt;next;
+    return res;
+    }
+else
+    {       /* suballocate */
+    if (avail == 0)
+        {
+        block = malloc(BLOCK_SIZE);
+        if (block == NULL)
+            return NULL;
+        avail = BLOCK_SIZE;
+        }
+    avail -= sizeof(list_element);
+    return
+     (list_element*)(block + avail);
+    }
+}
+</pre>
+
+<p>The suballocator is quite simple. It uses the variable <B>avail</B> to keep track of how many bytes are still available for use from <B>block</B>. When <B>avail</B> is zero, which occurs the first time the suballocator is used and whenever all the memory in a block has been used, it allocates a new block. Each list element is carved off the top of the block. Since the list elements are not being allocated with <B>malloc</B>, they cannot be passed to <B>free</B> when we are done with them. This means we cannot use the second version of <B>free_element</B>, only the first. We've eliminated <B>malloc</B>'s extra data from our list elements, at the cost of not being able to return unused list elements to the global heap (known as "free store" in C++). That's often acceptable. If we know that the application works with a large number of list elements and never drastically reduces the number of elements, the space we save by having smaller element blocks can easily outweigh the space that's lost by not being able to recycle elements in other parts of the code. In our actual code, the functions <B>alloc_element</B> and <B>free_element</B> would be written in a single source file, and their supporting data would be declared static within that source file.</p>
+
+<h4><FONT COLOR="#000080">Adapting for Arbitrary Data Types</FONT></H4>
+
+<p>The code we've looked at so far satisfies our customer's requirements, so the paying part of this project is finished. For our own purposes we may want to go further, and turn it into more generic code so that we can reuse it in future projects without having to make drastic changes to it. Once we've gotten our manager's approval for putting in this non-billable time, we can look at how to make this code suitable for use with linked lists holding arbitrary data types instead of two <B>double</B>s.</p>
+<p>First, there's a simple case involving essentially the same requirements as before, namely a single list element type throughout the application, but for different data fields within the element than what we were using. That's easy to deal with: we simply change the definition of <B>list_element</B> to reflect the new type, and recompile. The code should all still work.</p>
+<p>A more challenging problem is being able to handle allocations for more than one element type within a single program. Now we can no longer have a single source file with static data. We need to encapsulate our memory manager's data so that we can provide separate memory managers for different sizes of objects. In C we do this by putting the data inside a struct and changing <B>alloc_element</B> and <B>free_element</B> to take a pointer to a struct of that type rather than getting their data from global objects. Like this:</p>
+
+<pre>
+#include &lt;stdlib.h&gt;
+
+typedef struct mm_list_el
+{
+struct mm_list_el *next, *prev;
+} mm_list_element;
+
+typedef struct mem_d
+{
+mm_list_element *free_list;
+size_t size;
+} mem_data;
+
+void *alloc_element(mem_data *list)
+{
+if (list-&gt;free_list != NULL)
+    {  /* allocate from free list */
+    mm_list_element *res =
+        list-&gt;free_list;
+    list-&gt;free_list =
+        list-&gt;free_list-&gt;next;
+    return res;
+    }
+else
+    return malloc(list-&gt;size);
+}
+
+void
+free_element(mem_data *list,
+    void *elem)
+{
+((mm_list_element*)elem)-&gt;next =
+    list-&gt;free_list;
+list-&gt;free_list = elem;
+}
+</pre>
+
+<p>The user of our code needs to create and initialize an object of type <B>mem_data</B>, and pass that object whenever the code allocates or frees a list element.</p>
+
+<pre>
+typedef struct list_el
+{
+struct list_el *next, *prev;
+double re, im;
+} complex_list_element;
+
+mem_data complex_allocator =
+    { 0, sizeof(complex_list_element) };
+
+int main()
+{
+complex_list_element *elt =
+    alloc_element(&amp;complex_allocator);
+free_element(&amp;complex_allocator, elt);
+return 0;
+}
+</pre>
+
+<p>In C++ we'd turn all this into a class, and avoid having to explicitly pass the extra pointer:</p>
+
+<pre>
+#include &lt;stdlib.h&gt;
+
+class mem_mgr
+{
+public:
+    mem_mgr(size_t sz) : free_list(0),
+       size(sz) {}
+    void *alloc_element();
+    void free_element(void *elem);
+private:
+    struct mm_list_element
+    {
+    mm_list_element *next, *prev;
+    };
+    mm_list_element *free_list;
+    size_t size;
+};
+
+void *mem_mgr::alloc_element()
+{
+if (free_list != NULL)
+    {       /* allocate from free list */
+    mm_list_element *res = free_list;
+    free_list = free_list-&gt;next;
+    return res;
+    }
+else
+    return malloc(size);
+}
+
+void mem_mgr::free_element(void *elem)
+{
+((mm_list_element*)elem)-&gt;next =
+   free_list;
+free_list = (mm_list_element*)elem;
+}
+
+typedef struct list_el
+{
+struct list_el *next, *prev;
+double re, im;
+} complex_list_element;
+
+mem_mgr
+complex_allocator
+   (sizeof(complex_list_element));
+
+int main()
+{
+complex_list_element *elt =
+    (complex_list_element *)
+    complex_allocator.alloc_element();
+complex_allocator.free_element(elt);
+return 0;
+}
+</pre>
+
+<h4><FONT COLOR="#000080">Moving to Templates</FONT></H4>
+
+<p>This isn't very good C++ code, however. Instead, it's C code translated rather mechanically into C++. We can improve it tremendously by using templates instead of classes. The first step is to use the size of the list element as a template argument instead of passing it into the constructor.</p>
+
+<pre>
+#include &lt;stdlib.h&gt;
+
+template&lt;size_t size&gt; class mem_mgr
+{
+public:
+    static void *alloc_element();
+    static void
+    free_element(void *elem);
+private:
+    struct mm_list_element
+    {
+    mm_list_element *next, *prev;
+    };
+    static mm_list_element *free_list;
+};
+
+template&lt;size_t size&gt;
+void *mem_mgr&lt;size&gt;::alloc_element()
+{
+if (free_list != NULL)
+    {       /* allocate from free list */
+    mm_list_element *res = free_list;
+    free_list = free_list-&gt;next;
+    return res;
+    }
+else
+    return malloc(size);
+}
+
+template&lt;size_t size&gt;
+void mem_mgr&lt;size&gt;::free_element(void *elem)
+{
+((mm_list_element*)elem)-&gt;next = free_list;
+free_list = (mm_list_element*)elem;
+}
+
+template&lt;size_t size&gt;
+mem_mgr&lt;size&gt;::mm_list_element
+    *mem_mgr&lt;size&gt;::free_list;
+
+typedef struct list_el
+{
+struct list_el *next, *prev;
+double re, im;
+} complex_list_element;
+
+typedef mem_mgr&lt;sizeof(complex_list_element)&gt;
+    complex_allocator;
+
+int main()
+{
+complex_list_element *elt =
+    (complex_list_element *)
+    complex_allocator::alloc_element();
+complex_allocator::free_element(elt);
+return 0;
+}
+</pre>
+
+<p>There is a subtle change that you should notice here. Instead of using a class with ordinary members, I used a template with static members. When we used a class we needed a separate object for each different element size, because each different element size needs a separate free list. With a template, each time we specialize a template for a different size we get a different type. Thus, <B>mem_mgr&lt;24&gt;::free_list</B> is already distinct from <B>mem_mgr&lt;16&gt;::free_list</B>. We don't need separate objects to keep these items distinct. The type system will do it for us. All we need to do is call <B>alloc_element</B> and <B>free_element</B> on the appropriate type.</p>
+
+<h4><FONT COLOR="#000080">Refining the Template</FONT></H4>
+
+<p>Now we have a template that lets us create allocators for arbitrary sizes of list elements. That's nice in itself, but there are still too many details exposed to our users. They have to tell the template how big their element type is, they have to cast the return from <B>alloc_element</B>, and there's the danger that they'll call <B>free_element</B> with an object of the wrong type. These problems are easily fixed by adding a second template.</p>
+
+<pre>
+template&lt;class C&gt;
+class mgr {
+typedef mem_mgr&lt;sizeof(C)&gt; impl;
+public:
+    static C *alloc_element()
+        { return (C*)impl::alloc_element(); }
+    static void free_element(C *ptr)
+        { impl::free_element(ptr); }
+};
+</pre>
+
+<p>Now we have type safety, and our users don't have to concern themselves with <B>sizeof</B>. In use, our template looks like this:</p>
+
+<pre>
+int main()
+{
+complex_list_element *elt =
+    mgr&lt;complex_list_element&gt;::alloc_element();
+mgr&lt;complex_list_element&gt;::free_element(elt);
+return 0;
+}
+</pre>
+
+<h4><FONT COLOR="#000080">Conclusion</FONT></H4>
+
+<p>In this column we've gradually developed a memory manager for linked lists. Each version has incorporated a simple <B>main</B> function to serve as a driver. Simply calling <B>alloc_element</B> and <B>free_element</B> once, however, shouldn't be enough to satisfy us that our code works. We need a more comprehensive test, even if we have a separate testing group with responsibility for overall testing. Before we release our code to our testing group we should be convinced that it will almost certainly pass all of their tests. Next month we'll look at how to approach testing memory managers. It's difficult to do well, but it's easy to do a much better job than what we've done so far.</p>
+
+<h4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1]  Java, of course, doesn't fit this pattern. To get "Hello, world" working in Java is a much larger task than it is in C or C++. It requires that about half of the core library (by which I mean the packages <B>java.io</B>, <B>java.lang</B>, and <B>java.util</B>) be written and compilable, and that about a quarter of the core library work correctly. This requirement stems, in part, from Java's failure to distinguish between interface and implementation: library implementers must write function bodies for every function that is named in another function, even when that code is not actually called. Also, functions in the Java libraries are highly interdependent. For example, for "Hello, world" to work the library must be able to read a system resource that tells it how the newline character is represented on the platform where the library code is running. Resources are accessed through a <B>HashTable</B>, so the code that implements <B>HashTable</B> has to work, and system resources are read from files, so the code for opening and reading from files must also be working.</p>
+<p><a name="2"></a>[2]  I haven't addressed the problem of assuring appropriate alignment here. This code is intended only as a sketch of what the system library does. In the actual runtime library the code makes sure that the memory block is aligned suitably for any data type.</p>
+
+<p><i>Pete Becker is Technical Project Leader for Dinkumware, Ltd. He spent eight years in the C++ group at Borland International, both as a developer and manager. He is a member of the ANSI/ISO C++ standardization committee. He can be reached by email at <B>petebecker@acm.org</B>.</i></p>
+
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

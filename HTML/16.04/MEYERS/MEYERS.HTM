@@ -1,0 +1,600 @@
+
+
+
+
+
+
+<HTML>
+     
+     <HEAD>
+
+<TITLE>April 1998/Counting Objects in C++</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<H2><A href="../tocapr.htm"><IMG src="../../toc.gif" ALT="Back to TOC" WIDTH="54" HEIGHT="54"></A>
+<FONT COLOR="#FF0000">Object-Oriented Programming</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Counting Objects in C++</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Scott Meyers</FONT></H3>
+<BLOCKQUOTE>
+<p>It isn't hard to keep a count of all the objects allocated for a given class in
+C++, unless you have to deal with distractions.</p></BLOCKQUOTE><hr>
+
+<BLOCKQUOTE>
+<p>Sometimes easy things are easy, but they're still subtle. For example,
+suppose you have a class Widget, and you'd like to have a way to find out at
+run time how many Widget objects exist. An approach that's both easy to
+implement and that gives the right answer is to create a static counter in
+Widget, increment the counter each time a Widget constructor is called, and
+decrement it whenever the Widget destructor is called. You also need a static
+member function howMany to report how many Widgets currently exist. If Widget
+did nothing but track how many of its type exist, it would look more or less
+like this:</p>
+
+<pre>
+class Widget {
+public:
+    Widget() { ++count; }
+    Widget(const Widget&amp;) { ++count; }
+    ~Widget() { --count; }
+
+    static size_t howMany()
+    { return count; }
+
+private:
+    static size_t count;
+};
+
+// obligatory definition of count. This
+// goes in an implementation file
+size_t Widget::count = 0;
+</pre>
+
+<p>This works fine. The only mildly tricky thing is to remember to implement the copy
+constructor, because a compiler-generated copy constructor for Widget wouldn't
+know to increment count.<p>
+If you had to do this only for Widget, you'd be done, but counting objects is
+something you might want to implement for several classes. Doing the same thing
+over and over gets tedious, and tedium leads to errors. To forestall such
+tedium, it would be best to somehow package the above object-counting code so
+it could be reused in any class that wanted it. The ideal package would:</p>
+
+<UL><LI>be easy to use &#151; require minimal work on the part of class authors who
+        want to use it. Ideally, they shouldn't have to do more than one thing, that
+        is, more than basically say "I want to count the objects of this type."</LI>
+    <LI>be efficient &#151; impose no unnecessary space or time penalties on client
+        classes employing the package.</LI>
+    <LI>be foolproof &#151; be next to impossible to accidently yield a count that is
+        incorrect. (We're not going to worry about malicious clients, ones who
+        deliberately try to mess up the count. In C++, such clients can always find a
+        way to do their dirty deeds.)</LI>
+</UL>
+<p>Stop for a moment and think about how you'd implement a reusable
+object-counting package that satisfies the goals above. It's probably harder
+than you expect. If it were as easy as it seems like it should be, you wouldn't
+be reading an article about it in this magazine.</p>
+
+<h4><FONT COLOR="#000080">new, delete, and Exceptions</FONT></H4>
+
+<p>While
+you're mulling over your solution to the object-counting problem, allow me to
+switch to what seems like an unrelated topic. That topic is the relationship
+between new and delete when constructors throw exceptions. When you ask C++ to
+dynamically allocate an object, you use a new expression, as in:</p>
+
+<pre>
+class ABCD { ... }; // ABCD = "A Big Complex Datatype"
+ABCD *p = new ABCD; // a new expression
+</pre>
+
+<p>The
+new expression &#151; whose meaning is built into the language and whose behavior
+you cannot change &#151; does two things. First, it calls a memory allocation
+function called operator new. That function is responsible for finding enough
+memory to hold an ABCD object. If the call to operator new succeeds, the new
+expression then invokes an ABCD constructor on the memory that operator new
+found.<p>
+But suppose operator new throws a std::bad_alloc exception. Exceptions of this
+type indicate that an attempt to dynamically allocate memory has failed. In the
+new expression above, there are two functions that might give rise to that
+exception. The first is the invocation of operator new that is supposed to find
+enough memory to hold an ABCD object. The second is the subsequent invocation
+of the ABCD constructor that is supposed to turn the raw memory into a valid
+ABCD object.<p>
+If the exception came from the call to operator new, no memory was allocated.
+However, if the call to operator new succeeded and the invocation of the ABCD
+constructor led to the exception, it is important that the memory allocated by
+operator new be deallocated. If it's not, the program has a memory leak. It's
+not possible for the client &#151; the code requesting creation of the ABCD object
+&#151; to determine which function gave rise to the exception.<p>
+For many years this was a hole in the draft C++ language specification, but in
+March 1995 the C++ Standards committee adopted the rule that if, during a new
+expression, the invocation of operator new succeeds and the subsequent
+constructor call throws an exception, the runtime system must automatically
+deallocate the memory that operator new allocated. This deallocation is
+performed by operator delete, the deallocation analogue of operator new. (For
+details, see the <a href="sidebar.htm">sidebar</a>
+on placement new and placement delete.)<p>
+It is this relationship between new expressions and operator delete affects us
+in our attempt to automate the counting of object instantiations.</p>
+
+<h4><FONT COLOR="#000080">Counting Objects</FONT></H4>
+
+<p>In
+all likelihood, your solution to the object-counting problem involved the
+development of an object-counting class. Your class probably looks remarkably
+like, perhaps even exactly like, the Widget class I showed earlier:</p>
+
+<pre>
+// see below for a discussion of why
+// this isn't quite right
+
+class Counter {  
+public:          
+    Counter() { ++count; }
+    Counter(const Counter&amp;) { ++count; }
+    ~Counter() { --count; }
+    static size_t howMany()
+        { return count; }
+
+private:
+    static size_t count;
+};
+// This still goes in an
+// implementation file
+size_t Counter::count = 0;
+</pre>
+<p>The
+idea here is that authors of classes that need to count the number of objects
+in existence simply use Counter to take care of the bookkeeping. There are two
+obvious ways to do this. One way is to define a Counter object as a class data
+member, as in:</p>
+
+<pre>
+// embed a Counter to count objects
+class Widget {
+public:
+    .....  // all the usual public
+           // Widget stuff
+    static size_t howMany()
+    { return Counter::howMany(); }
+private:
+    .....  // all the usual private
+           // Widget stuff
+    Counter c;
+};
+</pre>
+<p>The
+other way is to declare Counter as a base class, as in:</p>
+
+<pre>
+// inherit from Counter to count objects
+class Widget: public Counter {
+    .....  // all the usual public
+           // Widget stuff
+private:
+    .....  // all the usual private
+           // Widget stuff
+};
+</pre>
+<p>Both
+approaches have advantages and disadvantages. But before we examine them, we
+need to observe that neither approach will work in its current form. The
+problem has to do with the static object count inside Counter. There's only one
+such object, but we need one for each class using Counter. For example, if we
+want to count both Widgets and ABCDs, we need two static size_t objects, not
+one. Making Counter::count nonstatic doesn't solve the problem, because we need
+one counter per class, not one counter per object.<p>
+We can get the behavior we want by employing one of the best-known but
+oddest-named tricks in all of C++: we turn Counter into a template, and each
+class using Counter instantiates the template with itself as the template
+argument.<p>
+Let me say that again. Counter becomes a template:</p>
+
+<pre>
+template&lt;typename T&gt;
+class Counter {
+public:
+    Counter() { ++count; }
+    Counter(const Counter&amp;) { ++count; }
+    ~Counter() { --count; }
+
+    static size_t howMany()
+    { return count; }
+
+private:
+    static size_t count;
+};
+
+template&lt;typename T&gt;
+size_t
+Counter&lt;T&gt;::count = 0; // this now can go in header
+</pre>
+<p>The
+first Widget implementation choice now looks like:</p>
+
+<pre>
+// embed a Counter to count objects
+class Widget {
+public:
+    .....
+    static size_t howMany()
+    {return Counter&lt;Widget&gt;::howMany();}
+private:
+    .....
+    Counter&lt;Widget&gt; c;
+};
+</pre>
+<p>And
+the second choice now looks like:</p>
+
+<pre>
+// inherit from Counter to count objects
+class Widget: public Counter&lt;Widget&gt; {    
+    .....
+};
+</pre>
+<p>Notice
+how in both cases we replace Counter with Counter&lt;Widget&gt;. As I said
+earlier, each class using Counter instantiates the template with itself as the
+argument.<p>
+The tactic of a class instantiating a template for its own use by passing
+itself as the template argument was first publicized by Jim Coplien. He showed
+that it's used in many languages (not just C++) and he called it "a curiously
+recurring template pattern" <a href="#1">[1]</a>. I don't think Jim intended it, but his
+description of the pattern has pretty much become its name. That's too bad,
+because pattern names are important, and this one fails to convey information
+about what it does or how it's used.<p>
+The naming of patterns is as much art as anything else, and I'm not very good
+at it, but I'd probably call this pattern something like "Do It For Me."
+Basically, each class generated from Counter provides a service (it counts how
+many objects exist) for the class requesting the Counter instantiation. So the
+class Counter&lt;Widget&gt; counts Widgets, and the class Counter&lt;ABCD&gt;
+counts ABCDs.<p>
+Now that Counter is a template, both the embedding design and the inheritance
+design will work, so we're in a position to evaluate their comparative
+strengths and weaknesses. One of our design criteria was that object-counting
+functionality should be easy for clients to obtain, and the code above makes
+clear that the inheritance-based design is easier than the embedding-based
+design. That's because the former requires only the mentioning of Counter as a
+base class, whereas the latter requires that a Counter data member be defined
+and that howMany be reimplemented by clients to invoke Counter's howMany <a href="#2">[2]</a>.
+That's not a lot of additional work (client howManys are simple inline
+functions), but having to do one thing is easier than having to do two. So
+let's first turn our attention to the design employing inheritance.</p>
+
+<h4><FONT COLOR="#000080">Using Public Inheritance</FONT></H4>
+
+<p>The
+design based on inheritance works because C++ guarantees that each time a
+derived class object is constructed or destroyed, its base class part will also
+be constructed first and destroyed last. Making Counter a base class thus
+ensures that a Counter constructor or destructor will be called each time a
+class inheriting from it has an object created or destroyed.<p>
+Any time the subject of base classes comes up, however, so does the subject of
+virtual destructors. Should Counter have one? Well-established principles of
+object-oriented design for C++ dictate that it should. If it has no virtual
+destructor, deletion of a derived class object via a base class pointer yields
+undefined (and typically undesirable) results:</p>
+
+<pre>
+class Widget: public Counter&lt;Widget&gt;
+{ ... };
+Counter&lt;Widget&gt; *pw =
+    new Widget;  // get base class ptr
+                 // to derived class object    
+......
+delete pw; // yields undefined results
+           // if the base class lacks
+           // a virtual destructor
+</pre>
+<p>Such
+behavior would violate our criterion that our object-counting design be
+essentially foolproof, because there's nothing unreasonable about the code
+above. That's a powerful argument for giving Counter a virtual destructor.<p>
+Another criterion, however, was maximal efficiency (imposition of no
+unnecessary speed or space penalty for counting objects), and now we're in
+trouble. We're in trouble because the presence of a virtual destructor (or any
+virtual function) in Counter means each object of type Counter (or a class
+derived from Counter) will contain a (hidden) virtual pointer, and this will
+increase the size of such objects if they don't already support virtual
+functions <a href="#3">[3]</a>. That is, if Widget itself contains no virtual functions, objects
+of type Widget would increase in size if Widget started inheriting from
+Counter&lt;Widget&gt;. We don't want that.<p>
+The only way to avoid it is to find a way to prevent clients from deleting
+derived class objects via base class pointers. It seems that a reasonable way
+to achieve this is to declare operator delete private in Counter:</p>
+
+<pre>
+template&lt;typename T&gt;
+class Counter {
+public:
+    .....
+private:
+    void operator delete(void*);
+    .....
+};
+</pre>
+<p>Now
+the delete expression won't compile:</p>
+
+<pre>
+class Widget: public Counter&lt;Widget&gt; { ... };
+Counter&lt;Widget&gt; *pw = new Widget;  ......
+delete pw; // Error. Can't call private
+// operator delete
+</pre>
+<p>Unfortunately
+&#151; and this is the really interesting part &#151; the new expression shouldn't
+compile either!</p>
+
+<pre>
+Counter&lt;Widget&gt; *pw =
+    new Widget;  // this should not
+                 // compile because
+                 // operator delete is
+                 // private
+</pre>
+<p>Remember
+from my earlier discussion of new, delete, and exceptions that C++'s runtime
+system is responsible for deallocating memory allocated by operator new if the
+subsequent constructor invocation fails. Recall also that operator delete is
+the function called to perform the deallocation. But we've declared operator
+delete private in Counter, which makes it invalid to create objects on the heap
+via new!<p>
+Yes, this is counterintuitive, and don't be surprised if your compilers don't
+yet support this rule, but the behavior I've described is correct. Furthermore,
+there's no other obvious way to prevent deletion of derived class objects via
+Counter* pointers, and we've already rejected the notion of a virtual
+destructor in Counter. So I say we abandon this design and turn our attention
+to using a Counter data member instead.</p>
+
+<h4><FONT COLOR="#000080">Using a Data Member</FONT></H4>
+
+<p>We've
+already seen that the design based on a Counter data member has one drawback:
+clients must both define a Counter data member and write an inline version of
+howMany that calls the Counter's howMany function. That's marginally more work
+than we'd like to impose on clients, but it's hardly unmanageable. There is
+another drawback, however. The addition of a Counter data member to a class
+will often increase the size of objects of that class type.<p>
+At first blush, this is hardly a revelation. After all, how surprising is it
+that adding a data member to a class makes objects of that type bigger? But
+blush again. Look at the definition of Counter:</p>
+
+<pre>
+template&lt;typename T&gt;
+class Counter {
+public:
+    Counter();
+    Counter(const Counter&amp;);
+    ~Counter();
+
+    static size_t howMany();
+private:
+    static size_t count;
+};
+</pre>
+<p>Notice
+how it has no nonstatic data members. That means each object of type Counter
+contains nothing. Might we hope that objects of type Counter have size zero? We
+might, but it would do us no good. C++ is quite clear on this point. All
+objects have a size of at least one byte, even objects with no nonstatic data
+members. By definition, sizeof will yield some positive number for each class
+instantiated from the Counter template. So each client class containing a
+Counter object will contain more data than it would if it didn't contain the
+Counter.<p>
+(Interestingly, this does not imply that the size of a class without a Counter
+will necessarily be bigger than the size of the same class containing a
+Counter. That's because alignment restrictions can enter into the matter. For
+example, if Widget is a class containing two bytes of data but that's required
+to be four-byte aligned, each object of type Widget will contain two bytes of
+padding, and sizeof(Widget) will return 4. If, as is common, compilers satisfy
+the requirement that no objects have zero size by inserting a char into
+Counter&lt;Widget&gt;, it's likely that sizeof(Widget) will still yield 4 even
+if Widget contains a Counter&lt;Widget&gt; object. That object will simply take
+the place of one of the bytes of padding that Widget already contained. This is
+not a terribly common scenario, however, and we certainly can't plan on it when
+designing a way to package object-counting capabilities.)<p>
+I'm writing this at the very beginning of the Christmas season. (It is in fact
+Thanksgiving Day, which gives you some idea of how I celebrate major
+holidays...) Already I'm in a Bah Humbug mood. All I want to do is count
+objects, and I don't want to haul along any extra baggage to do it. There has
+got to be a way.</p>
+
+<h4><FONT COLOR="#000080">Using Private Inheritance</FONT></H4>
+
+<p>Look
+again at the inheritance-based code that led to the need to consider a virtual
+destructor in Counter:</p>
+
+<pre>
+class Widget: public Counter&lt;Widget&gt;
+{ ... };
+Counter&lt;Widget&gt; *pw = new Widget;            
+......
+delete
+pw;  // yields undefined results
+     // if Counter lacks a virtual
+     // destructor
+</pre>
+<p>Earlier
+we tried to prevent this sequence of operations by preventing the delete
+expression from compiling, but we discovered that that also prohibited the new
+expression from compiling. But there is something else we can prohibit. We can
+prohibit the implicit conversion from a Widget* pointer (which is what new
+returns) to a Counter&lt;Widget&gt;* pointer. In other words, we can prevent
+inheritance-based pointer conversions. All we have to do is replace the use of
+public inheritance with private inheritance:</p>
+
+<pre>
+class Widget: private Counter&lt;Widget&gt;
+{ ... };
+Counter&lt;Widget&gt; *pw =
+    new Widget;  // error! no implicit
+                 // conversion from
+                 // Widget* to
+                 // Counter&lt;Widget&gt;*
+</pre>
+<p>Furthermore,
+we're likely to find that the use of Counter as a base class does not increase
+the size of Widget compared to Widget's stand-alone size. Yes, I know I just
+finished telling you that no class has zero size, but &#151; well, that's not
+really what I said. What I said was that no objects have zero size. The C++
+Standard makes clear that the base-class part of a more derived object may have
+zero size. In fact many compilers implement what has come to be known as the
+empty base optimization <a href="#4">[4]</a>.<p>
+Thus, if a Widget contains a Counter, the size of the Widget must increase. The
+Counter data member is an object in its own right, hence it must have nonzero
+size. But if Widget inherits from Counter, compilers are allowed to keep Widget
+the same size it was before. This suggests an interesting rule of thumb for
+designs where space is tight and empty classes are involved: prefer private
+inheritance to containment when both will do.<p>
+This last design is nearly perfect. It fulfills the efficiency criterion,
+provided your compilers implement the empty base optimization, because
+inheriting from Counter adds no per-object data to the inheriting class, and
+all Counter member functions are inline. It fulfills the foolproof criterion,
+because count manipulations are handled automatically by Counter member
+functions, those functions are automatically called by C++, and the use of
+private inheritance prevents implicit conversions that would allow
+derived-class objects to be manipulated as if they were base-class objects.
+(Okay, it's not totally foolproof: Widget's author might foolishly instantiate
+Counter with a type other than Widget, i.e., Widget could be made to inherit
+from Counter&lt;Gidget&gt;. I choose to ignore this possibility.)<p>
+The design is certainly easy for clients to use, but some may grumble that it
+could be easier. The use of private inheritance means that howMany will become
+private in inheriting classes, so such classes must include a using declaration
+to make howMany public to their clients:</p>
+
+<pre>
+class Widget: private Counter&lt;Widget&gt; {
+public:
+    // make howMany public
+    using Counter&lt;Widget&gt;::howMany; 
+
+    ..... // rest of Widget is unchanged
+};
+
+class ABCD: private Counter&lt;ABCD&gt; {
+public:
+    // make howMany public
+    using Counter&lt;ABCD&gt;::howMany;
+
+    ..... // rest of ABCD is unchanged
+};
+</pre>
+<p>For
+compilers not supporting namespaces, the same thing is accomplished by
+replacing the using declaration with the older (now deprecated) access
+declaration:</p>
+
+<pre>
+class Widget: private Counter&lt;Widget&gt; {
+public:
+    // make howMany public
+    Counter&lt;Widget&gt;::howMany; 
+
+    .....  // rest of Widget is unchanged
+};
+</pre>
+<p>Hence,
+clients who want to count objects and who want to make that count available (as
+part of their class's interface) to their clients must do two things: declare
+Counter as a base class and make howMany accessible <a href="#5">[5]</a>.<p>
+The use of inheritance does, however, lead to two conditions that are worth
+noting. The first is ambiguity. Suppose we want to count Widgets, and we want
+to make the count available for general use. As shown above, we have Widget
+inherit from Counter&lt;Widget&gt; and we make howMany public in Widget. Now
+suppose we have a class SpecialWidget publicly inherit from Widget and we want
+to offer SpecialWidget clients the same functionality Widget clients enjoy. No
+problem, we just have SpecialWidget inherit from
+Counter&lt;SpecialWidget&gt;.<p>
+But here is the ambiguity problem. Which howMany should be made available by
+SpecialWidget, the one it inherits from Widget or the one it inherits from
+Counter&lt;SpecialWidget&gt;? The one we want, naturally, is the one from
+Counter&lt;SpecialWidget&gt;, but there's no way to say that without actually
+writing SpecialWidget::howMany. Fortunately, it's a simple inline function:</p>
+
+<pre>
+class SpecialWidget: public Widget,
+    private Counter&lt;SpecialWidget&gt; {
+public:
+    .....
+    static size_t howMany()
+    { return Counter&lt;SpecialWidget&gt;::howMany(); }
+    .....
+};
+</pre>
+<p>The
+second observation about our use of inheritance to count objects is that the
+value returned from Widget::howMany includes not just the number of Widget
+objects, it includes also objects of classes derived from Widget. If the only
+class derived from Widget is SpecialWidget and there are five stand-alone
+Widget objects and three stand-alone SpecialWidgets, Widget::howMany will
+return eight. After all, construction of each SpecialWidget also entails
+construction of the base Widget part.</p>
+
+<h4><FONT COLOR="#000080">Summary</FONT></H4>
+
+<p>The
+following points are really all you need to remember:</p>
+<UL><LI>Automating the counting of objects isn't hard, but it's not completely
+        straightforward, either. Use of the "Do It For Me" pattern (Coplien's
+        "curiously recurring template pattern") makes it possible to generate the
+        correct number of counters. The use of private inheritance makes it possible to
+        offer object-counting capabilities without increasing object sizes.</LI>
+    <LI>When clients have a choice between inheriting from an empty class or
+        containing an object of such a class as a data member, inheritance is
+        preferable, because it allows for more compact objects.</LI>
+    <LI>Because C++ endeavors to avoid memory leaks when construction fails for heap
+        objects, code that requires access to operator new generally requires access to
+        the corresponding operator delete too.</LI>
+    <LI>The Counter class template doesn't care whether you inherit from it or you
+        contain an object of its type. It looks the same regardless. Hence, clients can
+        freely choose inheritance or containment, even using different strategies in
+        different parts of a single application or library. o</LI>
+</UL>     
+
+<h4><FONT COLOR="#000080">Notes and References</FONT></H4>
+
+<p><a name="1"></a>[1]
+James O. Coplien. "The Column Without a Name: A Curiously Recurring Template
+Pattern," C++ Report, February 1995.<p>
+<a name="2"></a>[2] An alternative is to omit Widget::howMany and make clients call
+Counter&lt;Widget&gt;::howMany directly. For the purposes of this article,
+however, we'll assume we want howMany to be part of the Widget interface.<p>
+<a name="3"></a>[3] Scott Meyers. More Effective C++ (Addison-Wesley, 1996), pp. 113-122.</p>
+<p><a name="4"></a>[4] Nathan Myers. "The Empty Member C++ Optimization," Dr. Dobb's
+Journal, August 1997. Also available at
+http://www.cantrip.org/emptyopt.html.</p>
+<p><a name="5"></a>[5] Simple variations on this design make it possible for Widget to use
+Counter&lt;Widget&gt; to count objects without making the count available to
+Widget clients, not even by calling Counter&lt;Widget&gt;::howMany directly.
+Exercise for the reader with too much free time: come up with one or more such
+variations.</p>
+
+<h4><FONT COLOR="#000080">Further Reading</FONT></H4>
+
+<p>To
+learn more about the details of new and delete, read the columns by Dan Saks on
+the topic (CUJ January - July 1997), or Item 8 in my More Effective C++
+(Addison-Wesley, 1996). For a broader examination of the object-counting
+problem, including how to limit the number of instantiations of a class,
+consult Item 26 of More Effective C++.</p>
+
+<h4><FONT COLOR="#000080">Acknowledgments</FONT></H4>
+
+<p>Mark
+Rodgers, Damien Watkins, Marco Dalla Gasperina, and Bobby Schmidt provided
+comments on drafts of this article. Their insights and suggestions improved it
+in several ways.
+</p>
+
+<p><i>Scott Meyers authored the best-selling Effective C++, Second Edition and
+More Effective C++ (both published by Addison Wesley). Find out more about him,
+his books, his services, and his dog at http://www.aristeia.com.
+</i></p>
+</BLOCKQUOTE>
+</body></html>

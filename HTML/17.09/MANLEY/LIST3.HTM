@@ -1,0 +1,161 @@
+<HTML><HEAD>
+<TITLE>September 1999/Improving Performance with Thread-Private Heaps/Listing 3</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 3: A program that measures multithreaded performance using thread classes and class-specific new and delete</A></h4>
+<pre>
+// main.cpp
+#include "ThreadPrivateHeapAllocated.h"
+#include &lt;process.h&gt;
+#include &lt;iostream&gt;
+using namespace std;
+
+static const int NUM_ALLOCS = 20000;
+static const int NUM_THREADS = 4; 
+
+class ClassAllocatedFromProcessHeap {
+public:
+protected:
+   char m_buffer[1024]; 
+};
+
+class ClassAllocatedFromPrivateHeap : 
+   public CThreadPrivateHeapAllocated {
+public:
+protected:
+   char m_buffer[1024]; 
+};
+
+class CThread {
+public:
+
+   CThread() 
+   {
+      m_hThread = 
+         (HANDLE) _beginthreadex( 
+            NULL,                   // no security attributes
+            0,                      // default stack size
+            threadFunc,             // starting address
+            (LPVOID) this,          // argument to threadFunc
+            CREATE_SUSPENDED,       // create suspended
+            (UINT*)&amp;m_dwThreadID ); // [out] thread ID
+   }
+            
+   virtual ~CThread() 
+      { CloseHandle( m_hThread ); }
+
+   DWORD Start()
+      { return ResumeThread( m_hThread ); }
+
+   virtual DWORD ThreadMain()=0; 
+
+   HANDLE GetThreadHandle()
+      { return m_hThread; }
+
+protected:
+   static UINT _stdcall threadFunc( LPVOID lpControlledThread )
+   {
+      CThread* pThread = 
+         reinterpret_cast&lt;CThread*&gt;(lpControlledThread); 
+      return pThread-&gt;ThreadMain(); 
+   }
+
+   HANDLE m_hThread; 
+   DWORD m_dwThreadID; 
+}; 
+
+class CThreadUsingProcessHeap : public CThread {
+public:
+
+   virtual DWORD ThreadMain()
+   {
+      for( int i=0; i&lt;NUM_ALLOCS; i++ ) {
+         ClassAllocatedFromProcessHeap* p = 
+            new ClassAllocatedFromProcessHeap; 
+         delete p;
+      } // for
+      return 0; 
+   } 
+
+}; 
+
+class CThreadUsingPrivateHeap : public CThread {
+public:
+
+   CThreadUsingPrivateHeap()
+      { m_hHeap = HeapCreate( HEAP_NO_SERIALIZE, 0x100000, 0 ); }
+
+   virtual ~CThreadUsingPrivateHeap()
+      { HeapDestroy( m_hHeap ); }
+
+   virtual DWORD ThreadMain()
+   { 
+      TlsSetValue( CThreadPrivateHeapAllocated::GetTlsIndex(), 
+         (LPVOID) m_hHeap );
+      for( int i=0; i&lt;NUM_ALLOCS; i++ ) {
+         ClassAllocatedFromPrivateHeap* p = 
+            new ClassAllocatedFromPrivateHeap; 
+         delete p;
+      } // for
+      return 0; 
+   } 
+
+protected:
+   HANDLE m_hHeap; 
+}; 
+
+int main(int argc, char* argv[])
+{
+   // Allocate a slot for thread-private heap handle. Let the
+   // CThreadPrivateHeapAllocated class know which slot number 
+   // will be used...
+   CThreadPrivateHeapAllocated::SetTlsIndex( TlsAlloc() ); 
+   DWORD dwStart=0, dwEnd=0; 
+   int i=0;
+
+   // ---------------------------------------------------------
+   // Do the test with single process heap...
+   CThreadUsingProcessHeap threadUsingProcessHeap[ NUM_THREADS ];
+   HANDLE hThreadUsingProcessHeap[NUM_THREADS]; 
+
+   dwStart = GetTickCount();       
+   for( i=0; i&lt;NUM_THREADS; i++ ) {
+      hThreadUsingProcessHeap[i] = 
+         threadUsingProcessHeap[i].GetThreadHandle();
+      threadUsingProcessHeap[i].Start();
+   } // for
+
+   WaitForMultipleObjects( NUM_THREADS, hThreadUsingProcessHeap, 
+      TRUE, INFINITE ); 
+   dwEnd = GetTickCount(); 
+
+   cout &lt;&lt; "Test using single process heap took " 
+        &lt;&lt; dwEnd-dwStart &lt;&lt; " ms." &lt;&lt; endl; 
+
+   // ---------------------------------------------------------
+   // Do the test with private heap per thread...
+   CThreadUsingPrivateHeap threadUsingPrivateHeap[ NUM_THREADS ];
+   HANDLE hThreadUsingPrivateHeap[NUM_THREADS]; 
+
+   dwStart = GetTickCount();       
+   for( i=0; i&lt;NUM_THREADS; i++ ) {
+      hThreadUsingPrivateHeap[i] = 
+         threadUsingPrivateHeap[i].GetThreadHandle();
+      threadUsingPrivateHeap[i].Start();
+   } // for
+
+   WaitForMultipleObjects( NUM_THREADS, hThreadUsingPrivateHeap, 
+      TRUE, INFINITE ); 
+   dwEnd = GetTickCount(); 
+
+   cout &lt;&lt; "Test using private heap per thread took " 
+        &lt;&lt; dwEnd-dwStart &lt;&lt; " ms." &lt;&lt; endl; 
+
+   TlsFree( CThreadPrivateHeapAllocated::GetTlsIndex() ); 
+   return 0; 
+}
+
+</pre>
+</BODY>
+</HTML>

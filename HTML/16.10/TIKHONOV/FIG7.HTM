@@ -1,0 +1,295 @@
+<HTML><HEAD>
+<TITLE>October 1998/An SQL Client Class/Figure 7</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Figure 7: A closer look at class Query</A></h4>
+<pre>
+class Query {
+    friend class StackOfQuery;
+    friend class StoredQuery;
+public :
+    Query(const char* name = 0);
+    virtual void setName(const char* name);
+
+    virtual Result release();
+    virtual ~Query() {};
+
+    virtual Result 
+    prepare(char* queryText, 
+       Bool useAsIs = FALSE);
+    virtual Bool unprepare();
+
+    virtual Result
+    open(char* queryText, ...);
+    virtual Result 
+    execute(char* queryText, ...);
+
+    virtual Result read(char* format,...);
+
+    virtual Bool fetch();
+    virtual Bool fetch(char* format,...);
+
+    virtual Result close() = 0;
+    virtual Result drop() = 0;
+    static Result 
+    dropQuery(const char* name);
+    static Result 
+    dropStack(const char* name);
+
+    // Field access methods
+    virtual char* getFieldName(int fldNo);
+    virtual int 
+    getFieldNo(const char *fldName);
+    // ...
+
+protected:
+    char queryName[QNAME_LEN];
+    short format[MAX_FIELDS_IN_QUERY];
+
+    short state;
+    DbSQLDA in;
+    DbSQLDA out;
+    SQLDA* out_sqlda;
+
+    DynArray* fieldByNameAccelerator;
+    static short nullind;
+
+    static short 
+    typeToShort(char* ptr, int&amp; size);
+    void getFormat(char* queryText);
+
+    //  cache related functions
+    // ...
+
+    _read(char* format, va_list ap);
+    virtual Result openCursor() = 0;
+
+    char* 
+    preRead(short&amp; fieldNo, short&amp; type, 
+       char* ptr);
+    void 
+    fillSQLDA(DbSQLDA&amp; sqlda, va_list&amp; ap);
+
+    virtual Result 
+    setArg(MemBuf&amp; dest, short type, 
+       SQLVAR* var, va_list&amp; ap);
+    virtual Result 
+    getArg(DbSQLDA&amp; sqlda, void* data, 
+       short type, int i);
+};
+
+// === Implementation of Query class ===
+// === storage methods               ===
+Result Query::store(char* text)  {
+    return stackOfQuery.Add(*this,text);
+}
+
+// ===  Common Query methods   ===
+Query::Query(const char *name) {
+    state = 0;
+    if (name &amp;&amp; *name)
+        setName(name);
+    else
+        sprintf(queryName,"_%p", this);
+    out_sqlda = NULL;
+    format[0] = Ft_Undefine;
+    fieldByNameAccelerator = 0;
+
+    // Accelerator will be created
+    // during first &lt;getFieldNo&gt; call
+}
+
+// ===  Query handling methods  ===
+Result Query::prepare(char* queryText,
+                      Bool useAsIs) {
+  Bool needToBeStored = FALSE;
+  if (state &amp; DQS_PREPARED)
+    return OK;
+
+  MemBuf clearQuery;
+  if (!useAsIs &amp;&amp; queryText)    {
+    clearQuery &lt;&lt; queryText;
+    ::getFormat(format,clearQuery);
+    queryText = clearQuery.getBuf();
+    }
+  else
+    format[0] = Ft_Stop;
+
+  if (state &amp; DQS_CACHED)
+    switch (restore(queryText))    {
+      case FAIL : return FAIL;
+      case TRUE : return OK;
+      default :    needToBeStored = TRUE;
+      }
+
+  if (_prepare(queryText) == FAIL)
+    return FAIL;
+  if (needToBeStored)
+    if (store(queryText) == FAIL)
+      return FAIL;
+  return OK;
+}
+
+Result Query::open(
+            char* queryText, ...) {
+  if (queryText)
+    getFormat(queryText);
+
+  va_list  ap;
+  va_start(ap, queryText);
+  in.clear();
+  fillSQLDA(in,ap);
+  va_end(ap);
+  in.synchronize();
+
+  if (close() == FAIL)
+    return FAIL;
+  if (prepare(queryText) == FAIL)
+    return FAIL;
+  return _open(in,0);
+}
+
+Result Query::execute(
+            char* queryText, ...) {
+  if (prepare(queryText) == FAIL)
+    return FAIL;
+
+  va_list  ap;
+  va_start(ap, queryText);
+  in.clear();
+  fillSQLDA(in,ap);
+  va_end(ap);
+  in.synchronize();
+  return _execute(in);
+}
+
+Bool Query::fetch(char* format, ...) {
+  Bool result = _fetch();
+  if (result == TRUE) {
+    va_list  ap;
+    va_start(ap, format);
+    if (_read(format,ap) == FAIL)
+      result = FAIL;
+    va_end(ap);
+    }
+  return result;
+}
+
+Bool Query::fetch() {
+  return _fetch();
+}
+
+Result Query::read(char* format,...) {
+  va_list  ap;
+  va_start(ap, format);
+  Result result = _read(format,ap);
+  va_end( ap );
+  return result;
+}
+
+// ===  Parameters treatment  ===
+void Query::fillSQLDA(DbSQLDA&amp; sqlda,
+                      va_list&amp; ap) {
+  // Calculate number of input parameters
+  for (int argc = 0;
+       format[argc] != Ft_Stop; argc++);
+
+  sqlda.extend(argc);
+  SQLVAR var;
+
+  MemBuf dest(MemBuf::DATABASE_MODE);
+  for (argc = 0;
+      format[argc] != Ft_Stop;argc++) {
+    dest.flush();
+    var.sqlind = 0;
+    setArg(dest, format[argc], &amp;var, ap);
+    var.sqllen = (var.sqlind == &amp;nullind)
+                 ? 0 : dest.getLength();
+    if (var.sqllen &gt; 0 &amp;&amp; 
+         (var.sqltype &amp; ~1) == SQL_FIXCHAR
+         &amp;&amp; format[argc] != Ft_Binary_)
+      var.sqllen--;
+    var.sqldata = dest.getBuf();
+    sqlda &lt;&lt; &amp;var;
+    }
+}
+
+Result Query::_read(char* format,
+                    va_list ap) {
+  short fieldNo = -1;
+  for (char* ptr = strchr(format,'%');
+       ptr; ptr = strchr(ptr,'%'))  {
+    short type = 0;
+    ptr = preRead(fieldNo,type,ptr);
+
+    void* data = va_arg(ap,void*);
+    if (getArg(out,data,type,fieldNo) == 
+       FAIL)
+      return FAIL;
+    }
+  return OK;
+}
+
+// === Format parsing system ===
+char* Query::preRead(short&amp; fieldNo,
+                 short&amp; type, char* ptr) {
+  fieldNo++; //  Next field no by default
+  type = 0;
+
+  // Try to extract type
+  if (ptr[1] != '#' &amp;&amp; ptr[1] != '(' 
+                  &amp;&amp; ptr[1] != '%')  {
+    int toSqueeze = 0;
+    type = typeToShort(ptr+1,toSqueeze);
+    ptr += toSqueeze;
+    }
+  switch (ptr[1]) {
+    case '#' :    //  pointed by ordinal
+                  //  number
+      sscanf(ptr+2,"%d",&amp;fieldNo);
+      break;
+    case '(' : {  //  pointed by field name
+      char* tail = strchr(ptr+2,')');
+      char name[MAXSTR];
+      strncpy(name,ptr+2,
+          (int)(tail-ptr-2));
+      name[(int)(tail-ptr-2)] = 0;
+      fieldNo = getFieldNo(name);
+      break;
+      }
+    }
+  ptr++;
+
+  //  Now we have fieldNo
+  if (type == 0)
+    switch (getFieldType(fieldNo))  {
+      case SQL_SHORT:
+        type = Ft_short_;
+        break;
+      case SQL_LONG:
+        type = Ft_long_;
+        break;
+      case SQL_FLOAT:
+        type = Ft_float_;
+        break;
+      case SQL_DOUBLE:
+        type = Ft_double_;
+        break;
+      case SQL_DATE:
+        type = Ft_Date_;
+        break;
+      default :
+        type = Ft_FString_;
+        break;
+    }
+  return ptr;
+}
+
+// === Common SQLDA access methods  ===
+
+// ...
+//End of File
+</pre>
+</BODY>
+</HTML>

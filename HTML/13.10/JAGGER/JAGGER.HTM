@@ -1,0 +1,164 @@
+
+
+<HTML>
+<HEAD>
+
+<TITLE>October 1995/An Alternative Debug Function Macro</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tococt.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Debugging</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">An Alternative Debug Function Macro<A name="0148_00CC"><A name="0148_00CC"></font></h2><P>
+<h3 align="center"><font color="#800000"><A name="0148_0000"><A name="0148_0000">Jon Jagger</font></h3><hr><blockquote><P>
+<P><i><A name="0148_0000"><A name="0148_0000">Jon Jagger currently works for National Transcommunication Limited, Manchester, England. He has six years C programming experience. Jon received a B.Sc. 1st in Computer Science from University College Cardiff in 1989. You can reach him by phone: +44 (0) 1962 822788, by fax: +44 (0) 1962 822409, by e-mail: academic@accu.org.</i></P><P>
+Why do we need another debugging macro? Aren't the ones we have good enough? Well, maybe not. Consider the common debug function macro:<P>
+<pre>#define malloc(x) \
+   DB_malloc(x, __FILE__, LINE__)</pre>
+While often very useful, this technique cannot cope with the thorny old problem of variable argument functions (such as <I>printf</I>). If you dig a bit deeper you also find that it fails in two other cases:<P>
+<UL><li>it does not see parenthesized function calls.</li>
+<pre>   void * pMem = (malloc)(nBytes);</pre>
+<li>it does not see calls made via a function pointer.</li>
+<pre>   void * (*fGetMem)(size_t) = malloc;
+   void * pMem = fGetMem(nBytes);</pre></UL>
+In this article I present a little-known alternative macro technique that overcomes these three limitations. The technique is completely generic. Throughout the article I use <I>printf</I> as an example, and utilize macros and functions from <I>check.h</I> and <I>check.c</I> (first versions, shown in <A href="list1.htm">Listing 1</a>
+and <A href="list2.htm">Listing 2</a>
+respectively).<P>
+<h4><FONT COLOR="#000080"><A name="0148_00CD">A Simple Macro<A name="0148_00CD"></FONT></h4></P>
+<A href="list3.htm">Listing 3</a>
+and <A href="list4.htm">Listing 4</a>
+show first versions of <I>printf.h</I> and <I>printf.c</I>. These listings demonstrate that you can immediately eliminate all three problems mentioned above by using a simple macro:<P>
+<pre>#define printf DB_printf
+int DB_printf(const char format[], ...) { ... }</pre>
+<I>DB_printf</I> as defined here makes a number of checks and issues warnings where appropriate. For example, <I>DB_printf</I> checks if the format string is null. It warns if the <I>'%'</I> character does not occur in the format string, if you are using <I>"%ul"</I> in a format string, and about any use of <I>"%p"</I>. After this bit of paranoia, <I>DB_printf</I> makes a <I>printf</I>-equivalent call using <I>vprintf</I>, and finally warns if the call to <I>vprintf</I> failed.<P>
+These checks may seem strange, but they all derive from mistakes I have made in the past. For example, I often do this:<P>
+<pre>printf("Hello world\n");</pre>
+Since there is no <I>%</I> in the format string, <I>DB_printf</I> reminds me to consider using <I>fputs</I> instead. It's probably faster, and if this is the only way <I>printf</I> is used replacing it with <I>fputs</I> will probably make for smaller executable code as well.<P>
+When I print an <I>unsigned long</I>, I remember that the format specifier uses a <I>u</I> (for <I>unsigned</I>) and an <I>l</I> (for <I>long</I>), but I often seem to get them the wrong way round. I write<P>
+<pre>unsigned long ul = 23;
+printf("%ul\n", ul);</pre>
+but the format specifier should be <I>"%lu"</I>. <I>DB_printf</I> catches this for me.<P>
+When I use <I>"%p"</I> in a format string I often do this:<P>
+<pre>struct foobar FB;
+printf("%p\n", &amp;FB);</pre>
+I like to be warned about this; strictly speaking, <I>&amp;FB</I> must be explicitly cast to a <I>void*</I><P>
+<pre>printf("%p\n", (void*)&amp;FB);</pre>
+since no prototype information about it exists.<P>
+Different people make different mistakes, but everyone is likely to repeat their own mistakes. When I track down a bug, one small extra check often ensures that when (not if) I repeat that mistake it is automatically detected.<P>
+<h4><FONT COLOR="#000080"><A name="0148_00CE"><I>__FILE__</I><B> and </B><I>__LINE__</I><A name="0148_00CE"></FONT></h4></P>
+<I>_FILE_</I> and <I>_LINE_</I> are compiler-supplied macros that evaluate to the current source file name and line number respectively. These macros would be much more useful if they enabled reporting of the source-file and source-line of each rogue <I>printf</I>. This is possible. Start by redefining the printf macro:<P>
+<pre>#define printf Ptr_printf()</pre>
+and defining <I>Ptr_printf</I> to be a function that returns a pointer to <I>DB_printf</I>:<P>
+<pre>typedef int PrintfLike( const char format[], ... );
+PrintfLike * Ptr_printf( void )
+      {
+      return DB_printf;
+      }</pre>
+You can now use this extra level of indirection by passing __<I>FILE__</I> and <I>__LINE__</I> as arguments to <I>Ptr_printf</I>, which stores them in file scope variables, <I>srcFile</I> and <I>srcLine</I> (so that modified versions of <I>WARNING_IF</I> and <I>UNDEFINED_IF</I> can see them):<P>
+<pre>#define printf Ptr_printf(__FILE__, __LINE__)
+
+const char * srcFile = NULL;
+int srcLine = 0;
+
+typedef int PrintfLike( const char format[], ...  );
+PrintfLike *Ptr_printf( const char file[], int line )
+      {
+      srcFile = file;
+      srcLine = line;
+      return DB_printf;
+      }</pre>
+However, there are three minor problems with this:<P>
+1.     Standard C says that __<I>LINE__</I> evaluates to the line number of the current source line as a decimal constant. But the type of a decimal constant depends on its value, so a large <I>__LINE__</I> may not be an <I>int</I>. One solution is to convert (with great care) the value of __<I>LINE__</I> to a string constant:<P>
+<pre>#define printf Ptr_printf(__FILE__, STRx2(_LINE_))
+#define STRx2(tokens) STRx1(tokens)
+#define STRx1(tokens) #tokens</pre>
+2.     The technique fails when using an <I>&amp;</I> to take the address of a function. For example,<P>
+<pre>int main( void )
+      {
+      int (*pf)(const char format[], ...) = &amp;printf;
+      return pf("hello world\n");
+      }</pre>
+is valid, but when the <I>printf</I> macro is visible it also becomes a compiler error. This problem can be overcome with<P>
+<pre>#define printf (*Ptr_printf(__FILE__, STRx2(__LINE__)))</pre>
+Now the superfluous * "cancels" any superfluous <I>&amp;</I>.<P>
+3.     The number of arguments to <I>DB_Trap</I> (via <I>UNDEFINED_IF</I> and <I>WARNING_IF</I>) is unwieldy. I overcome this by wrapping <I>srcCall</I>, <I>srcFile</I>, and <I>srcLine</I> inside a <I>struct</I>. I also split the <I>srcCall</I> into three parts &#151; the return value, the function name, and the parameters. (The reason for this will become apparent later in <A href="list11.htm">Listing 11</a>,
+ <I>dbmeta.hi.</I>)<P>
+<pre>struct Func
+      {
+      const char * ret;
+      const char * name;
+      const char * parms;
+      const char * file;
+      const char * line;
+      };
+struct Func func =
+      {
+      "int",
+      "printf",
+      "(const char format[], ...)",
+      NULL,
+      NULL
+      };</pre>
+Tying this all together produces new versions of <I>check.h</I>, <I>check.c</I>, <I>printf.h</I>, and <I>printf.c</I> in <A href="list5.htm">Listing 5</a>,
+ <A href="list6.htm">Listing 6</a>,
+ <A href="list7.htm">Listing 7</a>,
+ and <A href="list8.htm">Listing 8</a>
+respectively. Finally, this code could benefit from a little polishing.<P>
+<h4><FONT COLOR="#000080"><A name="0148_00CF">Final polishing<A name="0148_00CF"></FONT></h4></P>
+A minor irritation of this technique (exemplified by <A href="list7.htm">Listing 7</a>)
+ is that it pollutes the global namespace with two identifiers per debug function; one for the typedef (e.g. <I>PrintfLike</I>) and one for the function (e.g. <I>Ptr_printf</I>). However, we can reduce this pollution to one global name per debug function, since<P>
+<pre>typedef int PrintfLike (const char format[], ...);
+PrintfLike *Ptr_printf(const char file[], const char line[]);</pre>
+can be rewritten as<P>
+<pre>int (*Ptr_printf(const char file[], const char line[]))
+    (const char format[], ...);</pre>
+Removing the typedefs in this manner makes the function declarations somewhat tricky. <A href="list9.htm">Listing 9</a>
+shows <I>dbmeta.h</I>, a header file defining two generic macros, <I>DB_DECL</I> and <I>DB_CALL</I>, that simplify the creation of <I>printf.h</I>. <A href="list10.htm">Listing 10</a>
+is the final version of <I>printf.h</I> that uses <I>dbmeta.h</I>.<P>
+Finally, <A href="list11.htm">Listing 11</a>
+shows <I>dbmeta.hi</I>, a header file defining a generic macro that simplifies the creation of <I>printf.c</I>. <A href="list12.htm">Listing 12</a>
+is the final version of <I>printf.c</I>, which uses <I>dbmeta.hi</I>.<P>
+<h4><FONT COLOR="#000080"><A name="0148_00D0">Advantages<A name="0148_00D0"></FONT></h4></P>
+To recap the advantages of this technique:<P>
+1.     It works for variable argument functions.<P>
+2.     It works for parenthesized function calls.<P>
+3.     It works for a call made via a function pointer.<P>
+4.     It works if you do not have the function source code.<P>
+5.     <I>DB_XXXX</I> macros ease the creation of .h and .c files.<P>
+<h4><FONT COLOR="#000080"><A name="0148_00D1">Disadvantages<A name="0148_00D1"></FONT></h4></P>
+There is a price to pay for this versatility:<P>
+1.     File scope function pointer initializations may break. For example,<P>
+<pre>int (*pf)(const char format[], ...) = printf;</pre>
+at file scope (i.e., outside a function definition) is valid. However, with the <I>printf</I> macro visible it becomes a compiler error, since the initialization is now invalid. This is an inherent limitation of the technique.<P>
+2.     Code that uses the <I>#</I> preprocessor operator can silently change. Consider the following:<P>
+<pre>#define STRx2(tokens) STRx1(tokens)
+#define STRx1(tokens) #tokens
+const char Func[] = STRx2(printf);</pre>
+Normally this probably preprocesses to<P>
+<pre>const char Func[] = "printf";</pre>
+Using the debug <I>printf</I> macro, it preprocesses to:<P>
+<pre>const char Func[] = "(*Ptr_printf(\"GLOOP.C\",\"122\"))";</pre>
+Note, however, that you have to try hard to achieve this; the more common<P>
+<pre>#define STR(tokens) #tokens
+const char Func[] = STR(func);</pre>
+is not affected.<P>
+3.     Finally, it is possible to write convoluted code such that the __<I>FILE</I>__ and __<I>LINE</I>__ details are incorrect. However, once again you have to try hard to achieve this. For example,<P>
+<pre>#include &lt;stdio.h&gt;
+#include "printf.h"
+int main(void)
+      {
+      int (*fp1)(const char format[], ...);
+      int (*fp2)(const char format[], ...);
+      fp1 = printf;
+      fp2 = printf;
+      fp1("Hello world\n");
+      fp2("Hello world\n");
+      return 0;
+      };</pre>
+4.     This technique is not thread-safe.<P>
+<h4><FONT COLOR="#000080"><A name="0148_00D2">Thanks<A name="0148_00D2"></FONT></h4></P>
+I'd particularly like to thank Kevlin Henney, and everyone I know in The Association of C and C++ Users (ACCU, http://www.bach.cis.temple.edu/accu/) for their helpful advice and dedicated professionalism in C and C++.<P>
+
+<h4><a href="../../../source/1995/oct95/jagger.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

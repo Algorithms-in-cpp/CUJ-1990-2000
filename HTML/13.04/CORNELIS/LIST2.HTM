@@ -1,0 +1,240 @@
+<HTML><HEAD>
+<TITLE>April 1995/Two Wildcard Matching Utilities/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2 <I>Directory search utility</A></I></h4>
+<pre>/* ------------------------------------------------------------
+     
+     char * SearchWild (const char * wpath, int &amp; ftf)
+     
+     Search a directory\file path containing wildcards.
+     Return each matching file, one file per call.
+     Both the directory path and file name may contain
+     multiple wildcards, e.g. D:\AA*\...\*BB\CC*.E??
+     
+     *        matches zero or more characters
+     ?        matches one character
+     ...      matches zero or more directories
+     *...     matches one or more directories
+     A*...    matches one or more, beginning with 'A'
+     
+     wpath:   search path, with optional wildcards
+     d:\dir1\dir2\...   fully qualified
+     \dir1\dir2\...     use current disk
+     dir1\dir2\...      use current directory
+     
+     ftf:     must be 1 to initiate a new search,
+              do not alter for subsequent calls
+     
+     return value:
+       pointer to returned file name (d:\path\file)
+       or NULL if no more files found
+
+*/
+
+#include &lt;windows.h&gt;
+
+#define  DIRECTORY  FILE_ATTRIBUTE_DIRECTORY
+#define  maxlev     20          /* max. directory levels */
+#define  maxp       _MAX_PATH   /* max. pathname\filename length */
+#define  maxp4     maxp + 4
+
+#define  RETURN(nn,mm)  { reent[lev] = nn; --lev; return mm; }
+
+char * SearchWild(const char * wpath, int &amp; ftf)
+
+
+{
+   static HANDLE           ffh[maxlev];
+   static WIN32_FIND_DATA  ffdata[maxlev];
+   
+   static int   lev = -1, reent[maxlev];
+   static int   fstat[maxlev], ftf2[maxlev];
+   static char  rpath[maxp4];
+   static char  wpath1[maxlev][maxp4],
+              wpath2[maxlev][maxp4],
+              wpath3[maxlev][maxp4];
+   
+   int    stat, ii, jj;
+   char   * pF, * pF1, * pF2, * pF3;
+   
+   if (++lev &gt;= maxlev) goto exceed_maxlev; /* track level
+                                        of reentrancy */
+   
+   if (ftf) ftf = 0; /* 1st time flag  */
+   
+   else switch (reent[lev]) /* re-entry, resume processing */
+   {                        /* in current search context */
+     case 1: goto Reentl;
+     case 2: goto Reent2;
+     case 3: goto Reent3;
+     case 4: goto Reent4;
+     default: FatalAppExit(0,"reent bug");
+   }
+   ii = strlen(wpath);                   /* check wpath arg. */
+   if (ii &gt;= maxp) goto path_toolong;
+   
+   /* get current D:\DIRECTORY... */
+   
+   stat = GetCurrentDirectory(maxp.wpathl[lev]);
+   
+   if (! stat) goto no_curr_dirk;
+
+/*  if caller path begins "\" use curr. disk + caller path*/
+   if (wpath[0] == '\\')
+      strcpy(wpath1[lev]+2,wpath);
+   
+   else if (wpath[2] == '\\')          /*  if caller path
+                                     begins "d:\" */
+      strcpy(wpath1[lev],wpath);      /*  use caller path only */
+   
+   else                                /*  else use current
+                                     directory */
+   
+   {                                   /* + "\" + caller path  */
+     
+     ii = strlen(wpath1[lev]) + strlen(wpath) + 1;
+     if (ii &gt;= maxp) goto path_toolong;
+     strcat(wpath1[lev],"\\");
+     strcat(wpath1[lev],wpath);
+   }
+   
+   pF = wpath1[lev];
+   while (pF = strstr(pF,"...\\"))   /*  replace any "xxx...\"  */
+   {                                 /*         with "xxx\...\" */
+      
+      if (pF[-1] != '\\')
+      {
+         for (ii = strlen(pF); ii; ii--) pF[ii+l] = pF[ii];
+         pF[0] = '\\';
+      }
+      pF += 4;
+   }
+   
+   pF1 = Strchr(wpath1[lev], '*');   /*find 1st wild char. in path */
+   pF2 = strchr(wpath1[lev],'?');
+   pF3 = strchr(wpath1[lev], "\\...\\");
+   pf = wpath1[lev] + maxp;
+   if (pf1) pF = pF1;
+   if (pF2 &amp;&amp; (pf2 &lt; pF)) pf = pf2;
+   if (pF3 &amp;&amp; (pF3 &lt; pF)) pF = pF3;
+   
+   if (pF &lt; strrchr(wpath1[lev],'\\'))
+     goto wild_dirk;         /* wild char. is in a directory */
+
+/*  no wild directories exist - wild filename possible */
+   
+   /* search files using wpath1 */
+   
+   ffh[lev] = FindFirstFile(wpathl[lev],&amp;ffdata[lev]);
+   if (ffh[lev] == INVALID_HANDLE_VALUE) RETURN(0,0)
+   stat = fstat[lev] = 1;
+Reent1:
+   if (fstat[lev] == 2)
+      stat = FindNextFile(ffh[lev].&amp;ffdata[lev]);
+   fstat[lev] = 2;
+   if (! stat) RETURN(0,0)
+   if (strcmp(ffdata[lev].cFileName,".") == 0)
+     goto Reent1;              /* ignore "." and ".." directories */
+   if (strcmp(ffdata[lev].cFileName,"..") == 0) goto Reentl;
+   pF = strrchr(wpath1[lev],'\\');      /* last"\'in search path*/
+   ii = strlen(ffdata[lev].cFileName);
+   jj = pF - wpath1[lev] + 1;
+   if (ii + jj &gt; maxp) goto path_toolong;
+   strncpy(rpath,wpath1[lev],jj);      /* build directory\filename*/
+   strcpy(rpath+jj,ffdata[lev].cFileName);
+   RETURN(1,rpath)                   /* return, re-enter at Reent1 */
+
+/* directory has wild characters */
+
+wild_dirk;
+   if (pF[0] == '\\') goto wild_dots0;  /* found "\...\" */
+
+/* 1st wild directory contains '*' or '?' */
+   
+   strcpy(wpath2[lev],wpath1[lev]);     /*  wpath2 = wpath1 thru
+                                     wild dirk  */
+   pF = wpath2[lev] + (pF - wpath1[lev]);
+   while (pF[0] != '\\') pF++;          /*  eliminate final '\' */
+   pF[0] = 0;
+   ffh[lev] =
+     FindFirstFile(wpath2[lev],&amp;ffdata[lev]); /* search using wpath2 */
+   
+   if (ffh[lev] == INVALID_HANDLE_VALUE) RETURN(0,0)
+   stat = fstat[lev] = 1;
+Loop2;
+   if (fstat[lev] == 2) stat = FindNextFile(ffh[lev],&amp;ffdata[lev];
+   fstat[lev] = 2;
+   if (! stat) RETURN(0,0)
+   if (!(ffdata[lev].dwfileAttributes &amp; DIRECTORY))
+     goto Loop2;     /* ignore non-directories */
+   if (strcmp(ffdata[lev].cFileName,".") == 0)
+     goto Loop2;           /* ignore "." and ".." directories */
+   if (strcmp(ffdata[lev].cFileName,"..") == 0) goto Loop2;
+   strcpy(wpath3[lev],wpath2[lev]);
+   pF = strrchr(wpath3[Lev],'\\') + 1; /* wpath3 = wpath1
+                                    with specific */
+   ii = strlen(ffdata[lev].cFileName); /* dirk in place of
+                                    wild dirk */
+   ii += pF - wpath3[lev];
+   if (ii &gt; maxp) goto path_too long;
+   strcpy(pF,ffdata[lev].cFileName);
+   pF = wpath1[lev] + (pF - wpath3[lev]);
+   pF = strchr(pF,'\\');
+   jj =strlen(pF);
+   if (ii + jj &gt; maxp) goto path_toolong;
+   strcpy(wpath3[lev]+ii,pF);
+   ftf2[lev] = 1;
+Reent2:
+   pF = SearchWild(wpath3[lev],ftf2[lev]); /*  recursive search
+                                        next level */
+   if (! pF) goto Loop2;
+   RETURN(2,rpath)                 /* return, re-enter at Reent2 */
+
+/*  1st wild directory is "\...\" */
+
+wild_dots0:
+   strcpy(wpath2[lev],wpath1[lev]);        /*  wpath2 = wpath1 */
+   pF = strstr(wpath2[lev],"\\...\\");
+   for (ii = 0; pF[ii]; ii++)
+     pF[ii+1] = pF[ii+5];                  /*  repl.  "\...\"
+                                        with "\" */
+   ftf2[lev] = 1;
+Reent3:
+   pF = SearchWild(wpath2[lev],ftf2[lev]); /*  recursive search
+                                        next level */
+   if (! pF) goto wild_dots1;
+   RETURN(3,rpath)                 /*  return, re-enter at Reent3 */
+
+wild_dots1:
+   strcpy(wpath2[lev],wpath1[lev]);        /*  wpath2 = wpath1 */
+   pF = strstr(wpath2[lev], "\\...\\");
+   for (ii = strlen(pF); ii; ii--)
+     pF[ii+2] = pF[ii];                 /*  repl. "\...\"
+                                      with "\*\...\" */
+   strncpy(pF, "\\*",2);
+   ftf2[lev] = 1;
+Reent4:
+   pF = SearchWild(wpath2[lev],ftf2[lev]); /*  recursive search
+                                        next levl */
+   if (! pF) RETURN(0,0)
+   RETURN(4,rpath)                /* return, re-enter at Reent4 */
+
+/* fatal error exits */
+
+exceed_maxlev:
+   FatalAppExit(0,"SearchWild: exceed max directory levels");
+
+no_curr_dirk:
+   FatalAppExit(0, "SearchWild: GetCurrentDirectory() failed");
+
+path_toolong:
+   FatalAppExit(0, "SearchWild: exceed max path length");
+   return 0;                      /* dummy, required by compiler */
+}
+
+/* End of File */</pre>
+
+</BODY>
+</HTML>

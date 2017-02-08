@@ -1,0 +1,357 @@
+<HTML>   
+     <HEAD>
+<TITLE>January 2000/C++ Theory and Practice</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocjan.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   C/C++ Contributing Editors</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">C++ Theory and Practice: <br>Replacing Character Arrays with Strings, Part 1</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Dan Saks</FONT></H3>
+
+<BLOCKQUOTE>
+<p>It is a truism that well-designed library objects are superior to the more primitive C data structures. But it still helps to know the costs of converting to them.</p>
+</BLOCKQUOTE>
+
+<HR>
+<BLOCKQUOTE>
+
+<p>Copyright &copy; 1999 by Dan Saks</p>
+<p>For most of the past year, I've been discussing principles of large-scale software design and how you can use C++ to apply those principles. I've tried to keep discussion practical by applying the principles to a specific programming example, a program called xr that generates a cross-reference of words read from a text stream. Though hardly a large program, xr is large enough to demonstrate many of the points I've been trying to make.</p>
+<p>The unifying theme of all these articles is that good design and programming fosters an illusion of simplicity. It does this by decomposing programs into units &#151; typically classes &#151; that represent abstractions. Each class should hide some of the program's details from the rest of the program. By hiding details, each class lets you act in many ways as if the program is simpler than it really is.</p>
+<p>Two of my more recent articles [<a href="#1">1</a>, <a href="#2">2</a>] focused on another general principle for decomposing programs into classes, namely,</p>
+
+<UL><LI>   Hide each design decision in a separate class.</LI></UL>
+
+<p>I started applying this principle in rewriting xr, but I haven't finished.</p>
+<p>Although the Standard C++ library provides several general-purpose classes that I could use to simplify the program, I've been holding off on using them until now. As I explained in my previous article <a href="#3">[3]</a>, the generality of the library classes sometimes exacts a heavy toll in both run-time and code size. I don't like to pay until I have a better sense of the price.</p>
+<p>This month, we'll continue exploring the consequences of hiding each design decision in a separate class. Along the way, we'll see if it's possible to integrate the standard <B>string</B> class into the program without paying too dearly.</p>
+
+<H4><FONT COLOR="#000080">Picking Up the Thread</FONT></H4>
+<p>xr reads text from standard input and writes a cross-reference listing to standard output. The output is an alphabetized list of the words (actually identifiers as in C++) that appeared in the input. Each line in the output contains one word followed by the sequence of unique line numbers on which that word appeared in the input.</p>
+<p>xr uses a binary tree to accumulate the words in alphabetical order. The program uses a class called <B>cross_reference_table</B> to encapsulate the tree <a href="#4">[4]</a>. <B>table.h</B> in <a href="list1.htm">Listing 1</a> contains the <B>cross_reference_table</B> class and inline member function definitions. <B>table.cpp</B> in <a href="list2.htm">Listing 2</a> contains the non-inline definitions for the <B>cross_reference_table</B> class.</p>
+<p>Each node in the tree holds a word and its corresponding sequence of line numbers. The nodes in the tree are all of type <B>tree_node</B>, a structure declared in <a href="list1.htm">Listing 1</a> as a private member of class <B>cross_reference_table</B>. The complete definition for <B>tree_node</B> appears in <a href="list2.htm">Listing 2</a> as:</p>
+
+<pre>
+struct
+cross_reference_table::tree_node
+   {
+   tree_node(unsigned n);
+   deep_pointer&lt;char&gt; word;
+   line_number_sequence lines;
+   deep_pointer&lt;tree_node&gt;
+      left, right;
+   };
+</pre>
+
+<p>deep_pointer</B> is a class template. For any type <B>T</B>, a <B>deep_pointer&lt;T&gt;</B> behaves just like a <B>T *</B>, except that a <B>deep_pointer&lt;T&gt; const</B> behaves like a <B>T const *const</B> <a href="#5">[5]</a>.</p>
+<p><B>line_number_sequence</B> is a class that stores a sequence of line numbers. The class definition appears in <a href="list3.htm">Listing 3</a>.</p>
+<p>Conceptually, each word in a <B>tree_node</B> is a variable-length character string. But its declaration reveals that <B>word</B> is actually a pointer to the zeroth character of a null-terminated character sequence. Code in the body of <B>cross_reference_table::add</B> reveals that each null-terminated character sequence resides in a dynamically allocated array of <B>char</B>. The principle of hiding each design decision in a separate class suggests that these implementation details ought to be tucked away in a separate class.</p>
+<p>Rather than declare <B>tree_node</B>'s <B>word</B> as:</p>
+
+<pre>
+deep_pointer&lt;char&gt; word;
+</pre>
+
+<p>the program should use a type for the abstract concept of a variable-length character string. That type could be the standard library's <B>string</B> class or one written specifically for this application. In either event, the declaration of member <B>word</B> should be something such as:</p>
+
+<pre>
+string word;
+</pre>
+
+<p>With this change, <B>tree_node</B> looks like:</p>
+
+<pre>
+struct
+cross_reference_table::tree_node
+   {
+   tree_node(unsigned n);
+   string word;
+   line_number_sequence lines;
+   deep_pointer&lt;tree_node&gt;
+      left, right;
+   };
+</pre>
+
+<p>which reflects the program's design a bit better than the previous <B>tree_node</B> definition. Even without comments, it says "each node in the cross-reference table's tree associates a string with a corresponding line number sequence."</p>
+
+<H4><FONT COLOR="#000080">Eliminating Arbitrary Limits</FONT></H4>
+
+<p>A string class will be handy in other parts of the program. xr acquires the strings it places in the cross-reference table by reading them from standard input. The <B>get_token</B> function does most of that work, with a little help from <B>main</B>.</p>
+<p><B>main</B> and <B>get_token</B> appear in the source file <B>xr.cpp</B> (<a href="list4.htm">Listing 4</a>). <B>main</B> repeatedly calls:</p>
+
+<pre>
+int get_token(char *s, size_t n);
+</pre>
+
+<p>to scan the next token from the input until it exhausts the input. If it detects a token, <B>get_token</B> copies that token and a trailing null into the character array starting at <B>s</B>, and returns a non-zero value (meaning true). If there's nothing left to scan, <B>get_token</B> copies just a null character (an empty string) into <B>s</B>, and returns zero (meaning false).</p>
+<p><B>get_token</B>'s second parameter, <B>n</B>, is the maximum number of characters (including the null character) that <B>s</B> can hold. <B>get_token</B> takes pains to avoid copying more than <B>n</B> characters into <B>s</B>. When it encounters a token that's too long to fit in <B>s</B>, <B>get_token</B> simply discards the excess characters at the end of the token.</p>
+<p>Most of the tokens in a typical input stream (a text file containing either prose or source code) are fairly short. Few are more that twenty characters long. Nonetheless, xr should be able to handle longer tokens when they occur. The <B>main</B> function in <a href="list4.htm">Listing 4</a> uses a fixed-length array whose size is generous enough to hold some pretty large tokens:</p>
+
+<pre>
+#define MAX_TOKEN 256
+...
+char token[MAX_TOKEN];
+</pre>
+
+<p>The value 256 was an arbitrary choice. Choosing such arbitrary numbers is always tricky business, and it often leaves you with maintenance or performance problems. If you choose a number that's too small, the program might not handle long input properly. If you choose a number that's too big, the program may tie up resources &#151; usually memory &#151; that it never uses.</p>
+<p>A variable-length string class, such as the one in the Standard C++ library, eliminates the need to specify a maximum length for the input tokens. String objects can start out empty and expand as you stuff characters into them. Standard strings grow to hold any number of characters up to some implementation-defined limit. That limit is often exceedingly generous.</p>
+
+<H4><FONT COLOR="#000080">Scanning into a String</FONT></H4>
+
+<p>Let's rewrite xr so that it uses standard <B>string</B> objects instead of character arrays. As most of you know by now, I'm fairly conservative when it comes to making changes to working programs, so I'd rather not make too many changes all at once. Let's start by rewriting just <B>xr.cpp</B> (the main source file in <a href="list4.htm">Listing 4</a>) and see how it works out.</p>
+<p>Begin by adding:</p>
+
+<pre>
+#include &lt;string&gt;
+</pre>
+
+<p>somewhere near the top of the source file. This introduces the definition for the standard <B>string</B> class into the compilation.</p>
+<p>The standard <B>string</B> class is a member of namespace <B>std</B>. You might want to add the using directive:</p>
+
+<pre>
+using namespace std;
+</pre>
+
+<p>or the using declaration:</p>
+
+<pre>
+using std::string;
+</pre>
+
+<p>so that you can use the unqualified name <B>string</B> instead of the fully-qualified name <B>std::string</B>. (See <a href="#6">[6]</a> for a refresher on using-directives and -declarations.) I recommend holding off on this until it's evident that using the fully-qualified name is inconvenient.</p>
+<p>Most of the work involves rewriting <B>get_token</B> so that it scans the token into a string instead of a character array. A declaration for <B>get_token</B> appears above <B>main</B> as:</p>
+
+<pre>
+int get_token(char *s, size_t n);
+</pre>
+
+<p>You should change the type of parameter <B>s</B> from <B>char *</B> to either <B>std::string *</B> or <B>std::string &amp;</B>. The second parameter, <B>n</B>, specifies the maximum capacity of <B>s</B>. Since strings grow as needed to hold whatever you stuff into them, <B>get_token</B> has no use for <B>n</B>. You can just discard it.</p>
+<p>The choice of passing by address or passing by reference is largely a matter personal preference. It shouldn't affect performance. However, functions that modify a string parameter typically pass the string by reference, and I think it's appropriate here, too.</p>
+<p>Although <B>get_token</B>'s return type is <B>int</B>, the only values it returns are 0 (meaning false) and 1 (meaning true). Using <B>int</B> as the return type is just a holdover from when xr was a C program. As long as you're rewriting the function, you might as well change the return type to <B>bool</B>. The declaration now looks like:</p>
+
+<pre>
+bool get_token(std::string &amp;s);
+</pre>
+
+<p>Now, let's rewrite <B>main</B>. Change the declaration for the local variable <B>token</B> from:</p>
+
+<pre>
+char token[MAX_TOKEN];
+</pre>
+
+<p>to:</p>
+
+<pre>
+std::string token;
+</pre>
+
+<p>This declaration invokes the default constructor, which initializes <B>token</B> as an empty string.</p>
+<p>Next, change the condition in the while-loop from:</p>
+
+<pre>
+while (get_token(token, MAX_TOKEN))
+</pre>
+
+<p>to just:</p>
+
+<pre>
+while (get_token(token))
+</pre>
+
+<p>This eliminates all references to the symbol <B>MAX_TOKEN</B>. Thus, you can remove <B>MAX_TOKEN</B>'s definition, which appears just above <B>main</B>.</p>
+<p><B>main</B> needs one more change. The <B>add</B> member function in the cross-reference table class is still declared as:</p>
+
+<pre>
+void add(char const *w, unsigned n);
+</pre>
+
+<p>Now that <B>token</B> has type <B>std::string</B>, the call:</p>
+
+<pre>
+table.add(token, ln);
+</pre>
+
+<p>appearing in <B>main</B> no longer compiles. The standard string class doesn't have a conversion operator that will convert a <B>string</B> to a <B>char const *</B> implicitly. Rather, it has a member:</p>
+
+<pre>
+char const *c_str() const;
+</pre>
+
+<p>that will do the conversion explicitly. Using this conversion function, the call to the <B>add</B> function becomes:</p>
+
+<pre>
+table.add(token.c_str(), ln);
+</pre>
+
+<p>Now let's look in the body of <B>get_token</B>. You need not change the while-loop at the beginning of the function, but the if-statement:</p>
+
+<pre>
+if (c == EOF)
+   {
+   *s = '\0';
+   return 0;
+   }
+</pre>
+
+<p>needs work.</p>
+<p>When <B>s</B> pointed into an array, the assignment:</p>
+
+<pre>
+*s = '\0';
+</pre>
+
+<p>turned <B>s</B> into an empty sequence. Now that <B>s</B> refers to a string, you can empty it by using any of the following statements:</p>
+
+<pre>
+s = "";
+s.clear();
+s.erase();
+</pre>
+
+<p>(Microsoft Visual C++ 6.0 doesn't like <B>s.clear()</B> but it accepts the other forms.) Now that <B>get_token</B> returns a <B>bool</B>,</p>
+
+<pre>
+return 0;
+</pre>
+
+<p>should become:</p>
+
+<pre>
+return false;
+</pre>
+
+<p>It's been a while since I looked carefully at this part of the program, and it occurs to me now that setting the string empty isn't really necessary in this case. Code that calls <B>get_token</B> isn't supposed to pay any attention to the string unless <B>get_token</B> returns true. I think you can rewrite the if-statement as just:</p>
+
+<pre>
+if (c == EOF)
+   return false;
+</pre>
+
+<p>These two assignments appear immediately after the if-statement:</p>
+
+<pre>
+*s++ = c;
+n -= 2;
+</pre>
+
+<p><B>get_token</B> no longer uses <B>n</B>, so you can just erase the latter statement. The former takes a bit more thought.</p>
+<p>When <B>s</B> pointed into an array, the first of these assignments placed <B>c</B> into the first element, and positioned <B>s</B> to the second element. When <B>s</B> refers to a string, that statement becomes simply:</p>
+
+<pre>
+s = c;
+</pre>
+
+<p>which assigns the single character <B>c</B> to <B>s</B>. This assignment treats <B>c</B> as a character even though <B>c</B> has type <B>int</B>.</p>
+<p>Whereas:</p>
+
+<pre>
+s = c;
+</pre>
+
+<p>replaces the value of <B>s</B> with <B>c</B>,</p>
+
+<pre>
+s += c;
+</pre>
+
+<p>appends <B>c</B> to the value of <B>s</B>. The latter will not work in this situation, for the following reason.</p>
+<p>On each call to <B>get_token</B>, <B>s</B> refers to local variable <B>token</B> in <B>main</B>. On the first call, <B>token</B> is an empty string, so assigning and appending produce the same result. Neither <B>get_token</B> nor <B>main</B> sets <B>token</B> back to empty. Thus, on subsequent calls to <B>get_token</B>, <B>token</B> is non-empty. The assignment:</p>
+
+<pre>
+s = c;
+</pre>
+
+<p>in <B>get_token</B> wipes out the old value in <B>s</B> and starts assembling a new one. In contrast,</p>
+
+<pre>
+s += c;
+</pre>
+
+<p>appends the first character of the new token after the last character of the previous token. <B>get_token</B> will return a string containing every token it's seen so far. I don't think you want that to happen.</p>
+<p>If you really prefer to replace:</p>
+
+<pre>
+*s++ = c;
+</pre>
+
+<p>with:</p>
+
+<pre>
+s += c;
+</pre>
+
+<p>you can get it to work if you clear or erase <B>s</B> first. Just insert:</p>
+
+<pre>
+s.erase();
+</pre>
+
+<p>(or one of its alternatives) at the beginning of <B>get_token</B>. This also restores <B>get_token</B>'s old behavior of returning an empty string when it encounters <B>EOF</B>.</p>
+<p>The next stretch of code to consider is in the second loop in <B>get_token</B>:</p>
+
+<pre>
+if (n &gt; 0)
+   {
+   *s++ = c;
+   &#151;n;
+   }
+</pre>
+
+<p>This code uses <B>n</B> to determine if there's room in the array to append <B>c</B> to the token. With strings, there's always room (up to some exceedingly generous limit), so you can delete everything except the assignment:</p>
+
+<pre>
+*s++ = c;
+</pre>
+
+<p>This you should replace with:</p>
+
+<pre>
+s += c;
+</pre>
+
+<p>Here, <B>get_token</B> really is appending each character to the token.</p>
+<p>Finally, replace the last two statements in <B>get_token</B>:</p>
+
+<pre>
+*s = '\0';
+return 1;
+</pre>
+
+<p>with just:</p>
+
+<pre>
+return true;
+</pre>
+
+<p>You never need to place an end marker such as <B>'\0'</B> into a <B>string</B>. Each <B>string</B> keeps track of its own length. Placing <B>'\0'</B> into a <B>string</B> object has no special significance. To a <B>string</B>, <B>'\0'</B> is just another character value.</p>
+<p>A version of <B>xr.cpp</B> using strings appears in <a href="list5.htm">Listing 5</a>. The fully-qualified name <B>std::string</B> appears only three times in the listing. The source file doesn't need a using-directive or using-declaration after all.</p>
+
+<H4><FONT COLOR="#000080">No Free Lunch</FONT></H4>
+
+<p>Of course, the flexibility and convenience of <B>string</B> objects comes at a price. Strings grow and shrink by allocating and deallocating memory at run time. All that allocating and deallocating uses memory more frugally, at the expense of greater code size and execution time.</p>
+<p>To try to get a sense for what this costs I ran a set of measurements similar to the ones I did in my last column. I compared several versions of the cross-reference program:</p>
+<p>1.  a version written in Standard C, similar in style to the one appearing in exercise 6-3 of Tondo and Gimpel;</p>
+<p>2.  a version that uses classes for cross-reference tables and line number sequences, but still using <B>stdio</B> and character arrays. (It uses <B>xr.cpp</B> from <a href="list4.htm">Listing 4</a>.)</p>
+<p>3.  a version that uses classes and <B>stdio</B> as in version 2, but uses strings instead of character arrays for input. (It uses <B>xr.cpp</B> from <a href="list5.htm">Listing 5</a>.)</p>
+<p>4.  a variation of version 3 in which <B>get_token</B> erases the strings each time before appending characters. (It uses the <B>get_token</B> function from <a href="fig1.htm">Figure 1</a>.)</p>
+<p>The first two programs are the same as ones I measured last time. However, since I made the earlier measurements, I replaced the hard drive on my machine with a bigger drive. I also switched from using Windows 95 to Windows 98. The run times for the first two programs are a little slower than they were.</p>
+<p>Anyway, the results of my new measurements appear in <a href="tab1.htm">Table 1</a>. With compilers B and C, just using strings instead of character arrays for getting tokens increased the execution time for the C++ program by about 15%. I think that's tolerable for most non-time-critical work. For compiler A, the time increased by about 50%. That's a bit less tolerable.</p>
+<p>The last row of the table shows that a seemingly small change in a string algorithm might produce a surprisingly large change in program execution time.</p>
+<p>Next time, I'll look at integrating strings into the rest of the cross-reference program.</p>
+
+<H4><FONT COLOR="#000080">References</FONT></H4>
+<p><a name="1"></a>[1]  Dan Saks. "C++ Theory and Practice: Isolating Design Decisions, Part 1," <I>CUJ,</I> July 1999.</p>
+<p><a name="2"></a>[2]  Dan Saks. "C++ Theory and Practice: Isolating Design Decisions, Part 2," <I>CUJ,</I> August 1999.</p>
+<p><a name="3"></a>[3]  Dan Saks. "C++ Theory and Practice: Standard C++ as a High-Level Language?," <I>CUJ,</I> November 1999.</p>
+<p><a name="4"></a>[4]  Dan Saks. "C++ Theory and Practice: Partitioning with Classes," <I>CUJ,</I> February 1999.</p>
+<p><a name="5"></a>[5]  Dan Saks. "C++ Theory and Practice: Thinking Even Deeper," <I>CUJ,</I> July 1999.</p>
+<p><a name="6"></a>[6]  Dan Saks. "C++ Theory and Practice: An Introduction to Namespaces," <I>CUJ,</I> January 1998. </p>
+
+<p><i><B>Dan Saks</B> is the president of Saks &amp; Associates, which offers training and consulting in C++ and C. He is active in C++ standards, having served nearly seven years as secretary of the ANSI and ISO C++ standards committees. Dan is coauthor of </I>C++ Programming Guidelines<I>, and codeveloper of the Plum Hall Validation Suite for C++ (both with Thomas Plum). You can reach him at 393 Leander Dr., Springfield, OH 45504-4906 USA, by phone at +1-937-324-3601, or electronically at <B>dsaks@wittenberg.edu</B>.</i></p>
+
+<h4><a href="../../../source/2000/jan00/saks.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

@@ -1,0 +1,118 @@
+<HTML>   
+     <HEAD>
+<TITLE>December 1999/Executing a Class Member in Its Own Thread</TITLE></HEAD>
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<H2><A HREF="../tocdec.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<HR>
+
+<H2 ALIGN="center"><FONT COLOR="#800000">Executing a Class Member in Its Own Thread</FONT></H2>
+<H3 ALIGN="center"><FONT COLOR="#800000">Allen Broadman and Eric Shaw</FONT></H3>
+
+<BLOCKQUOTE>
+<p>Creating a separate thread to execute a member function call is a messy business that's often necessary. It's a task well worth encapsulating.</p>
+</BLOCKQUOTE>
+
+<hr>
+<BLOCKQUOTE>
+
+<h4><FONT COLOR="#000080">Overview</FONT></H4>
+
+<p>When doing multithreaded C++ programming under Microsoft Windows NT/9x, it is often necessary to make a non-static class member function run in a newly created thread of execution. The Win32 API does not support this mode of operation directly. This article describes a technique that lets a client make a single function call that forces a class member to execute in its own new thread. Although the implementation shown is specific to Microsoft Windows, the general issues are relevant in any environment supporting threads. The technique can be ported to other operating systems, using their native multi-tasking primitives.</p>
+<p>The Win32 API provides the function <B>CreateThread</B> <a href="#1">[1]</a>, which allows the programmer to provide a user-defined function that is run by Windows in a newly created thread of execution. Here is the declaration of <B>CreateThread</B>, as it appears in the Microsoft Visual C++ version of the header <B>winbase.h</B>:</p>
+
+<pre>
+WINBASEAPI HANDLE WINAPI
+CreateThread
+   (
+    LPSECURITY_ATTRIBUTES
+       lpThreadAttributes,
+    DWORD dwStackSize,
+    LPTHREAD_START_ROUTINE
+       lpStartAddress,
+    LPVOID lpParameter,
+    DWORD dwCreationFlags,
+    LPDWORD lpThreadId
+   );
+</pre>
+
+<p><B>lpStartAddress</B> holds the address of the user function to be executed. Stripping away the macro definitions behind <B>LPTHREAD_START_ROUTINE</B> reveals that the type of <B>lpStartAddress</B> is just a function that takes a single typeless 32-bit parameter and returns a 32-bit unsigned integer. This requirement is easy to satisfy with global functions, but can be cumbersome for C++ class member functions. A member function's address often cannot be used directly with <B>CreateThread</B> because the member's hidden <B>this</B> pointer makes its function signature incompatible. The rest of this article discusses scenarios when this problem occurs and presents two different solutions to the problem.</p>
+
+<h4><FONT COLOR="#000080">An Example Scenario</FONT></H4>
+
+<p>For many object-oriented C++ programs, it is more direct to have class member functions run in their own thread than to use global functions. But when does a class member need to run in a separate thread? A typical example occurs when client code must call a member function that provides guaranteed return time, yet must perform a potentially lengthy task such as a database access or remote procedure call. One way to guarantee response time to the caller is to have a public member function queue the caller request and return immediately. A private member function in a separate thread of execution can then process the queued requests, dispatching accordingly for each queued item. Here is an example of such a class:</p>
+
+<pre>
+class Task {...};
+     
+class Processor
+{
+public:
+   // client initiates the task
+   void submitTask(Task t)
+private:
+   // runs in a new thread
+   unsigned processTasks(void *data)
+     
+   // holds client task requests
+   std::queue&lt;Task&gt; _tasks;
+};
+</pre>
+
+<p>In this class, <B>submitTask</B> will insert the requested task onto the <B>_tasks</B> queue and return immediately, thereby supporting clients with strict timing requirements. To handle the tasks, <B>processTasks</B> needs to run in a new thread in which it can continually process the <B>_tasks</B> queue and block when the queue is empty. Using an additional thread here reduces the return time of <B>submitTask</B> down to only the overhead necessary for copying and queuing the task information. Note that the overall processing time to handle tasks is <I>not</I> reduced by the additional thread &#151; only the return time to the caller of <B>submitTask</B> is reduced <a href="#2">[2]</a>.</p>
+<p>Class member functions usually contain a hidden <B>this</B> pointer argument, which makes the member signature incompatible with the one required by <B>CreateThread</B>. For example, the true signature of <B>processTasks</B> (disregarding name-mangling) would probably look as follows:</p>
+
+<pre>
+unsigned
+processTasks(Processor const *this,
+   void* data)
+</pre>
+
+<p>which is incompatible with <B>CreateThread</B>. One common solution under Win32 is to make <B>processTasks</B> a static class member which has no <B>this</B> pointer. This has drawbacks, the most painful being the loss of access to non-static class data. Ideally, the member function should run in a new thread, but still maintain all the advantages of remaining non-static. We have seen various solutions that involve frameworks of classes supporting very fine control of the threading, but for many situations a simpler solution is adequate. Our solution encapsulates the creation of a new thread and the execution of the desired member function on that thread, but leaves the issues of data protection, thread suspension, termination, etc. to the class member implementers.</p>
+
+<h4><FONT COLOR="#000080">Two Solutions</FONT></H4>
+
+<p>Two different solutions are provided. Both use a global function called <B>runInThread</B> that encapsulates the operating-system specifics of the thread creation. The function is used by clients as follows:</p>
+
+<pre>
+Foo f;
+runInThread(f, &amp;Foo::member,args);
+</pre>
+
+<p>Executing this code will result in the execution of the non-static <B>Foo::member</B> within a new thread. The client can retrieve the handle and/or thread id of the new thread using default output arguments.</p>
+<p>The first solution is supplied in <B>thread1.h</B> (<a href="list1.htm">Listing 1</a>). It relies on forcing a compiler into interpreting a member function with no parameters as a global function taking a single <B>void*</B> parameter. It's then possible to create a new thread using the member function address and to pass the member an object <B>this</B> pointer directly via the <B>void*</B> thread argument of <B>CreateThread</B>.</p>
+<p>This first version of <B>runInThread</B> was implemented and tested under Microsoft Visual C++ 6.0. It is short and simple, and works as expected &#151; the member function is called directly by the operating system. However, this solution has a number of problems:</p>
+<p>1.  The member function signature is required to use the WINAPI calling convention (<B>__stdcall</B> in MSVC) which is not always possible. Also, this solution will not easily work for const member functions because <B>const</B> is a semantically significant part of the class member signature.</p>
+<p>2.  Using the <B>void*</B> thread argument to pass the object <B>this</B> pointer prevents the member function from taking any parameters, which is overly restrictive.</p>
+<p>3.  The most serious problem is that this implementation assumes (incorrectly) that non-static member functions will always receive their <B>this</B> pointer as the first argument on the call stack. Although this may be very common in practice, the C++ Standard does not enforce such behavior. A compiler vendor is free to use a different convention, for example placing the <B>this</B> pointer into a CPU register.</p>
+<p>The code in <B>thread2.h</B> (<a href="list2.htm">Listing 2</a>) shows a second solution that solves these problems, although at the cost of some increased complexity. The major changes are:</p>
+<p>1.  The <B>runInThread</B> function is replaced by the template class <B>ThreadableMember</B> which encapsulates a member function that will run in a new thread. <B>ThreadableMember</B> uses private variables to hold a reference to an object and the address of a member function to be executed for that object, both of which are supplied in its constructor.</p>
+<p>2.  The user-defined member function signature is made into a template parameter (<B>MemberFunc</B>) to address the issues related to WINAPI and const vs. non-const members.</p>
+<p>3.  The user-defined member function can now take a single strongly typed parameter. A new template parameter called <B>Param</B> is added to hold the type of this single argument.</p>
+<p><B>ThreadableMember</B> works by using a private static member function (<B>ThreadFunc</B>) that matches the function signature that <B>CreateThread</B> expects and which is responsible for executing the client-defined member function. Since <B>ThreadFunc</B> is limited to accepting only a single <B>void*</B> parameter, a nested struct (<B>ThrdArg</B>) is used to package all the data that <B>ThreadFunc</B> needs to execute the object member.</p>
+<p>The <B>run</B> method creates a heap-based <B>ThrdArg</B> struct, copies the required data into it, and then calls <B>CreateThread</B> to start the new thread, using <B>ThreadFunc</B> as the function address to execute. <B>ThreadFunc</B>'s job is simple &#151; it unpackages the data from <B>ThrdArg</B> and executes the member function, passing it the client-provided parameter. An <B>auto_ptr</B> is used because it is <B>ThreadFunc</B>'s responsibility to free the heap-allocated <B>ThrdArg</B> structure.</p>
+<p>One nuisance with the class-based solution is that the class template parameters must be provided explicitly by the client because they are never automatically deduced <a href="#3">[3]</a>. This can be messy, especially since it involves pointer-to-member types. To solve this problem, <B>runInThread</B> is reintroduced as a global template function. It provides compiler deduction of the template parameters and simplifies usage of the class. Examples of both types of client usage are provided in <B>test.cpp</B> (<a href="list3.htm">Listing 3</a>).</p>
+
+<h4><FONT COLOR="#000080">Issues</FONT></H4>
+
+<p>Allowing clients to force a non-static class member function onto a new thread can be dangerous. Multithreading requires great care in the protection of data, and class methods must be built with this in mind. Forcing a class member onto a separate thread from the other members of its class could result in catastrophic failure if the class implementers have not taken the proper precautions. At our company, we use <B>runInThread</B> within a public member function to force another (usually private) member function into a new thread, reducing client awareness of the class's threading usage.</p>
+<p>Another issue is that <B>runInThread</B> forces the client to use default values for thread security and stack-size. Also, it is not possible to create the new thread in a suspended state. If this type of control is needed, default arguments can be added to <B>ThreadedMember::run</B> and to <B>runInThread</B> and passed on to <B>CreateThread</B>.</p>
+
+<h4><FONT COLOR="#000080">Acknowledgements</FONT></H4>
+
+<p>The authors wish to thank Andrei Alexandrescu for reviewing the initial implementation and for suggesting many improvements that were incorporated directly into the second version.</p>
+
+<h4><FONT COLOR="#000080">Notes</FONT></H4>
+
+<p><a name="1"></a>[1]  Unfortunately, <B>CreateThread</B> is often misused. It is a low-level operating-system service that has no knowledge of your application's specific environment. It basically just creates a thread and executes the user-supplied function. A potentially serious problem for C++ applications is that the inherited Standard C runtime library doesn't know (or care) about threads. Assorted bugs and failures can occur if your multithreaded application uses a single-threaded C runtime library. The culprits are usually global data (such as <B>errno</B>) and functions that use global data for intermediate results (such as <B>strtok</B>). MSVC provides <B>_beginthreadex</B>, which initializes the C runtime library to replace usage of global data with thread-local data. You should check your compiler documentation to replace <B>CreateThread</B> with an appropriate wrapper function.</p>
+<p><a name="2"></a>[2]  On a single CPU machine, adding threads of execution will usually increase processing time because the CPU instructions required to schedule and switch between threads are not negligible. Perceived performance can often be improved if a user interface is involved. On a multi-CPU machine, true parallel processing is possible, and overall processing time can be reduced if threads are used carefully.</p>
+<p><a name="3"></a>[3]  For information on template parameter deduction, see Bjarne Stroustroup, <I>The C++ Programming Language, Third Edition</I> (Addison-Wesley, 1997) Section 13.3.1.</p>
+
+<p><i><B>Allen Broadman</B> works as a senior designer and C++ developer for Micromodeling Associates in New York City. His work focuses on real-time systems design and implementation. Allen authored the article and wrote the <B>ThreadableMember</B> class template. He can be reached at <B>broadmana@mmanet.com</B>.</p>
+<p><B>Eric Shaw</B> is a C++ developer at Micromodeling Associates in New York City. His work there focuses on systems programming, especially networking using sockets. Eric's idea to run class members in a new thread by using a single function call got everything going and he developed the first solution presented. Eric can be reached at <B>shawe@mmanet.com</B>.</i></p>
+
+<h4><a href="../../../source/1999/dec99/broadman.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

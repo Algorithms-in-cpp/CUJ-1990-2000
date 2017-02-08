@@ -1,0 +1,196 @@
+<HTML><HEAD>
+<TITLE>April 1999/Report Generation Using an Integrated Web Browser/Figure 4</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Figure 4: Mortgage calculator dialog member functions</A></h4>
+<pre>
+void CMortCalcDlg::OnPrintButton() 
+{
+    // TODO: Add your control notification handler code here
+
+    // This code sends the print message to the browser via COM
+    LPDISPATCH lpDispatch = NULL;
+    LPOLECOMMANDTARGET lpOleCommandTarget = NULL;
+    lpDispatch = m_cWebBrowser.GetDocument();
+    ASSERT(lpDispatch);
+
+    lpDispatch-&gt;QueryInterface(IID_IOleCommandTarget, 
+                    (void **)&amp;lpOleCommandTarget);
+    ASSERT(lpOleCommandTarget);
+
+    lpDispatch-&gt;Release();
+
+    lpOleCommandTarget-&gt;Exec(NULL,OLECMDID_PRINT,0,NULL,NULL);
+    lpOleCommandTarget-&gt;Release();
+}
+
+void CMortCalcDlg::OnCalculate() 
+{
+    // TODO: Add your control notification handler code here
+    
+    // Get the current state of the radio buttons and edit controls
+    UpdateData(TRUE);
+
+    m_cPrintButton.EnableWindow(FALSE);
+    month = 1;
+    year = 1;
+    m_dRate /= 100.0;
+
+    // Set a member variable to tbe number of years of the loan
+    if (m_nLoanType == 0)
+        NumYears = 30;
+    else
+        NumYears = 15;
+
+    // Create the output in a file
+    if (CreateHtmlOutput())
+    {
+        // If creating the output file is successful load the file 
+        // into the web browser
+        COleVariant noArg;
+        m_cWebBrowser.Navigate("file:\\\\c:\\Temp\\LoanOutput.htm",
+            &amp;noArg,
+        &amp;noArg,&amp;noArg,&amp;noArg);
+    }
+}
+
+int CMortCalcDlg::CreateHtmlOutput()
+{
+
+    // Create the Loan with the parameters
+
+    CLoanCalc *aLoan = 
+        new CLoanCalc(m_dRate,NumYears,12,m_dLoanAmount);
+
+    // Create the loan schedule
+    aLoan-&gt;CalcSchedule();
+
+    // Get a pointer to the linked list
+    LoanPayment *schedule = aLoan-&gt;GetSchedule();
+
+    char filename[255];
+    char temp[255];
+
+    // Create structures for the totals
+    CMortTotal *totalYear = new CMortTotal;
+    CMortTotal *totalLoan = new CMortTotal;
+    int CurrentPayment = 1;
+    int CurrentYear = 1;
+
+    sprintf(filename,"c:\\temp\\LoanOutput.htm");
+
+    // Open up an output file for the html report
+
+    ofstream fout(filename);
+
+    if (!fout)
+    {
+        AfxMessageBox("Cannot create output file in C:\\TEMP",
+            MB_OK|MB_ICONERROR);
+        delete aLoan;
+        delete totalYear;
+        delete totalLoan;
+        return 0;
+    }
+
+    fout.setf(ios::fixed);
+
+    CReport MortReport(CMortCalcDlg::vTitleLine,3,
+        CMortCalcDlg::vFooterLine,0,&amp;fout,44);
+
+
+    fout &lt;&lt; "&lt;HTML&gt;" &lt;&lt; endl;
+    
+    // Use a CSS Style Sheet to control the font of the table.
+
+    fout &lt;&lt; "&lt;HEAD&gt;&lt;STYLE&gt; " &lt;&lt; endl;
+    fout &lt;&lt; 
+      " TH,TD { font-size: 10pt;font-family: \"MS SANS Serif\"} " 
+         &lt;&lt; endl;
+    fout &lt;&lt; "&lt;/STYLE&gt; " &lt;&lt; endl;
+    fout &lt;&lt; "&lt;/HEAD&gt;" &lt;&lt; endl;
+
+    fout &lt;&lt; "&lt;BODY&gt;" &lt;&lt; endl;
+
+    // Loop until the last one
+
+    while (schedule-&gt;next != NULL)
+    {
+        
+        // print the payment
+        MortReport.vPrintLine(CMortCalcDlg::vPaymentLine,
+            1, (void *)aLoan, (void *)schedule, (void *)NULL);
+
+        // add this payment to the totals
+
+        totalLoan-&gt;AddToTotal(schedule);
+        totalYear-&gt;AddToTotal(schedule);
+    
+        if (CurrentPayment%12 == 0)
+        {
+            // this is the end of a year, print the total, 
+            // clear the total and increment the year
+
+            sprintf(temp,"Total for Year %d",CurrentYear);
+            totalYear-&gt;SetPaymentInfo(temp);
+            MortReport.vPrintLine(CMortCalcDlg::vTotalLine, 2, 
+                (void *)aLoan, (void *)totalYear, (void *)NULL);
+            totalYear-&gt;Clear();
+            CurrentYear++;
+        }
+
+        CurrentPayment++;
+        schedule = schedule-&gt;next;
+    }
+    // print the final payment 
+    MortReport.vPrintLine(CMortCalcDlg::vPaymentLine, 1,
+        (void *)aLoan, (void *)schedule, (void *)NULL);
+
+    sprintf(temp,"Total for Year %d",CurrentYear);
+    totalYear-&gt;SetPaymentInfo(temp);
+    MortReport.vPrintLine(CMortCalcDlg::vTotalLine, 2,
+        (void *)aLoan, (void *)totalYear, (void *)NULL);
+    
+    // print the last year total
+    totalLoan-&gt;AddToTotal(schedule);
+    totalYear-&gt;AddToTotal(schedule);
+    strcpy(temp,"Total for Loan");
+    totalLoan-&gt;SetPaymentInfo(temp);
+
+    // print the grand loan totals
+    MortReport.vPrintLine(CMortCalcDlg::vTotalLine, 2,
+        (void *)aLoan, (void *)totalLoan, (void *)NULL);
+
+    fout &lt;&lt; "&lt;/TABLE&gt;&lt;/BODY&gt;&lt;/HTML&gt;" &lt;&lt; endl;
+    fout &lt;&lt; flush;
+
+    delete aLoan;
+    delete totalYear;
+    delete totalLoan;
+    return 1;
+
+}
+
+BEGIN_EVENTSINK_MAP(CMortCalcDlg, CDialog)
+    //{{AFX_EVENTSINK_MAP(CMortCalcDlg)
+    ON_EVENT(CMortCalcDlg, IDC_AMORT_EXPLORER, 259 
+        /* DocumentComplete */, OnDocumentCompleteAmortExplorer, 
+        VTS_DISPATCH VTS_PVARIANT)
+    //}}AFX_EVENTSINK_MAP
+END_EVENTSINK_MAP()
+
+void 
+CMortCalcDlg::OnDocumentCompleteAmortExplorer(LPDISPATCH pDisp, 
+    VARIANT FAR* URL) 
+{
+    // This event is called when the docuement is completely
+    // loaded into the WebBrowser.  Allow the user to use the 
+    // print button.
+    m_cPrintButton.EnableWindow(TRUE);
+}
+
+
+</pre>
+</BODY>
+</HTML>
