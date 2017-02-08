@@ -1,0 +1,170 @@
+<HTML><HEAD>
+<TITLE>February 1994/Coding with Printable Characters/Listing 7</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 7<I> Decode 9 bytes from 11 characters</I></A></h4>
+<pre>/* DBAZ.C
+ * Contributed to Public Domain 9/93
+ * by Thad Smith, Boulder Co.
+ */
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include "baz.h"
+#include "bazcom.h"
+#include "crc16.h"
+
+#define LAST_CODE    (FIRST_CODE + BASE -1)
+#defin e BASESQ      (unsigned long)(BASE*BASE)
+#define BASEVAL(c)   (unsigned)((c)-FIRST_CODE)
+#define ISENCODE(c)  ((c) &gt;= FIRST_CODE &amp;&amp; \
+                  (c) &lt;= LAST_CODE)
+
+static unsigned int crc;/* input file CRC */
+static size_t n_unused; /* # unused input bytes */
+static int ninb;        /* # bytes in inbuf     */
+static int done;        /* set if finished      */
+static char inbuf[ENCB_LEN * 2 + 2];
+static unsigned char outbuf[BINB_LEN * 2];
+static int (*outfunc) (const char *out, size_t len);
+
+static decode_stat
+decode_endmark(const char *data, size_t len);
+/* Initialize the BAZ911 decoder. */
+int dbaz_init (outf_t *p_outfunc) {
+   initcrctab ();
+   crc = CRC_INIT_VALUE;
+   done = 0;
+   ninb = 0;
+   n_unused = 0;
+   outfunc = p_outfunc;
+   return 0;
+}
+
+/* Decode block of data. */
+decode_stat
+dbaz_data (const unsigned char *data, size_t len) {
+   int        s;        /* output return status */
+
+   if (done) {
+     n_unused +=len;
+     return DECR_END;
+   } else if (len == 0)
+     return DECR_NO_ENDMARK;
+
+   for (;;) {
+     /* fill block input buffer */
+     while (ninb &lt; ENCB_LEN) {
+        if (ISENCODE(*data))
+           inbuf[ninb++]= (char) *data;
+        data++;
+        if (--len == 0)
+           return DEC_OK;
+     }
+     if (*inbuf == END_FLAG) {
+        return decode_endmark ((const char *) data,
+                                       len);
+
+     }
+     if (decode_11_to_9 (outbuf, inbuf))
+        return DECR_INVALID_DATA;
+     ninb = 0;
+     crc = updcrc (crc, outbuf, BINB_LEN);
+     if ((s= outfunc ((char *)outbuf,BINB_LEN)) != 0)
+        return (decode_stat) s;
+   }
+}
+
+/* Return number of characters in internal buffer.
+ * This can be used after DECR_END status is returned
+ * to determine the number of unused characters given
+ * to the decoder.                                  */
+size_t dbaz_excess_chars (void) {
+   return n_unused;
+}
+
+decode_stat decode_endmark (
+   const char *data,   /* data following inbuf     */
+   size_t len          /* length of data           */
+)
+{
+   int         s;      /* output return status     */
+   int         nreq;   /* # input bytes required for
+                    * end ensemble              */
+   unsigned int rc;    /* # remaining data bytes   */
+
+   if ((rc = BASEVAL(inbuf[1])) &gt; MAX_ENDBLK_DB)
+      return DECR_INVALID_DATA;
+
+   memset (inbuf+ninb, FIRST_CODE, 2*ENCB_LEN+2-ninb);
+   nreq = rc +4 +CRCLBY;
+   if (nreq &lt; ENCB_LEN)
+      nreq = ENCB_LEN;     /* min size is 1 block */
+   if (rc &gt; BINB_LEN - CRCLBY)
+      nreq += 2;           /* use part of 2nd blk */
+   /* get remaining characters */
+   while (ninb &lt; nreq) {
+      if (len == 0)
+         return DECR_OK;   /* need more input chars */
+      if (ISENCODE(*data))
+         inbuf[ninb++] = *data;
+      data++;
+      len--;
+   }
+   done = 1;
+   if (decode_11_to_9 (outbuf, inbuf+2))
+      return DECR_INVALID_DATA;
+   if (rc &gt; BINB_LEN - CRCLBY) {
+      if (decode_11_to_9 (outbuf+BINB_LEN,
+                       inbuf+2+ENCB_LEN))
+         return DECR_INVALID_DATA;
+   }
+   crc = updcrc (crc, outbuf, rc);
+   if ((s = outfunc ((char *) outbuf, rc)) != 0)
+      return (decode_stat) s;
+   if (((crc &gt;&gt; 8) &amp; 0xff) != outbuf[rc] ||
+       ( crc      &amp; 0xff) != outbuf[rc+1] )
+      return DECR_CRC_ERR;
+   n_unused = len;
+   return DECR_END;
+}
+
+/* Decode 11 printable ASCII characters into 9 bytes */
+int             /* return: 0=OK, 1= invalid input */
+decode_11_to_9 (unsigned char out[], const char in[]) {
+   unsigned long block;
+   unsigned    b2, q1, q2, i;
+
+   block = BASEVAL(in[0]) * BASESQ +
+      (BASEVAL(in[1]) * BASE + BASEVAL(in[2]));
+   out[0] = (unsigned) block &amp; 0xff;
+   b2 = (unsigned) (block &gt;&gt; 8);
+   q1 = b2 / PBASE;
+   q2 = b2 - q1 * PBASE;
+   if (q1 &gt;= PBASE) return 1;
+
+   for (i = 1; i &lt; 9; i += 4) {
+      block = (BASEVAL(in[i+2]) * BASE +
+              BASEVAL(in[i+3])) * BASESQ +
+         (BASEVAL(in[i+4]) * BASE + BASEVAL(in[i+5]));
+
+      if (((unsigned)(block &gt;&gt; 16) &gt;= PBMULT) ||
+         q1 == PBASE-1 &amp;&amp; block &gt;
+         (0xffffffffUL -(PBMULT*(PBASE-1UL) &lt;&lt; 16))) {
+        return 1;
+      }
+
+      block += (unsigned long) (q1 * PBMULT) &lt;&lt; 16;
+      out[i+0] = (unsigned char) (block &gt;&gt; 24);
+      out[i+1] = (unsigned char) (block &gt;&gt; 16);
+      out[i+2] = (unsigned char) (block &gt;&gt; 8);
+      out[i+3] = (unsigned char) block;
+      q1 = q2;
+   }
+   return 0;
+}
+
+/* End of File */
+</pre>
+</BODY>
+</HTML>

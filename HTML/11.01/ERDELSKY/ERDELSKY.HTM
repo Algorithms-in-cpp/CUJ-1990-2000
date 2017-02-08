@@ -1,0 +1,91 @@
+
+
+<HTML>
+<HEAD>
+
+<TITLE>January 1993/A Safer setjmp in C++</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocjan.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">A Safer setjmp in C++<A name="0028_0009"><A name="0028_0009"></font></h2><P>
+<h3 align="center"><font color="#800000"><A name="0028_0000"><A name="0028_0000">Philip J. Erdelsky</font></h3><hr><blockquote><P>
+<P><i><A name="0028_0000"><A name="0028_0000">Philip J. Erdelsky is an R&amp;D engineer with over eight years experience in C programming. He can be reached at Data/Ware Development, Inc., 9449 Carroll Park Dr., San Diego, CA 92121, or on Compuserve at 75746,3411.</i></P><P>
+Calling <I>setjmp</I> to mark a place in your C program and then calling <I>longjmp</I> to return to it, even from a deeply-nested function call, is considered useful but slightly hazardous. If control has left the function that called <I>setjmp</I>, <I>longjmp</I> will usually crash. Yet the careful use of this perverse pair is an efficient way to transfer control when an error detected in a low-level function must be handled at a much higher level. When using the alternative, passing the error condition laboriously up the chain of functions, testing a flag at each step, you must be careful not to go flying past an intermediate function's garbage collection, leaving memory blocks unreleased, files open, and motors running.<P>
+Surprisingly, <I>setjmp</I> and <I>longjmp</I> are still available in C++, and they still work the same way. However, C++ provides a way around the principal danger of <I>setjmp</I> and <I>longjmp</I>.<P>
+<h4><FONT COLOR="#000080"><A name="0028_000A">Technique<A name="0028_000A"></FONT></h4></P>
+The most important part of this technique is to encapsulate the <I>jmp_buf</I> buffer in a class object that has a constructor and a destructor:<P>
+<pre>#include &lt;setjmp.h&gt;
+
+class error
+{
+ error *previous;
+public:
+ static error *current;
+ jmp_buf jmpbuf;
+ error() { previous = current; current = this; }
+ ~error() { current = previous; }
+};
+
+error *error::current;</pre>
+The class has one <I>static</I> member called <I>error::current</I>, that points to the current buffer, the one an error exit will use to make its escape.<P>
+If a function needs to handle an error discovered at a lower level, just begin it this way:<P>
+<pre>function f(...)
+ {
+   &lt;variable declarations&gt;
+   error error_x;
+     // calls constructor for error_x
+   if (setjmp(error_x.jmpbuf))
+   {
+      &lt;garbage collection&gt;
+      return;
+     // calls destructor for error_x
+   }
+   &lt;function code&gt;
+   &lt;garbage collection&gt;
+   // destructor for error_x also called here
+}</pre>
+When the buffer <I>error_x</I> is created, its constructor is called. The constructor code links the buffer to a chain of previous error buffers, if any, and makes it the one pointed to by <I>error::current</I>. The <I>if</I> statement puts the context into its <I>jmpbuf</I> member and returns a zero, so processing continues with the function code.<P>
+When a lower level function detects an error, it calls<P>
+<pre>longjmp (error::current-&gt;jmpbuf,1);</pre>
+This brings control back to the garbage-collection routines after the <I>if</I> statement. When the <I>return</I> statement is executed, the destructor for <I>error_x</I> is called, the buffer is removed from the chain, and any subsequent <I>longjmp (error::current-&gt;jmpbuf, 1)</I> will use the previous buffer, not this one. Moreover, if control returns from the function <I>f</I> without detecting an error, the destructor for <I>error_x</I> is called automatically. These are the principal safety features of this technique.<P>
+Actually, an important part of the garbage collection is performed automatically by C++. The destructors for other variables, if any, are called automatically.<P>
+If garbage collection is needed in some intermediate function, you have to be a little more careful. You might put something like this at the head of the intermediate function:<P>
+<pre>error error_x;
+if (setjmp (error_x.jmpbuf))
+{
+   error *p = error:: current-&gt;previous;
+   &lt;garbage collection&gt;
+   error::~error(error_x);
+   &lt;calls on other destructors&gt;
+   longjmp (p-&gt;jmpbuf,1);
+}</pre>
+You can safely reuse the name <I>error_x</I> because each is local to its own function.<P>
+Here is where you run into a little difficulty. C++ is very good about calling destructors for local objects when control leaves their scope, but <I>not</I> when exit is made via <I>longjmp</I>. Therefore, the destructors for <I>error_x</I> and other local variables, if any, must be called explicitly before bailing out.<P>
+You can avoid this drudgery if you are willing to sacrifice portability and are using a compiler like Borland C++ 2.0 that uses negative frame addressing. Just use the function <I>declare_error</I>, followed by an immediate <I>return</I>, as shown in <A href="list1.htm">Listing 1</a>.
+<P>
+Negative frame addressing makes it possible for a carefully coded (but admittedly nonportable) function like <I>declare_error</I> to find the return address and patch it so that when the following <I>return</I> statement is executed, the destructors for <I>error_x</I>, and other local variables, if any, are called, and then return is made, not to calling function, but to the special function <I>error_exit</I>, which then calls <I>longjmp</I>. Of course, this involves some additional runtime overhead, but error exits are not common and need not be fast.<P>
+The function <I>declare_error</I>, followed by an immediate <I>return</I> statement, can also be called when the error is first discovered, if the function from which it is called needs to call destructors for some of its local variables.<P>
+Even if you have to do this for every intermediate function, you can still save a lot of code if each intermediate function is called from many places.<P>
+Occasionally, an error occurs in a non-function block and needs to be handled in a larger enclosing block. This technique doesn't work so well because there is no practical way for <I>declare_error</I> to find the block exit. However, the old <I>break</I> and <I>goto</I> statements will usually suffice in such cases.<P>
+<h4><FONT COLOR="#000080"><A name="0028_000B">Limitations<A name="0028_000B"></FONT></h4></P>
+This technique isn't foolproof. It can still fail if an error is declared in a function called by a constructor or initializer for a variable declared before <I>error_x:</I><P>
+<pre>f(...)
+{
+  class something old;
+  int x = g();
+  error error_x;
+  if (setjmp (error_x.jmpbuf))
+  {
+    declare_error();
+    return;
+  }</pre>
+If an error is declared in <I>g</I>, control will pass to a higher level, and the destructor for <I>old</I> won't get called.<P>
+Don't even think of trying to get around this by declaring <I>error_x</I> first. If an error is declared in <I>g</I>, an attempt will be made to pass control with an uninitialized <I>error_x.jmpbuf</I>.<P>
+If memory deallocation is the only garbage collection involved, a more sophisticated memory allocator should be able to straighten things out, but such a technique is beyond the scope of this article.<P>
+This is a safer <I>setjmp</I>, about the safest available in C++. For a much safer <I>setjmp</I>, you have to use other languages that may keep you from doing what you really want to do.<P>
+
+<h4><a href="../../../source/1993/jan93/erdelsky.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

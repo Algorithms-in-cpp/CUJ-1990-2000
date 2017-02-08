@@ -1,0 +1,108 @@
+
+
+
+<HTML>
+<HEAD>
+
+<TITLE>June 1990/Calling C Functions From SQL</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocjun.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Calling C Functions From SQL<A name="014C_00B3"><A name="014C_00B3"></font></h2><P>
+<h3 align="center"><font color="#800000"><A name="014C_0000"><A name="014C_0000">Victor Volkman</font></h3><hr><blockquote><P>
+<P><i><A name="014C_0000"><A name="014C_0000">Victor R. Volkman received a B.S. in computer science from Michigan Technological University in 1986. His areas of interest include database internals, compiler semantics, and graphics applications. He is currently employed as software engineer at Cimage, Inc. of Ann Arbor, Michigan. He can be reached at the HAL 9000 BBS, 313-663-4173, 1200/2400 baud.</i></P><P>
+Structured Query Language (SQL) based programs are an increasingly popular method for manipulating relational databases. Since the introduction of the ANSI SQL standard in 1986, more and more users are demanding SQL solutions for their database problems. This is because standard SQL is a platform independent solution for database applications. SQL defines a high-level English-like set of commands which perform <I>SELECT, PROJECT, JOIN, UPDATE, INSERT, DELETE</I>, and other operations against databases <a href="#note1">[1]</a>.</FONT></FONT><P>
+However, SQL &#151; as its name implies &#151; was originally developed to function as a query language, and the current SQL standard fails to provide the tools needed for the nuts and bolts of most applications. Functions such as handling data entry screens, report writing, and user-defined menus are notably absent. The developer has two options: he can either implement an Embedded SQL (ESQL) <a href="#note2">[2]</a> solution, or use a fourth generation language (4GL) solution. ESQL often requires scores, if not hundreds, of lines of code just to perform a single SQL query. Additionally, debugging is complicated by the addition of the ESQL preprocessor. The alternative to ESQL is a fourth generation language (4GL). A 4GL system allows SQL statements to be incorporated directly into its programming environment. Furthermore, 4GL programs are often executed by interpreters &#151; meaning that the development cycle is shorter than for complied ESQL solutions. With the addition of a C interface, a system like Informix combines the rapid development environment of a 4GL with the power and flexibility of C.<P>
+Informix-4GL is an SQL-based fourth generation language with extensions for functions, while/do loops, for/next loops, case/switch, and many other structured elements. <A href="fig1.htm">Figure 1</a>
+is an example Informix-4GL program which displays the entire <I>CONTACT</I> database to the screen. Informix-4GL offers a robust development environment across many platforms including PC-DOS and most versions of UNIX. Additionally, it has built-in report writing, window management, menuing, and form-handling features.</FONT></FONT><P>
+A customizable interface for C functions allows them to be called from within the Informix-4GL interpreter. You need this C interface to augment the native fourth generation language with complex or otherwise unsupported functions. Informix-4GL contains statements to manipulate relational tables in any conceivable fashion, but lacks a library of routines to open, close, read, and write ordinary ASCII files. This oversight is easily corrected by installing a set of functions to access the built-in C stream I/O library (<I>fopen, fclose, fgets</I>, etc.). Since stream I/O is familiar to C programmers, this library can serve as a gentle introduction to the Informix-4GL/C interface. But before delving headlong into the C interface, you should attain a certain level of familiarity with the Informix-4GL environment.</FONT></FONT><P>
+<h4><FONT COLOR="#000080"><A name="014C_00B4">The Informix-4GL RDS Environment<A name="014C_00B4"></FONT></h4></P>
+The Rapid Development System (RDS) for Informix-4GL is a "layered" environment. Several layers of programs must be loaded before an application may actually be executed. <A href="fig2.htm">Figure 2</a>
+shows the memory map of a custom mailing labels application. Although the example environment shown in <A href="fig2.htm">Figure 2</a>
+is for real-mode PC-DOS, the protected-mode version is logically equivalent. The first component is the SQL Engine, a resident collection of database functions available to all system and user programs. The next layer is the 4GL Runner, a program which interprets 4GL programs and calls the SQL Engine for database functions. The final component is the compiled 4GL User Application, a p-code file produced by the 4GL Program Compiler (FGLPC). (For the remainder of this article, when you see "4GL," please understand that this means Informix-4GL only.)<P>
+<h4><FONT COLOR="#000080"><A name="014C_00B5">4GL Data Types<A name="014C_00B5"></FONT></h4></P>
+Informix-4GL supports a variety of data types for use with 4GL programs (see <A href="fig3.htm">Figure 3</a>)
+. The <I>SMALLINT</I>, <I>INTEGER</I>, and <I>CHAR</I> correspond exactly to the <I>shor</I>, <I>long</I>, and <I>char</I> types in C. All base types may be grouped into arrays and records as desired, and you may create arrays of records as well. The most notable omission to 4GL is the absence of any pointer concepts. All program variables are instantiated with the <I>DEFINE</I> statement. Scoping rules are much the same as C since local variables override global variables of the same name. Here are some examples of legal 4GL variable declarations:</FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT><P>
+<pre>define  last_name      char(30)
+define  age            smallint
+define  units_sold     integer
+define  amt_owed       decimal (16,2)
+
+define  employees array[10] of record
+define  emp_name           char(30),
+     define salary        float
+     end record</pre>
+Informix-4GL automatically performs as much data conversion as it can during expression evaluation so that type casting is generally unneccessary. However, a failed type conversion will cause a run-time error.<P>
+The string data type in 4GL has a few differences from its C counterpart. First, strings in 4GL are not terminated by a <I>null</I> character; instead, they are padded with trailing blanks to fill out their required size. The blank padding, however, can be trimmed from string variables in any expression by adding the <I>CLIPPED</I> suffix. Second, returning a string longer than 512 characters from a function causes a run-time error. This is a limitation of the Informix parameter-passing mechanism, since strings can normally be up to 32,767 chars long.</FONT></FONT></FONT></FONT><P>
+<h4><FONT COLOR="#000080"><A name="014C_00B6">4GL Functions, Variables, And Parameters<A name="014C_00B6"></FONT></h4></P>
+Function declarations in Informix-4GL are quite similar to those in C. The function <I>average_num()</I> defined below receives two parameters, computes the sum and average, and returns them to the caller:.</FONT></FONT><P>
+<pre>function average_num(val1, val2)
+    define val1 smallint
+    define val2 smallint
+    define sum float
+    let sum = val1+ val2
+    return sum, sum / 2.0
+end function</pre>
+Both 4GL and C use the same basic parameter passing system: pass-by-value. This means the arguments to a function are evaluated and then copied to the called function. Since 4GL lacks pointers, parameters are essentially the same as local variables with initial values. Values must be returned to the caller directly in the <I>RETURN</I> statement rather than by modifying parameters. This difference in semantics requires a change in the syntax of function calls. An example calling sequence for <I>average_num</I> might be as follows:</FONT></FONT></FONT></FONT><P>
+<pre>call average_num(12,5)
+    returning sum_val, avg_val</pre>
+Any type of variable may be a parameter or return value with the exception of arrays. 4GL ascertains that each function receives the correct number of arguments and returns the number of values that the calling function was expecting. However, Informix-4GL functions written in C may receive a variable number of parameters.<P>
+<h4><FONT COLOR="#000080"><A name="014C_00B7">Interfacing Informix-4GL To C<A name="014C_00B7"></FONT></h4></P>
+The development of a custom application with C functions involves creating both a 4GL program and a custom runner. The development cycle for the mailing labels custom application appears in <A href="fig4.htm">Figure 4</a>.
+ User-written C functions are linked with Informix-supplied libraries to produce a new p-code interpreter. Once built, a runner can execute any number of different 4GL applications without modification.<P>
+The <I>userfuncs[]</I> structure array in <I>FGIUSR.C</I> (see <A href="list1.htm">Listing 1</a>)
+ serves as a catalog of user-supplied C functions. The <I>cfunc_t</I> structure supplies everything the runner needs to know to call a function: its 4GL name string, its function pointer, and the number of arguments it expects. The <I>userfuncs[]</I> array is terminated by a record of null values which flags the end of the list. Functions expecting a variable number of arguments are indicated by setting the argument count equal to <I>-max</I>, where <I>max</I> is the maximum allowable count. Remember, a function must be declared before a pointer to it can be referenced.</FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT><P>
+The final component is the actual set of functions listed in your <I>userfuncs[]</I> list. In the mailing labels application, these functions are contained in <I>STDIO4GL.C</I> (see <A href="list2.htm">Listing 2</a>)
+. Informix's calling convention <a href="#note3">[3]</a> specifies a stack as the model by which parameters are passed. An Informix parameter stack is a Last-in First-Out (LIFO) queue analogous to a CPU stack. Specifically, "push" operations add to the stack and "pop" operations take away from the stack.</FONT></FONT></FONT></FONT><P>
+Parameters are pushed from left-to-right in a 4GL function call. Functions receiving parameters must then pop them off in a right-to-left order. C functions are allowed to access the 4GL parameter stack through a set of library functions. The complete list of parameter stack function is presented in <I>FGIPROTO.H </I>(see <A href="list3.htm">Listing 3</a>)
+. The only formal argument to the C function itself is an integer containing the parameter count (<I>nargs</I>). 4GL callable C functions must always send the number of 4GL arguments pushed as the return value.</FONT></FONT></FONT></FONT><P>
+<h4><FONT COLOR="#000080"><A name="014C_00B8">A Stream I/O Library For 4GL<A name="014C_00B8"></FONT></h4></P>
+The file <I>STDIO4GL.C</I> contains 4GL callable C functions that provide access to the standard I/O stream library. The functions <I>fgl_fopen, fgl_fclose, fgl_fgets,</I> and <I>fgl_fputs</I> together allow you to read and write ASCII text files. In describing <I>fgl_fopen</I>, we'll revisit each aspect of the Informix-4GL/C interface.</FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT><P>
+The <I>fgl_fopen</I> function, like every other 4GL callable C function, has <I>nargs</I> as its only parameter. The <I>nargs</I> value indicates how many 4GL parameters are waiting on the 4GL stack. Since the entry for <I>fgl_fopen()</I> in <I>userfuncs[]</I> looks like this:</FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT><P>
+<pre>"fgl_fopen", fgl_fopen, 2,</pre>
+the runner knows there should be exactly two parameters, i.e. <I>nargs=2</I>. If there are a different number of parameters, then the runner will signal a run-time error and not call the function. Thus, there is no reason for <I>fgl_fopen()</I> to examine <I>nargs</I>. The first two lines of <I>fgl_fopen()</I> functions to pop strings from the stack:</FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT><P>
+<pre>popquote (mode, sizeof (mode) - 1);
+popquote (filename,
+        sizeof(filename) -1);</pre>
+The first parameter tells where to put the string and the second parameter tells how large the destination string can be (excluding the terminating <I>null</I>). If the value being popped contains more characters than are requested, they will be lost. The best defense against this is to allow for the longest reasonable string in your destination variable. If the value being popped contains fewer characters than are requested, the destination string will be padded with blanks. Blank padding <I>fopen()</I>'s filename and mode arguments yields unpredictable results, so the values are clipped before use:</FONT></FONT></FONT></FONT><P>
+<pre>clipped (mode);
+clipped (filename);</pre>
+If you examine the mailing labels application in <I>LABELS.4GL</I> (see <A href="list4.htm">Listing 4</a>)
+, you can verify that the parameters were indeed popped off in the reverse order from the original call:</FONT></FONT><P>
+<pre>call FGL_fopen (filename, "w")
+returning filehandle</pre>
+Back in the <I>STDIO4GL.C</I> file, the next three lines of <I>fgl_open()</I> actually open the file and return the handle.</FONT></FONT></FONT></FONT><P>
+<pre>ascfile = fopen(filename,mode);
+retlong ((long) ascfile);
+return 1;</pre>
+Although casting the <I>FILE</I> pointer to a <I>long</I> type may seem suspect, it is actually quite safe for most environments. Informix-4GL for MS-DOS requires that the large program model is used (code &gt; 64K, data &gt; 64K). Since 4GL does not support a native pointer type, our method seems to provide the most convenient solution. The alternatives would be either to maintain a list of filehandles or to restrict the user's access to one file at a time. <I>fgl_fopen()</I>'s last task is to return a count of the number of parameters pushed.</FONT></FONT></FONT></FONT></FONT></FONT><P>
+The remainder of the stream I/O functions in <I>STDIO4GL.C</I> are similar in most respects to <I>fgl_fopen()</I>. The only function which returns more than one value is <I>fgl_gets()</I>. This function returns both a string value and an error code. It's crucial to remember that parameters are popped right-to-left, but pushed left-to-right. A sample call such as:</FONT></FONT></FONT></FONT></FONT></FONT><P>
+<pre>call fgl_fgets(filehandle)
+    returning err_code, buffer</pre>
+requires return values in the following order:<P>
+<pre>retshort(err_code);
+retquote(buffer);
+return 2;</pre>
+<h4><FONT COLOR="#000080"><A name="014C_00B9">Variable Number Of Parameters<A name="014C_00B9"></FONT></h4></P>
+As mentioned earlier, the <I>userfuncs []</I> array tells the runner how many arguments a function expects. A negative value in the <I>cf_nargs</I> indicates the function can accept a variable number of arguments. One example of a function which needs variable arguments is a function to return the maximum value of a set of numbers. The function <I>fgl_max()</I> in <I>STDIO4GL.C</I> will take up to nine arguments. The following example shows four parameters being used.</FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT><P>
+<pre>call fgl_max(4,2,1,3) returning
+max_val</pre>
+The only difference in coding style betwen <I>fgl_max()</I> and the other 4GL callable functions is that <I>fgl_max()</I> acts upon the value of <I>nargs</I>. A function must pop all of its parameters, regardless of whether it has a fixed or variable number of parameters. The stack will be corrupted if unused parameters are left on it.</FONT></FONT></FONT></FONT></FONT></FONT><P>
+<h4><FONT COLOR="#000080"><A name="014C_00BA">A Mailing List Application<A name="014C_00BA"></FONT></h4></P>
+The mailing labels application in <I>LABELS.4GL</I> (see <A href="list4.htm">Listing 4</a>)
+ demonstrates one possible utilization of a 4GL callable stream I/O library. This application essentially uses the stream I/O library as a poor man's report writer. The <I>LABELS.4GL</I> program reads from the <I>CONTACT</I> table of the <I>CARDFILE</I> database and writes the result to <I>LABELS.PRN</I>. The application executes a <I>SELECT</I> on the entire <I>CONTACT</I> table after opening the output file. Next, exactly six lines of output are written for each <I>CONTACT</I> record. Notice that some of the lines contain newline escapes (<I>\n</I>) for extra linefeeds to ensure proper address spacing. Finally, the output file is closed and control returns to the operating sytem.</FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT><P>
+<h4><FONT COLOR="#000080"><A name="014C_00BB">Conclusion<A name="014C_00BB"></FONT></h4></P>
+One of the most frequent complaints by detractors of fourth-generation languages is "Sure, I would use a 4GL, but it doesn't support ____." (fill in the blank). I have discovered, however, that with the addition of a modest set of 4GL-callable C functions, I can implement every feature a developer could want. I have constructed 4GL-callable libraries for a DESQview multi-tasking shell, NetBIOS and Sun PC-NFS based database servers, and a hardware key programmer. Informix-4GL RDS offers both the raw power of SQL with the agility of C to deliver a knockout blow. <P>
+<h4>Footnotes</FONT></h4></P>
+<a name="note1">[1]</a> Lusardi, David. <I>The Database Expert's Guide to SQL</I>, McGraw-Hill, New York, New York, 1988.<P>
+<a name="note2">[2]</a> Pass, E.M. "Embedding SQL Commands in Your C Source", <I>The C Users Journal</I>, May 1989. pp. 105-113.<P>
+<a name="note3">[3]</a> Informix-4GL <I>Rapid Development System Reference Manual</I>, 1988, Informix Software, Menlo Park, CA, pp. 1-58ff.<P>
+
+<h4><a href="../../../source/1990/jun90/volkman.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>
+
+

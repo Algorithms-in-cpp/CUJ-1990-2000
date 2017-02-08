@@ -1,0 +1,582 @@
+<HTML><HEAD>
+<TITLE>January 1993/Template Classes for the iostreams Library/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1 <B></B>tstream.h &#151; <B><I></B>template class definitions</A></I></h4>
+<pre>#if !defined TSTREAM_H
+#define TSTREAM_H
+
+#include &lt;iostream.h&gt;  // for base class definitions
+
+// class tbuf&lt;&gt;. Derived publicly from streambuf to
+// allow class ios which contains pointer to streambuf
+// access to virtual functions. tbuf&lt;&gt; implements
+// basic buffering, reading, writing and seeking on
+// a stream. It also provides open, close, attach,
+// and utility functions.
+template &lt;class T&gt;
+class tbuf : public streambuf {
+public:
+// openProtection provides a default parameter to the
+// open functions to specify what protection a file
+// will be created with. You can ignore this if it is
+// not necessary
+static const int openProtect;
+// tbufSize specifies the default buffer size. It is
+// set to 516 bytes.
+static const int tbufSize;
+// Default contructor. Make a buffer without a
+// stream attached. mode has a dual meaning, if it
+// is zero it means that any operation is allowable,
+// and the stream should not be deleted when closing.
+   tbuf()
+      : stream(0), mode(0), opened(0)
+   {
+      makbuf();
+   }
+// create buffer and attach to t.  t is assumed to be
+// already opened in read/write mode.  t will not be
+// deleted or closed when closing this buffer
+   tbuf(T &amp;t)
+      : stream(&amp;t), mode(0), opened(1)
+   {
+      makbuf();
+   }
+// create buffer from parameters, and attach to t.
+   tbuf(T &amp;t, char* b, int l)
+      : stream(&amp;t), mode(0), opened(1)
+   {
+      setbuf(b, l);
+   }
+// destroy buffer. If mode is not zero, t will be
+// closed and deleted. Otherwise just flush the
+// output buffer.
+   ~tbuf()
+   {
+      if(mode)
+         close();
+      else
+         overflow(EOF);
+   }
+// return open status
+   int is_open() const
+   {
+      return opened;
+   }
+// return reference to stream
+   T &amp;fd() const
+   {
+      return *stream;
+   }
+// open stream. mode must not be zero.  stream will
+// be closed and deleted when closing buffer.
+   tbuf *open(const char *name, int mode,
+                   int prot = tbuf::openProtect);
+// close buffer and optionally delete stream.
+   tbuf *close();
+// attach stream to buffer.  Stream is assumed to
+// be opened in read/write mode.
+   tbuf *attach(T &amp;);
+// write buffer to stream and reset pointers.
+   virtual int overflow(int = EOF);
+// read data into buffer and reset pointers.
+   virtual int underflow();
+// sync input and output.
+   virtual int sync();
+// seek to offset and flush output buffers.
+   virtual long seekoff(long, ios::seek_dir, int);
+// set buffer.  For unbuffered i/o set char * to 0.
+   virtual streambuf *setbuf(char *, int);
+protected:
+   int putBackSize()
+   {
+      return (blen() &gt; 8) ? 4 : 1;
+   }
+   void resetpg(int end = 0);
+   void makbuf()
+   {
+      setbuf(new char[tbufSize], tbufSize);
+   }
+   int unbuffered()
+   {
+      return streambuf::unbuffered() | !base();
+   }
+   T     *stream;
+   int   mode;
+   short opened;
+   char  lookAhead[2];
+};
+
+template &lt;class T&gt;
+const int tbuf&lt;T&gt;::tbufSize = 516;
+template &lt;class T&gt;
+const int tbuf&lt;T&gt;::openProtect = 0;
+
+// Attach an open stream to this buffer. When this
+// buffer is closed don't try to close stream. If
+// not yet buffered, try to create a buffer. Reset
+// the put and get pointers. Return 0 on error, or
+// this if OK.
+template &lt;class T&gt;
+tbuf&lt;T&gt;* tbuf&lt;T&gt;::attach(T &amp;t)
+{
+   if(opened)      // if already opened, return 0
+      return 0;
+   stream = &amp;t;    // attach stream.
+   opened = 1;     // set to opened.
+   mode = 0;       // buffer doesn't own stream.
+   if(!base())     // if no buffer yet...
+      makbuf();   // try to make one.
+   else
+      resetpg(); // reset put and get pointers.
+   return this;
+}
+
+// Close buffer, and optionally stream attached to it.
+// Flush buffer if data inside. Return 0 on error or
+// this if OK.
+template &lt;class T&gt;
+tbuf&lt;T&gt;* tbuf&lt;T&gt;::close()
+{
+   if(!*stream)    // if stream closed,
+      opened = 0; // set opened off.
+   if(!opened)     // if not on return 0.
+      return 0;
+   int ret = 0;
+   if(out_waiting()) // if output in buffer.
+          // flush output buffer.
+      ret = (overflow(EOF) == EOF) ? 1 : 0;
+   if(mode)        // if mode is 0, don't
+      delete stream;  // close or delete stream.
+   opened = 0;     // set opened off.
+   return ret ? 0 : this;
+}
+// Write data from buffer to stream. This function
+// is called when the buffer is full and we need to
+// output more characters. The parameter c is the
+// character that caused the overflow. If the
+// stream is buffered, it will be placed in the
+// buffer, otherwise it is written to the stream.
+// If input char is EOF, don't write, just flush.
+// Returns EOF on error, or 1 on success.
+template &lt;class T&gt;
+int tbuf&lt;T&gt;::overflow(int c)
+{
+   if(!opened ||    // check to see if stream
+      mode == 0 ||     // is on and mode is out.
+      !(mode&amp;ios::out))
+      return EOF;
+   if(unbuffered())
+   {
+      if(c ! = EOF)
+      {        // if unbuffered,
+         char b = c; // write single char
+         if(stream-&gt;write(&amp;b, 1) != 1)
+            return EOF;
+      }
+   }
+   else       // else if buffered.
+   {
+      if(sync() != 0) // sync input and output
+         return EOF; // when writing
+      resetpg(1); // reset the put/get pointers
+      if(c != EOF)
+      {
+         sputc(c);   // add c to the buffer
+         gbump(1);   // move the get pointer
+      }
+   }
+   return 1;       // return OK
+}
+
+// Open stream. If mode ios::ate (at end) is on,
+// seek to end
+template &lt;class T&gt;
+tbuf&lt;T&gt;* tbuf&lt;T&gt;::open(const char* n, int m, int p)
+{
+   if(opened || !m)    //if already on, or no mode,
+      return 0;   // return error.
+   stream = new T; // make new stream pointer.
+   stream-&gt;open(n, m, p);// open stream.
+   if(!*stream)     // if stream not open,
+      return 0;    // return error.
+   opened = 1;      // set to on.
+   mode = m;        // remeber mode.
+   if((mode &amp; ios::ate) &amp;&amp;
+         stream-&gt;seek(OL, ios::end) == EOF)
+      return 0;    // seek to end if ios::ate.
+   resetpg();       // reset put/get pointers.
+   return this;     // return OK.
+}
+
+// Set the buffer, reset the put/get pointers.
+// Return 0 on error, this if OK.
+template &lt;class T&gt;
+streambuf* tbuf&lt;T&gt;::setbuf(char* b, int l)
+{
+   if(!b)      // turn off buffering.
+   {
+      streambuf::unbuffered(1);
+      return this;
+   }
+   if(opened &amp;&amp; base())// check if stream is opened,
+      return 0;       // , and no buffer yet.
+   setb(b, b+l, 0);    // set buffer pointers.
+   resetpg();      // reset put/get pointers.
+   return this;    // return OK.
+}
+
+// Seek to offset. dir indicates the relativity of
+// the offset, either from beginning, current position,
+// or end (ios::beg, ios::cur, ios::end).
+// First make sure there's nothing in the buffer.
+template &lt;class T&gt;
+long tbuf&lt;T&gt;::seekoff(long off, ios::seek_dir dir,
+                        int /* mode ignored */)
+{
+   long loff = off;
+   int count = out_waiting();  // flush output first.
+   if(count)
+   {
+      if(stream-&gt;write(pbase(), count) != count)
+         return EOF;
+   }
+   else if(dir == ios::cur &amp;&amp; // if relative seek,
+         (count = in_avail()) != 0)
+      loff -= count;      // discount input.
+   resetpg();          // reset pointers.
+   return stream-&gt;seek(loff, dir);
+}
+// sync input and output buffer pointers. If output
+// is waiting, write it, if input is waiting,
+// back up to read it again
+template &lt;class T&gt;
+int tbuf&lt;T&gt;::sync()
+{
+   if (!opened)        // check if opened.
+      return EOF;
+   int count = out_waiting();  // check for output,
+   if(count)           // in buffer.
+   {
+      if(stream-&gt;write(pbase(), count) != count)
+         return EOF;       // write output.
+      resetpg(1);
+   }
+   else if(in_avail())      // check for input
+   {               // in buffer
+      long pos = stream-&gt;seek(long(-in_avail()),
+                                   ios::cur);
+      setg(eback(), gptr(), gptr());
+      setp(gptr(), gptr());   // set up to re-read.
+      if(pos == EOF)
+         return EOF;
+   }
+   return 0;
+}
+
+// Read from stream to fill buffer. Must be opened and
+// in input mode. If there is input in the buffer,
+// return it. Otherwise call sync, read from stream,
+// and set pointers. If the input is unbuffered,
+// use the lookahead buffer.
+template &lt;class T&gt;
+int tbuf&lt;T&gt;::underflow()
+{
+   if(!opened || mode == 0 || !(mode&amp;ios::in))
+      return EOF; // check for correct mode.
+   if(in_avail())      // if available from buffer,
+      return *gptr()&amp;0xFF;    // don't bother.
+   int c;
+   int count;
+   if(unbuffered())        // if unbuffered.
+   {
+      count = stream-&gt;read(lookAhead, 1);
+      if(count == EOF)     // read one char
+      {           // into look ahead
+         c = EOF;         // buffer.
+         setg(0, 0, 0);
+      }
+      else
+      {
+         c = lookAhead[0]&amp;0xFF;
+         setg(lookAhead, lookAhead, lookAhead+1);
+      }
+   }
+   else           // else buffered.
+   {
+      if(sync() != 0)    // sync pointers.
+         return EOF;
+      int pb = putBackSize();
+      char *b = base();   // read into buffer.
+      count = stream-&gt;read(b+pb, blen()-pb);
+      if(count == EOF)    // check read return.
+         return EOF;
+      setg(b, b+pb, b+pb+count);
+      setp(b+pb, b+pb);   // set pointers.
+      if(count)        // return first char.
+         c = *gptr()&amp;0xFF;
+   }
+   if(!count)
+      c = EOF;
+   return c;
+}
+
+// reset the put and get pointers. If end is
+// true set the end pointers to the end of
+// the buffer.
+template&lt;class T&gt;
+void tbuf&lt;T&gt;::resetpg(int end)
+{
+   char *buf = base(); // get the start of buffer.
+   char *sbuf = buf + (buf ? putBackSize() : 0);
+   char *ebuf;     // set start and end pointers.
+   if(end)
+      ebuf = buf + blen();
+   else
+      ebuf = sbuf;
+   setp(sbuf, ebuf);   // set put pointer
+   setg(buf, sbuf, sbuf);// set get pointer
+}
+
+// tstreambase is virtually derived from ios. ios
+// does not define any functionality for tstreambase
+// but allows communication between tstreambase and
+// istream, ostream and stream classes. The functions
+// defined in tstreambase typically call the same
+// named function for its tbuf&lt;&gt; member and set ios
+// status flags. When a tstreambase is constructed
+// ios is initialized with a pointer to the tbuf&lt;&gt;
+// member. ios see this pointer as a streambuf
+// pointer, and only has access to tbuf&lt;&gt; through the
+// virtual functions, overflow, underflow, sync, and
+// seekoff.
+template &lt;class T&gt;
+class tstreambase : virtual public ios {
+public:
+// Default constructor. Make an unattached
+// buffer, and initialize ios with it's pointer.
+   tstreambase()
+      : tbbuf()
+   {
+      ios::init(&amp;tbbuf);
+   }
+// Make a buffer attach to named stream, and open
+// stream
+   tstreambase(const char* n, int m, int p = tbuf&lt;T&gt;::openProtect)
+      : tbbuf()
+   {
+      ios::init(&amp;tbbuf);
+      open(n, m, p);
+   }
+// Make a buffer attached to already opened stream.
+   tstreambase(T &amp;f)
+      : tbbuf(f)
+   {
+      ios::init(&amp;tbbuf);
+   }
+// Make a buffer using parameters, and attach
+// to already opened stream.
+   tstreambase(T &amp;f, char* b, int l)
+      : tbbuf(f, b, l)
+   {
+      ios::init(&amp;tbbuf);
+   }
+// Destroy buffer
+   ~tstreambase()
+   {
+      ;
+   }
+// close attached stream and set ios flags.
+   void close()
+   {
+      if(tbbuf.close())
+         clear(ios::goodbit);
+      else
+         setstate(ios::failbit);
+   }
+// set buffer and set ios flags.
+   void tstreambase::setbuf(char* b, int l)
+   {
+      if(tbbuf.setbuf(b, l))
+         clear(ios::goodbit);
+      else
+         setstate(ios::failbit);
+   }
+// open stream and set ios flags.
+   void open(const char *, int,
+                int = tbuf&lt;T&gt;::openProtect);
+// attach opened stream and set ios flags.
+   void attach(T &amp;);
+// return the buffer.
+   tbuf&lt;T&gt; *rdbuf()
+   {
+      return &amp;tbbuf;
+   }
+private:
+   tbuf&lt;T&gt; tbbuf;
+};
+
+// Attempt to open tbuf&lt;&gt;, and set ios flags
+// accordingly. Opening an already open stream
+// results in an error. If ios::app (append to
+// file) is set, also set ios::out. If ios::out
+// is set, and ios::app, ios::in, and ios::ate
+// (start at end) are not set, set the ios::trunc bit.
+template &lt;class T&gt;
+void tstreambase&lt;T&gt;::open(const char *n, int m, int p)
+{
+   if(m &amp; ios::app)
+      m |= ios::out;
+   else if((m &amp; (ios::out|ios::ate|ios::app|ios::in))
+                                   == ios::out)
+      m |= ios::trunc;
+   if(tbbuf.is_open())
+      clear(ios::failbit);
+   else if(tbbuf.open(n, m, p))
+      clear(ios::goodbit);
+   else
+      clear(ios::badbit);
+}
+
+// Attach an opened stream to buffer, and set the ios
+// bits accordingly.
+template &lt;class T&gt;
+void tstreambase&lt;T&gt;::attach(T &amp;f)
+{
+   if(tbbuf.is_open())
+      setstate(ios::failbit);
+   else if(tbbuf.attach(f))
+      clear(ios::goodbit);
+   else
+      clear(ios::badbit);
+}
+
+// The itstream, otstream and tstream class are merely
+// "shell" classes, and serve only to combine the
+// functionality of it's base class. The only functions
+// defined are the constructor and destructors, and
+// open and rdbuf. There are no addition data members
+// and all functions call directly the functions of the
+// base class. The default open mode is ios::in for
+// itstream, ios::out for otstream, and both for
+// tstream.
+template &lt;class T&gt;
+class itstream : public tstreambase&lt;T&gt;,
+                        public istream {
+public:
+   itstream()
+   {
+      ;
+   }
+   itstream(const char* n, int m = ios::in,
+                   int p = tbuf&lt;T&gt;::openProtect)
+      : tstreambase&lt;T&gt;(n, m | ios::in, p)
+   {
+      ;
+   }
+   itstream(T &amp;f)
+      : tstreambase&lt;T&gt;(f)
+   {
+      ;
+   }
+   itstream(T &amp;f, char* b, int l)
+      : tstreambase&lt;T&gt;(f, b, l)
+   {
+      ;
+   }
+   ~itstream()
+   {
+      ;
+   }
+   tbuf&lt;T&gt; *rdbuf()
+   {
+      return tstreambase&lt;T&gt;::rdbuf();
+   }
+   void open(const char *n, int m = ios::in,
+                   int p = tbuf&lt;T&gt;::openProtect)
+   {
+      tstreambase&lt;T&gt;::open(n, m | ios::in, p);
+   }
+};
+template &lt;class T&gt;
+class otstream : public tstreambase&lt;T&gt;,
+                          public ostream {
+public:
+   otstream()
+   {
+      ;
+   }
+   otstream(const char* n, int m = ios::out,
+                int p = tbuf&lt;T&gt;::openProtect)
+      : tstreambase&lt;T&gt;(n, m | ios::out, p)
+   {
+      ;
+   }
+   otstream(T &amp;f)
+      : tstreambase&lt;T&gt;(f)
+   {
+      ;
+   }
+   otstream(T &amp;f, char* b, int l)
+      : tstreambase&lt;T&gt;(f, b, l)
+   {
+      ;
+   }
+   ~otstream()
+   {
+      ;
+   }
+   tbuf&lt;T&gt; *rdbuf()
+   {
+      return tstreambase&lt;T&gt;::rdbuf();
+   }
+   void open(const char *n, int m = ios::out,
+                 int p = tbuf&lt;T&gt;::openProtect)
+   {
+      tstreambase&lt;T&gt;::open(n, m | ios::out, p);
+   }
+};
+
+template &lt;class T&gt;
+class tstream : public tstreambase&lt;T&gt;,
+                       public iostream {
+public:
+   tstream()
+   {
+      ;
+   }
+   tstream(const char *n, int m, int p = tbuf&lt;T&gt;::openProtect)
+      : tstreambase&lt;T&gt;(n, m, p)
+   {
+      ;
+   }
+   tstream(T &amp;f)
+      : tstreambase&lt;T&gt;(f)
+   {
+      ;
+   }
+   tstream(T &amp;f, char *b, int l)
+      : tstreambase&lt;T&gt;(f, b, l), iostream()
+   {
+      ;
+   }
+   ~tstream()
+   {
+      ;
+   }
+   tbuf&lt;T&gt; *rdbuf()
+   {
+      return tstreambase&lt;T&gt;::rdbuf();
+   }
+   void open(const char *n, int m,
+            int p = tbuf&lt;T&gt;::openProtect)
+   {
+      tstreambase&lt;T&gt;::open(n, m, p);
+   }
+};
+#endif
+/* End of File */
+</pre>
+</BODY>
+</HTML>

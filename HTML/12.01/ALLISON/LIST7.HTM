@@ -1,0 +1,463 @@
+<HTML><HEAD>
+<TITLE>January 1994/Code Capsules/Listing 7</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 7 <I>An implementation of the bits class template</I></A></h4>
+<pre>// bits.h
+
+#include &lt;iostream. h&gt;
+#include &lt;stddef. h&gt;
+#include &lt;limits.h&gt;
+#include &lt;assert.h&gt;
+#include "string.hpp"
+
+template&lt;size_t N&gt;
+class bits
+{
+   // Global I/O funtions
+   friend ostream&amp; operator&lt;&lt;(ostream&amp; os, const bits&lt;N&gt;&amp; rhs)
+      {os &lt;&lt; rhs.to_string(); return os;}
+   friend istream&amp; operator&gt;&gt;(istream&amp; is, bits&lt;N&gt;&amp; rhs)
+      {rhs.read(is); return is;}
+
+   // Global bitwise operators
+   friend bits&lt;N&gt;operator&amp;(const bits&lt;N&gt;&amp; b1,const bits&lt;N&gt;&amp; b2)
+      {bits&lt;N&gt; r(b1); return r &amp;= b2;}
+   friend bits&lt;N&gt;operator|(const bits&lt;N&gt;&amp;b1,const bits&lt;N&gt;&amp; b2)
+      {bits&lt;N&gt; r(b1); return r |= b2;}
+   friend bits&lt;N&gt; operator^(const bits&lt;N&gt;&amp; b1,const bits&lt;N&gt;&amp; b2)
+      {bits&lt;N&gt; r(b1); return r ^= b2;}
+
+public:
+   // Constructors
+   bits();
+   bits(unsigned long n);
+   bits(const bits&lt;N&gt;&amp; b);
+   bits(const string&amp; s);
+
+   // Conversions
+   unsigned short to_ushort() const;
+   unsigned long to_ulong() const;
+   string to_string() const;
+
+   // Assignment
+   bits&lt;N&gt;&amp; operator=(const bits&lt;N&gt;&amp; rhs);
+
+   // Equality
+   int operator==(const bits&lt;N&gt;&amp; rhs) const;
+   int operator!=(const bits&lt;N&gt;&amp; rhs) const;
+
+   // Basic bit operations
+   bits&lt;N&gt;&amp; set(size_t pos, int val = 1);
+   bits&lt;N&gt;&amp; set();
+   bits&lt;N&gt;&amp; reset(size_t pos);
+   bits&lt;N&gt;&amp; reset();
+   bits&lt;N&gt;&amp; toggle(size_t pos);
+   bits&lt;N&gt;&amp; toggle();
+   bits&lt;N&gt; operator~() const;
+   int test(size_t n) const;
+   int any() const;
+   int none() const;
+
+   // Bit-wise operators
+   bits&lt;N&gt;&amp; operator&amp;=(const bits&lt;N&gt;&amp; rhs);
+   bits&lt;N&gt;&amp; operator|=(const bits&lt;N&gt;&amp; rhs);
+   bits&lt;N&gt;&amp; operator^=(const bits&lt;N&gt;&amp; rhs);
+
+   // Shift operators
+   bits&lt;N&gt;&amp; operator&lt;&lt;=(size_t n);
+   bits&lt;N&gt;&amp; operator&gt;&gt;=(size_t n);
+   bits&lt;N&gt; operator&lt;&lt;(size_t n) const;
+   bits&lt;N&gt; operator&gt;&gt;(size_t n) const;
+
+   size_t count() const;
+   size_t length() const;
+
+private:
+   typedef unsigned int Block;
+   enum {BLKSIZ = CHAR_BIT * sizeof (Block)};
+   enum {nblks_ = (N+BLKSIZ-1) / BLKSIZ};
+
+   Block bits_[nblks_];
+
+   static size_t word(size_t pos)
+     {return nblks_ - 1 - pos/BLKSIZ;}
+   static size_t offset(size_t pos)
+     {return pos % BLKSIZ;}
+   static Block mask1(size_t pos)
+     {return Block(1) &lt;&lt; offset(pos);}
+   static Block mask0(size_t pos)
+     {return ~(Block(1) &lt;&lt; offset(pos));}
+
+   void cleanup();
+   void set_(size_t pos);
+   int set_(size_t pos, int val);
+   void reset_(size_t pos);
+   int test_(size_t pos) const;
+   void from_string(const string&amp; s);
+   void read(istream&amp; is);
+   int any(size_t start_pos) const;
+   unsigned long to(size_t) const;
+};
+
+template&lt;size_t N&gt;
+inline bits&lt;N&gt;::bits()
+{
+   reset();
+}
+
+template&lt;size_t N&gt;
+bits&lt;N&gt;::bits(const string&amp; s)
+{
+   // Validate that s has only 0's and 1's
+   for (int i = 0; i &lt; s.length(); ++i)
+   {
+       char c = s.get_at(i);
+       if (c != '0' &amp;&amp; c != '1')
+          break;
+   }
+   assert(i == s.length());
+
+   from_string(s);
+}
+
+template&lt;size_t N&gt;
+inline bits&lt;N&gt;::bits(const bits&lt;N&gt;&amp; b)
+{
+   memcpy(bits_,b.bits_,nblks_*sizeof(bits_[0]));
+}
+
+template&lt;size_t N&gt;
+bits&lt;N&gt;::bits(unsigned long n)
+{
+   // Don't drop any bits
+   if (N &lt; CHAR_BIT * sizeof(unsigned long))
+      assert((n &gt;&gt; N) == 0);
+
+   reset();
+
+   size_t nblks = sizeof (unsigned long) / sizeof (Block);
+   if (nblks &gt; 1)
+      for (int i = 0; i &lt; nblks; ++i)
+      {
+          bits_[nblks - 1 - i] = Block(n);
+          n &gt;&gt;= BLKSIZ;
+      }
+   else
+      bits_[nblks_ - 1] = Block(n);
+}
+
+template&lt;size_t N&gt;
+unsigned short bits&lt;N&gt;::to_ushort() const
+{
+   size_t limit = sizeof(unsigned short) * CHAR_BIT;
+   assert(!(length() &gt; limit &amp;&amp; any(limit)));
+   size_t nblks = sizeof(unsigned short) / sizeof(Block);
+   return (unsigned short) to(nblks);
+}
+template&lt;size_t N&gt;
+unsigned long bits&lt;N&gt;::to_ulong() const
+{
+   size_t limit= sizeof(unsigned long) * CHAR_BIT;
+   assert(!(length() &gt; limit &amp;&amp; any(limit)));
+   size_t nblks = sizeof(unsigned long) / sizeof(Block);
+   return to(nblks);
+}
+
+template&lt;size_t N&gt;
+string bits&lt;N&gt;::to_string() const
+{
+   char *s = new char[N+1];
+   for (int i = 0; i &lt; N;++i)
+       s[i] = '0' + test_(N-1-i);
+   s[N] = '\0';
+   string s2(s);
+   delete [] s;
+   return s2;
+}
+
+template&lt;size_t N&gt;
+bits&lt;N&gt;&amp; bits&lt;N&gt;::operator=(const bits&lt;N&gt;&amp; b)
+{
+   if (this != &amp;b)
+      memcpy(bits_,b.bits_, nblks_* sizeof(bits_[0]));
+   return *this;
+}
+
+template&lt;size_t N&gt;
+inline int bits&lt;N&gt;::operator==(const bits&lt;N&gt;&amp; b) const
+{
+   return !memcmp(bits_,b.bits_,nblks_ * sizeof(bits_[0]));
+}
+
+template&lt;size_t N&gt;
+inline int bits&lt;N&gt;::operator!=(const bits&lt;N&gt;&amp; b) const
+{
+   return !operator==(b);
+}
+
+template&lt;size_t N&gt;
+inline bits&lt;N&gt;&amp; bits&lt;N&gt;::set(size_t pos, int val)
+{
+   assert(pos &lt; N);
+   (void) set_(pos,val);
+   return *this;
+}
+
+template&lt;size_t N&gt;
+inline bits&lt;N&gt;&amp; bits&lt;N&gt;::set()
+{
+   memset(bits_,~0u,nblks_ * sizeof bits_[0]);
+   cleanup();
+   return *this;
+}
+
+template&lt;size_t N&gt;
+inline bits&lt;N&gt;&amp; bits&lt;N&gt;::reset(size_t pos)
+{
+   assert(pos &lt; N);
+   reset_(pos);
+   return *this;
+}
+
+template&lt;size_t N&gt;
+inline bits&lt;N&gt;&amp; bits&lt;N&gt;::reset()
+{
+   memset(bits_,0,nblks_ * sizeof bits_[0]);
+   return *this;
+}
+
+template&lt;size_t N&gt;
+inline bits&lt;N&gt;&amp; bits&lt;N&gt;::toggle(size_t pos)
+{
+   assert(pos &lt; N);
+   bits_[word(pos)] ^= mask1(pos);
+   return *this;
+}
+
+template&lt;size_t N&gt;
+bits&lt;N&gt;&amp; bits&lt;N&gt;::toggle()
+{
+   size_t nw = nblks_;
+   while (nw--)
+       bits_[nw] = ~bits_[nw];
+   cleanup();
+   return *this;
+}
+
+template&lt;size_t N&gt;
+inline bits&lt;N&gt; bits&lt;N&gt;::operator~() const
+{
+   bits&lt;N&gt; b(*this);
+   b.toggle();
+   return b;
+}
+
+template&lt;size_t N&gt;
+inline int bits&lt;N&gt;::test(size_t pos) const
+{
+   assert(pos &lt; N);
+   return test_(pos);
+}
+
+template&lt;size_t N&gt;
+int bits&lt;N&gt;::any() const
+{
+   for (int i = 0; i &lt; nblks_; ++i)
+       if (bits_[i])
+          return 1;
+   return 0;
+}
+
+template&lt;size_t N&gt;
+inline int bits&lt;N&gt;::none() const
+{
+   return !any();
+}
+
+template&lt;size_t N&gt;
+bits&lt;N&gt;&amp; bits&lt;N&gt;::operator&amp;=(const bits&lt;N&gt;&amp; rhs)
+{
+   for (int i = 0; i &lt; nblks_; ++i)
+       bits_[i] &amp;= rhs.bits_[i];
+   return *this;
+}
+
+template&lt;size_t N&gt;
+bits&lt;N&gt;&amp; bits&lt;N&gt;::operator|=(const bits&lt;N&gt;&amp; rhs)
+{
+   for (int i = 0; i &lt; nblks_; ++i)
+       bits_[i]  = rhs.bits_[i];
+   return *this;
+}
+
+template&lt;size_t N&gt;
+bits&lt;N&gt;&amp; bits&lt;N&gt;::operator^=(const bits&lt;N&gt;&amp; rhs)
+{
+   for (int i= 0; i &lt; nblks ; ++i)
+       bits_[i] ^= rhs.bits_[i];
+   return *this;
+}
+
+template&lt;size_t N&gt;
+bits&lt;N&gt;&amp; bits&lt;N&gt;::operator&gt;&gt;=(size_t n)
+{
+   if (n &gt; N)
+       n = N;
+   for (int i = 0; i &lt; N-n;++i)
+       (void) set_(i,test_(i+n));
+   for (i = N-n; i &lt; N; ++i)
+       reset_(i);
+   return *this;
+}
+
+template&lt;size_t N&gt;
+bits&lt;N&gt;&amp; bits&lt;N&gt;::operator&lt;&lt;=(size_t n)
+{
+   if (n &gt; N)
+       n = N;
+   for (int i = N-1; i &gt;= n; --i)
+       (void) set_(i,test(i-n));
+   for (i = 0; i &lt; n; ++i)
+       reset_(i);
+   return *this;
+}
+
+template&lt;size_t N&gt;
+inline bits&lt;N&gt; bits&lt;N&gt;::operator&gt;&gt;(size_t n) const
+{
+   bits r(*this);
+   return r &gt;&gt;= n;
+}
+
+template&lt;size_t N&gt;
+inline bits&lt;N&gt; bits&lt;N&gt;::operator&lt;&lt;(size_t n) const
+{
+   bits r(*this);
+   return r &lt;&lt;= n;
+}
+
+template&lt;size_t N&gt;
+size_t bits&lt;N&gt;::count() const
+{
+   size_t sum = 0;
+   for (int i = 0; i &lt; N; ++i)
+       if (test_(i))
+          ++sum;
+   return sum;
+}
+
+template&lt;size_t N&gt;
+inline size_t bits&lt;N&gt;::length() const
+{
+   return N;
+}
+
+// Private functions
+template&lt;size_t N&gt;
+inline void bits&lt;N&gt;::set_(size_t pos)
+{
+   bits_[word(pos)] |= mask1(pos);
+}
+
+template&lt;size_t N&gt;
+int bits&lt;N&gt;::set_(size_t pos, int val)
+{
+   if (val)
+      set_(pos);
+   else
+      reset_(pos);
+   return !!val;
+}
+
+template&lt;size_t N&gt;
+inline void bits&lt;N&gt;::reset_(size_t pos)
+{
+   bits_[word(pos)] &amp;= mask0(pos);
+}
+
+template&lt;size_t N&gt;
+inline int bits&lt;N&gt;::test_(size_t pos) const
+{
+   return !!(bits_[word(pos)] &amp; mask1(pos));
+}
+
+template&lt;size_t N&gt;
+inline void bits&lt;N&gt;::cleanup()
+{
+   // Make sure unused bits don't get set
+   bits_[0] &amp;= (~Block(0) &gt;&gt; (nblks_ * BLKSIZ - N));
+}
+
+template&lt;size_t N&gt;
+void bits&lt;N&gt;::from_string(const string&amp; s)
+{
+   // Assumes s contains only 0's and 1's
+   size_t slen = s.length();
+   reset();
+   for (int i = slen-1; i &gt;= 0; --i)
+       if (s.get_at(i) == '1')set_(slen-i-1);
+}
+
+template&lt;size_t N&gt;
+void bits&lt;N&gt;::read(istream&amp; is)
+{
+   char *buf = new char[N];
+   char c;
+
+   is &gt;&gt; ws;
+   for (int i = 0; i &lt; N; ++i)
+   {
+       is.get(c);
+       if (c == '0' || c == '1')
+          buf[i] = c;
+       else
+       {
+          is.putback(c);
+          buf[i] = '\0';
+          break;
+       }
+   }
+
+   if (i==0)
+       is.clear(ios::failbit);
+   else
+       from_string(string(buf));
+   delete buf;
+}
+
+template&lt;size_t N&gt;
+int bits&lt;N&gt;::any(size_t start) const
+{
+   // See if any bit past start (inclusive) is set
+   for (int i = start; i &lt; N; ++i)
+       if (test_(i))
+          return 1;
+   return 0;
+}
+
+template&lt;size_t N&gt;
+unsigned long bits&lt;N&gt;::to(size_t nblks) const
+{
+   if (nblks &gt; 1)
+   {
+       int i;
+       unsigned long n = bits_[nblks_ - nblks];
+
+       /* Collect low-order sub-blocks into an unsigned */
+       if (nblks &gt; nblks_)
+          nblks = nblks_;
+       while (--nblks)
+          n = (n &lt;&lt; BLKSIZ) | bits_[nblks_ - nblks];
+       return n;
+   }
+   else
+       return (unsigned long) bits_[nblks_ - 1];
+
+}
+
+/* End of File */
+</pre>
+</BODY>
+</HTML>

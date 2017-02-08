@@ -1,0 +1,316 @@
+<HTML><HEAD>
+<TITLE>March 1994/Symbolic Access To Embedded Controllers/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2<I> The message interpreter and assembler for the embedded controller, implemented on a PC</A></I></h4>
+<pre>/* pars.c */
+/* no copyrights claimed */
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;ctype.h&gt;
+#include &lt;string.h&gt;
+#include "parsdef.h"
+
+static toDoList toDo[MAX_STATEMENTS];
+static char stringPool[STRINGPOOL];
+static char *pPool, *poolEnd;
+static char message[MESSAGELENGTH];
+static char *messList[]= {
+   "EMPTY","error","empty","assign","request",
+   "to_eeprom","is","command","integer","float",
+   "name","name_error","op_error","val_error",
+   "end_error","pool_error"
+};
+
+main()
+{
+   while(1) {
+      pPool= stringPool;
+      poolEnd= stringPool+STRINGPOOL-1;
+      printf("\nmessage: ");
+      gets(message);
+      if(message[0]=='.') break;
+      Parse(message, toDo);
+      PrintToDo(toDo);
+      DoCommands(toDo);
+   }
+}
+
+/* first, the parsing */
+
+void Parse(char *message, toDoList *pToDo)
+{
+   char *pC, token[MAX_TOKEN_LEN+1];
+   int type, i;
+   pC= message;
+   for(i=0; i&lt;MAX_STATEMENTS; i++) {
+      (pToDo+1)-&gt;command= EMPTY; /* mark end */
+      if(*pC=='\0'){pToDo-&gt;command= EMPTY; return;}
+      /* get name */
+      pC= GetNextToken(pC, token, &amp;type);
+      if(StoreToken(&amp;pToDo-&gt;name, token) != 0)
+         { pToDo-&gt;command=POOL_ERROR; return; }
+      if((type==ERROR)||(type!=NAME))
+         { pToDo-&gt;command= NAME_ERROR; return;}
+      if(*pC=='\0') {pToDo-&gt;command=EMPTY; return;}
+      /* get operator */
+      pC= GetNextToken(pC, token, &amp;type);
+      if(type==ERROR)
+         {pToDo-&gt;command=OP_ERROR; return;}
+      pToDo-&gt;command= type;
+      /* get value */
+      if((type==ASSIGN)||(type==TO_EEPROM)||
+         (type==IS)) {
+         if(*pC=='\0')
+            {pToDo-&gt;command=VAL_ERROR; return;}
+         pC= GetNextToken(pC, token, &amp;type);
+         pToDo-&gt;type= type;
+         if(type==INTEGER)
+            pToDo-&gt;value= atoi(token);
+         else {pToDo-&gt;command= VAL_ERROR; return;}
+      }
+      else pToDo-&gt;type= INTEGER;
+      if(pToDo-&gt;command== EMPTY) return;
+      pToDo++;
+   }
+   pToDo-&gt;command= END_ERROR;
+   return;
+}
+
+char *GetNextToken(char *begin, char *token, int type)
+{
+   char *pC, *pT;
+   int i;
+   pC= begin;
+   pT= token;
+   *token='\0';
+   *type= EMPTY;
+   if(*pC == '\0') {return pC;}
+   /* remove leading spaces */
+   while(*pC=='') pC++;
+   if(*pC=='\0') return pC;
+   if(isalpha(*pC)) { /* name */
+      *type= NAME;
+      *pT++= *pC++;
+      for(i=1; i&lt;MAX_TOKEN_LEN; i++) {
+         if((isalpha(*pC)) || (isdigit(*pC))
+            ||(*pC=='_')) *pT++= *pC++;
+         else {
+            *pT= '\0';
+            return pC;
+         }
+      }
+      *type= ERROR;
+   return pC;
+   }
+   else if((isdigit(*pC))||(*pC=='+')||)
+      (*pC=='-')) { /* number */
+      *pT++= *pC++;
+      for(i=1; i&lt;MAX_TOKEN_LEN; i++) {
+         if(isdigit(*pC)) *pT++= *pC++;
+         else {
+            *pT= '\0';
+            *type= INTEGER;
+            return pC;
+         }
+      }
+      *type= ERROR;
+      return pC;
+   }
+   else if(*pC== '=') *type= ASSIGN;
+   else if(*pC== '?') *type= REQUEST;
+   else if(*pC== '&gt;') *type= TO_EEPROM;
+   else if(*pC== ':') *type= IS;
+   else if(*pC== '!') *type= COMMAND;
+   else {*type= ERROR; return ++pC;}
+   return ++pC;
+}
+
+int StoreToken(char **ppName, char *token)
+{
+   int length;
+   *ppName= pPool;
+   length= strlen(token)+1;
+   if((pPool+length)&gt;=poolEnd) return -1;
+   strcpy(pPool, token);
+   pPool+= length;
+   return 0;
+}
+
+/* and now, the action */
+
+static symTabEntry symTab[]= {
+
+   {"reset"  ,  0  , Reset, -1},
+   {"status" , 35  , NULL , -1},
+   {"temp"   , 16  , NULL ,  20}
+};
+
+void PrintToDo(toDoList *toDo)
+{
+   while(toDo-&gt;command != EMPTY) {
+      printf("\n %s %s '%s'",
+         messList[toDo-&gt;command],
+         messList[toDo-&gt;type], toDo-&gt;name);
+      if(toDo-&gt;type==INTEGER)
+         printf(" %d", toDo-&gt;value);
+      toDo++;
+   }
+}
+
+int SymCmp(symTabEntry *a, symTabEntry *b)
+{
+   return strcmp(a-&gt;name, b-&gt;name);
+}
+
+symTabEntry *FindSymbol(char *pName)
+{
+   symTabEntry dummy, *p;
+   dummy.name= pName;
+   p= (symTabEntry*) bsearch(&amp;dummy, symTab,
+      sizeof(symTab)/sizeof(symTabEntry),
+      sizeof(symTabEntry),
+      (int(*)(const void*, const void*))SymCmp);
+   return p;
+}
+
+char *Reset(char *pC)
+{
+   printf("\nExecuting 'Reset'");
+   return pC;
+}
+
+void DoCommands(toDoList *pToDo)
+{
+   char *txBuffer, *pTx;
+   txBuffer= pTx= TxBuffer();
+   *pTx= '\0';
+   while(pToDo-&gt;command != EMPTY) {
+   switch(pToDo-&gt;command) {
+      case ERROR:
+      case NAME_ERROR:
+      case OP_ERROR:
+      case VAL_ERROR:
+      case END_ERROR:
+      case POOL_ERROR:
+      pTx= SayError(pToDo, pToDo-&gt;command, pTx);
+      break;
+      case ASSIGN:    pTx= Assign(pToDo, pTx);
+                    break;
+      case REQUEST:   pTx= Request(pToDo, pTx);
+                    break;
+      case TO_EEPROM: pTx= ToEeprom(pToDo, pTx);
+                    break;
+      case COMMAND:   pTx= RunCommand(pToDo, pTx);
+                    break;
+           default:        break;
+      }
+   ++pToDo;
+   }
+   printf("\ntxBuffer: '%s'\n", txBuffer);
+}
+
+char *SayError(toDoList *pToDo, int err, char *pC)
+{
+   char str[MAX_TOKEN_LEN+1], *pS;
+   pS= pToDo-&gt;name;
+   while(*pC++=*pS++);
+   pC--;
+   *pC++='#';
+   sprintf(str,"%-d", err);
+   pS= str;
+   while(*pC++= *pS++);
+   return --pC;
+}
+
+char *Assign(toDoList *pToDo, char *pTx)
+{
+   symTabEntry *pSym;
+   pSym= FindSymbol(pToDo-&gt;name);
+   if(pSym==NULL) {
+      pTx= SayError(pToDo, UNDEF_SYMB, pTx);
+      return pTx;
+   }
+   if(pToDo-&gt;type==INTEGER) pSym-&gt;ival= pToDo-&gt;value;
+   if(pSym-&gt;func!=NULL) pTx= (*pSym-&gt;func)(pTx);
+   return pTx;
+}
+
+char *Request(toDoList *pToDo, char *pTx)
+{
+
+   symTabEntry *pSym;
+   char *pS, str[MAX_TOKEN_LEN+1];
+   pSym= FindSymbol(pToDo-&gt;name);
+   if(pSym==NULL) {
+      pTx= SayError(pToDo, UNDEF_SYMB, pTx);
+      return pTx;
+   }
+   pS= pToDo-&gt;name;
+   while(*pTx++=*pS++);
+   pTx--;
+   *pTx++= '=';
+   if(pToDo-&gt;type==INTEGER)
+      sprintf(str,"%-d", pSym-&gt;ival);
+   pS= str;
+   while(*pTx++=*pS++);
+   if(pSym-&gt;func!=NULL) pTx= (*pSym-&gt;func)(pTx);
+   return --pTx;
+}
+
+char *ToEeprom(toDoList *pToDo, char *pTx)
+{
+   symTabEntry *pSym;
+   pSym= FindSymbol(pToDo-&gt;name);
+   if(pSym==NULL) {
+      pTx= SayError(pToDo, UNDEF_SYMB, pTx);
+      return pTx;
+   }
+   if(pSym-&gt;eeOffset&lt;O) {
+      pTx= SayError(pToDo, NOT_EEPROM, pTx);
+      return pTx;
+   }
+   if(pToDo-&gt;type==INTEGER) {
+      pSym-&gt;ival= pToDo-&gt;value;
+      WriteEeprom(pSym, INTEGER];
+   }
+   if(pSym-&gt;func!=NULL) pTx= (*pSym-&gt;func)(pTx);
+   return pTx;
+   }
+
+char *RunCommand(toDoList *pToDo, char *pTx)
+{
+   symTabEntry *pSym;
+   pSym= FindSymbol(pToDo-&gt;name);
+   if(pSym==NULL) {
+      pTx= SayError(pToDo, UNDEF_SYMB, pTx);
+      return pTx;
+   }
+   if(pSym-&gt;func!=NULL) pTx= (*pSym-&gt;func)(pTx);
+   else {
+      pTx=SayError(pToDo, UNDEF_FUNC, pTx);
+      return pTx;
+   }
+   return pTx;
+}
+
+char *TxBuffer(void)
+{
+   static char buffer[200];
+   return buffer;
+}
+
+void WriteEeprom(symTabEntry *pSym, int type)
+{
+   if(type==INTEGER) printf(
+      "\nTo EE, type: %d off: %d val: %d\n",
+      type, pSym-&gt;eeOffset, pSym-&gt;ival);
+   return;
+}
+
+/* End of File */</pre>
+
+
+</BODY>
+</HTML>

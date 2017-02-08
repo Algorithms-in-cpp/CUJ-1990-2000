@@ -1,0 +1,616 @@
+<HTML><HEAD>
+<TITLE>December 1991/PC UART Device Driver/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1 (uartapi.c) Application Programming Interface for UART Asynch Driver</A></h4>
+<pre>#include &lt;conio.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;stddef.h&gt;
+#include &lt;dos.h&gt;
+
+#include "uart.h"
+#include "uartmacs.c"
+
+/* unused interrupt vector to redirect Ctrl-Break to */
+#define UNUSEDVECT 0x48
+
+/* Ctrl-Break vector */
+#define CTRL_BRKVECT 0x23
+
+/* Table for converting baud rate to divisor
+   settings */
+static struct
+{
+   unsigned long baud_rate;
+   unsigned char divisor_high_byte;
+   unsigned char divisor_low_byte;
+} gas_baud_to_divisor[] =
+   {
+      {   50L,        0x09,   0x00 },
+      {   75L,        0x06,   0x00 },
+      {   110L,       0x04,   0x17 },
+      {   134L,       0x03,   0x59 },
+      {   150L,       0x03,   0x00 },
+      {   300L,       0x01,   0x80 },
+      {   600L,       0x00,   0xC0 },
+      {   1200L,      0x00,   0x60 },
+      {   1800L,      0x00,   0x40 },
+      {   2000L,      0x00,   0x3A },
+      {   2400L,      0x00,   0x30 },
+      {   3600L,      0x00,   0x20 },
+      {   4800L,      0x00,   0x18 },
+      {   7200L,      0x00,   0x10 },
+      {   9600L,      0x00,   0x0C },
+      {   19200L,     0x00,   0x06 },
+      {   38400L,     0x00,   0x03 },
+      {   57600L,     0x00,   0x02 },
+      {   115200L,    0x00,   0x01 },
+      {   0L,         0x00,   0x00 },
+   };
+
+/* Space to save original asynch interrupt vector */
+static void (interrupt far * gp_orig_asynch_vector)();
+
+/* to save original Ctrl-Break vector */
+static void (interrupt far *gp_ctrlbrk_vector)();
+
+/*******************************************************
+rc = Init_UART()
+rc = 1 : UART(s) intialized OK
+rc = -1: Failure in initialization.
+
+Before calling this function, you must allocate and
+initialize the gp_port_info array to describe
+the UART(s) you want to drive, and you must set
+g_uart_irq to the IRQ level used (all ports must
+use the same IRQ level).
+
+This function latches the UART's interrupt driver
+into the system interrupt table and initializes the
+UART(s). If successful, it registers the
+Exit_UART function to be called during system
+shutdown.
+*******************************************************/
+
+int Init_UART(void)
+{
+   static char a_funcname[] = "Init_UART:";
+   register int value_from_port;
+   unsigned int i;
+   int retcode;
+   unsigned char cur_port;
+   struct t_port_info *p_cur_port_info;
+   void (interrupt far * p_unusedvect();
+
+   /* Verify that calling program has initialized
+     info structures and variables */
+   if (g_num_ports &lt; 1)
+   {
+      fprintf(stderr,"%s g_num_ports (%u) &lt; 1\n",
+             a_funcname,g_num_ports);
+      return(-1);
+   }
+   if (gp_port_info == NULL)
+   {
+      fprintf(stderr,"%s gp_port_info is NULL\n",
+             a_funcname);
+      return(-1);
+   }
+   if ( (g_uart_irq &lt; 3) || (g_uart_irq &gt; 7) )
+   {
+      fprintf(stderr,"%s g_uart_irq (%u) not 3-7\n",
+             a_funcname,g_uart_irq);
+      return(-1);
+   }
+
+   /* Point at entry for first port */
+   p_cur_port_info = gp_port_info;
+
+   /* Loop through array of port info entries and
+     initialize each port */
+   for (cur_port=1;cur_port&lt;=g_num_ports;cur_port++)
+   {
+      /* Initialize internal variables in port
+         info entry */
+      p_cur_port_info-&gt;tx_head = 0;
+      p_cur_port_info-&gt;tx_tail = 0;
+      p_cur_port_info-&gt;rx_head = 0;
+      p_cur_port_info-&gt;rx_tail = 0;
+      p_cur_port_info-&gt;non_int_chars = 0;
+
+      /* Check for valid port on this IRQ and at
+         this base address */
+      retcode = Test_for_asynch_port(
+         p_cur_port_info-&gt;base_address,g_uart_irq);
+      if (retcode == -1)
+      {
+         fprintf(stderr,
+           "%s port %u-no UART at %.4Xh on IRQ %u\n",
+           a_funcname,cur_port,
+           p_cur_port_info-&gt;base_address,
+           g_uart_irq);
+         return (-1);
+      }
+
+      /* Validate modem parameters */
+      if ( (p_cur_port_info-&gt;stop_bits &lt; 1) ||
+          (p_cur_port_info-&gt;stop_bits &gt; 2) )
+      {
+          fprintf(stderr,
+            "%s port %u-stop bits (%u) not 1 or 2\n",
+            a_funcname,cur_port,
+            p_cur_port_info-&gt;stop_bits);
+            return(-1);
+      }
+      switch (p_cur_port_info-&gt;parity)
+         {
+             case 0 :
+             case 1 :
+             case 3 :
+                 break;
+
+             default :
+                 fprintf(stderr,
+            "%s port %u-parity (%u) not 0,1,or 3\n",
+                    a_funcname,cur_port,
+                    p_cur_port_info-&gt;parity);
+                 return(-1);
+         }
+
+      if ( (p_cur_port_info-&gt;data_bits &lt; 5) ||
+          (p_cur_port_info-&gt;data_bits &gt; 8) )
+      {
+          fprintf(stderr,
+             "%s port %u-data bits (%u) not 5-8\n",
+             a_funcname,cur_port,
+             p_cur_port_info-&gt;data_bits);
+          return(-1);
+      }
+
+      /* Translate specified baud rate into
+         divisor settings */
+      for (i=0;
+          gas_baud_to_divisor[i].baud_rate != 0L;
+          i++)
+      {
+          if (p_cur_port_info-&gt;baud_rate ==
+             gas_baud_to_divisor[i].baud_rate)
+             break;
+
+      }
+      if (gas_baud_to_divisor[i].baud_rate == 0L)
+      {
+         fprintf(stderr,
+            "%s port %u-invalid baud rate %lu\n",
+            a_funcname,cur_port,
+            p_cur_port_info-&gt;baud_rate);
+         return (-1);
+      }
+
+      /* Make sure interrupt generation is disabled */
+      outp(p_cur_port_info-&gt;base_address+
+          INTERRUPT_ENABLE_REGISTER,0x00);
+
+      /* Delay for port to catch up */
+      IO_DELAY(3);
+
+      /* Enable writing to divisor latch */
+      outp(p_cur_port_info-&gt;base_address+
+          LINE_CONTROL_REGISTER,0x80);
+
+      /* Delay for port to catch up */
+      IO_DELAY(3);
+
+      /* Set the low byte of the divisor latch */
+      outp(p_cur_port_info-&gt;base_address+
+          DIV_LATCH_LOW_BYTE,
+          gas_baud_to_divisor[i].divisor_low_byte);
+
+      /* Delay for port to catch up */
+      IO_DELAY(3);
+
+      /* Set the low byte of the divisor latch */
+      outp(p_cur_port_info-&gt;base_address+
+          DIV_LATCH_HIGH_BYTE,
+          gas_baud_to_divisor[i].divisor_high_byte);
+
+      /* Delay for port to catch up */
+      IO_DELAY(3);
+
+      /* Set parity, data bits, stop bits, and
+         disable writing to divisor latch */
+      value_from_port = (int)
+        ( ((p_cur_port_info-&gt;stop_bits - 1) &lt;&lt; 2 ) |
+          ( p_cur_port_info-&gt;parity &lt;&lt; 3 ) |
+          ( p_cur_port_info-&gt;data_bits - 5 ) ) ;
+      outp(p_cur_port_info-&gt;base_address +
+         LINE_CONTROL_REGISTER, value_from_port);
+
+      /* Delay for port to catch up */
+      IO_DELAY(3);
+
+      /* Initialize Modem Control Register - raise the
+         OUT2 signal */
+      outp(p_cur_port_info-&gt;base_address +
+           MODEM_CONTROL_REGISTER,0x08);
+
+      /* Delay for port to catch up */
+      IO_DELAY(3);
+
+      /* Enable the FIFO and set it to generate rcv
+         interrupts only when fifo has more than 8
+         characters (if UART doesn't have a fifo -
+         it is an older UART - this instruction will
+         do nothing). */
+      outp(p_cur_port_info-&gt;base_address +
+          FIFO_CONTROL_REGISTER,FIFO_ENABLE);
+
+      /* Delay for port to catch up */
+      IO_DELAY(3);
+
+      /* Read the interrupt identification register
+         to determine if the FIFO is enabled. If the
+         fifo is enabled, use it to transmit multiple
+         characters. */
+      value_from_port =
+         inp(p_cur_port_info-&gt;base_address +
+            INTERRUPT_IDENT_REGISTER);
+
+      if ( (value_from_port &amp; IIR_FIFO_ENABLED) ==
+           IIR_FIFO_ENABLED)
+         /* Port has a fifo so it can transmit 16
+           characters at once. */
+         p_cur_port_info-&gt;max_tx_chars = 16;
+      else
+         p_cur_port_info-&gt;max_tx_chars = 1;
+
+      /* If port is not going to use hardware flow
+         control, raise the Request To Send signal
+         and keep it on since some modems will not
+         transmit unless this signal is raised. */
+      if ( !p_cur_port_info-&gt;obey_rts_cts)
+      {
+          RAISE_RTS;
+      }
+
+      /* Point at next port info struct in array */
+      p_cur_port_info++;
+   }       /* End Initialize UART loop */
+
+   /* Save current interrupt vector */
+   gp_orig_asynch_vector =
+      _dos_getvect( (0x08 + g_uart_irq) );
+
+   /* get original Ctrl-Break vector */
+   gp_ctrlbrk_vector = _dos_getvect(CTRL_BRKVECT);
+
+   /* get an unused vector to redirect Ctrl-Break to */
+   p_unusedvect = _dos_getvect(UNUSEDVECT);
+
+   /* Register UART Shutdown for execution on
+      program exit */
+   atexit(Exit_UART);
+
+   /* disable interrupts */
+   _disable();
+
+   /* set Ctrl_brk to unused vector */
+   _dos_setvect(CTRL_BRKVECT, p_unusedvect);
+
+   /* Latch new UART interrupt routine into vector
+      table */
+   _dos_setvect( (0x08 + g_uart_irq), Asynch_driver );
+
+   /* Get current 8259 interrupt controller mask */
+   value_from_port = inp(R8259A_MASK);
+
+   /* Delay for port to catch up */
+   IO_DELAY(3);
+
+   /* Turn off bit for asynch interrupt so that
+      it will be enabled. Note: 0x01 &lt;&lt; g_uart_irq
+      is the equivalent of 2 raised to the
+      g_uart_irq-th power */
+   value_from_port &amp;= (0xff ^ ( 0x01 &lt;&lt; g_uart_irq) );
+
+   /* Output new mask to 8259 interrupt controller */
+   outp(R8259A_MASK,value_from_port);
+
+   /* Point at entry for first port */
+   p_cur_port_info = gp_port_info;
+
+   /* Loop through array of port info entries and
+      enable interrupts for each port */
+
+   for (cur_port=1;cur_port&lt;=g_num_ports;cur_port++)
+   {
+      /* set interrupt enable registers to generate
+         interrupts for everything (i.e., Transmit
+         Holding Register Empty, Character Received,
+         Receive Error, and Modem Status Change). */
+      outp(p_cur_port_info-&gt;base_address +
+          INTERRUPT_ENABLE_REGISTER,0x0F);
+
+      /* Delay for port to catch up */
+      IO_DELAY (3);
+
+      /* Clear interrupt identification register */
+      value_from_port =
+         inp(p_cur_port_info-&gt;base_address +
+            INTERRUPT_IDENT_REGISTER);
+
+      /* Delay for port to catch up */
+      IO_DELAY (3);
+
+      /* Clear receive register. */
+      value_from_port =
+         inp(p_cur_port_info-&gt;base_address +
+         RECEIVE_REGISTER);
+
+      /* Delay for port to catch up */
+      IO_DELAY (3);
+
+      /* Clear line status interrupt */
+      value_from_port =
+         inp(p_cur_port_info-&gt;base_address +
+            LINE_STATUS_REGISTER);
+
+      /* Delay for port to catch up */
+      IO_DELAY (3);
+
+      /* Clear modem status interrupt and initialize
+         modem status signal flags */
+      value_from_port =
+         inp(p_cur_port_info-&gt;base_address +
+            MODEM_STATUS_REGISTER);
+      if (IS_CTS(value_from_port) )
+          p_cur_port_info-&gt;cts_state = 1;
+      else
+         p_cur_port_info-&gt;cts_state = 0;
+      if (IS_DSR(value_from_port) )
+         p_cur_port_info-&gt;dsr_state = 1;
+      else
+         p_cur_port_info-&gt;dsr_state = 0;
+      if (IS_DCD(value_from_port))
+         p_cur_port_info-&gt;dcd_state = 1;
+      else
+         p_cur_port_info-&gt;dcd_state = 0;
+
+      /* Initialize modem status signal states */
+
+      /* Delay for port to catch up */
+      IO_DELAY (3);
+
+      /* Flush transmit and receive fifos */
+      outp(p_cur_port_info-&gt;base_address +
+          FIFO_CONTROL_REGISTER,
+          (FIFO_ENABLE | FCR_FLUSH_XMIT_FIFO |
+           FCR_FLUSH_ RCV_FIFO) );
+
+      /* Delay for port to catch up */
+      IO_DELAY (3);
+
+      /* Turn on the Data Terminal Ready signal */
+      RAISE_DTR;
+
+      /* Point at next port info struct in array */
+      p_cur_port_info++;
+
+   }   /* End interrupt enable loop */
+
+   /* Re-enable interrupts */
+   _enable ();
+
+   return(1);
+}
+
+/****************************************************
+Exit_UART ()
+
+Resets UARTs, unlatches interrupt driver, and
+reenables control-break.
+****************************************************/
+void Exit_UART (void)
+{
+   register int value_from_port;
+   unsigned char cur_port;
+   struct t_port_info *p_cur_port_info;
+
+   /* If asynch not initialized, just return. */
+   if (gp_ctrlbrk_vector == NULL)
+      return;
+
+
+   /* disable interrupts */
+   _disable();
+
+   /* Get current 8259 interrupt controller mask */
+   value_from_port = inp(R8259A_MASK);
+
+   /* Delay for port to catch up */
+   IO_DELAY (3);
+   /* Turn on bit for asynch interrupt so that
+      it will be disabled. */
+   value_from_port |= ( 0x01 &lt;&lt; g_uart_irq);
+
+   /* Output new mask to 8259 interrupt controller */
+   outp (R8259A_MASK,value_from_port);
+
+   /* Latch original UART interrupt routine into vector
+      table */
+   _dos_setvect( (0x08 + g_uart_irq),
+       gp_orig_asynch_vector);
+
+   /* Point at entry for first port */
+   p_cur_port_info = gp_port_info;
+
+   /* Loop through array of port info entries and
+      reset interrupt generation and modem signals
+      for each port */
+   for (cur_port = 1; cur_port&lt;=g_num_ports; cur_port++)
+   {
+       /* disable interrupt generation on UART */
+       outp(p_cur_port_info-&gt;base_address +
+           INTERRUPT_ENABLE_REGISTER, 0x00);
+
+       /* Delay for port to catch up */
+       IO_DELAY (3);
+
+       /* Reset Line Control Register */
+       outp(p_cur_port_info-&gt;base_address +
+           LINE_CONTROL_REGISTER,0x00);
+
+       /* Delay for port to catch up */
+       IO_DELAY (3);
+
+       /* Reset Modem Control Register */
+       outp(p_cur_port_info-&gt;base_address +
+           MODEM_CONTROL_REGISTER, 0x00);
+
+       /* Delay for port to catch up */
+       IO_DELAY(3);
+
+       /* Reset the FIFO */
+       outp(p_cur_port_info-&gt;base_address +
+           FIFO_CONTROL_REGISTER,FCR_RESET_FIFO);
+
+       /* Delay for port to catch up */
+       IO_DELAY (3);
+
+       /* Point at next port info struct in array */
+       p_cur_port_info++;
+   }        /* End reset port loop */
+
+
+   /* Re-enable control-break by setting its interrupt
+      vector back to the original value */
+   _dos_setvect(CTRL_BRKVECT, gp_ctrlbrk_vector);
+
+   /* Re-enable interrupts */
+   _enable();
+
+   return;
+}
+/****************************************************
+rc = Send_char(unsigned int port_number,
+             unsigned char tx_char)
+rc = 1 : Character accepted by circular buffer
+rc = -1: Character not accepted for transmission
+
+Attempts to queue tx_char for transmission on
+port_number (1 to g_num_ports) by adding it to the
+circular transmit buffer. If port is not currently
+transmitting, interrupt driver will be 'woken up' by
+bouncing the Transmit Holding Register Empty (THRE)
+interrupt.
+****************************************************/
+int Send_char(unsigned int port_number,
+            unsigned char tx_char)
+{
+   static char a_funcname[]= "Send_char:";
+   struct t_port_info *p_cur_port_info;
+   unsigned int next_tail ,old_tail;
+
+   /* Validate port number */
+   if ( (port_number &lt; 1) ||
+       (port_number &gt; g_num_ports) )
+   {
+      fprintf(stderr,"%s bad port_number (%u)\n",
+             a_funcname, port_number);
+      return (-1);
+   }
+
+   /* Set pointer to port's info entry */
+   p_cur_port_info = &amp;(gp_port_info[port_number -1]);
+
+   /* Calculate what the new transmit tail will be, and
+     see if loading this character would overflow the
+     circular transmit buffer */
+   old_tail = p_cur_port_info-&gt;tx_tail;
+   next_tail = old_tail + 1;
+   if (next_tail &gt;= BUFFER_SIZE)
+      next_tail = 0;
+   if (next_tail == p_cur_port_info-&gt;tx_head)
+   {
+      fprintf(stderr,"%s transmit buffer overflow!\n",
+             a_funcname);
+      return (-1);
+   }
+
+   /* Load the character into the circular transmit
+      buffer */
+   p_cur_port_info-&gt;a_transmit_buffer[old_tail] =
+      tx_char;
+
+   /* Update tail pointer */
+   p_cur_port_info-&gt;tx_tail = next_tail;
+
+   /* If this is now the only character in the transmit
+      buffer, wake up the interrupt driver. This is
+      held off until this point since the interrupt
+      driver may have emptied the list even while the
+      earlier parts of this function were executing! */
+   if (old_tail == p_cur_port_info-&gt;tx_head)
+      BOUNCE_THRE;
+
+   return(1);
+}
+
+/****************************************************
+rc = Read_char(unsigned int port_number)
+rc = -1: Error reading
+rc = -2: No data available
+otherwise, low byte of rc is data character,
+high byte is bitmapped flag (see defines in
+UART.H).
+
+Attempts to read the next character from port_number
+(1 to g_num_ports)'s circular receive buffer.
+****************************************************/
+int Read_char(unsigned int port_number)
+{
+   static char a_funcname[]= "Read_char:";
+   struct t_port_info *p_cur_port_info;
+   int new_head,return_char;
+   char *p_temp;
+
+   /* Validate port number */
+   if ( (port_number &lt; 1) ||
+       (port_number &gt; g_num_ports) )
+   {
+      fprintf(stderr,"%s bad port_number (%u)\n",
+             a_funcname,port_number);
+      return(-1);
+   }
+
+   /* Set pointer to port's info entry */
+   p_cur_port_info = &amp;(gp_port_info[port_number -1]);
+
+   /* Check to see if there is any data */
+   if (p_cur_port_info-&gt;rx_tail ==
+      p_cur_port_info-&gt;rx_head)
+      return(-2);
+
+   /* Retrieve the next character from circular
+      recieve buffer, along with its status flags */
+   p_temp = p_cur_port_info-&gt;a_receive_buffer +
+      p_cur_port_info-&gt;rx_head;
+   return_char = *( (int *) p_temp);
+
+   /* Calculate next head position in receive buffer.
+      This is done in a temporary variable since
+      interrupt driver could interrupt in the middle
+      of the sequence. */
+   new_head = p_cur_port_info-&gt;rx_head += 2;
+   if (new_head &gt;= (BUFFER_SIZE *-2) )
+      new_head = 0;
+   p_cur_port_info-&gt;rx_head = new_head;
+
+   return(return_char);
+}
+/* End of File */
+</pre>
+</BODY>
+</HTML>

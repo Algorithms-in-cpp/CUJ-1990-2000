@@ -1,0 +1,120 @@
+<HTML><head><TITLE>December 1990/Writing MS-DOS Device Drivers/Listing 3</TITLE></head><BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4><A name="0276_0171"><A name="0276_0171">Listing 3 (char.c) Main Interrupt Routine; also Keyboard Read Routine<A name="0276_0171"></h4><P>
+<pre>#include     "char.h"
+
+/*-------- Prototypes ---------*/
+
+              /* handle init call */
+extern void char_init (void);
+              /* look up key code for reassignment */
+extern char *k_seek (void);
+              /* read the keyboard */
+extern void rawread (void);
+              /* see if char is available at the keyboard */
+extern int rawstat (void);
+              /* write byte into ring buffer */
+extern void r_write (char);
+              /* write character to screen */
+extern void w_putc (void);
+
+/*
+ * rd_getc()
+ *
+ * rd_getc() reads a character from the keyboard, hanging until
+ * there is one. If the character has been reassigned, copy the
+ * reassignment buffer into the ring buffer. Otherwise, write
+ * the character itself (with leading nul byte for extended
+ * keys) into the ring buffer
+ */
+
+void   rd_getc()
+   {
+   if (r_index == w_index)
+      {
+      rawread();
+      if (k_seek())
+         {
+         for (k = 0; k &lt;*len; k++)
+             r_write(*ptr++);
+         }
+      else
+         {
+         if (keycheck &amp; 0177400)
+             r_write(0);
+         r_write(((char) keycheck) &amp; 0000377);
+         }
+      }
+   }
+
+/*
+ * interrupt()
+ *
+ * interrupt() takes care of the commands as they come in from
+ * the request header. Of all the commands, only the device
+ * initialization call is a separate function; this reduces
+ * stack overhead. char_init() is a separate function, alone in
+ * its own module, so that it can report its own address as the
+ * end of the driver.
+ */
+
+void  interrupt()
+   {
+   count = rh-&gt;count;
+   transfer = rh-&gt;transfer;
+   switch (rh-&gt;command)
+      {
+      case   0:    /* initialization */
+         char_init();
+         break;
+      case   4:    /* read */
+         while (count)
+            {
+            rd_getc();
+            *transfer++ = r_buf[ r_index++ ] &amp; 000377;
+            r_index &amp;= RLIMIT;
+            count--;
+            }
+         rh-&gt;status = DONE;
+         break;
+      case   5:      /* non-destr uctive read */
+         if (r_index == w_index)
+            {
+            if (!rawstat())
+                {
+                rh-&gt;status = BUSY | DONE;
+                break;
+                }
+            rd_getc();
+            }
+         rh-&gt;status = DONE;
+         rh-&gt;data = r_buf[ r_index ];
+         break;
+      case   7:    /* flush input buffers */
+         r_index = w_index = 0;
+         while (rawstat())
+            rawread();
+         rh-&gt;status = DONE;
+         break;
+      case   8:      /* write */
+      case   9:      /* write with verify */
+         while (count)
+            {
+            outchar = *transfer++;
+            w_putc();
+            count--;
+            }
+      case   1:     /* media check */
+      case   2:     /* build parameter block */
+      case   6:     /* input status */
+      case   10:    /* output status */
+      case   11:    /* flush output buffers */
+         rh-&gt;status = DONE;
+         break;
+      case   3:      /* ioctl read */
+      default:
+         rh-&gt;status = UNKNOWN_COMMAND | ERROR | DONE;
+         break;
+      }
+   }
+</pre>
+</BODY></HTML>

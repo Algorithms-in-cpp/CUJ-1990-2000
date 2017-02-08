@@ -1,0 +1,492 @@
+<HTML><HEAD>
+<TITLE>January 1993/Hiding ISAM Function Libraries with OOP/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2 <B></B>isam. cpp</A></h4>
+<pre>//////////////
+// Isam.cpp //
+//////////////
+
+#include "isam.h"
+#include &lt;fstream.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;stdarg.h&gt;
+#include &lt;ctype.h&gt;
+
+static struct BTParms {
+   char        name[9], filename[9];
+   int     keylen, dreclen, maxrecs, indxfd, datafd,
+             kstart, count;
+   t_func  keygen;
+} btparms[40];
+
+static int items = 0;
+
+extern "C" {
+   int (*Write)(int,const void *,unsigned) = write;
+   int (*Read)(int,void *,unsigned) = read;
+}
+static void isam_init(void);
+
+static void isam_init(void)
+{
+   ifstream btr("btparms.btr");
+   char nwln, item[81], buf[20], fname[13], fcname[9];
+   int i;
+
+   if (!btr)
+      eprintf("\n\nUnable to open btparms.btr.\n");
+
+   for (i = 0; i &lt; 40; i++) {
+      btr.get (item, 80);
+      if (!strlen(item))
+         break;
+      btr.get(nwln);
+      strcpy(btparms[i].name, strtok(item, "^"));
+      strtok(NULL, "^");
+      strcpy(buf, strtok(NULL, "^"));
+      btparms[i].keylen = atoi(buf);
+      strtok(NULL, "^");
+      strcpy(buf, strtok(NULL, "^"));
+      btparms[i] .dreclen = atoi (buf);
+      strtok(NULL, "^");
+      strcpy(fname, strtok(NULL, "^"));
+      strtok(NULL, "^");
+      strcpy(buf, strtok(NULL, "^"));
+      btparms[i].kstart = atoi(buf);
+      strcpy(fcname, nospace(strtok(NULL, "^")));
+      strcpy(btparms[i].filename, strtok(fname,"."));
+      btparms[i].count = O;
+      btparms[i].indxfd = btparms[i].datafd = -1;
+      if (strlen(fcname))
+         btparms[i].keygen = cataloged_func (
+            catalog_number(fcname));
+      else
+         btparms[i].keygen = (t_func) NULL;
+   }
+
+   items = i;
+   btr.close();
+
+   if (!items)
+      eprintf("\n\nUnable to initialize isam system.\n");
+
+   for (i = items; i &lt; 40; i++) {
+      strcpy(btparms[i].name,"");
+      strcpy(btparms[i].filename,"");
+      btparms[i].keygen = NULL;
+      btparms[i].keylen = btparms[i].dreclen =
+         btparms[i].count = btparms[i].kstart = 0;
+      btparms[i].indxfd = btparms[i].datafd = -1;
+   }
+}
+
+Isam::Isam(const char *datafilename, int e)
+{
+   int i, j;
+   char buf[20];
+
+   backingout = 0;
+   elements = e;
+   if (!items)             // this is the first Isam
+      isam_init();        // initialize btparms
+
+   strcpy(buf, nospace(datafilename));
+   indices = 0;
+                               // find btree params
+   for (i = 0; i &lt; items; i++)
+      if (!stricmp(buf, btparms[i].filename))
+         btr[indices++] = i;
+   if (!indices)             // couldn't find any, fatal
+      eprintf("\n\nCan't find parameters for %s!\n",
+         datafilename);
+                         // set up btree interfaces
+
+   if( !(btc = new BTC [indices])                       ||
+         !(inames = new char* [indices])               ||
+         !(loc = new long [elements])                  ||
+         !(oldrec = new char* [elements])              ||
+         !(rec = new char* [elements])                 ||
+         !(okey = new char [btparms[*btr].dreclen])    ||
+         !(nkey = new char [btparms[*btr].dreclen])     )
+      eprintf("\n\nOut of memory.\n");
+   for (i = 0; i &lt; indices; i++) {
+      inames[i] = btparms[btr[i]].name;
+      btc[i].btvcount = 1;
+      if (btrinit(inames[i], btc+i) == ERR)
+         eprintf("\n\nCouldn't initialize %s.\n",
+            inames[i]);
+      btc[i].btmulti = 0;    // record locking off
+   }
+   for (i = 0; i &lt; elements; i++) {
+      loc[i] = OL;
+      if (!(oldrec[i] = new char
+         [btparms[*btr].dreclen + 1]) ||
+         !(rec[i] = new char
+         [btparms[*btr].dreclen + 1]) )
+            eprintf("\n\nOut of memory.\n");
+   }
+   if (btparms[*btr].count) { // open files if neccesary
+      fd[0] = btparms[*btr].datafd;
+      fd[1] = btparms[*btr].indxfd;
+   }
+   else {                         // yup, it's neccesary
+      strcpy(buf, btparms[*btr].filename);
+      strcat(buf, ".dat");
+      if ((fd[0]:bt_open(buf, 0_RDWR,S_IRDWR)) == ERR)
+         eprintf("\n\nCan't open %s.\n", buf);
+      strcpy(buf, btparms[*btr].filename);
+      strcat(buf, ".idx");
+      if ((fd[1]=bt_open(buf, 0_RDWR,S_IRDWR)) == ERR)
+         eprintf("\n\nCan't open %s.\n", buf);
+      btparms[*btr].datafd = fd[0];
+      btparms[*btr].indxfd = fd[1];
+   }
+
+   (btparms[*btr].count)++;    // record that we are here
+   clear();
+}
+
+Isam::~Isam()
+{
+   int i, j;
+                               // clean up out mess
+   for (i = 0; i &lt; indices; i++)
+      btrterm(btc+i);
+   for (i = 0; i &lt; elements; i++) {
+      delete [] oldrec[i];
+      delete [] rec[i];
+   }
+   delete [] btc;
+   delete [] inames;
+   delete [] loc;
+   delete [] oldrec;
+   delete [] rec;
+   delete [] nkey;
+   delete [] okey;
+          // if we're last ones out, turn off the lights
+   if (!(--(btparms[*btr].count))) {
+      close (fd[0]);
+      close (fd[1]);
+      btparms[*btr].indxfd = -1;
+      btparms[*btr].datafd = -1;
+   }
+}
+
+int Isam::write ()
+{
+   int deltakey, oldl, new1, ele, index, result, len,
+       start, notfirst;
+   t_func fcn;
+   if (*loc &lt; 0) // programmer hasn't followed rules
+      eprintf ("No writes after gets!");
+   for (ele = 0; ele &lt; elements; ele++) {
+      old1 : strlen(oldrec[ele]);
+      new1 = strlen(   rec[ele]);
+      if (!(old1 || new1) ||
+            !strcmp(oldrec[ele], rec[ele]))
+         continue;
+      for (index = 0; index &lt; indices; index++) {
+                   // generate the old and/or new key
+         len   = btparms[btr[index]].keylen;
+         start = btparms[btr[index]].kstart;
+         if ((fcn = btparms[btr[index]].keygen) != (t_func) NULL) {
+            if (old1)
+               strcpy(okey, fcn(oldrec[ele]));
+            if (new1)
+               strcpy(nkey, fcn(   rec[ele]));
+         }
+         else {
+            if (old1)
+               strnncpy(okey, oldrec[ele] + start, len);
+            if (new1)
+               strnncpy(nkey,    rec[ele] + start, len);
+        }
+         deltakey = (!old1||!new1||stricmp(okey,nkey));
+
+         if (old1 &amp;&amp; deltakey) {
+            notfirst = 0;
+            while (strlen(okey) &gt;= len) {
+               strnncpy(btc[index].btkey, ToUpper(okey), len);
+               btc[index].btoptype = (new1 || index || notfirst++ || backingout) ? DELTKY
+                  : DELETE;
+               btc[index].btloc = loc[ele];
+               result=cbtree(fd[O], fd[1], btc+index);
+               if (result != BTCALLOK)
+                  backout (ele, 'D', index, result);
+               strcpy(okey, okey + len);
+            }
+         }
+         if (new1 &amp;&amp; deltakey) {
+            notfirst = 0;
+            while (strlen(nkey) &gt;= len) {
+               strnncpy(btc[index].btkey, ToUpper(nkey), len);
+               btc[index].btoptype = (loc[ele] == OL) ? INSERT : ISRTKY;
+               btc[index].btloc = loc[ele];
+               result = cbtree(fd[0], fd[1], btc+index);
+               if (result == BTCALLOK)
+                  loc[ele] = btc[index].btloc;
+               else
+                  backout(ele, 'I', index, result);
+               strcpy(nkey, nkey+ len);
+            }
+         }
+      }
+      if (!new1)
+         continue;
+      if (btseek (fd[0], loc[ele], btc-&gt;btdtalen)
+            == -1L)
+         backout(ele, 'S');
+      if(Write(fd[0],rec[ele],(unsigned)btc-&gt;btdtalen)
+            !=btc-&gt;btdtalen)
+         backout(ele,'W');
+   }
+   clear();
+   return 0;
+}
+
+void Isam::backout(int ele,char op,int index,int result)
+{   //backs out record add/change/delete on error
+   char *trec;
+   if(!(trec = new char [btparms[*btr].dreclen]) ||
+         backingout)// Iquit! Error in error backout!
+      eprintf("\n\nBackout error, error type was %c\n",
+         backingout);
+   if (index&gt;=0)
+      indices = index + 1; // those beyond index are ok
+   backingout = op;
+   elements = 1;
+   strcpy(trec,rec[ele]);
+   strcpy(rec[0],oldrec[ele]);
+   strcpy(oldrec[0],trec);
+   loc[0] = loc[ele];
+   write();
+   switch(backingout) {
+   case 'I':
+      eprintf(
+"\n\nINSERT error, element %d, index %s, result %d\n",
+          ele, inames[index],result);
+   case 'D':
+      eprintf(
+"\n\nDELETE error, element %d, index %s, result %d\n",
+          ele, inames[index],result);
+   case 'S':
+      eprintf ("\n\nSeek error, element %d\n", ele);
+   case 'W':
+      eprintf ("\n\nWrite error, element %d\n", ele);
+   }
+}
+
+int Isam::read(const char *key, int ele_limit, int idx,
+   int ele)
+{
+   int i = 0, j = 0;
+
+   if ((ele_limit + ele) &gt; elements)
+      eprintf("\n\nNot enough elements!\n");
+   free_svkey(btc+idx);
+   btc[idx].btoptype = GETALL;
+   strcpy(btc[idx].btkey, ToUpper(key));
+   btc[idx].btloc = OL;
+   while (cbtree(fd[0], fd[1], btc + idx) == BTCALLOK) {
+      while (btc[idx].btrecnum[i-j] != OL) {
+         if (i &lt; ele_limit) {
+            loc[i+ele] = bte[idx].btrecnum[i-j];
+            btseek(fd[0], loc[i+ele], btc[idx].btdtalen);
+            Read (fd[0], rec[i+ele], btc[idx].btdtalen);
+        }
+         i++;
+         if (!((i-j) &lt; btc[idx].btmax))
+            break;
+      }
+      if ((i-j) &lt; btc[idx].btmax)
+         break;
+      j += btc[idx].btmax;
+   }
+   for (j = 0; j &lt; ele_limit;j++)
+      strcpy(oldrec[j], rec[j]);
+   return i;
+}
+
+int Isam::getfirst(int index)
+{
+   return getxxx (index, GETFRST);
+}
+
+int Isam::getnext(int index)
+{
+   return getxxx(index, GETNXT);
+}
+
+int Isam::getge (char *key, int index)
+{
+   *loc = -1;
+   btc[index].btoptype = GETGE;
+   strcpy(btc[index].btkey,ToUpper(key));
+   if (!(cbtree(fd[0], fd[1], btc + index) == BTCALLOK))
+      return 0;
+   btseek(fd[0], btc[index].btloc, btc[index].btdtalen);
+   Read (fd[0], rec[0], btc[index].btdtalen);
+   return 1;
+}
+
+int Isam::getxxx(int index, int opt)
+{
+   *loc = -1;
+   btc[index].btoptype = opt;
+   if (!(cbtree(fd[0], fd[1], btc + index) == BTCALLOK))
+      return 0;
+   btseek(fd[0], btc[index].btloc, btc[index].btdtalen);
+   Read (fd[0], rec[0], btc[index].btdtalen);
+   return 1;
+}
+
+void Isam::clear()
+{
+   int i;
+   for (i = 0; i &lt; elements; i++) {
+      loc[i] = OL;
+      memset (oldrec[i], '\0', btparms[*btr].dreclen +
+1);
+      memset (  rec[i], '\0', btparms[*btr].dreclen + 1);
+   }
+}
+
+int Isam::keynum (const char *btname)
+{
+   int i;
+
+   if (!items)
+      eprintf("\n\nBtparms not initialized!\n");
+   if (indices &lt; 1)
+      eprintf("\n\nNo indices.\n");
+   for (i = 0; i &lt;indices; i++)
+      if (!stricmp(inames[i], nospace(btname)))
+         return i;
+   eprintf ("\n\nIndex %s not found.\n", btname);
+   return -1;
+}
+
+char* nospace(const char *arg)
+{
+   static char rtn[80];
+   int i, j = 0, k = strlen(arg);
+   for (i = 0; i &lt; k; i++)
+      if (arg[i] != ' ')
+         rtn[j++] = arg[i];
+   rtn[j] = '\0';
+   return rtn;
+}
+
+int eprintf(const char *format, ...)
+{
+   int rtn;
+   va_list argptr;
+   va_start(argptr, format);
+   rtn = vprintf(format, argptr);
+   va_end (argptr);
+   exit (1);
+   return rtn;
+}
+
+char *ToUpper(const char *c)
+{
+   static char d[257];
+   int i;
+
+   for (i = 0; i &lt; 256, c[i] != '\0'; i++)
+      d[i] = toupper(c[i]);
+   d[i] = '\0';
+   return d;
+}
+
+void Isam::reindex(rel_func func)
+{
+   char buf[20], cmd[80];
+   int tad, i, rlen = btparms[*btr].dreclen, x, y;
+   long l;
+
+   clear();
+   strcpy(buf, btparms[*btr].filename);
+   strcat(buf, ".tad");
+   if (bt_open(buf, 0_RDWR,S_IRDWR) != ERR)
+                  // I can't cook in a dirty kitchen!
+                  // Besides that, the last re-index
+                  // must have failed and I don't know
+                  // where the real data is, now.
+      eprintf("\n\n%s still exists!\n", buf);
+   sprintf(cmd, "ren %s.dat %s.tad",
+      btparms[*btr].filename, btparms[*btr].filename);
+   close (fd[0]);
+   system (cmd);                      // ren .dat to .tad
+   if ((tad = bt_open(buf, 0_RDWR,S_IRDWR)) == ERR)
+      eprintf("n\nCan't open %s\n", buf);// ren didn't go
+   strcpy(buf, btparms[*btr].filename);  // recreate .dat
+   strcat(buf, ".dat");
+   if((fd[0]=bt_open(buf, 0_NEW/0_RDWR, S_IRDWR) ) == ERR)
+      eprintf ("\n\nCouldn't recreate %s.dat\n",
+         btparms[*btr].filename);
+   initdat(fd[0], btc);             // create file header
+   btparms[*btr].datafd = fd[0];
+   strcpy(buf, btparms[*btr].filename);  // unlink .idx
+   strcat(buf, ".idx");
+   close (fd[1]);
+   unlink (buf);
+   for (i = 0; i &lt; indices; i++) {
+      btrterm(btc + i);  // to btrinit() with no .idx
+      if (btrinit(inames, btc+i) == ERR)
+         eprintf("\n\nCouldn't re-initialize %s.\n",
+            inames[i]);
+      creatbtr(btc + i);
+   }
+   for (i = 0; i &lt; indices; i++) {       // re-initialize
+      btrterm(btc + i);
+      if (btrinit(inames[i], btc+i) == ERR)
+         eprintf("\n\nCouldn't re-initialize %s.\n",
+            inames[i]);
+   }         // We now have empty datafile and indexfile
+   strcpy(buf, btparms[*btr].filename);  // re-open .idx
+   strcat(buf, ".idx");
+
+   if((fd[1]:bt_open(buf, 0_RDWR, S_IRDWR)) == ERR)
+      eprintf ("\n\nCouldn't recreate %s.idx\n",
+         btparms[*btr].filename);
+   btparms[*btr].indxfd = fd[1];
+   clrscr();                               // we're ready
+   l = 2L; i = 0;
+   while (1) {
+      if (!(l%10)) {
+         if (l &lt; 11L) {
+            gotoxy(10,10);
+            cprintf("Processing %s location ", btparms[*btr].filename);
+            x = wherex(); y = wherey();
+         }
+         gotoxy(x, y);
+         cprintf("%ld", l);
+      }
+      btseek(tad, 1++, rlen);
+      if (Read (tad, *rec, rlen) == rlen) {
+         if (**rec != '~') {
+            if (func)
+               if (func(*rec))
+                  continue;
+            write();
+            i++;
+         }
+      }
+      else
+         break;
+   }
+   printf ("\n\n%d records added.\n", i);
+   close (tad);
+   strcpy(buf, btparms[*btr].filename);
+   strcat(buf, ".tad");
+   unlink (bur);           // clean kitchen for next time
+}
+/* End of File */
+</pre>
+</BODY>
+</HTML>

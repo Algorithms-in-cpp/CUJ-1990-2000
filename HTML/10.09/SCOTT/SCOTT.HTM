@@ -1,0 +1,67 @@
+
+
+
+<HTML>
+<HEAD>
+
+<TITLE>September 1992/C Inside the 8250</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocsep.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Communications and Networks</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">C Inside the 8250<A name="01A7_00D5"><A name="01A7_00D5"></font></h2><P>
+<h3 align="center"><font color="#800000"><A name="01A7_0000"><A name="01A7_0000">Vince Scott</font></h3><hr><blockquote><P>
+<P><i><A name="01A7_0000"><A name="01A7_0000">Vince Scott has a B.S.E.E.T. and is currently working for Sandia National Laboratories in Albuquerque, New Mexico. He has been programming in C for two years and also enjoys programming as a hobby.</i></P><P>
+<h4><FONT COLOR="#000080"><A name="01A7_00D6">Introduction<A name="01A7_00D6"></FONT></h4></P>
+The 8250, a popular UART, can be found in millions of IBM PCs and compatibles. If you program on PC compatibles chances are that you will or already have encountered one of these devices. It may be that you need to talk with a printer, a plotter, a modem, or even another computer using serial communications. I found that getting the information to accomplish this task was not always as straightforward as I would have liked, so the code in this article evolved. It can be configured for both polled and interrupt I/O as well as access to all four COM ports at baud rates up to 115200 (if your PC can handle the speed).<P>
+I designed this code to be readable and understandable instead of using the old one-line, hard-to-decode syntax that C does so well. This code is very powerful and can be modified to accomplish any serial communication task on the PC.<P>
+<h4><FONT COLOR="#000080"><A name="01A7_00D7">Implementation<A name="01A7_00D7"></FONT></h4></P>
+The heart of this article can be found in <A href="list1.htm">Listing 1</a>,
+ <I>sereal.h</I>. It describes each of the ten user registers on the 8250. Each register can be accessed through seven port addresses relative to the COM port's base address. I will not try to cover every register in detail in this article. I will only refer to those that are important to supporting the functions in the other listings.<P>
+<h4><FONT COLOR="#000080"><A name="01A7_00D8">Parameter Settings<A name="01A7_00D8"></FONT></h4></P>
+<A href="list2.htm">Listing 2</a>
+sets up the communication parameters: COM port, baud rate, parity, data bits, and stops bits. <I>SetSerial</I> must be called first to set up the global variable portbase as well as error check the parameter list. It calls three functions that are used to accomplish this task. Note that each of these functions return a --1 on error.<P>
+<I>SetPort</I> passes the COM port parameter (COM1 through COM4) defined in <I>serial.h</I> and sets the global variable portbase.<P>
+<I>SetBaud</I> sets the baud rate. The baud parameter can be any value from 1 to 115200. The first line of code in this function flags for an invalid baud rate. If it is a valid rate then it is divided into 115,200L to create a divisor that is used by the 8250 to set the appropriate baud rate. The value 115200 is derived by dividing the reference clock frequency (1.8432 MHz) by 16. This value is called the master data clock. It is then divided by the desired baud rate value to create the divisor.<P>
+The next line of code reads the current value in the <I>Line Control Register</I> (LCR). The value is then bitwise <I>OR</I>ed with 0<I>x80</I> to set the <I>Data Latch Address Bit</I> (DLAB). Make a note here of the gimmick used to set the baud rate. This device only has seven port addresses, but accesses 10 registers. To access registers 8 (DLL) and 9 (DLH) you must first set the <I>Data Latch Address Bit</I> bit in the <I>Line Control Register</I> high and then access each register at an offset of 0 and 1, respectively, to the portbase address. Register 8 latches the low byte and register 9 latches the high byte of the divisor. Once this has been accomplished you will need to turn the <I>Data Latch Address Bit</I> off by writing the previous value stored in the variable <I>Current_Value</I> back out to the <I>Line Control Register.</I><P>
+The last function, <I>SetOthers</I>, sets the parity bit, data bits, and stop bits parameters. The first few lines of code flag for invalid parameters. The rest of the code creates a byte value that will be written to the <I>Line Control Register</I>. You may want to study the bit patterns described in <A href="list1.htm">Listing 1</a>
+for the <I>Line Control Register.</I><P>
+<h4><FONT COLOR="#000080"><A name="01A7_00D9">Interrupt Vectors<A name="01A7_00D9"></FONT></h4></P>
+<A href="list3.htm">Listing 3</a>
+redirects the interrupt vector and sets the enable interrupt bits in the <I>Modem Control Register</I> (MCR) and the <I>Interrupt Enable Register</I> (IER). <I>Init-Serial</I> initializes the current portbase address for interrupt I/O. <I>Setvects</I> switches the port parameter to the correct interrupt vector. <I>getvect</I> saves the old vector value and <I>setvect</I> redirects the interrupt to the <I>ReceiveData</I> function.<P>
+<I>EnableInt</I> enables the 8250 for interrupt communications. Lines one and two are used to set the <I>General Purpose Output</I> (GPO2) of the <I>Modem Control</I> <I>Register</I>. This enables the 8250 to interrupt your computer's CPU.<P>
+The next line of code describes the type of interrupt to be enabled. The first bit of the IER (<I>RX_INT</I>) is enabled to generate an interrupt when a byte is received.<P>
+The last few lines of code are use to select the correct port IRQ value and set the mask bits in the 8259 <I>Programmable Interrupt Controller</I> (PIC) (see <A href="list1.htm">Listing 1</a>)
+. Also note that COM 1 and COM 3 typically share IRQ4 and COM 2 and COM 4 share IRQ3.<P>
+<I>CloseSerial</I> resets the interrupt vectors when you are through using the serial port. This is accomplished by the functions <I>DisableInt</I> and <I>Resetvects</I>. These two functions are the reverse logic of their counterparts <I>EnableInt</I> and <I>Setvects.</I><P>
+<h4><FONT COLOR="#000080"><A name="01A7_00DA">Grabbing the Interrupt Byte<A name="01A7_00DA"></FONT></h4></P>
+<A href="list4.htm">Listing 4</a>
+shows the functions that perform the interrupt service routines. <I>ReceiveData</I> is the interrupt function where the data is stored into a global ring buffer that is read by the function <I>IntSerialIn</I>. The first line of code determines if the interrupt was activated by the data-received bit. (See the <I>Interrupt Identification Register</I> in <A href="list1.htm">Listing 1</a>)
+. If so, the byte is then stored in the ring buffer and the <I>bufptr</I> is incremented. Note that if the pointer reaches the end of the buffer, it is reset to zero and will begin overwriting the buffer. After this is accomplished an end-of-interrupt is sent to the programmable interrupt controller.<P>
+<I>IntSerialIn</I> reads data from the ring buffer. The first few lines of code compare the <I>byteptr</I> to the <I>bufptr</I>. They should be equal only when the buffer is empty or the number of bytes read equals the number of bytes received. If they are equal a --1 is returned. If not, then the byte is read and <I>byteptr</I> is incremented. If the pointer reaches the end of the array, it is reset to zero and starts reading from the beginning of the buffer.<P>
+<h4><FONT COLOR="#000080"><A name="01A7_00DB">Polling the Port<A name="01A7_00DB"></FONT></h4></P>
+<A href="list5.htm">Listing 5</a>
+is the polling function <I>SerialIn</I>. Note that when using polled I/O, the functions in <A href="list3.htm">Listing 3</a>
+are not needed. In this code I've used the <I>clock</I> function to flag for a timeout. In the first version of this code a counter was decremented, but when I switched from an 8086 to the 80386, the 386 ate up the timeout. I modified the code to use the <I>clock</I> function. It seems to work well this way. The time difference may be changed if you wish a longer timeout. I have used this code on everything from an 8086 to an 80486 with no problems.<P>
+The next line of code looks for the <I>Data Ready</I> bit of the <I>Line Status Register</I> (LSR) to be set. Or if a timeout, it returns a -1. If the DR bit is set then read the Receive Register and return the <I>Char_Value</I>.<P>
+<h4><FONT COLOR="#000080"><A name="01A7_00DC">Sending Data<A name="01A7_00DC"></FONT></h4></P>
+<A href="list6.htm">Listing 6</a>
+is used in both polled and interrupt I/O. <I>Serial-Out</I> is used to send a byte of data out the current portbase address. Again, I used the <I>clock</I> function to flag for a timeout. The next line looks for the <I>Transmitter Buffer Empty</I> (TBE) bit of the <I>Line Status Register</I> to set. If it finds a timeout, it returns a -1. If the <I>Transmitter Buffer Empty</I> bit is set, then it writes <I>Char_ Value</I> to the <I>Transmit Register</I> and returns zero.<P>
+<h4><FONT COLOR="#000080"><A name="01A7_00DD">Modem Control<A name="01A7_00DD"></FONT></h4></P>
+If you wish to talk with a modem, you will need to use the functions in <A href="list7.htm">Listing 7</a>.
+ You activate the modem by setting the DTR bits and deactivate it by toggling the DTR bit to off. I also have ran into a few other devices that want to see the DTR bit set high before they would allow any communication. <I>Assert</I> allows you to set any of the bits in the <I>Modem Control Register</I> by passing the correct bit value. They can then be turned off by the <I>Assert_Off</I> function. <I>Status</I> is used to read any of the bit values in the <I>Modem Status Register</I>. These functions are useful for full handshaking with CTS and RTS.<P>
+<h4><FONT COLOR="#000080"><A name="01A7_00DE">Putting It All Together<A name="01A7_00DE"></FONT></h4></P>
+If you're like me, anytime I see functions that are written by other programmers, I would like to see just how they are implemented. In addition to keeping this code as straightforward as possible, I have put the functions together in a simple terminal program that you can use. This allows you to see how the functions work together and to help complete the serial communications picture.<P>
+You can use <A href="list8.htm">Listing 8</a>,
+ the terminal program, to talk with about anything you want. I use this program to do most of my initial test work when trying to develop a program that involves serial communications. It allows both polled and interrupt modes. Keep in mind that sometimes interrupts on serial cards are not configured properly or may not even work, so try both modes. This will also let you know if your interrupts are working correctly.<P>
+The first <I>if</I> statement in <A href="list8.htm">Listing 8</a>
+flags for no parameters passed and prints the correct syntax to the screen. If it finds parameters, the parameter list is set to the correct data types. <I>SetSerial</I> is the first serial function called. It not only sets up the COM port, but also checks for bad parameter values. If no errors occurred during the set up, I tell the user that the terminal is established. <I>Assert</I> then sets the DTR bit. I flag to see if interrupt mode is selected. If so, I call <I>InitSerial</I> and pass the current COM port (COM1 through COM4). I then go into a <I>do/while</I> loop that looks for either keyboard activity or activity on the serial port and displays it to the screen. If data is received I <I>AND</I> it with <I>0x7f</I> to convert the <I>int</I> value to an ASCII value. This can be changed to <I>0xff</I> if you wish to work with binary values. Both of these values have been defined at the top of the program. If the <I>ESC</I> key is pressed, the program exits. Before I quit, I again check the flag for interrupt mode. If the flag is true, <I>CloseSerial</I> is called to reset the old vectors and exit gracefully. <I>Assert_Off</I> turns the DTR bit off to release communication ties with external devices if so required.<P>
+<h4><FONT COLOR="#000080"><A name="01A7_00DF">Closing Notes<A name="01A7_00DF"></FONT></h4></P>
+This code was written using Turbo C and the ANSI standard. It can be easily ported to Microsoft C by changing <I>getvect</I> and <I>setvect</I> to <I>_dos_getvect</I> and <I>_dos_setvect</I>.<P>
+<h4><FONT COLOR="#000080"><A name="01A7_00E0">Suggested Reading<A name="01A7_00E0"></FONT></h4></P>
+Campbell, Joe. 1989. <I>The C Programmer's Guide to Serial Communications</I>. Howard W. Sams &amp; Co.: Carmel, IN.<P>
+
+<h4><a href="../../../source/1992/sep92/scott.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

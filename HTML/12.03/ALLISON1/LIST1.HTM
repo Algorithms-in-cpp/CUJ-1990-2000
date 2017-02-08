@@ -1,0 +1,329 @@
+<HTML><HEAD>
+<TITLE>March 1994/ROMLDR, an Embedded System Program Locator/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1 <I>The EXE locator program</I></A></h4>
+<pre>/* ROMLDR.C EXE locator program
+   written by: Charles B. Allison
+   last change: 11-3-93 */
+
+#include &lt;sys\stat.h&gt;
+#include &lt;io.h&gt;
+#include &lt;dos.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;alloc.h&gt;
+#include &lt;conio.h&gt;
+#include &lt;ctype.h&gt;
+#include &lt;fcntl.h&gt;
+#include &lt;string.h&gt;
+#define BC 1
+/* BC is Borland c, else assume Microsoft */
+typedef struct {
+   unsigned sig; /* signature = 4d5ah */
+   unsigned 1st_sec_lng;
+      /*length of last sector in file modulo 512*/
+   unsigned file_size;
+   /* size of file in 512 byte pages includes hdr*/
+   unsigned num_reloc;
+                /* number of relocation items */
+   unsigned hdr_siz;
+          /* # of 16 byte paragraphs in header */
+   unsigned min_ld_para;
+         /* min # of paragraphs above load file */
+   unsigned max_ld_para;
+    /* max # of paragraphs requested by file */
+   unsigned disp_stack_seg;
+         /* rel displacement of stack segment */
+   unsigned sp;
+     /* contents of stack ptr on entry to prog */
+   unsigned chksm;    /* check sum for file */
+   unsigned ip; /* beginning instruction ptr */
+   unsigned rel_cs_seg; /* relative cs segment */
+   unsigned off_reloc;
+       /* offset to 1st relocation item typ. 1e */
+   unsigned over_lay;        /* overlay number */
+   unsigned rsrved;          /* ?? reserved ?? */
+/* relocation item format is seg:off location
+  relative to the beginning of the code section */
+       } EXE_HDR;
+struct MP_TBL {
+  long addrs;       /* segment beg. address */
+  long haddrs;     /* segment high addrs*/
+  char class[12];       /* class of object */
+    } maptable[120];
+
+void sort_table(void);
+void gethdr(char *bf);
+long hexcvt(char *num);
+size_t read_block(char far *segbuf, size_t segsz);
+long read_segm(int i);
+size_t write_block(char far *segbuf,size_t segsz);
+long write_segm(long segsize);
+int fix_segm(int i);
+int config(char *cfgfile);
+void term_error(int numerr);
+
+unsigned (*ch_ptr)[2];/* pointer to translation table
+            [0] = offset,[1] = segment*/
+char mfile[14] = "rom.map"; /* dumy file names */
+char bfile[14] = "rom.bin";
+char efile[14] = "rom.exe";
+/*columns for starting and ending addresses in MAP */
+#define LCOL 1
+#define HCOL 8
+#ifdef BC
+#define MAPCOL 41;
+
+/*bc map file class column*/
+#else
+#define MAPCOL 45;
+/*ms map file class column */
+#endif
+int class_loc = MAPCOL;
+FILE *mapfile,*exefile,*binfile;
+#define BUF_SIZE 60
+char mapstring[BUF_SIZE];
+long fsize; /*number of bytes in exe file */
+int nsegs; /* number of segments in map */
+unsigned romsadr = 0xf000,ramsadr=0x40;
+char header[10000];
+EXE_HDR *filhdr = (EXE_HDR *)header;
+char far *seg_buffer;
+int next_fix = 0;
+char ram_class[15] = "FAR_DATA";
+unsigned ramdata; /* beginning ram segment*/
+/* ************ main ************* */
+int main(int argc,char *argv[])
+{
+int r_class_flag=1,i;
+long tmp,ssize;
+
+if((seg_buffer = (char far *) farmalloc(0x10000L))
+          == NULL) term_error(0);
+if(argc == 1) term_error(-1); /*any cfg file name? */
+config(argv[1]);
+i=0;
+while (fgets(mapstring,BUF_SIZE,mapfile))
+ {
+/* process map file from mapstring input */
+/* maptable[1] - n contains the segments -
+class STACK should be last one */
+/* ends with i having n+1 segments */
+  if( (int)strlen(mapstring) &gt; class_loc+1)
+    { /* get rid of \n at end of string */
+     mapstring[(int)strlen(mapstring)-1]='\0';
+     if((tmp = hexcvt(&amp;mapstring[LCOL])) &gt;= 0)
+       {
+     maptable[i].addrs = tmp;
+     maptable[i].haddrs=hexcvt(&amp;mapstring[HCOL]);
+            &amp;mapstring[class_loc]);
+        strcpy(maptabte[i].class,
+              &amp;mapstring[class_loc]);
+     if(r_class_flag)
+     if(strcmp(&amp;mapstring[class_loc],ram_class)==0)
+       { /*set it to first class occurance*/
+        ramdata = (maptable[i].addrs) &gt;&gt;4;
+        r_class_flag = 0;
+       }
+     printf("\n Segment %4.41x Class %s",
+     maptable[i].addrs/16,maptable[i].class);
+     i++;
+        }/* end - if hexcvt */
+     } /* end if strlen */
+   if(i&gt;=119) break; /* error too many segments */
+ } /* end while */
+if(feof(mapfile))
+   printf("\nend of file\n");
+  else
+   printf("\nerror reading map file\n");
+nsegs = i-1; /* number of segments [1 to nsegs] */
+gethdr(header); /* read in the exe header info */
+/* size of object section of file */
+fsize = (long) ((512L * (filhdr-&gt;file_size-1)) +
+   filhdr-&gt;lst_sec_lng - 16L * filhdr-&gt;hdr_siz);
+printf("\nStartup Address %4.4x:%4.4x\n",romsadr+
+            filhdr-&gt;rel_cs_seg,filhdr-&gt;ip);
+printf("Rom Size %lx\n",fsize);
+/* process the exe file header - sort fix ups */
+sort_table();
+/* read in exe file by segment
+do fixups from map table and
+
+   write it to output file */
+   for(i=0;i &lt; nsegs;i++)
+      {
+       if((ssize = read_segm(i)) &gt; 0L )
+          { /* ignore 0 length segments */
+       fix_segm(i);
+       write_segm(ssize );
+          }
+      }
+   /* done - end the program */
+   farfree(seg_buffer);
+   fcloseall();
+   return 0;
+   }
+   /* ****************** */
+   /* qsort routine for far pointers */
+   int cmp_ptr(const void *a, const void *b)
+   {
+   long vala,valb;
+   vala=((long)((unsigned *)a)[0])+
+                 (((unsigned *)a)[1]&lt;&lt;4);
+   valb=((long)((unsigned *)b)[0])+
+                 (((unsigned *)b)[1]&lt;&lt;4);
+   vala -= valb;
+   if(vala &lt; 0) return -1;
+   if(vala &gt; 0) return 1;
+   return 0;
+   }
+
+/*------------ sort_table ----------------*/
+/* sort header table */
+void sort_table(void)
+{
+ qsort((void *)&amp;header[filhdr-&gt;off_reloc],
+        filhdr-&gt;num_reloc,4,cmp_ptr);
+}
+/* -------------- read_block ---------------- */
+size_t read_block(char far *segbuf,size_t segsz)
+{
+if(fread(segbuf,1,segsz,exefile) != segsz)
+      term_error(-7);
+return segsz;
+}
+/* -------------- read_segm.------------------ */
+long read_segm(int i)
+{
+long segsize;
+segsize = maptable[i].haddrs - maptable[i].addrs;
+if(!segsize) return 0;
+segsize += maptable[i+1].addrs-(maptable[i].haddrs);
+if(segsize &lt;= 0x8000)
+  { read_block(seg_buffer,(size_t)segsize);
+  } else {
+   read_block(seg_buffer,0x8000);
+   read_block((&amp;seg_buffer[0x8000]),
+          (size_t)(segsize-0x8000));
+  }
+return segsize;
+}
+/* ------------------ write_block -------------------- */
+size_t write_block(char far *segbuf,size_t segsz)
+{
+if(fwrite(segbuf,1,segsz,binfile) != segsz)
+    term_error(-8);
+return segsz;
+}
+/* ---------------- write_segm ------------------ */
+long write_segm(long segsize)
+{
+if(!segsize) return 0;
+if(segsize &lt;= 0x8000)
+  { write_block(seg_buffer,segsize);
+  } else {
+   write_block(seg_buffer,0x8000);
+   write_block((&amp;seg_buffer[0x8000]),
+          (size_t)(segsize-0x8000));
+  }
+return segsize;
+}
+/* ------------ fix_segm -------------- */
+int fix_segm(int i)
+{
+unsigned tmp,cseg,fixup;
+unsigned far * fixptr;
+cseg = (unsigned)(maptable[i].addrs/16L);
+while(next_fix &lt; filhdr-&gt;num_reloc)
+  {
+   if(ch_ptr[next_fix][1] &gt; cseg) break;
+   tmp = ch_ptr[next_fix][0]; /*offset into buffer*/
+   fixptr = (unsigned far *) &amp;seg_buffer[tmp];
+   fixup = *fixptr;
+/* modify segment fixup according to type */
+   if(fixup &gt;= ramdata)
+     {/* modify for ram */
+      fixup -= ramdata;
+      fixup += ramsadr;
+     }
+     else
+     {/* handle as rom */
+      fixup += romsadr;
+     }
+   *fixptr = fixup;
+   next_fix++;
+  } /*end while */
+return 0 ;
+}
+/* ------------ hexcvt -------------- */
+/* do hex digits to unsigned long */
+long hexcvt(char *num)
+{
+char *term;
+long value;
+value = strtoul(num,&amp;term,16);
+return value;
+}
+/* -------------- gethdr ---------------- */
+void gethdr(char *buf )
+{
+int i,j=32; /*index counter */
+    if(fread(&amp;buf[0],l,32,exefile) &lt; 32)
+    term_error(-6);
+/* have filhdr contents so get size of full header */
+if(fread(&amp;buf[j],16,filhdr-&gt;hdr_siz-2,exefile)
+       &lt; filhdr-&gt;hdr_siz-2) term_error(-6);
+(unsigned *)ch_ptr =
+     (unsigned *)(&amp;buf[filhdr-&gt;off_reloc]);
+/* get address of relocation table - ch_ptr [n][m]
+ m - 0 offset, 1 - seg, n relocation # */
+}
+/*---------------------- config.------------------------*/
+/* get configuration data */
+int config(char *cfgfile)
+{
+FILE *cfg;
+char buf[80];
+if((cfg = fopen(cfgfile,"r"))==NULL) term_error(-1);
+if(fgets(buf,80,cfg) == NULL) term_error(-2);
+if(sscanf(buf,"%s %s %s",&amp;mfile,
+         &amp;efile, &amp;bfile) != 3) term_error(-2);
+/* Now try to open input file 1 */
+if((mapfile=fopen(mfile,"r"))==NULL) term_error(-3);
+if((exefile=fopen(efile,"rb"))==NULL) term_error(-4);
+if((binfile=fopen(bfile,"wb"))==NULL) term_error(-5);
+if(fgets(buf,80,cfg) == NULL) term_error(-7);
+if(sscanf(buf,"%4x %4x",&amp;romsadr,
+           &amp;ramsadr) != 2) term_error(-7);
+if(fgets(buf,80,cfg) == NULL) term_error(-7);
+if(sscanf(buf,"%s",&amp;ram_class) != 1) term_error(-7);
+return 0;
+}
+/* error handler */
+char *errlist[10] = {
+ "Memory Allocation Error",
+ "No configuration file, USAGE:romldr cfgfile.cfg",
+ "Configuration file error - File names", //-2
+ "Map File open error",                    //-3
+ "Exe File open error",                    //-4
+ "Bin File open error",                    //-5
+ "Error reading header",             //-6
+ "Error reading exe file",             //-7
+ "Error writing bin file",           //-8
+ " "
+     };
+void term_error(int errnum)
+{
+errnum = abs(errnum);
+if(errnum &gt;= 9) exit(-1);
+printf("%s\n",errlist[errnum]);
+farfree(seg_buffer);
+exit(errnum);
+}
+
+/* End of File */
+</pre>
+</BODY>
+</HTML>

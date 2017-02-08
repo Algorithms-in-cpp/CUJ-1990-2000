@@ -1,0 +1,330 @@
+<HTML><HEAD>
+<TITLE>December 1992/Windows Device Drivers/Listing 6</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 6 <B><I></B>vxd2.asm</I></A></h4>
+<pre>PAGE ,132
+title VxD2B.ASM - Example Device Driver #2b
+;EM VxD2B - Example Device Driver #2b
+;
+;   Copyright 1992, Cherry Hill Software
+;   All rights reserved.
+;
+;   SUMMARY
+;       This driver simulates an interrupting device. The control
+;       port (output) has the following bit assignments:
+;
+;       Bit 0 - Start I/O. Writing a zero to this bit begins
+;           I/O transfer. The "transfer" takes approximately
+;           one-tenth of a second. Writing a one to this
+;           bit has no effect.
+;
+;       Bit 1 - Send EOI to device. Writing a zero to this bit
+;           sends End-of-Interrupt to the device and removes
+;           any pending interrupt request. Writing a one to
+;           this bit has no effect.
+;
+;       All other bits: Always must write ones for future
+;               compatibility.
+;
+;       When reading the port, the following is returned:
+;
+;       Bit 0 - initially set, this is reset when output port bit
+;           1 is reset and is set when the interrupt request
+;           is asserted. This bit is zero when the device
+;           is transferring data and is set to indicate
+;           transfer complete.
+;
+;       Bit 1 - initially set, this is reset when the interrupt
+;           request is asserted and is reset when the device
+;           removes the interrupt request. This bit is zero
+;           to indicate a pending interrupt and is set if
+;           no interrupt is pending.
+;
+;       All other bits: ignore returned value for future
+;               compatibility.
+;
+;   WARNINGS
+;
+;
+   .386p
+
+.xlist
+include vmm.inc
+include debug.inc
+
+include v86mmgr.inc
+include vpicd.inc
+include ..\include\bogus.inc
+.list
+
+VM_Not_Executable equ VM_Not_Executeable ; acckk!
+
+subttl VxD Declaration/Definition
+page
+
+VxD2B_Init Order equ VNETBIOS_Init_Order+100 ; Do this after the Virtual net
+VxD2B_Device_ID equ Bogus_Device_ID
+
+Declare_Virtual_Device VXD2, 1, 0, VxD2B_Control, VxD2B_Device_ID, \
+             VxD2B_Init_Order
+
+VxD_DATA_SEG
+
+;
+;   Virtual Interrupt Descriptor Structure
+;
+;   We pass this to VPIDC_Virtualize_IRQ. Here we specify the
+;   interrupt level, the hardware interrupt procedure, and the
+;   procedure that VPICD calls when the interrupt is dispatched
+;    into the VM and when the VM returns from the interrupt.
+;
+IRQD VPICD_IRQ_Descriptor &lt;FAKE_IRQ,,,OFFSET32 VxD2_VInt_Proc,\
+             ,\
+             OFFSET32 VxD2_Mask_Change_Proc,\
+             OFFSET32 VxD2_IRET_Proc&gt;
+
+hIRQ        dd -1     ; IRQ handle
+hOwner      dd -1     ; Owning VM handle
+hTimeout    dd 0       ; handle to timeout callback (0=&gt;none)
+bFakeData   db 01111111b   ; Fake I/O port data
+
+VxD_DATA_ENDS
+
+
+subttl Dispatch VxD Control
+page
+VxD_LOCKED_CODE_SEG
+
+BeginProc CheckOwner, NO_LOG
+   cmp ebx,hOwner
+   jne short col
+   ret             ; exit if owner is calling
+co1:
+   cmp hOwner,-1
+   jne short co2       ; skip if non-owner calling
+   mov hOwner,ebx      ; set the owner
+   ret
+co2:
+   mov al,-1
+   ret
+EndProc CheckOwner
+
+BeginProc TimeoutProc
+   mov hTimeout,0      ; clear the handle
+   cmp edx,hOwner      ; Still the same owner?
+   jne short to1       ; skip if not
+   test    bFakeData,FAKE_STAT_BUSY        ; I/O pending?
+   jnz short to1       ; skip if not
+   cmp hOwher,-1      ; Do we have an owner?
+   je short to1        ; skip if not
+   mov eax,hIRQ
+   mov ebx,hOwner
+   VxDcall VPICD_Set_Int_Request   ; assert the interrupt
+   mov al,bFakeData
+   and al,NOT (FAKE_STAT_IRQ)  ; indicate so in status port
+   or al,FAKE_STAT_BUSY    ; indicate no longer busy
+   mov bFakeData,al
+to1:
+   ret
+EndProc TimeoutProc
+
+
+;IP Port_IO_Callback - Process access to FAKE_PORT
+;
+;   ENTRY
+;       EAX - The output value (for output instructions)
+;       EBX - The handle to the current VM
+;       ECX - The type of I/O operation
+;       DS,ES - FLAT
+;
+;   EXIT
+;       EAX the input value (for input instructions)
+;
+;   WARNINGS
+;
+;   NOTES
+;       Note that we don't even look at the client register frame.
+;
+;       We simply read and increment
+;
+;   CALLS
+;
+BeginProc Port_IO_Callback, NO_LOG
+    Dispatch_Byte_IO Fall_Through,Port_Output_Callback
+
+Port_Input_Callback:
+   call    CheckOwner
+   jc  short ioexit
+   mov al,bFakeData
+   or  bFakeData,FAKE_STAT_ERROR  ; clear pending error
+ioexit:
+   ret
+
+Port_Output_Callback:
+   call    CheckOwner
+   jc  short ioexit        ; ignore I/O if not the owner
+   test    al,FAKE_CTL_START
+   jnz short poc1      ; skip if not starting I/O
+   test    bFakeData,FAKE_STAT_BUSY
+   jz  short poc1      ; skip if already busy
+   test    bFakeData,FAKE_STAT_IRQ
+   jz  short pocl      ; skip if IRQ pending
+   push    eax
+   push    edx
+   and bFakeData,NOT (FAKE_STAT_ERROR) ; presume error
+   mov eax,100         ; callback in 1/10 second
+   mov edx,hOwner      ; pass the owner to the callback
+   mov esi,OFFSET32 TimeoutProc
+   VMMcall Set_VM_Time_Out
+   pop edx
+   pop eax
+   or  esi,esi
+   jz  short poc1      ; skip if error
+   and bFakeData,NOT (FAKE_STAT_BUSY)  ; indicate busy
+   or  bFakeData,FAKE_STAT_ERROR   ; else, clear error indication
+   mov hTimeout,esi        ; save timeout handle
+poc1:
+   test    al,FAKE_CTL_EOI
+   jnz short poc2      ; skip if not sending EOI
+   test    bFakeData,FAKE_STAT_IRQ ; interrupt pending?
+   jnz short poc2      ; skip if not
+   or  bFakeData,FAKE_STAT_IRQ ; indicate interrupt no longer pending
+   push    eax
+   mov eax,hIRQ
+   VxDcall VPICD_Clear_Int_Request
+   pop eax
+poc2:
+   ret
+EndProc Port_IO_Callback
+
+; ECX == 0 if unmasking (enabling), ECX != 0 if masking (disabling).
+BeginProc VxD2_Mask_Change_Proc
+   call    CheckOwner
+   jc  short mcp9      ; ignore if not the owner
+   jcxz    mcp9            ; skip if unmasking (enabling)
+
+;
+; The owner is relinquishing control. Allow another VM to sign up.
+;
+   mov hOwner,-1        ; clear the owner
+
+mcp9:
+   ret
+EndProc VxD2_Mask_Change_Proc
+
+; called when the ISR executes
+BeginProc VxD2_VInt_Proc
+   mov eax,High_Pri_Device_Boost
+   VMMCall Adjust_Exec_Priority  ; boost priority for int processing
+   ret
+EndProc VxD2_VInt_Proc
+
+; called when the ISR returns (IRETs)
+BeginProc_VxD2_IRET_Proc
+   mov eax,-(High_Pri_Device_Boost)
+   VMMCall Adjus_tExec_Priority         ; restore priority
+   ret
+EndProc VxD2_IRET_Proc
+
+ifdef DEBUG
+BeginProc VxD2B_Debug_Query
+   Trace_Out   "VxD2 has no debug command support."
+   clc
+   ret
+EndProc VxD2B_Debug_Query
+endif
+
+;
+;   VxD2B_Control
+;
+
+CtlDisp macro x
+ Control_Dispatch x, VxD2B_&amp;x
+ endm
+
+Begin_Control_Dispatch VxD2B
+   CtlDisp Device_Init
+ifdef DEBUG
+   CtlDisp Debug_Query
+endif
+End_Control_Dispatch VxD2B
+
+VxD_LOCKED_CODE_ENDS
+
+VxD_CODE_SEG
+VxD_CODE_ENDS
+
+subttl  Initialization Data
+page
+VxD_IDATA_SEG
+; put initialization-only data here
+VxD_IDATA_ENDS
+
+
+subttl  VxD Initialization
+page
+VxD_ICODE_SEG
+
+page
+;EP VxD2B_Device_Init - Non-critical Device Initialization
+;
+;   ENTRY
+;       EBP - Client frame
+;       EBX - System VM handle
+;       DS,ES - FLAT
+;
+;   EXIT
+
+
+;       SUCCESS
+;       Carry clear
+;       FAILURE
+;       Carry set
+;
+;   WARNINGS
+;
+;   NOTES
+;
+;   CALLS
+;
+
+BeginProc VxD2B_Device_Init
+   Debug.Out "VxD2B_Device_Init"
+   
+   mov edi,OFFSET32 IRQD
+   VxDcall VPICD_Virtualize_IRQ    ; Virtualize the interrupt
+   jc short vdi1       ; exit if error
+   mov hIRQ,eax        ; save the handle
+
+   mov edx,FAKE_PORT
+   mov esi,OFFSET32 Port_IO_Callback
+   VMMCall Install_IO_Handler
+   VMMCall Enable_Global_Trapping ;
+   
+   clc             ; No error
+vdi1:
+   ret
+EndProc VxD2B_Device_Init
+
+
+VxD_ICODE_ENDS
+
+VxD_REAL_INIT_SEG
+
+VxD2B_Real_Init LABEL FAR ; Called before Windows enters
+protected mode
+   mov ax,Device_Load_Ok   ; Allow the VxD to load
+   xor bx,bx       ; No EMM Exclude pages
+   xor si,si       ; no instance data items
+             ; pass edx unmodified
+   ret
+
+VxD_REAL_INIT_ENDS
+
+   END VxD2B_Real_Init
+; End of File
+</pre>
+</BODY>
+</HTML>

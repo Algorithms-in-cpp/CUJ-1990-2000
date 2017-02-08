@@ -1,0 +1,259 @@
+
+
+
+<HTML>
+<HEAD>
+
+<TITLE>September 1992/Exception Handling</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocsep.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Exception Handling<A name="01AB_00D9"><A name="01AB_00D9"></font></h2><P>
+<h3 align="center"><font color="#800000"><A name="01AB_0000"><A name="01AB_0000">Carlos Vidal</font></h3><hr><blockquote><P>
+<P><i><A name="01AB_0000"><A name="01AB_0000">Carlos Vidal has an M.S. in nuclear engineering. He has been working mainly in UNIX and C since 1986, and has experience with C++ and X. He is currently employed by ABB Atom, Sweden, in the Methods Development department at the fuel factory. He can be reached by mail at ABB Atom, S-721 63 Vasteras, Sweden.</i></P><P>
+When you work for some time in C, your software looks<B> </B>more like an extension of the C library than a new program.<B> </B>This means that you are beginning to understand and share<B> </B>the undocumented philosophy (or style) hidden behind C. In<B> </B>one expression of that style, many functions return a pointer,<B> </B>and if something goes wrong, the pointer is <I>NULL</I>.<P>
+Code like<P>
+<pre>if(p==NULL)
+print_message("...")</pre>
+or<P>
+<pre>if(p==NULL)
+abort</pre>
+should be included just after any call to your functions. These<B> </B>lines pass hints about a failure through the <I>errno</I> global<B> </B>variable. This is basically the C (and UNIX) error-handling policy,<B> </B>and was the only one in C++ until November 1990, when the<B> </B>ANSI C++ standards committee accepted the <I>exception</I><I><B> </I></B><I>handling</I> mechanism as part of the language. This mechanism<B> </B>offers a way of jumping directly to a handler when an error<B> </B>condition is found, avoiding the return to the expression that<B> </B>called the function. Unfortunately, at least in the UNIX<B> </B>community, exception handling will not be available in most of<B> </B>commercial compilers until 1993.<P>
+This article shows how to build a provisional<B> </B>implementation of the mechanism with a state of the art compiler. The<B> </B>code can be used in real projects, if you cannot wait for the<B> </B>official version.<P>
+<h4><FONT COLOR="#000080"><A name="01AB_00DA">A Short Description<A name="01AB_00DA"></FONT></h4></P>
+Exception handling was presented in April 1990 by Koenig<B> </B>and Stroustrup, and is formally described in <I>The Annotated C++ Reference Manual</I> by Stroustrup and Ellis. <I>The C++ Programming Language</I>, 2nd Edition, by Stroustrup also<B> </B>contains some examples.<P>
+Exception handling uses three<B> </B>additional keywords: <I>try, catch</I>, and <I>throw.</I><I><B> </I></B><I>try</I> and <I>catch</I> are always together<B> </B>defining a handler. That is, the handler<B> </B>"tries" a piece of code, and is prepared<B> </B>to "catch" a list of possible errors. The<B> </B>code looks like<P>
+<pre>try {
+    f1();
+    f2();
+    ...
+    etc.
+}
+catch (Error of type A) {
+    ...
+}
+catch (Error of type B) {
+    ...
+}
+
+// Normal continuation point
+...</pre>
+If something goes wrong inside the <I>try</I><B> </B>block, the program enters the<B> </B>appropriate <I>catch</I> block. Otherwise,<B> </B>execution continues after the <I>catch</I> list.<P>
+To signal an error, the code executed<B> </B>inside the <I>try</I> block can "throw" an<B> </B>exception. For instance,<P>
+<pre>fd = fopen (...);
+if(fd == NULL)
+throw (Error of type X);</pre>
+This looks only like another syntax of the code<P>
+<pre>if(error in try block) {
+   switch(errno) {
+      case 1:
+         ...
+         etc
+   }
+}</pre>
+except that the next expression executed after <I>throw</I> is the correspondent <I>catch</I> block. The program enters the <I>catch</I> block regardless of the number of stacked function calls involved. For instance,<P>
+<pre>main() {
+   try {
+      f();
+   }
+   catch (An_Exception) {
+      ...
+   }
+}
+void  f() { g(); }
+void g() { throw ( An_Exception ); }</pre>
+In this example, the control is transferred directly from <I>g</I> to the <I>catch</I> block, without passing through <I>f</I>.<P>
+In other words, throwing an exception transfers control to the last handler entered. If there is no <I>catch</I> matching the exception, the program calls a function named <I>unexpected</I>. If there is no handler, the program calls a function named <I>terminate</I>.<P>
+By default, <I>unexpected</I> calls <I>terminate</I>, and <I>terminate</I> calls <I>abort</I>. With the functions <I>set_unexpected</I> and <I>set_terminate</I> this can be changed by user-supplied implementations.<P>
+The implementation differs from the classical method in two important ways:<P>
+1.     After throwing an exception, a special action is taken.<P>
+2.     The jump to the handler breaks all the rules. Actually, it is a non-local <I>goto</I>, transferring control directly from <I>throw</I> to the appropriate <I>catch</I> block. (This is the delicate side of this mechanism.)<P>
+Throwing an exception is like putting a message in a bottle. The castaway launching the bottle has no idea if anyone will get the message, but is sure this is the best thing to do.<P>
+In C++, exception handling is particularly useful when treating errors in object constructors. For instance, a constructor implementation of the class<P>
+<pre>class A: public B {
+   ...
+public:
+   A();
+}</pre>
+may look like<P>
+<pre>A::A() : B()
+{
+
+   // construct A.
+   // The B part of A should be ready
+
+   // Check B construction
+   if(status != OK) {
+      my_status = ~OK;
+      return;
+   }
+
+   // Proceed with A construction
+   ...
+}</pre>
+The only way of checking if <I>B::B()</I> succeeded is to add a status variable in <I>B</I>, and ask if it is OK. Then, you can proceed with the <I>A</I> constructor. If it fails, the error can be reported in the same status variable of <I>B</I> if it is accessible, or in another variable especially defined for <I>A</I> (for instance, if <I>B</I> comes in a commercial class library and you can't change the source).<P>
+If somebody wants to derive a class from <I>A</I>, he is faced with the same problem. A user of class <I>A</I> has also to check if its construction is OK before using the object, otherwise he is opening the door for a bug. In other words, with this approach errors are not encapsulated.<P>
+Using exceptions, <I>A</I>'s constructor looks like any simple constructor. That is,<P>
+<pre>A::A() : B()
+{
+   // Proceed with A construction
+   ...
+}</pre>
+If <I>B::B()</I> fails, this program throws an exception and <I>A</I> need not be aware of it. A user code can look like<P>
+<pre>try {
+   A a;
+   //or
+   A* pa = new A;
+}
+catch(Bad_B) {
+   delete pa;
+   ...
+}</pre>
+If a user forgets the handler, when an error occurs the code stops through <I>unexpected</I>, which is always better than a message such as <I>memory fault, core dumped</I> or <I>segmentation violation</I>.<P>
+<h4><FONT COLOR="#000080"><A name="01AB_00DB">The Formal Syntax<A name="01AB_00DB"></FONT></h4></P>
+Before starting with the implementation, I will formally define the syntax and uses of the keywords.<P>
+<h4><FONT COLOR="#000080"><A name="01AB_00DC"><I>throw<A name="01AB_00DC"></I></FONT></h4></P>
+Throw can be used in three different ways:<P>
+1. <I>throw an_obj;</I><P>
+2. <I>throw;</I><P>
+3. <I>f() throw (type1, type2, etc.) {</I><P>
+<I>//function body ...</I><P>
+Item 1 was used in the previous examples. <I>an_obj</I> is the object passed to the handler. The type of this object is used to select the <I>catch</I> block. For instance,<P>
+<pre>class AnError;
+
+f() {
+   AnError err;
+   ...
+   throw err;
+   ...
+}</pre>
+or directly<P>
+<pre>f() {
+   ...
+   throw AnError();
+   ...
+}</pre>
+Item 2 means to "throw the last exception thrown." To use this form a previous exception must exist. The previous exception has to appear inside the <I>catch</I> block or in a function called from the <I>catch</I> block. For instance,<P>
+<pre>catch (AnError) {
+   throw;   // Throws AnError, with the object originally passed
+}</pre>
+Finally, item 3 specifies a list of exceptions handled by a function. That is,<P>
+<pre>void f() throw (A, B)
+{
+   // Body of f()
+}</pre>
+is actually expanded to<P>
+<pre>void f()
+{
+   try {
+      // Body of f()
+   }
+   catch(A) {throw;}
+   catch(B) {throw;}
+}</pre>
+<h4><FONT COLOR="#000080"><A name="01AB_00DD"><I>catch<A name="01AB_00DD"></I></FONT></h4></P>
+<I>catch</I> has to specify a type, catching any exception of this type or of types derived from it. The syntaxes used are<P>
+<pre>try {
+   ...
+}
+catch(AnError) {
+   // Your handler
+   ...
+}</pre>
+Or, to access the object passed by throw<P>
+<pre>catch(AnError&amp; obj) {
+   // Your handler using obj values and services
+   ...
+}</pre>
+Finally, <I>catch(...)</I> means to "catch any exception." <I>catch</I> blocks must appear just after the <I>try</I> block, and are evaluated in the order they are declared. Then, if the last block is <I>catch (...)</I>, <I>unexpected</I> is never called for this handler.<P>
+<h4><FONT COLOR="#000080"><A name="01AB_00DE"><I>try<A name="01AB_00DE"></I></FONT></h4></P>
+The <I>try</I> keyword has only one syntax, and is the one used in all the examples.<P>
+<h4><FONT COLOR="#000080"><A name="01AB_00DF">An Implementation<A name="01AB_00DF"></FONT></h4></P>
+The <I>throw</I> keyword is actually a non-local <I>goto</I>. In C you can get the same result using the standard functions <I>setjmp</I> and <I>longjmp</I>. (A very good description of these primitives was presented by P.J. Plauger in the October 1991 <I>CUJ</I>).<P>
+<h4><FONT COLOR="#000080"><A name="01AB_00E0">Synopsis<A name="01AB_00E0"></FONT></h4></P>
+<pre>#include.h
+
+int setjmp(jmp_buf env);
+void longjmp(jmp_buf env, int retval);</pre>
+Basically, <I>setjmp</I> saves the current execution environment (you can say "the state of the CPU" in a buffer passed as an argument, and then returns 0). <I>longjmp</I> restores the environment saved in the buffer passed as an argument, with the exception of the <I>setjmp</I> return value, which is replaced by the second argument of <I>longjmp</I>.<P>
+For instance, in the following code, <I>main</I> starts saving the current environment with <I>setjmp</I>. As this is a direct invocation, <I>setjmp</I> returns 0. Then <I>f</I> is called. Finally, <I>g</I> is called and <I>longjmp</I> is executed. Here the normal flow of the program is interrupted. Everything is reset to the state it was in when <I>env</I> was saved, so the next instruction is the evaluation of the <I>if</I> statement in <I>main</I>, with the only difference being that now <I>setjmp</I> returns 1 (<I>longjmp</I>'s second argument).<P>
+<pre>#include.h
+static jmp_buf env;
+void g()
+{
+   longjmp(env, 1);
+   // Never reach this point
+}
+
+void f()
+{
+   g();
+   cout&lt; "Return from g(). Never happens";
+}
+
+main()
+{
+   if(setjmp(env) == 0) {
+      f();
+   }
+   else {
+      cout &lt; "Violent return\n";
+   }
+}</pre>
+This behavior is quite similar to the one needed. You can say that <I>try</I> is a kind of<I> setjmp</I>, and <I>throw</I> is a kind of <I>longjmp</I>. The exception-handling definition says that <I>throw</I> has to jump to the "last try-block entered." This can be achieved by passing to <I>setjmp</I> a buffer allocated on top of a stack, and calling <I>longjmp</I> with the last value pushed.<P>
+<A href="list1.htm">Listing 1</a>
+shows the definition of a stack of <I>jmp_buf</I>. For simplicity, I used a fixed-size stack space and a minimum implementation. Any other stack class can be used, provided that <I>jmp_bufs</I> are not allocated as automatic variables. <A href="list2.htm">Listing 2</a>
+shows the implementation.<P>
+In order to handle exception types and be able to pass objects, I defined a virtual base class called <I>Exception</I> (see <A href="list3.htm">Listing 3</a>)
+.<P>
+<A href="list4.htm">Listing 4</a>
+shows the class <I>ExH</I>, controlling the exception handling mechanism. To implement the <I>terminate</I> and <I>unexpected</I> functionality, I defined the type <I>PFV</I> as a pointer to a <I>void</I> function. The functions <I>set_terminate</I> and <I>set unexpected</I> return a pointer to the last function in use. This allows the user to temporarily set his own implementation, independently of the previous one. (See paragraph 15.6.2 in <I>The Annotated C++ Reference Manual.</I>) For instance,<P>
+<pre>void my_unexp();
+
+void f()
+{
+   PFV old = set_unexpected(my_unexp);
+
+   ...
+   // your stuff
+   ...
+
+   set_unexpected(old);
+}</pre>
+To store the current pointers to <I>unexpected</I> and <I>terminate</I> I use the static variables <I>PFV terminate</I> and <I>PFV unexpected</I> in class <I>ExH</I>. To be able to modify them, I declare the functions <I>set_unexpected</I> and <I>set_terminate</I> as friends.<P>
+The buffer <I>safeSpace</I> is used to save the last object thrown. As this object is always derived from <I>Exception</I>, I use the pointer <I>lastEx</I> to work with the buffer <I>(lastEx = (Exception*)safeSpace)</I>.<P>
+The inline function <I>throw</I> shows how they are used together with the stack of <I>jmp_buf</I>. All variables are static because <I>ExH</I> is a control module, so I need only one instance in the program.<P>
+<A href="list5.htm">Listing 5</a>
+shows <I>ExH</I> implementation. Actually, it gives only the initialization of static variables and <I>set</I>_<I>unexpected</I> and <I>set</I>_<I>terminate</I>.<P>
+<h4><FONT COLOR="#000080"><A name="01AB_00E1">How To Use It<A name="01AB_00E1"></FONT></h4></P>
+With this class, keywords can be translated as shown in <A href="tab1.htm">Table 1</a>.
+ After the last <I>catch</I> block, the line <I>else unexpected()</I>; must be added if the last <I>catch</I> has no ellipsis.<P>
+<A href="list6.htm">Listing 6</a>
+shows a translator built with <I>lex</I> (UNIX lexical analyzer) that transforms the keywords to C++ code.<P>
+<h4><FONT COLOR="#000080"><A name="01AB_00E2">Limitations of This Model<A name="01AB_00E2"></FONT></h4></P>
+There are two major limitations to this model, compared with the formal definition in <I>The Annotated C++ Reference Manual</I> (ACRM). Probably these are the reasons why exception handling is not already available.<P>
+<h4><FONT COLOR="#000080"><A name="01AB_00E3">Stack Unwinding<A name="01AB_00E3"></FONT></h4></P>
+As I said, when <I>longjmp</I> is executed, the next instruction is the one following the associated <I>setjmp</I>. This means that the stack pointer returns to the former value, and no action is taken with the objects created between <I>try</I> and <I>throw</I>. Automatic variables are not such a big problem because they are allocated on the stack, so you lose their values but can reuse the space. On the other hand, objects allocated in the heap (with <I>new</I> or <I>malloc</I>) will remain where they are, generating memory leaks, because you probably lose the pointers to them.<P>
+The formal definition of the mechanism prevents this, saying that as control passes from a <I>throw</I> point to handler, destructors are invoked for all objects fully constructed on the path from <I>try</I> to <I>throw</I>.<P>
+Unfortunately, this is not the case here. To use this model you have to be careful that the objects created in between are properly destroyed. A partial solution is to derive dangerous classes from an Undo class with virtual destructor, and do some kind of garbage collection with them.<P>
+<h4><FONT COLOR="#000080"><A name="01AB_00E4"><I>Exception</I><B> Base Class<A name="01AB_00E4"></B></FONT></h4></P>
+The second limitation is that you need an <I>Exception</I> base class to get a uniform access to the virtual functions <I>size</I> and <I>type</I>. Nevertheless, if exceptions are declared all together in some include file, this can be easily modified when the official mechanism becomes available.<P>
+<h4><FONT COLOR="#000080"><A name="01AB_00E5">Conclusions<A name="01AB_00E5"></FONT></h4></P>
+My experience using this implementation is that exception handling is very useful to isolate base library writers from application developers. I gained more in productivity than in code performance. For instance, one of my programs has to read an ASCII file with large tables (200K) used to initialize objects of approximately 20 different classes. The application code looks something like<P>
+<pre>{
+   CdFile in("my_file");
+   FuelType ft;
+
+   try {
+      in &gt;ft;
+   }
+   catch(what you can) {
+   }
+}</pre>
+When I wrote <I>operator&gt;</I> I worked very fast knowing that on an input error some kind of action surely has to be taken, independently of the user of the class. The alternative was to abort on any error compromising data integrity.<P>
+
+<h4><a href="../../../source/1992/sep92/vidal.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

@@ -1,0 +1,248 @@
+<HTML><HEAD>
+<TITLE>January 1993/Template Classes for the iostreams Library/Listing 3</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 3 <B></B>tserial.cpp &#151; <B><I></B>serial port stream classes</I></A></h4>
+<pre>#include &lt;iostream.h&gt;
+#include "tserial.h"
+#include &lt;string.h&gt;
+#include &lt;dos.h&gt;
+#include &lt;bios.h&gt;
+#include &lt;conio.h&gt;
+
+// interrupt functions.
+typedef void interrupt far intFunc(...);
+
+// Programmed Interrupt Controller constants.
+const PICO : 0x20;
+const PIC1 : 0x21;
+const EOI : 0x20;
+
+// Offsets from port address.
+const InterruptEnable = 1,
+     InterruptIdent = 2,
+     ModemControl = 4,
+     LineStatus = 5,
+     ModemStatus = 6;
+
+// Value for the modem control register.
+const ModemControlValue = 11;
+
+// A serial port circular buffer class. There
+// are only two instances of this class, one
+// for each port COM1, and COM2. They are
+// static globals, and are initailized before
+// main(). They contain a circular buffer,
+// the port number and port address, and the
+// interrupt vector they replace, so that
+// they can be restored at destruction. This
+// is not a complete or robust class, and is
+// private to this module. It is intended
+// only for use by SerialStream.
+class ComBuffer {
+public:
+// Size of circular buffer
+   enum{ BufSize = 0x100 };
+// Default constructor.
+   ComBuffer();
+   ~ComBuffer();
+// Set up vector, and enables interrupts
+   void hookInterrupt();
+// Get a single character from the buffer
+   int getc();
+// Send a single character to the port
+   void putc(int c);
+// Read the line status register.
+   int status() const
+   {
+      return ::inp(portAddr+LineStatus);
+   }
+// Check if characters are available
+   int avail() const
+   {
+      return in != out;
+   }
+// Receive a character from port. This function
+// is called by the interrupt routine.
+   void receive();
+private:
+// The mask needed for setting the PIC.
+   int interruptMask(int port) const
+   {
+      return 1 &lt;&lt; (4 - port);
+   }
+// The interrupt number for each port.
+   int interruptVec(int port) const
+   {
+      return 12 - port;
+   }
+   char *in, *out, *buff;  // The circular buffer
+   int port;           // The port number 0-1
+   int portAddr;       // The port address
+   intFunc *oldVector;     // The previos vector
+   static int initPort;
+};
+
+// initPort is used by the constructor to initialize
+// the ports in sequence.
+int ComBuffer::initPort = 0;
+// Only two ports are set up here. If you add more
+// you need to identify the port addresses and
+// interrupt vectors.
+static ComBuffer CommPorts[2];
+
+// Initialize the buffers. Allocate the circular
+// buffer, set the in/out pointers, set the port
+// and port address values, and clear the old
+// vector value.
+ComBuffer::ComBuffer()
+   : buff(new char[BufSize]), port(initPort++),
+            oldVector(0)
+{
+// this line is for sceptics to see initializing.
+   cout &lt;&lt; "initializing port #" &lt;&lt; port &lt;&lt; endl;
+   portAddr = port ? 0x2f8 : 0x3f8;
+   in = out = buff;
+}
+
+// Delete the circular buffer. If the old vector
+// is a valid address, restore it.
+ComBuffer::~ComBuffer()
+{
+// another line for sceptics.
+   cout &lt;&lt; "de-initializing port #" &lt;&lt; port &lt;&lt; endl;
+   if(oldVector)
+      ::setvect(interruptVec(port),oldVector);
+   delete[] buff;
+}
+
+// These two routines reset to PIC, and put
+// the new character in the buffer
+void interrupt far comInterrupt0(...)
+{
+   ::outp(PICO,EOI);
+   CommPorts[0].receive();
+}
+void interrupt far comInterruptl(...)
+{
+   ::outp(PICO,EOI);
+   CommPorts[1].receive();
+}
+
+// This function sets up the interrupts, and
+// enables the PIC
+void
+ComBuffer::hookInterrupt()
+{
+   if(oldVector==0)
+      oldVector = ::getvect(interruptVec(port));
+   switch(port)
+   {
+   case 0:
+      ::setvect(interruptVec(port),comInterrupt0);
+      break;
+   case 1:
+      ::setvect(interruptVec(port),comInterrupt1);
+      break;
+   default:
+      return;
+   }
+   ::outp(portAddr+ModemControl,
+      ::inp(portAddr+ModemControl)|ModemControlValue);
+   ::outp(PIC1,::inp(PIC1) &amp; ~interruptMask(port));
+   ::outp(portAddr+InterruptEnable,1);
+   ::outp(PICO, EOI);
+   ::inp(portAddr);
+   ::inp(portAddr+InterruptIdent);
+   ::inp(portAddr+ModemStatus);
+   status();           // clear status reg.
+}
+
+// Receive a byte from the port and place in the
+// circular buffer, called from the interrupt
+// handler.
+void
+ComBuffer::receive()
+{
+   if(in == buff + BufSize)
+      in = buff;      // circular buffer
+   *in++ = ::inp(portAddr);
+}
+
+// Get a character from the circular buffer.
+int
+ComBuffer::getc()
+{
+   while(!avail())
+      if(::kbhit())
+         return -1;
+   if(out == buff + BufSize)
+      out = buff;     // circular buffer
+   return *out++;
+}
+
+// Send a character directly to the port
+void
+ComBuffer::putc(int c)
+{
+   while((status() &amp; 0x20) == 0)
+      if(::kbhit())
+         return;
+   ::outp(portAddr, c);
+}
+
+const default_init =_COM_1200|_COM_CHR8|
+                 _COM_STOP1|_COM_NOPARITY;
+
+// The open function needs to translate the name
+// to the port number, initialize the port, and
+// enable interrupts.
+int SerialStream::open(const char *name, int, int)
+{
+   if(::stricmp(name,"COM1") == 0)
+      port = 0;
+   else if(::stricmp(name, "COM2") == 0)
+      port = 1;
+   else
+      return -1;
+   unsigned int stat = :: bios_serialcom(
+                 _COM_INIT,port,default_init);
+   buffPtr = CommPorts+port;
+   buffPtr-&gt;hookInterrupt();
+   if(stat &amp; 0xFF00)
+      return -1;
+   return 0;
+}
+
+// The close routine sets the port number to -1
+// to indicate it's closed
+int
+SerialStream::close()
+{
+   port = -1;
+   return 0;
+}
+
+// The read routine repeatedly calls ComBuffer::getc
+// to fill it's buffer. len should always be 1.
+int SerialStream::read(char *b, size_t len)
+{
+   for(int i = 0; i &lt; len; i++)
+       b[i] = buffPtr-&gt;getc();
+   return i;
+}
+
+// The write routine repeatedly calls ComBuffer::putc
+// to empty it's buffer. len should alway be 1.
+int SerialStream::write(char *b, size_t len)
+{
+   for(int i = 0; i &lt; len; i++)
+       buffPtr-&gt;putc(b[i]);
+   return i;
+}
+
+/* End of File */</pre>
+
+</BODY>
+</HTML>

@@ -1,0 +1,102 @@
+
+
+<HTML>
+<HEAD>
+
+<TITLE>October 1994/Standard C/C++</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tococt.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Columns</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Standard C/C++<A name="018F_00DE"><A name="018F_00DE"></font></h2><P>
+<h3 align="center"><A name="018F_0000"><A name="018F_0000">Inserters</h3><P>
+<h3 align="center"><font color="#800000">P. J. Plauger</font></h3><hr><blockquote><P>
+<P><i><A name="018F_0000"><A name="018F_0000">P.J. Plauger is senior editor of C/C++ Users Journal. He is convenor of the ISO C standards committee, WG14, and active on the C++ committee, WG21. His latest books are The Draft Standard C++ Library, and Programming on Purpose (three volumes), all published by Prentice-Hall. You can reach him at pjp@plauger.com.</i></P><P>
+<h4><FONT COLOR="#000080"><A name="018F_00DF">Two Asides<A name="018F_00DF"></FONT></h4></P>
+Before I continue where I left off last month, I have two asides. The first is that I finally delivered my latest book to the publisher. By the time you read this, bookstores should have copies of <I>The Draft Standard C</I>++ <I>Library</I>, published by Prentice Hall. It describes a complete implementation of the Standard C++ library, at least as it stood earlier this year.<P>
+You've already seen bits and pieces of that code, and the explanations that go with it, in earlier installments of this column. The last dozen or so "Standard C/C++" columns served as useful input to the book. Now the process is reversed. This and subsequent columns are derived from the book.<P>
+No, they are not simply direct copyings. The requirements of a magazine article are seldom exactly the same as for a book chapter. I endeavor each month to provide a bite-size sampler of the Standard C++ library, drawing on material in the book to make the discussion as rich and informative as possible. (Long-time readers of this magazine may recall that I performed much the same exercise with my earlier opus, <I>The Standard C Library</I>.)<P>
+The second aside concerns the status of the draft C++ Standard. I mentioned in last month's Editor's Forum that the draft is now being prepared for a ballot within ISO leading to registration as a Committee Draft. What this means is that major additions should stop popping up in future editions of the C++ Standard. Of course, a heckuva lot of stuff got added to the library at the eleventh hour. You can be sure that changes will occur on a regular basis until all this new stuff gets debugged &#151; and some of the older stuff changes to match.<P>
+I don't intend to try to track all these changes on a regular basis. Any explanations I endeavor to provide here would only confuse after a while. Instead, I'm going to keep bulling ahead describing the code I've implemented. That's not as reactionary as it sounds. Many of the additions to the Standard C++ library involve "templatizing" existing iostreams and string classes. The required instantiations of these templates for type <I>char</I>, with rare exceptions, have the same behavior as what I describe here.<P>
+There's a good reason for that. My implementation of the Standard C++ library caught it at a time when it had codified all the existing practice the Committee intended to standardize, and little more. The additions since then are extremely inventive. Some of them can't even compile with existing commercial compilers. Some have <I>never</I> been implemented. Others can be sort of compiled, by dummying out new language features. They then suffer from the limitations of current template technology, which often gags or bogs down when templates are used extensively.<P>
+C++ lets you write a <I>specialization</I> for a template. Rather than rely on an important instantiation to expand rapidly into efficient code, you can preempt template processing with your own version. I suspect that a typical implementation of the Standard C++ library will do exactly this for the traditional flavor of iostreams that is used so heavily. The code I present here, with a few small fiddles, provides just the specialization you might expect from a sensible implementation.<P>
+I certainly intend to keep you informed about what's happening with the draft C++ Standard, particularly the library portion. But fast-breaking news has to stay decoupled from the ongoing explanation of an implementation that works with today's technology. With that in mind, we return to our regularly scheduled program.<P>
+<h4><FONT COLOR="#000080"><A name="018F_00E0">Introduction<A name="018F_00E0"></FONT></h4></P>
+This is the second installment on the class <I>ostream</I>, defined in the header <I>&lt;ostream&gt;</I> (See "Standard C: The Header <I>&lt;ostream&gt;," CUJ,</I> September 1994.) Last month, I showed the definition of the class and described the member functions that perform unformatted output. <A href="fig1.htm">Figure 1</a>
+shows how <I>ostream</I> fits into the class structure of iostreams. I continue this month, as promised, with a description of the member functions that perform formatted output. These functions are commonly known as <I>inserters</I>.<P>
+For convenient reference, I once again provide a description of class <I>ostream</I>. <A href="list1.htm">Listing 1</a>
+shows how the draft C++ Standard defines it. You might want to look it over now, then refer back to it as needed in the discussion that follows.<P>
+Inserters overload <I>operator&lt;&lt;</I> for a left parameter of type <I>ostream&amp;</I>. That lets you write code such as:<P>
+<pre>float fl;
+cout &lt;&lt; fl;</pre>
+which converts the <I>float</I> value <I>fl</I> to a character sequence and inserts those characters into the stream controlled by <I>cout</I> (the standard output stream). The character sequence is essentially the same as that produced by the Standard C library function <I>fprintf</I>, declared in <I>&lt;stdio.h&gt;</I>. The entire sequence must be successfully inserted in the stream buffer for the function to succeed. Otherwise, the function reports failure, typically by setting <I>badbit</I> in <I>cout</I>.<P>
+Thus, inserters serve the same function for the Standard C++ library that the <I>fprintf</I> family serves for the Standard C library. You can, in fact, implement inserters by calls to <I>fprintf</I>. That turns out to be not always convenient, however:<P>
+<UL><li>The destination for output from a stream controlled by an <I>ostream</I> object is controlled in turn by a <I>streambuf</I> object. You can't always relate that destination directly to the destinations writeable by <I>fprintf</I> or <I>sprintf</I>.</li>
+<li>You can store characters into a buffer using <I>sprintf</I> then insert them into the stream buffer. But doing so requires a buffer that is arbitrarily large. Or you end up doing so much postprocessing of the text that you duplicate much of the work done by <I>sprintf</I>.</li>
+<li>The program can specify an arbitrary fill character for an inserter, not just the implied space character (' ') supplied by <I>fprintf</I>. Moreover, the program can specify that this arbitrary character be used for "internal" fill, in place of the implied zero ('<I>0</I>') supplied by <I>fprintf</I>.</li>
+<li>For these reasons, you can't count on calls to <I>fprintf</I> to do all the hard work of implementing inserters. Nevertheless, the <I>definition</I> of a typical inserter member function in <I>ostream</I> is in terms of <I>fprintf</I> conversion specifiers. When in doubt, you can often turn to the C Standard for a more precise description of inserter behavior.</li></UL>
+<h4><FONT COLOR="#000080"><A name="018F_00E1">Kinds of Inserters<A name="018F_00E1"></FONT></h4></P>
+Last month, I discussed the inserters that perform a minimum of interpretation. These insert one or more characters from the output stream and deliver them either to memory or to an output stream. The simplest is <I>operator&lt;&lt;(char&amp;)</I>, which inserts a single character. As usual, class ostream also has <I>unsigned char</I> and <I>signed char</I> versions of the same inserter. The member function <I>operator&lt;&lt;(const char *)</I> inserts a sequence of characters into the output stream from a null-terminated string in the character array designated by the pointer argument. Yes, there are three flavors, once again. And yes, you can pad a string on either end with fill characters.<P>
+The remaining formatted output functions are my principal topic this month. They insert various scalar types. For all of these inserters, you can specify a field width, a fill character, and the format flags in the group <I>adjustfield</I>. These work together to determine whether and where to insert fill characters as padding when generating the text representation of a value. The scalar inserters further subdivide into integer types, floating-point types, and pointer to <I>void</I>. You control the behavior of each of these groups with different subsets of the format flags.<P>
+You can, of course, also write your own inserters. It is commonplace, when designing a new class, to provide a tailored inserter at the very least. If reading values of the class makes sense, then it is good manners to provide an extractor as well. You might even want to write an inserter or two that are not associated with a specific class.<P>
+The best style for writing new inserters is to do so in terms of the member functions of class <I>ostream</I>. If you must drop below this level and access the associated <I>streambuf</I> object directly, then by all means match the discipline followed in some existing inserter. (That assumes, of course, that you can get your hands on such source code.) Extractors are more fragile than inserters, because of the need to look ahead in the input sequence and push back an occasional character. But inserters are delicate enough in their own right. Don't take unnecessary chances.<P>
+<h4><FONT COLOR="#000080"><A name="018F_00E2">How Inserters Work<A name="018F_00E2"></FONT></h4></P>
+The scalar inserters in class <I>ostream</I> are important work horses. Each converts some encoded form within a C++ program to a human-readable text sequence (or <I>field</I>). The form is determined by type T in a member declaration of the form:<P>
+<pre>ostream&amp; operator&lt;&lt;(T x);</pre>
+where x designates the value of the argument expression.<P>
+In all cases, the following steps occur, in order:<P>
+<UL><li>If either of the status bits <I>badbit</I> or <I>failbit</I> is set, the function makes no attempt to insert characters.</li></UL>
+If <I>tie()</I> is not a null pointer, the function flushes the specified stream.<P>
+The function generates the minimum-length character sequence that represents the argument value, as determined by the argument type and any relevant format flags.<P>
+<UL><li>If the field width is greater than the length of this character sequence, the function pads the character sequence with fill characters as determined by the format flags in the <I>adjustfield</I> group.</li>
+<li>If the function cannot insert all the characters in the generated field, it sets <I>badbit</I>.</li>
+<li>If the format flag <I>unitbuf</I> is set, the function flushes the output stream.</li></UL>
+In all cases, the function returns <I>*this</I>, so that inserters can be chained.<P>
+<h4><FONT COLOR="#000080"><A name="018F_00E3">Integer Inserters<A name="018F_00E3"></FONT></h4></P>
+Integer inserters exist for the types <I>char, signed char, unsigned char, short, int, unsigned int, long,</I> and <I>unsigned long</I>. You <I>cannot</I> insert an integer value directly from an expression of a character type. An inserter for a character type inserts the character code instead, as I described earlier. You must type cast the character expression <I>ch</I> to some integer type, as with <I>(int)ch</I>.<P>
+Remember that the <I>basefield</I> format flags determine the base for both input and output conversions. For inserters only, clearing all <I>basefield</I> flags calls for decimal output.<P>
+For all the integer types, you can control:<P>
+<UL><li>the numeric base for the text representation by how you set the <I>ios::basefield</I> group of format flags</li>
+<li>whether non-negative values have a leading <I>+</I>, by setting the format flag <I>showpos</I></li>
+<li>whether octal values have a leading 0 or hexadecimal values have a prefix <I>0x</I> or <I>0</I><I>X</I>, by setting the format flag <I>showbase</I></li>
+<li>whether hexadecimal values use uppercase letters for <I>x</I> and the digits <I>a</I> through <I>f</I>, by setting the format flag <I>uppercase</I></li>
+<li>whether padding occurs after any sign and/or prefix and before the digits, by setting just the format flag <I>internal</I> in the group <I>adjustfield</I></li></UL>
+<h4><FONT COLOR="#000080"><A name="018F_00E4">Floating-Point Inserters<A name="018F_00E4"></FONT></h4></P>
+Floating-point inserters exist for the types <I>float, double</I>, and <I>long double</I>. They generate the same formats as the <I>fprintf</I> conversion specifiers <I>e, f</I>, and <I>g</I> (or their uppercase versions). For niggling details, see a precise description of that function (such as in P&amp;B92).<P>
+For all the floating-point types, you can control:<P>
+<UL><li>whether non-negative values have a leading <I>+</I>, by setting the format flag <I>showpos</I></li>
+<li>whether to preserve the decimal point along with any trailing zeros, by setting the format flag <I>showbase</I></li>
+<li>whether to use an uppercase letter for <I>e</I>, by setting the format flag <I>uppercase</I></li>
+<li>whether padding occurs after any sign and before the digits, by setting just the format flag <I>internal</I> in the group <I>adjustfield</I></li>
+<li>whether to include a decimal exponent, by setting just the format flag <I>scientific</I>, or to omit a decimal exponent, by setting just the format flag <I>fixed,</I> or to choose the format that best represents the value of the number, by setting any other combination of flags in the group <I>floatfield</I></li></UL>
+Specifically, the three formats selected by the group <I>floatfield</I> follow the same rules as for the <I>fprintf</I> conversion specifiers <I>e</I> <I>(scientific), f (fixed),</I> and <I>g</I> (any other).<P>
+<h4><FONT COLOR="#000080"><A name="018F_00E5">Pointer Inserter<A name="018F_00E5"></FONT></h4></P>
+You can use the inserter <I>operator&lt;&lt;(void *)</I> to convert an arbitrary object pointer. The draft C++ Standard defines this conversion in terms of the <I>p</I> conversion specifier for <I>fprintf</I>, but the C Standard has little to add on that topic. Certainly, whatever this inserter generates should be acceptable to its corresponding <I>istream</I> extractor, and should recover the same value. But little is promised about how pointers appear as character sequences.<P>
+Often, an implementation displays a pointer to <I>void</I> as one or more hexadecimal integer values. And often, the conversion is affected by the same flags that qualify hexadecimal conversions. But the draft C++ Standard is mum on this topic. Don't count on much in the way of portable behavior when inserting pointers. (I use such inserters only for debugging.) And make a point of writing an explicit <I>(void *)</I> type cast before any pointer you wish to insert. A pointer to <I>char</I> will certainly get hijacked by another inserter. And you never know when someone else might decide to write an inserter that accepts some other object pointer type.<P>
+<h4><FONT COLOR="#000080"><A name="018F_00E6">User-Defined Inserters<A name="018F_00E6"></FONT></h4></P>
+The remaining member function in class <I>ostream</I> is the sole "support function" (unlike class <I>istream</I>, which has several). You call it when you want to take more direct control of the associated stream buffer, as when defining your own inserters or your own manipulators.<P>
+You call the member function <I>flush()</I> simply to synchronize the output stream with any external file. I discussed it and related operations last month.<P>
+Generating output is a much simpler task than parsing input, but I still counsel you to keep such antics to a minimum. The member functions I have described so far also represent a considerable amount of engineering in their own way, just like extractors. You are more likely to violate some subtle semantic constraints if you strike off on your own. So wherever possible, I urge you to write new inserters and manipulators in terms of existing ones.<P>
+An alternative way to write your own inserters is to model them after an existing one. Follow the pattern I showed last month:<P>
+<pre>
+try {
+     if (opfx())
+        &lt;<I>perform any output</I>&gt;
+     osfx();
+     }
+catch (...) {
+     setstate(badbit);
+     throw;
+     }</pre>
+I also gave some guidelines for calling the public member functions of class <I>streambuf</I> several months ago. (See "Standard C: The Header <I>&lt;streambuf&gt;</I>," <I>CUJ</I>, June 1994.)<P>
+<h4><FONT COLOR="#000080"><A name="018F_00E7">Locales<A name="018F_00E7"></FONT></h4></P>
+As a final note, I remind you that the <I>ostream</I> member functions exhibit some behavior that depends upon the current locale:<P>
+<UL><li>A "decimal point" in a floating-point conversion is the character <I>localeconv( )-&gt;decimal_point[0],</I> where <I>localeconv</I> is declared in <I>&lt;locale.h&gt;</I>.</li>
+<li>Floating-point inserters may generate alternate formats outside the <I>"C"</I> locale.</li></UL>
+If your program alters the current locale by calling <I>setlocale</I>, declared in <I>&lt;locale.h&gt;</I>, the behavior of some inserters can thus change. Moreover, future versions of iostreams may behave differently.<P>
+The Committee has already approved the addition of "locale objects," which encapsulate all aspects of a C-style locale. You "imbue" an <I>ios</I> object with its own locale object. Even if you don't however, the object no longer tracks the current locale. I doubt that many people are concerned about such matters yet. (Many will never be.) Just know that change is in the works in this rather mysterious area.<P>
+
+<h4><a href="../../../source/1994/oct94/pjp.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

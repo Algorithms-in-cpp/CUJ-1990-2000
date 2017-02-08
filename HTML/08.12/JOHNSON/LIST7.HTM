@@ -1,0 +1,593 @@
+<HTML><head><TITLE>December 1990/Writing MS-DOS Device Drivers/Listing 7</TITLE></head><BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4><A name="0276_0179"><A name="0276_0179">Listing 7 (write.c) Routines Used to Write to the Screen<A name="0276_0179"></h4><P>
+<pre>#includde   "char.h"
+
+/*--------- external function prototypes: ---------*/
+
+             /* look for unused key buffer */
+extern char *k_alloc (void);
+             /* look for key buffer */
+extern char *k_seek (void);
+             /* write decimal integer to ring buffer */
+extern void r_puti (char);
+             /* write byte to ring buffer */
+extern void r_write (char);
+             /* clear selected part of the screen */
+extern void rawclear (void);
+             /* set the video mode */
+extern void rawmode (void);
+             /* move the cursor */
+extern void rawmv (void);
+             /* scroll the screen up */
+extern void rawscroll (void);
+             /* output character as raw tty */
+extern void rawtty (void);
+             /* output character to screen */
+extern void rawwrite (void);
+
+/*
+ * delimiters used for quoted characters as
+ * parameters of escape sequences
+ */
+
+#define DELIM1 '\"
+#define DELIM2 '"'
+
+/*
+ * characters that require special handling
+ */
+
+#define BEL '\007'
+#define BS  '\010'
+#define NL  '\012'
+#define CR  '\015'
+#define ESC '\033'
+
+/*
+ * color codes
+ */
+
+#define BLUE    (01)
+#define GREEN   (02)
+#define RED (04)
+#define CYAN    (BLUE <FONT FACE="Symbol" SIZE=2>½ GREEN)</FONT></FONT>
+#define MAGENTA (BLUE <FONT FACE="Symbol" SIZE=2>½ RED)</FONT></FONT>
+#define YELLOW  (GREEN <FONT FACE="Symbol" SIZE=2>½ RED)</FONT></FONT>
+#clefine WHITE  (BLUE <FONT FACE="Symbol" SIZE=2>½ GREEN <FONT FACE="Symbol" SIZE=2>½ RED)</FONT></FONT></FONT></FONT>
+
+/*
+ * macro's for turning on and off attributes or designating
+ * a color as foreground or background
+ */
+
+#define ON(x)    (attrib <FONT FACE="Symbol" SIZE=2>½= (char) (x))</FONT></FONT>
+#define OFF(x)   (attrib &amp;= (char) (~(x)))
+#define FORE(x)  (attrib <FONT FACE="Symbol" SIZE=2>½= (char) (x))</FONT></FONT>
+#define BACK(x)  (attrib <FONT FACE="Symbol" SIZE=2>½= (char) ((x) &lt;&lt; 4))</FONT></FONT>
+
+/*
+ * we don't want to use the standard 'c' isdigit(); it's
+ * either implemented as a function (we don't want to use
+ * osmebody else's functions that might have unpleasant side
+ * effects) or a macro invoking an array of values that
+ * dictate what lexical properties a given character possesses
+ * (a waste of precious memory)
+ */
+
+#define isdigit(x) (((x) &gt;= '0') &amp;&amp; ((x) &lt;= '9'))
+
+/*
+ * w_write()
+ *
+ * w_write() keeps track of actually getting stuff on the screen
+ * and moving the cursor around
+ */
+
+void   w_write()
+   {
+   switch (outchar)
+      {
+      case     CR:
+
+          /* just set the column to 0 for a carriage return */
+
+          curr.loc.col = 0;
+
+          /* and fall through to the backspace handler */
+
+      case    BS:
+
+          /* decrement the current column unless at the left
+           * margin */
+
+          if (curr.loc.col)
+             --curr.loc.col;
+
+          /* move the cursor and that's it... */
+
+          rawmv();
+          break;
+
+      default:
+
+          /* first, write the character without
+             moving the cursor */
+
+          rawwrite();
+
+          /* then, if we're not on the right margin, bump the
+           * cursor right and that's it */
+
+          if ((curr.loc.col + 1) &lt;= max.loc.col)
+              {
+              ++curr.loc.col;
+              rawrmv();
+              break;
+              }
+
+          /* but if we were at the right margin, check the wrap
+           * flag; if it's clear, just return. if not, execute
+           * a carriage return (just set the column to zero -
+           * we'll do a rawmv() call later), set the current
+           * character to newline, and fall into the newline
+           * routine */
+
+          if (!wrap)
+              break;
+          curr.loc.col = 0;
+          outchar = NL;
+      case     NL:
+
+          /* if we're not at the bottom of the screen, just bump
+           * the line down and call rawmv() */
+
+          if (++curr.loc.line &lt; 25)
+              {
+              rawmv();
+              break;
+              }
+
+          /* but if we were at the bottom (or somehow below!),
+           * make sure we're on the bottom line. If we're in
+           * one of the CGA 80x25 text modes, do our fancy
+           * assembly language scroll routine, else just let
+           * the BIOS handle it */
+
+          curr.loc.line = 24;
+          if (video_mode == 2 || video_mode == 3)
+              {
+              rawscroll();
+              break;
+              }
+
+      case     BEL:
+
+          /* do a raw tty output; it handles the cursor movement
+           * too */
+
+          rawtty();
+          break;
+      }
+   }
+
+/*
+ * w_buffer()
+ *
+ * w_buffer() writes a byte into the escape buffer. silently
+ * overwrites the last byte in the buffer if we get that far. it
+ * was either that or trash the new byte
+ */
+
+void  w_buffer(c)
+char  c;
+   {
+   if (char_cnt == BUF_LEN)
+      esc_buf[ BUF_LEN - 1 ] = c;
+   else
+      esc_buf[ char_cnt++ ] = c;
+   }
+/*
+ * w_cursor()
+ *
+ * w_cursor() handles the cursor left, right, up and down
+ * functions. bumps the value by the value of the 1st parameter
+ * in the escape sequence (if there isn't one, we put a 1 in for
+ * it) in the direction specified by the delta, until it hits the
+ * specified limit. then execute the cursor move...
+ */
+
+void   w_cursor()
+   {
+   if (!char_cnt)
+      esc_buf[ 0 ] = 1;
+   while (*cur_val != limit)
+      {
+      *cur_val += delta;
+      esc_buf[ 0 ]--;
+      if (!esc_buf[ 0 ])
+          break;
+      }
+   rawmv();
+   }
+
+/*
+
+ * w_putc()
+ *
+ * w_putc() updates the parameters that might have changed since
+ * last time, then runs the character through the escape sequence
+ * state machine
+ */
+
+void   w_putc()
+   {
+
+   /* update parameters */
+
+   max.loc.col = SCREEN_WIDTH - 1;
+   cur_page = CURRENT_PAGE;
+   curr.position = (PAGE_TABLE [ cur_page ]).position;
+   if (curr.loc.col &gt; max.loc.col)
+      curr.loc.col = max.loc.col;
+   if ((video_mode = CURRENT_MODE) == 7)
+      video_address = MONOCHROME + SCREEN_OFFSET;
+   else
+      video_address = GRAPHIC + SCREEN_OFFSET;
+
+   /* process the escape sequence state */
+
+   switch (state)
+      {
+
+      case    HAVE_ESC:
+          /* if we have an escape, we want a left bracket.
+           * if we get it, change the state and return,
+           * else reset back to the RAW state and fall
+           * through */
+
+          if (outchar == '[')
+              {
+              state = HAVE_LBRACE;
+              break;
+              }
+          state = RAW;
+
+      case     RAW:
+
+          /* if it's an escape, change the stae, else output the
+           * character */
+
+          if (outchar == ESC)
+              state = HAVE_ESC;
+          else
+              w_write();
+          break;
+
+      case     IN_NUMBER:
+
+          /* if it's another digit, roll it into the value. else
+           * the state falls back to HAVE_LBRACE, and we fall
+           * through */
+
+          if (isdigit(outchar))
+              {
+              tmp.value *= 10;
+              tmp.value += outchar - '0';
+              break;
+              }
+          else
+              {
+              state = HAVE_LBRACE;
+              w_buffer(tmp.value);
+              }
+
+      case     HAVE_LBRACE:
+
+          /* if we have a string delimiter, change the state and
+           * save the delimiter */
+             if (outchar == DELIM1 || outchar == DELIM2)
+                {
+                state = IN_STRING;
+                tmp.delim = outchar;
+                break;
+                }
+
+             /* else if it's 'punctuation', ignore it */
+
+             if (outchar == ';' || outchar == '=' ||
+                       outchar == '?')
+                break;
+
+             /* else if it's a digit, start a number and
+                change the state */
+
+             if (isdigit(outchar))
+                {
+                state = IN_NUMBER;
+                tmp.value = outchar - '0';
+                break;
+                }
+
+             /* else it terminates the escape sequence, and
+              * identifies its purpose */
+
+             switch (outchar)
+                {
+                case     'A':           /* cursor up */
+                    limit = 0;
+                    delta = (char) -1;
+                    cur_val = &amp;curr.loc.line;
+                    w_cursor();
+                    break;
+                case     'B':           /* cursor down */
+                    limit = 24;
+                    delta = 1;
+                    cur_val= &amp;curr.loc.line;
+                    w_cursor();
+                    break;
+
+                case     'C':           /* cursor right */
+                    limit = max.loc.col;
+                    delta = 1;
+                    cur_val = &amp;curr.loc.col;
+                    w_cursor();
+                    break;
+
+                case     'D':           /* cursor left */
+                    limit = 0;
+                    delta = (char) -1;
+                    cur_val = &amp;curr.loc.col;
+                    w_cursor();
+                    break;
+
+                case     'H':
+                case     'R':
+                case     'f':
+
+                    /* set cursor position: make sure there
+                     * are at least 2 parameters stored,
+                     * correct any out-of-range parameters,
+                     * and execute the move. if the
+                     * character was 'R', fall through into
+                     * the report position sequence */
+
+                    switch (char_cnt)
+                       {
+                       case  0:
+                           w_buffer(1);
+                       case    1:
+                           w_buffer(1);
+                       default:
+                           break;
+
+                    /* set graphic rendition - just do all
+                     * the parameters and set/reset the
+                     * appropriate bits in the attribute
+                     * byte */
+
+                    while (char_cnt)
+                       {
+                       switch (esc_buff[ --char_cnt ])
+                           {
+                           case    0:
+                              attrib = 0007; break;
+                           case  1:
+                              ON(010); break;
+                           case    4:
+                              OFF(07); ON(01); break;
+                           case    5:
+                              ON(0200); break;
+                           case    7:
+                              OFF(07); 0N(0160); break;
+                           case    8:
+                              0FF(0167); break;
+                           case    30:
+                              OFF(07);  break;
+                           case    31:
+                              OFF(07); FORE(RED); break;
+                           case    32:
+                              OFF(07); FORE(GREEN); break;
+                           case    33:
+                              OFF(07); FORE(YELLOW); break;
+                           case    34:
+                              OFF(07); FORE(BLUE); break;
+                           case    35:
+                              OFF(07); FORE(MAGENTA); break;
+                           case    36:
+                              OFF(07); FORE(CYAN); break;
+                           case    37:
+                              OFF(07); FORE(WHITE); break;
+                           case    40:
+                              OFF(0160);  break;
+                           case    41:
+                              OFF(0160); BACK(RED); break;
+                           case    42:
+                              OFF(0160); BACK(GREEN); break;
+                           case    43:
+                              OFF(0160); BACK(YELLOW); break;
+                           case    44:
+                              OFF(0160); BACK(BLUE); break;
+                           case    45:
+                              OFF(0160); BACK(MAGENTA); break;
+                           case    46:
+                              OFF(0160); BACK(CYAN); break;
+                           case    47:
+                              OFF(0160); BACK(WHITE); break;
+                           default:
+                              break;
+                           }
+                        }
+                    break;
+                case     'p':
+                    if (esc_buf[ 0 ])
+                        {
+
+      /* if the first parameter is not nul, then we're
+         redefining a 'normal' key. Clear the msb of
+         keyc1heck to indicate this */
+    
+                        keycheck = (esc_buf[ 0 ]) &amp;
+                           0000377;
+
+      /* check first to see if we've already allocated
+         a buffer to this key; then if not, see if we have
+         an unused buffer to hand out */
+
+                        if (k_seek() <FONT FACE="Symbol" SIZE=2>½<FONT FACE="Symbol" SIZE=2>½ k_alloc()))</FONT></FONT></FONT></FONT>
+                           }
+
+                        if (!esc_buf[ 0 ])
+                           curr.loc.line = 1;
+                        else if (esc_buf[ 0 ] &gt; 25)
+                           curr.loc.line = 25;
+                        else
+                           curr.loc.line = esc_buf[ 0 ];
+
+                        if (!esc_buf[ 1 ])
+                           curr.loc.col = 1;
+                        else if (esc_buf[ 1 ] &gt; max.loc.col + 1)
+                           curr.loc.col = max.loc.col + 1;
+                        else
+                           curr.loc.col = esc_buf[ 1 ];
+
+                        curr.loc.line--;
+                        curr.loc.col--;
+                        rawmv();
+
+                        if (outchar != 'R')
+                           break;
+
+                    case     'n':
+                        /* output the position; format is
+                         * "\033[%.2d;%.2dR\015" */
+
+                        r_write(ESC);
+                        r_write('[');
+                        r_puti(curr.loc.line + 1);
+                        r_write(';');
+                        r_puti(curr.loc.col + 1);
+                        r_write('R');
+                        r_write(CR);
+                        break;
+
+                    case     'J':
+                        /* rawclear clears the screen from
+                         * (curr.loc.line, curr.loc.col) to
+                         * (max.loc.line, max.loc.col); so for
+                         * clear screen, set the current
+                         * position to the upper left hand
+                         * corner of the screen, and the max
+                         * line to the bottom of the screen */
+
+                        curr.loc.line = curr.loc.col = 0;
+                        max.loc.line = 24;
+                        rawclear();
+                        break;
+
+                    case     'K':
+                        /* and clear to end of line is even
+                         * simpler - just set the max line equal
+                         * to the same line we're on */
+
+                        max.loc.line = curr.loc.line;
+                        rawclear();
+                        break;
+
+                    case     'h':
+                    case     'l':
+                        /* set and reset mode do the same thing
+                         * unless the mode is 7. easy */
+
+                        if (!char_cnt)
+                           w_buffer(2);
+                        if (esc_buf[ 0 ] &gt; 7)
+                           break;
+                        if (esc_buf[ 0 ] == 7)
+                           wrap = (char) (outchar == 'h');
+                        else
+                           rawmode();
+                        break;
+
+                    case     'm':
+                           {
+                           k = 1;
+                           kp-&gt;keystroke =
+                              (esc_buf[ 0 ])
+                              &amp; 0000377;
+                           }
+                        else
+                           break;
+                        }
+                    else
+                        {
+
+      /* first byte was nul - an extended key. indicate
+         by setting msb of keycheck to $FF */
+
+                        keycheck = (esc_buf[ 1 ]) <FONT FACE="Symbol" SIZE=2>|</FONT>
+                           0177400;
+                        if (k_seek() <FONT FACE="Symbol" SIZE=2>½<FONT FACE="Symbol" SIZE=2>½ k_alloc())</FONT></FONT></FONT></FONT>
+                           {
+                           k = 2;
+                           kp-&gt;keystroke =
+                              (esc_buf[ 1 ])
+                              <FONT FACE="Symbol" SIZE=2>½ 0177400; </FONT></FONT>
+                           }
+                        else
+                           break;
+                        }55
+
+      /* copy the parameters into the buffer, counting as we go */
+
+                        for (*len= 0; (k &lt; char_cnt) &amp;&amp;
+                           (k &lt; KEY_BUFLEN); ++*len)
+                           *ptr++ = esc_buf[ k++ ];
+
+                        break;
+
+                    case     's':
+
+                        /* save current position */
+
+                        saved.position = curr.position;
+                        break;
+
+                    case     'u':
+
+                        /* restore current position */
+
+                        curr.position = saved.position;
+                        rawmv();
+                        break;
+
+                    default:
+
+                        /* anything else? discard the parameters
+                         * and output the final character to the
+                         * screen */
+
+                        w_write();
+                        break;
+                    }
+
+                /* finally, clear the buffer by resetting the count
+                   and fall back to the RAW state */
+
+                char_cnt = 0;
+                state = RAW;
+                break;
+
+            case    IN_STRING:
+
+                /* finally, the IN_STRING case - if the character
+                 * isn't the delimiter we saved, then put it into
+                 * the buffer as it was received */
+
+                if (outchar == tmp.delim)
+                        state = HAVE_LBRACE;
+                    else
+                        w_buffer(outchar);
+                    break;
+                }
+            }</pre>
+</BODY></HTML>

@@ -1,0 +1,244 @@
+<HTML><HEAD>
+<TITLE>July 1992/Simulated Annealing for Optimization Problems/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1</A></h4>
+<pre>/*
+  This is a simulated annealing solution to the
+ quadratic assignment problem (a.k.a. placement of
+ facilities). The particular data sets were drawn
+ from [1] and solutions found were optimal (where
+ optimal solutions are known (5*5, 6*6, 7*7, 8*8, and
+ 12*12 datasets) or better than or equal to previous
+ known results for the larger datasets (15*15, 20*20
+ and 30*30). Time taken was surprisingly short.
+ Found a better solution for 30*30 on second run,
+ which lasted only a few minutes on an 8MHz PC
+ (compiled under Turbo C++).
+
+  [1] Nugent, C.E., Vollmann, T.E., and Ruml, J. --
+     "An Experimental Comparison of Techniques for
+     the Assignment of Facilities to Locations",
+     _Operations Research_ 16, pp.  150-173 January,
+     1968
+
+  [2] Kirkpatrick, S., Gelatt, C.D. Jr., and Vecchi,
+     M.P. -- "Optimization by Simluated Annealing",
+     _Science_ 220:4598, pp. 671-680, May 1983.
+*/
+
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;limits.h&gt;
+#include &lt;math.h&gt;
+#include &lt;time.h&gt;
+
+#ifdef_cplusplus
+#define INLINE inline
+#else
+#define INLINE
+#endif
+
+#define MAX 30
+
+/* prototypes */
+void init(void);
+int energy(void);
+int acceptable(int E, int E2);
+int metastable(int accepts, int rejects);
+int annealing(int E);
+
+int n;                          /* data array size */
+double init_T;              /* initial "temperature" */
+double alpha;           /* cooling schedule variable */
+int accept_n;               /* metastable indicator */
+int reject_n;               /* metastable indicator */
+int freeze_n;                   /* system is frozen */
+double T;                  /* Current "temperature" */
+
+/* number of units to ship between plant i and plant j
+   is units[i][j] == units[j][i]
+*/
+int units[MAX] [MAX];
+
+/* cost/unit shipped between site i and site j is
+   in cost[i][j] == cost[j][i]
+*/
+int cost[MAX] [MAX];
+
+/* site[i] == p means plant p is at site i */
+int site[MAX];
+
+
+void init(void)
+{
+  int i, j, input_array[MAX] [MAX];
+  char file[13];
+
+  FILE *fp;
+
+  scanf("%d", &amp;n);
+  scanf("%12s", file);
+  scanf("%lf", &amp;init_T);
+  scanf("%lf", &amp;alpha);
+  scanf("%d", &amp;accept_n);
+  scanf("%d", &amp;reject_n);
+  scanf("%d", &amp;freeze_n);
+
+  printf("Matrix size            : %d\n", n);
+  printf("Data file              : %s\n", file);
+  printf("Initial temperature    : %lf\n", init_T);
+  printf("alpha (T = alpha * T)  : %lf\n", alpha);
+  printf("accept max             : %d\n", accept_n);
+  printf("reject max             : %d\n", reject_n);
+  printf("freeze max             : %d\n", freeze_n);
+  printf(" \n\n" );
+
+  fp = fopen(file, "rt");
+  if (!fp)
+  {
+    printf("cannot open file: %s\n", file);
+    exit (4);
+  }
+
+  /* Get cost/unit array */
+  for (i = 0; i &lt; n; i++)
+    for (j = 0; j &lt; n; j++)
+      fscanf(fp, "%d", &amp;input_array[i] [j]);
+  fclose(fp);
+
+ /* Unit deliveries are in upper triangular section
+    of the input array. Transfer costs are in
+    lower triangular section of the input array.
+    Copy each part into its own array, and reflect
+    itinto the other triangular section so that
+    units[i][j] == units[j][i] and
+    cost[i][j] == cost[j][i].
+ */
+  for (i = 0; i &lt; n; i++)
+    for (j = i + 1; j &lt; n; j++)
+    {
+      units[i][j] = units[j][i] = input_array[i][j];
+      cost[i][j] = cost[j][i] = input_array[j][i];
+    }
+
+  /* Generate initial plant-site layout */
+  for (i = 0; i &lt; n; i++)
+    site[i] = i;
+}
+
+
+INLINE int energy(void)
+{
+  int plant_i, plant_j, E = 0;
+
+  for (plant_i = 0; plant_i &lt; n; plant_i++)
+    for (plant_j = plant i + 1; plant_j &lt; n; plant_j++)
+      E += units[plant_i][plant_j] *
+          cost[site[plant_i]] [site[plant_j]];
+  return E;
+}
+
+
+INLINE int acceptable(int E, int E2)
+{
+  static double rand_max = (double) RAND_MAX;
+  double random_number;
+  double P;
+
+  if (E2 &lt;= E)
+    return 1;
+
+  random_number = random(RAND_MAX) / rand_max;
+  P = exp((double) (E - E2) / T);
+  return random_number &lt; P;
+}
+
+
+INLINE int metastable(int accepts, int rejects)
+{
+  return accepts &gt; accept_n || rejects &gt; reject_n;
+}
+
+
+int annealing(int E)
+{
+  int accepts, rejects;
+  int swap1, swap2, temp;
+  int E2;
+
+  accepts = 0;
+  rejects = 0;
+  do                            /* metastable loop */
+  {
+    do          /* randomly pick two distinct plants */
+    {
+
+      swap1 = rand() % n;
+      swap2 = rand() % n;
+    } while (swap1 == swap2);
+    temp = site[swap1];          /* swap plant sites */
+    site[swap1] = site[swap2];
+    site[swap2] = temp;
+    E2 = energy();        /* energy of new solution */
+
+    if (acceptable(E, E2))          /* Metropolis test */
+    {
+      accepts++;
+      E = E2;
+    }
+    else
+    {                          /* no good, throw out */
+      rejects++;
+      temp = site[swap1];           /* swap them back */
+      site[swap1] = site[swap2];
+      site[swap2] = temp;
+    }
+  } while (!metastable(accepts, rejects));
+
+  return E;   /* energy of current, metastable state */
+}
+
+
+main()
+{
+  int i;
+  int E, old_E;
+  int freeze;
+
+  randomize();
+  init();
+
+  T = init_T;
+
+    old_E = E = energy();    /* E of inital solution */
+    freeze = 0;
+
+    do                              /* freezing loop */
+    {
+      E = annealing(E);    /* anneal at current temp */
+
+      if (E != old_E)           /* check for change */
+      {
+        freeze = 0;               /* still changing */
+        old_E = E;
+      }
+      else
+        freeze++;         /* closing in on freezing */
+
+      T *= alpha;             /* lower temperature */
+
+    } while (freeze &lt; freeze_n);
+
+    /* display solution */
+    printf("Frozen at T = %f E = %d\n", T, E);
+    for (i = 0; i &lt; n; i++)
+      printf("place plant %d at site %d\n", i, site[i]);
+
+    return 0;
+  }
+  /* End of File */</pre>
+
+</BODY>
+</HTML>

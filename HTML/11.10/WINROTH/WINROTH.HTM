@@ -1,0 +1,309 @@
+
+
+<HTML>
+<HEAD>
+
+<TITLE>October 1993/Exception Handling in C</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tococt.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Exception Handling in C<A name="02D9_00F0"><A name="02D9_00F0"></font></h2><P>
+<h3 align="center"><font color="#800000"><A name="02D9_0000"><A name="02D9_0000">Harald Winroth and Matti Rendahl</font></h3><hr><blockquote><P>
+<P><i><A name="02D9_0000"><A name="02D9_0000">Harald Winroth received the M.S. degree in electrical engineering from the Royal Institute of Technology in Stockholm, Sweden, in 1986. He is currently a Ph.D. student in Computational Vision at the institute.</i></P><P>
+<P><i>Matti Rendahl has a B.A. degree in economy from the University of Stockholm. He is currently a senior research engineer at the Royal Institute of Technology, Stockholm, and is also active at the SUNET/NORDUnet operation center.</i></P><P>
+<P><i>E-mail: harald@bion.kth.se</i></P><P>
+<h4><FONT COLOR="#000080"><A name="02D9_00F1">Introduction<A name="02D9_00F1"></FONT></h4></P>
+An exception is an abnormal condition which the main body of the code has not been designed to handle. Exception handling is a technique that allows control to be transferred to an alternative routine when an exception is detected, without cluttering the code with a lot of conditional statements.<P>
+This article presents a set of macros which supports exception handling in ANSI/ISO C. Programs using these macros need no special pre-processing; the Standard C pre-processor pass will suffice.<P>
+Exceptions can be defined, thrown, and caught with a uniform block-oriented syntax. Top-level handlers can be installed for exceptions that would otherwise not be caught. The package also includes a callback facility which can restore user-defined data structures when exceptions are thrown.<P>
+<h4><FONT COLOR="#000080"><A name="02D9_00F2">Exception Handling<A name="02D9_00F2"></FONT></h4></P>
+There are several ways in which anomalous conditions, such as run-time errors, can be handled in C programs. For some programs it might be sufficient to print a message and then exit:<P>
+<pre>if (idx &gt;= length) {
+   fprintf(stderr, "Out of range!");
+   exit(1);
+}</pre>
+However, in all but the simplest programs, error conditions have to be handled more gracefully. In general, programs must be able to recover at least from all errors made by users (bad input data, invalid commands, etc.). Even for fatal errors some cleaning up may be necessary, such as removing temporary files, clearing semaphores or releasing other system resources. A common approach is to have all functions return a special value when they fail. For functions returning pointers, the zero pointer usually plays this role (<I>malloc</I> and <I>fopen</I> are two examples). Other functions may return an integer status code (for example <I>rename</I>). It is the responsibility of the caller to check the returned value and to take appropriate action, e.g., to pass the error status on to the next level:<P>
+<pre>if ((ptr = malloc(size)) == NULL)
+   return 1;
+if ((f = fopen(name, "r")) == NULL)
+   return 2;
+return 0; /* OK */</pre>
+As you can see from this example, code relying on return values for error checking will be swamped with <I>if</I> and <I>return</I> statements which obscure the normal flow of control. Furthermore, it is easy to forget a check, which can result in bugs that are very hard to pin down. In the following example the <I>fopen</I> call will truncate the file if <I>rename</I> fails:<P>
+<pre>rename(name, another_name);
+f = fopen(name, "w");</pre>
+The number of possible return values also tends to increase as more detailed information about the errors is required by the client programs. It is not easy to keep the usage of status values consistent between different modules in a large system.<P>
+A radically different approach to the problem is a technique called <I>exception handling</I>. An exception is an unusual condition which is not handled explicitly in the code executed during normal operation. Instead, the control will jump to an alternative block of code if an exception is detected. Often, the exception is an error condition, but it can also represent some other type of event.<P>
+In C, exception handling can be implemented with the <I>setjmp/longjmp</I> facility. However, direct calls to these functions make the code unnecessarily hard to read. In addition, it will be very difficult to make error handling routines in different modules cooperate unless they adhere to some conventions for using <I>setjmp/longjmp</I>. One solution is to encapsulate these calls in macros with clear syntax and well-defined semantics.<P>
+In the system described here, code segments where exceptions might occur are encapsulated in try-blocks. If an exception is detected in such a block, we may throw an exception by executing a throw statement. The control will then be transferred immediately to an alternative piece of code, called the unwind-block, which has been associated with the try-block in a <I>TRY</I> macro call:<P>
+<pre>TRY (<I>try-block</I>, <I>unwind-block</I>);</pre>
+Exceptions can be thrown in a try-block with the <I>THROW</I> macro. The point of execution where an exception is thrown is called the throw-point:<P>
+<pre>TRY(
+{
+   /* Try something */
+   if (failure)
+      THROW(exc); /* throw-point */
+   /* On success, continue here */
+},
+{
+ /* On failure, continue here */
+}
+);</pre>
+The exception is here represented by a variable &#151; or to be more precise, by the address of a variable. In the previous example it is <I>exc</I>, which is assumed to have been defined elsewhere.<P>
+The unwind-block is usually concerned with cleaning up after the attempt to do something failed. Program execution may continue afterwards if it is safe to do so. However, there is no way of resuming execution at the throw-point once the exception has been thrown. An example of such cleanup code is shown in <A href="list1.htm">Listing 1</a>.
+ Ten blocks of memory are allocated. If any allocation operation fails, all previously allocated blocks are freed. Usually, the program will exit at the end of the unwind-block. However, a continue statement in the unwind-block will allow execution to continue after the <I>TRY</I> macro:<P>
+<pre>TRY(
+{
+   ...
+   THROW(out_of_memory);
+},
+{
+   ...
+   continue;
+});
+/* Continue here after cleanup */</pre>
+Try-blocks may of course be nested, as shown in <A href="list2.htm">Listing 2</a>.
+ Suppose that the <I>scanf</I> call fails in the inner try-block. The control will then be transferred to the inner unwind-block. If that block contains a <I>continue</I> statement, execution will be resumed at the <I>printf</I> call. However, if the end of the inner unwind-block is reached, control will be transferred to the outer unwind-block, i.e. the one belonging to the enclosing <I>TRY</I> macro. In general, this "stack unwinding" will proceed until the end of the top-level unwind-block has been reached or a <I>continue</I> has been found.<P>
+The code in <A href="list2.htm">Listing 2</a>
+is an example of statically nested try-blocks. Functions containing <I>TRY</I> statements may also be called from a try-block, which results in dynamically nested try-blocks.<P>
+<h4><FONT COLOR="#000080"><A name="02D9_00F3">Identifying Exceptions<A name="02D9_00F3"></FONT></h4></P>
+Usually, an unwind-block will allow execution to continue only if a specific exception has been thrown, and pass all other exceptions to the unwind-block of the enclosing <I>TRY</I> (if any). This can be specified with a <I>CATCH</I> macro, by which an exception is associated with a statement called the catch-form:<P>
+<pre>CATCH (<I>exception, catch-form</I>);</pre>
+If an exception is caught by a <I>CATCH</I> clause, the exception is considered to be completely processed at the end of the catch-form, and execution will continue after the <I>TRY</I> macro containing it.<P>
+<pre>TRY(
+{
+   p = malloc(1024);
+   if (p == NULL)
+      THROW(out_of_memory);
+},
+{
+   CATCH(out_of_memory,
+   {
+     /* Handle memory allocation failures here */
+   });
+});</pre>
+Hence, a <I>CATCH</I> contains a hidden <I>continue</I>. Often, several catches for different exceptions are specified in a single unwind-block. Each exception specification will be compared to the exception thrown, and the catch-form associated with the first matching <I>CATCH</I> will be executed:<P>
+<pre>TRY(
+{
+   /* try-block */
+},
+{
+   CATCH(out_of_memory, { ... });
+   CATCH(read_error,    { ... });
+   CATCH(write_error,   { ... });
+});</pre>
+If none of the listed exceptions match, execution will continue in the current unwind-block after the <I>CATCH</I> statements, and if no continue statement is found there, control will be transferred to the unwind-block of the closest surrounding <I>TRY</I>.<P>
+The application code must obviously be able to distinguish between different exceptions, and in this system addresses of variables are used for that purpose. The main advantage is that a user can easily define his own exceptions just by creating new local or global variables. The linker guarantees that all (simultaneously existing) exception variables are assigned unique addresses in the program.<P>
+Any type of exception variable can be used for identifying exceptions. Actually, any lvalue with an address will do. Since the <I>THROW</I> and <I>CATCH</I> macros only care about addresses, the space occupied by an exception variable can be used for transferring information from the throw-point to the unwind-block. The variable will typically contain a status code (integer) or an error message (string), which has been set before the throw.<P>
+<h4><FONT COLOR="#000080"><A name="02D9_00F4">Exception Domains<A name="02D9_00F4"></FONT></h4></P>
+Exception variables may also be structures, which makes it possible to group exceptions into domains. For a library <I>foo</I>, an <I>io</I> domain with exceptions <I>read_failed</I> and <I>write_failed</I> and a memory domain containing exceptions <I>out_of_memory</I> and <I>already_free</I> could be defined in the following way:<P>
+<pre>struct {
+   struct {
+      int read_failed;
+      int write_failed;
+   } io;
+   struct {
+      int out_of_memory;
+      int already_free;
+   } memory;
+} foo;</pre>
+Dot notation can then be used for catching individual exceptions as well as whole domains:<P>
+<pre>TRY(
+{
+   p = malloc(256);<P>
+   if (!p)
+      THROW(foo.memory.
+   out_of_memory);
+   f(p);
+},
+{
+   CATCH(foo.io, { ... });
+   CATCH(foo,    { ... });
+}
+);</pre>
+The first <I>CATCH</I> will handle all of <I>foo</I>'s I/O exceptions, while the second one will handle the rest of <I>foo</I>'s exceptions. Actually, the exception domain argument of the <I>CATCH</I> macro will match any exception whose address is greater or equal to the domain address, but less than the domain address plus the domain size.<P>
+<h4><FONT COLOR="#000080"><A name="02D9_00F5">Private and Public Exceptions<A name="02D9_00F5"></FONT></h4></P>
+An exception will be exported if the corresponding variable is declared <I>extern</I> in a header file. On the other hand, if the variable is declared <I>static,</I> the linker will not see it and the exception cannot be thrown or caught outside the file defining it. A local exception variable is of course private to the scope in which it exists.<P>
+<h4><FONT COLOR="#000080"><A name="02D9_00F6"><I>return</I><B> Statements<A name="02D9_00F6"></B></FONT></h4></P>
+The exception system is implemented as a linked list of context records, each containing data specific to a <I>TRY</I> macro call (such as the current stack pointer). This list must be updated whenever a new <I>TRY</I> scope is entered or exited. Therefore, the use of <I>return</I> statements in try-blocks is somewhat troublesome. Consider the following code:<P>
+<pre>void f(void) 
+{
+   TRY (
+   {
+      return g();
+   },
+   {
+      unwind ();
+   });
+}</pre>
+Here, <I>g()</I> should be evaluated in the scope of the <I>TRY</I> in function <I>f</I>, so that <I>unwind</I> is called if <I>g</I> throws an exception. Unfortunately, it is not possible to redefine <I>return</I> so that it first evaluates <I>g()</I>, then resets the linked list of context records, and finally returns the value of <I>g()</I>, since <I>g</I> can have any return type, including <I>void</I>. A <I>typeof</I> operator, which is available in GNU's C compiler [<a href="#1">1</a>, <a href="#2">2</a>], would have allowed <I>return</I> to be redefined by a macro, expanding to something like:<P>
+<pre>typeof(g()) tmp = g();
+/* Reset TRY scope by updating
+ * linked list of context records
+ */
+return tmp;</pre>
+However, since <I>typeof</I> is not part of ANSI C, this idea was abandoned. Nevertheless, it is possible to define a macro <I>tryreturn</I> which can return an addressable lvalue, but not a general expression:<P>
+<pre>TRY (
+{
+   char *s = malloc(256);
+   if (!s) THROW(out_of_memory);
+   tryreturn (s);
+},
+{
+   /* unwind-block */
+}
+);</pre>
+If the lvalue argument involves an expression, such as <I>idx()</I> in <I>tryreturn(array[idx()])</I>, that expression will be evaluated in the scope of the current <I>TRY</I>. Despite its limitation to lvalues, <I>tryreturn</I> is very useful for returning values of variables that are local to the try-block, such as <I>s</I> in the example above, and global <I>const</I> variables. All other <I>return</I> statements in try-blocks are invalid and generate run-time error messages.<P>
+Note that a <I>tryreturn</I> allows execution to continue after the call to the function containing the <I>TRY</I> and is therefore an implicit <I>continue</I> statement.<P>
+<h4><FONT COLOR="#000080"><A name="02D9_00F7"><I>break</I><B> and </B><I>continue</I><A name="02D9_00F7"></FONT></h4></P>
+As mentioned above, a <I>continue</I> statement can be used in unwind-blocks to force program execution to resume after the <I>TRY</I> macro. Although there is an implicit <I>continue</I> at the end of each <I>CATCH</I> macro, <I>continue</I> can also be used explicitly in a <I>CATCH</I> to leave it prematurely. The <I>continue</I> statement has the same meaning in try-blocks &#151; execution will continue immediately after the <I>TRY</I> macro.<P>
+Sometimes it is convenient to catch some exception, process it, and then execute a more general unwind-code. The <I>break</I> statement can be used in <I>CATCH</I> statements for that purpose. In the following example, the allocated buffer will be released for all exceptions thrown.<P>
+<pre>void *volatile buf = NULL;
+
+TRY(
+{
+   if ((buf = malloc(256)) == NULL)
+      THROW(out_of_memory);
+
+if (fscanf(stdin, "%d %255s", &amp;i, buf) != 2)
+   THROW (illegal_syntax);
+},
+{
+CATCH(illegal_syntax,
+{
+   fprintf(stderr, "Syntax err!");
+   break;
+});
+
+if (buf) free(buf);
+});</pre>
+<h4><FONT COLOR="#000080"><A name="02D9_00F8">Unwind-Protect<A name="02D9_00F8"></FONT></h4></P>
+In Common Lisp <a href="#3">[3]</a> there is a special form called unwind-protect, which is similar to the <I>TRY</I> macro. The main difference is that instead of the unwind-block, which is executed only when an exception is thrown, it has a cleanup-block which is always executed after the try-block. That is convenient when the same cleanup must be performed after failures and successful operations. The exception library provides a similar macro,<P>
+<pre>UNWIND_PROTECT (<I>protected-block</I>, <I>cleanup-block</I>);</pre>
+which associates <I>protected-block</I> with <I>cleanup-block.</I> Suppose that a file needs to be closed after a read operation, even if the read operation fails. <A href="list3.htm">Listing 3</a>
+shows how this can be coded. If a cleanup-block is executed because an exception was thrown in the protected block, the control will subsequently be transferred to the unwind-block or cleanup-block of the surrounding <I>TRY</I> or <I>UNWIND_PROTECT</I> (if any). Otherwise, normal execution will resume after the current <I>UNWIND_PROTECT</I>. Actually, the <I>UNWIND_PROTECT</I> macro expands to the following <I>TRY</I> macro call:<P>
+<pre>{
+   static int _unwind_prot;
+   TRY(
+   {
+      protected_block;
+      THROW(_unwind_prot);
+  },
+  {
+     cleanup_block;
+     CATCH(_unwind_prot, ; );
+  });
+}</pre>
+<h4><FONT COLOR="#000080"><A name="02D9_00F9">Exception Handlers<A name="02D9_00F9"></FONT></h4></P>
+A handler can be installed for an exception or exception domain with an <I>EXC_INSTALL_HANDLER</I> macro call:<P>
+<pre>int h(void *e, void *e_type, void *data);
+
+EXC_INSTALL_HANDLER(dom, h, data);</pre>
+The specified handler will be called if an exception from the <I>dom</I> domain is thrown beyond the top-level <I>TRY</I>. A handler differs from the unwind-block of a <I>TRY</I> macro in two respects. First, an unwind-block will not be executed unless the corresponding try-block has previously been entered. In contrast, a handler is completely independent of the nesting of blocks and function calls. Second, once a handler ha been called, the termination of the program is imminent, since handlers are called only for exceptions from which the program cannot recover, i.e. for which there is no catch.<P>
+When a handler is called, the <I>e</I> parameter will contain the actual exception thrown. It is guaranteed to belong to the domain specified as the first argument of <I>EXC_INSTALL_HANDLER</I>. The data parameter will contain the void pointer given as the third argument of <I>EXC_INSTALL_HANDLER</I>. The pointer value is private to the handler and will not be interpreted by the exception system. The <I>e_type</I> parameter specifies the exception variable type, which will be discussed below.<P>
+If several handlers are installed, the latest installed one (with a matching domain tag) will be called first. If the handler ends with <I>return</I>, the exception is assumed to be completely processed, and the exception system will call <I>exit</I> with the status value returned from the handler. In contrast, if a handler executes <I>THROW</I>, the next handler (i.e., a handler installed before the current one) will be called if its domain tag matches the pending exception. Thus, handlers are always called in reverse installation order. A handler can also be installed with the special domain symbol <I>exc_any</I>, which will match any exception.<P>
+When should handlers be installed? Suppose that a library defines and throws some exceptions, and that all its exception variables are strings containing error messages created at the throw-point. Such a library would typically install (in its initialization function) a handler to print out these messages.<P>
+<h4><FONT COLOR="#000080"><A name="02D9_00FA">Exception Types<A name="02D9_00FA"></FONT></h4></P>
+Since the exception system handles exceptions through void pointers, the actual type of the exception variable thrown will not be known by the compiler in catch-forms and handlers. However, the type is often implicit in the code. For example, if all exceptions in a domain <I>D</I> have the same type <I>T</I> and a handler has been installed for <I>D</I>, it is safe to cast the exception variable address to <I>T*</I> in that handler.<P>
+Still, there are situations where the type is completely unknown, for example when a handler installed for <I>exc_any</I> is called. In such cases, it can be useful to associate the exception variable with a type tag at the throw-point with <I>THROW_TYPED</I>. This macro works like <I>THROW</I> but takes an extra type variable. Actually, exception types are also identified by variable addresses, just like the exceptions whose types they represent:<P>
+<pre>int my_type;
+MyData err;
+THROW_TYPED (err, my_type);</pre>
+Most of the macros described above can also be applied to exception types. In particular, exception types can be grouped into domains, and tested with the <I>EXC_IN_DOMAIN</I> macro in exception handlers:<P>
+<pre>if (EXC_IN_DOMAIN(e_type, my_type))
+{
+MyData my_data = *(MyData *) e;
+
+...
+}</pre>
+<h4><FONT COLOR="#000080"><A name="02D9_00FB">Callbacks<A name="02D9_00FB"></FONT></h4></P>
+In this system, callbacks are user-defined functions that can be called when try-blocks are entered or exited, or when exceptions are thrown. The callback facility enables libraries and application programs to save and restore private context information in the same way that <I>TRY</I> saves and restores the stack environment. For example, a callback can release memory blocks or other system resources that have been allocated since the last <I>TRY</I> was entered. Callback functions are declared and installed in the following way:<P>
+<pre>void cb(excCallbackTag tag, void *cb_data,
+       void **try_data);
+
+exc_install_callback(tags, cb, cb_data);</pre>
+The <I>tags</I> argument of <I>exc_install_callback</I> is a mask which can be any combination of the following bits:<P>
+<UL><li><I>excBeginCallback</I>. The callback function will be invoked whenever a new <I>TRY</I> is entered.</li>
+<li><I>excEndCallback</I>. The callback will be called if the try-block completes normally, i.e., not with a throw.</li>
+<li><I>excThrowCallback</I>. The callback will be called if an exception is thrown. The call is made at the throw-point, before the stack has been unwound.</li>
+<li><I>excRecoverCallback</I>. The callback is invoked when the program has recovered from an exception.</li></UL>
+The actual reason for the call will be specified by the <I>tag</I> parameter of the callback function (only one of its bits will be set). If several callbacks have been installed, they will be called in installation order for <I>excBeginCallback</I> and <I>excRecoverCallback</I> calls, and in reverse order for <I>excEndCallback</I> and <I>excThrowCallback</I> calls.<P>
+<I>cb_data</I> is a void pointer associated with the callback function. The pointer is specified when the callback is installed and is not altered or interpreted by the exception system. The <I>try_data</I> parameter specifies the address of a void pointer variable, which is automatically allocated by the exception library for each callback whenever a new try-block is entered. The contents of this void pointer is private to the callback and can be used for any purpose. It is usually set in the callback function when <I>tag</I> is <I>excBeginCallback</I> read when <I>tag</I> is <I>excEndCallback</I> or <I>excThrowCallback</I>. (However, <I>try_data</I> will be a null pointer in <I>excEndCallback</I> and <I>excThrowCallback</I> calls if the callback function was not installed when the corresponding <I>TRY</I> was entered.)<P>
+As an example, suppose that an application maintains a stack of objects unavailable for garbage collection (i.e., "live" objects). During normal program execution, every push can be balanced by a corresponding pop. However, when exceptions are thrown, the stack pointer must be reset. This can be achieved with the callback shown in <A href="list4.htm">Listing 4</a>.
+<P>
+<h4><FONT COLOR="#000080"><A name="02D9_00FC">Implementation Details<A name="02D9_00FC"></FONT></h4></P>
+The exception system is based on the standard <I>setjmp/longjmp</I> library functions. Basically, <I>setjmp</I> saves the current context (the stack pointer and some other processor registers) in a <I>jump buffer</I> and returns zero. A subsequent call to <I>longjmp</I> with the jump buffer as an argument restores the context and <I>setjmp</I> returns again, this time with a non-zero value.<P>
+Each <I>TRY</I> macro allocates a new static jump buffer, appends it to a global linked list, and calls <I>setjmp.</I> The <I>THROW</I> macro calls <I>longjmp</I> with the last jump buffer in the list. The exception library also keeps track of the <I>TRY</I> scope to which control must be transferred if a <I>tryreturn</I> is executed. Consider the code shown in <A href="list5.htm">Listing 5</a>.
+ The <I>tryreturn</I> in try-block 3 causes <I>g</I> to return, so the <I>TRY</I> scope must be reset two levels, back to try-block 1 in function <I>f</I>, and all installed callbacks must be called for the intermediate level (with the tag parameter equal to <I>excEndCallback</I>).<P>
+Because of the special control flow associated with <I>setjmp/longjmp</I>, it may be necessary to protect local variables from being clobbered. The <I>volatile</I> keyword can be used for that purpose:<P>
+<pre>char *next_command()
+{
+   char *volatile buf = NULL;
+
+TRY(
+{
+   buf = malloc(256);
+   read_command(buf, 255);
+},
+{
+   free(buf);
+});
+
+return buf;
+}</pre>
+Here it is assumed that <I>read_command</I> throws exceptions if <I>buf</I> is <I>NULL</I> or if the user's input is longer than 255 characters. Note that it is the local variable buf that should be declared <I>volatile</I>, not the space it points to.<P>
+<h4><FONT COLOR="#000080"><A name="02D9_00FD">An Application<A name="02D9_00FD"></FONT></h4></P>
+As a simple example of how this exception system can be used, consider the variable definition in <A href="list6.htm">Listing 6</a>,
+ where each exception in a domain <I>foo</I> has been associated with an error message. These primitive exceptions have been grouped into subdomains <I>io, memo,</I> etc. An exception from the <I>foo</I> domain, e.g. <I>io.open,</I> can be thrown with<P>
+<pre>THROW (foo.io.open);</pre>
+Unless there is a <I>CATCH</I> for this exception, the program will terminate after printing the following message:<P>
+<pre>exception: exception not caught and no handler to call</pre>
+Of course, in this case we want the associated error message to be printed, and therefore an exception handler should be installed for the <I>foo</I> domain:<P>
+<pre>int h(void *e, void *t, void *d)
+{
+   fprintf(stderr, "foo: %s\n", ((Err*)e)-&gt;str);
+   return 1; /* exit code */
+}
+
+EXC_INSTALL_HANDLER(foo, h, NULL);</pre>
+Now the previous <I>THROW</I> statement will result in the message:<P>
+<pre>foo: cannot open file</pre>
+Note that the handler was installed for the <I>foo</I> domain only. However, the same handler can be used for all exceptions of type <I>Err</I> if a type tag is associated with such exceptions at the throw-point:<P>
+<pre>int err_type; /* represents Err */
+
+THROW_TYPED(foo.io.open, err_type);</pre>
+The handler now has to verify that the pending exception belongs to a type it is familiar with. All other exceptions should be re-thrown so that they can be processed by the next handler:<P>
+<pre>int h2(void *e, void *t, void *d)
+{
+   if (!EXC_IN_DOMAIN(t, err_type))
+       exc_throw(e);
+
+   fprintf(stderr, "foo: %s\n", ((Err*)e)-&gt;str);
+   return 1; /* exit code */
+}
+EXC_INSTALL_HANDLER(exc_any, h2, NULL);</pre>
+(The <I>exc_throw</I> function above is similar to <I>THROW</I>, but it throws the specified exception address and not the address of the formal parameter <I>e</I>.)<P>
+Now suppose a user wants to add support for internationalization. Provided that a suitable message database has been set up (e.g., the X/Open Portability Guide or the <I>gettext</I> (X/Open) and <I>setlocale</I> manual pages), the previous handler can be modified:<P>
+<pre>int h3(void *e, void *t, void *d)
+{
+   if (!EXC_IN_DOMAIN(t, err_type))
+       exc_throw(e);
+
+   fprintf(stderr, "foo: %s\n", gettext(((Err*)e)-&gt;str));
+   return 1; /* exit code */
+}
+
+EXC_INSTALL_HANDLER(exc_any, h3, NULL);</pre>
+The only change is the <I>gettext</I> call which returns the translation of the error message. By installing this handler, the user can override the previous one.<P>
+As this example shows, there are two advantages to using exceptions instead of raw <I>fprintf</I> and <I>exit</I> calls. First, the behavior of the handler can easily be changed, for example to print an alternative text or to use a pop-up window. Second, if the exception is caught by the program and processed internally, nothing will be printed. This greatly simplifies the integration of subroutines into larger software systems.<P>
+<h4><FONT COLOR="#000080"><A name="02D9_00FE">Source Code Availability<A name="02D9_00FE"></FONT></h4></P>
+The macros implementing this exception system can be fetched with anonymous ftp from <I>ftp.bion.kth.se</I> (see the file <I>./cvap/2.0/README</I> for details). The package also contains routines for formatting error messages and some support for signal handling. The software can be used and redistributed freely under the terms of the GNU Library General Public License.<P>
+<h4><FONT COLOR="#000080"><A name="02D9_00FF">Bibliography<A name="02D9_00FF"></FONT></h4></P>
+<a name="1">[1]</a>     R.M. Stallman, "Using and Porting GNU CC," Free Software Foundation Inc., 1990.<P>
+<a name="2">[2]</a>     R.M. Stallman, "The C Preprocessor," Free Software Foundation Inc., 1990.<P>
+<a name="3">[3]</a>     G.L. Steele, <I>Commom Lisp: The Language, 2nd ed,</I> Digital Press, 1990.<P>
+
+<h4><a href="../../../source/1993/oct93/winroth.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

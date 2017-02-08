@@ -1,0 +1,388 @@
+
+
+<HTML>
+<HEAD>
+
+<TITLE>October 1994/Powerful Assertions for C++</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tococt.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Debugging</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Powerful Assertions for C++<A name="0187_00D6"><A name="0187_00D6"></font></h2><P>
+<h3 align="center"><font color="#800000"><A name="0187_0000"><A name="0187_0000">Harald M. Mueller</font></h3><hr><blockquote><P>
+<P><i><A name="0187_0000"><A name="0187_0000">Harald M. Mueller has been involved in software development for about ten years, starting at the Technical University of Vienna, where he received a Ph.D., then at Siemens Austria, where he is working on projects developing hardware support tools. His current assignment (and interest) is mainly software testing and quality assurance. He may be contacted at mueller@garwein.hai.siemens.co.at, or c/o Siemens AG Austria, EZE 41 Erdberger Laende 26, A-1030 Vienna, Austria.</i></P><P>
+<h4><FONT COLOR="#000080"><A name="0187_00D7">Introduction<A name="0187_00D7"></FONT></h4></P>
+Many programming languages provide means for specifying assertions, i.e. conditions that should hold in every case. Writing assertions helps to catch specification, design, and programming errors by giving necessary conditions that must hold to ensure that continuation is possible [<a href="#3">3</a>, <a href="#4">4</a>, <a href="#5">5</a>].<P>
+Among the many languages providing assertions, some of them are object oriented, for example, C++ and Eiffel. Eiffel has demonstrated a notable effort to integrate assertions into the C language, having pre- and post-conditions for methods, invariants for classes and loops, and automatic checking during execution <a href="#2">[2]</a>. C++, on the other hand, is quite weak in this respect; in most installations, it merely allows use of the <I>assert</I> macro (a holdover from C) to check Boolean conditions at strategic points in a program. Programmers can formulate simple conditions with this macro, as shown by the following fragment:<P>
+<pre>template &lt;class T&gt;
+class Stack {
+   public:
+      T pop();
+      ...
+   private:
+      unsigned height;
+      ...
+};
+template &lt;class T&gt;
+T Stack&lt;T&gt;::pop()
+{
+   assert(height &gt; 0); // check that there is at least
+                          // one element in the stack
+   ...
+}</pre>
+By defining and calling special functions, a programmer can in principle check arbitrarily complex conditions. However, besides its ugliness (in my eyes) in defining a new function for each assertion, this approach poses a new problem in C++: to access a class object's private members, this function would have to be a member function or a friend of the class. As an example, observe a general array class with a sorting method:<P>
+<pre>template &lt;class T&gt;
+class Array {
+   public:
+      void sort();
+      ...
+   private:
+      T elems[size];
+};</pre>
+When creating the sort function, the programmer may want to include an assertion at the end of it to be sure that his function really sorts the elements:<P>
+<pre>template &lt;class T&gt;
+Array&lt;T&gt;::sort()
+{
+   ... do the sorting ...
+   assert(there is no index i=1..size-1 such that elems[i-1] &gt; elems[i]);
+}</pre>
+As this assertion needs a loop to check all elements, it can no longer be formulated as a parameter to the standard <I>assert</I> macro. The programmer could instead reformulate the condition and write<P>
+<pre>for (int i = 1; i &lt; size-1; i++) {
+   assert(!(elems[i-1] &gt; elems[i]));
+}</pre>
+but that would make it impossible to hide the check in a production version by simply defining the <I>assert</I> macro as empty. Moreover, reformulating conditions can introduce subtle bugs.<P>
+In C, it is possible to write a separate function<P>
+<pre>check_ascending(T array[], int size);</pre>
+which returns 0 if it finds a pair of elements in wrong order and which could then be called in an <I>assert</I> macro:<P>
+<pre>assert(check_ascending(array,size))</pre>
+In C++, however, the function must have access to the private members of an <I>Array</I> object, and therefore must either be a member function or a friend to the <I>Array</I> class. Both declarations make it necessary to change the class <I>declaration</I> of <I>Array</I> solely because an assertion is introduced in the <I>implementation</I> of a member function.<P>
+Certainly, it would be much better to formulate assertions as shown above by simply writing<P>
+<pre>assert(!exists(i = 1; i &lt; size-1; i++ : elems[i-1] &gt; elems[i]));</pre>
+right at the end of the sort method, where the assertion actually belongs.<P>
+This article describes a set of powerful macros that support <I>forall</I> and <I>exists</I> operators (or "quantifiers," as they are called in logic texts). I have implemented these extensions to the <I>assert</I> facility solely by means of the standard C++ macro processor and a little bit of overloading. Thus, these extensions require no separate preprocessor or other complication in their use. Moreover, since all the necessary functions are very small, they will all fit in a single header file so that no additional object file or library is necessary. The rest of the article consists of three parts: "What the Extensions Do" explains how to use the new <I>forall</I> and <I>exists</I> operators in a call to the redefined <I>assert</I> macro. The second part, "How the Extensions Work," is quite long, as it explains in detail how these operators are implemented. The third part shows an application that uses the <I>forall</I> operator in a small function (see <a href="#5">[5]</a> for more information about assertions).<P>
+<h4><FONT COLOR="#000080"><A name="0187_00D8">What the Extensions Do<A name="0187_00D8"></FONT></h4></P>
+I have written the extensions so as to blend in with the normal behavior of <I>assert</I>. Thus, you can mostly use <I>assert</I> in the usual manner, without having the extensions get in your way. But when you need the extended behaviors, they're available. To show what the extensions do, and how they interact with C++, I define the syntax of assertions as follows. After including the header file<P>
+<pre>#include &lt;assert.h&gt;</pre>
+shown in <A href="list1.htm">Listing 1</a>,
+ the (modified) <I>assert</I> macro and a companion, called <I>assertp</I>, are available. Inside these macros (and only there), the assert conditions can be written as follows:<P>
+<pre>assertion ::=
+       'assert' '(' assert-condition ')'
+       'assertp' '(' assert-condition ',' stream-output ')'</pre>
+<I>assert</I> has the same syntax and meaning as defined in the traditional <I>assert.h</I> header file. <I>assertp</I> has the same effect as <I>assert</I>, but additionally it outputs all values given in the second parameter to a special output stream. I introduced this macro because I hate the secrecy of <I>assert</I> about the values that caused the assertion to fail. <I>assertp</I> will output any value desired; it is especially useful with the <I>forall</I> and <I>exists</I> conditions, as knowing which cycle of the internal for-loop failed is important in tracking down an error.<P>
+Going now one level deeper into the syntax, an <I>assert</I> condition is a list of subconditions connected by <I>&amp;&amp;</I> or <I>//</I>:<P>
+<pre>assert-condition ::=
+       assert-condition '&amp;&amp;' assert-subcondition
+       assert-condition '||' assert-subcondition
+       assert-subcondition</pre>
+<I>&amp;&amp;</I> and <I>//</I> obey the usual C++ precedence laws and are shortcut operators &#151; i.e., if the left side of an <I>&amp;&amp;</I> (<I>//</I>) yields 0 (1), the right side is not evaluated. This feature may be important when pointers are involved, as in<P>
+<pre>assert( p == 0 || forall ((q = list; q; q = q-&gt;next), *q != *p) );</pre>
+An <I>assert</I> subcondition may be any of the following:<P>
+<pre>assert-subcondition ::=
+      a usual C++ expression (or more precisely:
+                          a logical-or-expression
+                          as defined in the ARM in
+                          section 5.15 <a href="#1">[1]</a>)
+      not-prefix 'forall' '(' for-specification ','
+                          assert-condition ' )'
+      not-prefix 'exists' '(' for-specification ','
+                          assert-condition ')'</pre>
+Note that the condition inside a <I>forall</I> or <I>exists</I> can be an arbitrary <I>assert</I> condition, again using <I>foralls</I> or <I>exists</I>. I will demonstrate the power of this syntax via examples later in this article.<P>
+A <I>not-prefix</I> is simply a series of zero or more <I>'!'</I> -operators ( one is enough, but this is more general):<P>
+<pre>not-prefix ::=
+// empty
+not-prefix '!'</pre>
+Finally, a <I>for-specification</I> is the parenthesized part of a <I>for</I> statement:<P>
+<pre>for-specification ::=
+'(' for-init-statement ';' expression<SUB>opt</SUB> ';' expression<SUB>opt</SUB> ')'</pre>
+(The above is copied from the ARM <a href="#1">[1]</a>, section 6.5.)<P>
+<h4><FONT COLOR="#000080"><A name="0187_00D9">How the Extensions Work<A name="0187_00D9"></FONT></h4></P>
+The extensions rely heavily upon the macros <I>forall</I> and <I>exists.</I> This discussion focuses mostly on <I>forall </I>&#151;<I> exists</I> is almost exactly the same (just a few zeroes changed to ones) so I don't elaborate on it here. A few notational items: where code is embedded in article text a sequence of four dots represents code not yet explained. For enhance readability, I have also omitted trailing backslashes (for multi-line macros) in the text. <A href="list1.htm">Listing 1</a>
+contains the complete, unadulterated code.<P>
+<h4><FONT COLOR="#000080"><A name="0187_00DA">The <B><I>assert</I></B> macro<A name="0187_00DA"></FONT></h4></P>
+All <I>assert</I> conditions occur in a call to the <I>assert</I> macro. This wrapper macro is very simple:<P>
+<pre>#define assert(assert-condition)
+   asstResult =
+      .... assert-condition,
+   asstResult || (action to take if assertion fails)</pre>
+<I>asstResult</I> is a static variable that holds the value of the <I>assert</I> condition after its evaluation. If <I>assert</I> condition is a C++ expression, the expansion of <I>assert</I> will also be an expression (a comma expression, to be precise), which can be used anywhere where expressions are allowed. If <I>assert</I> condition is not a C++ expression, however, <I>assert</I> itself will become a sequence of statements. I explain how this happens in the following sections.<P>
+<h4><FONT COLOR="#000080"><A name="0187_00DB"><I>forall</I><B> &#151; the Core of the Code<A name="0187_00DB"></B></FONT></h4></P>
+The core of the <I>forall</I> macro will be a standard loop that is exited when the subcondition does not hold; thus,<P>
+<pre>forall (for-specification, subcondition)</pre>
+expands to<P>
+<pre>....
+asstResult = 1;
+for for-specification {
+   asstResult = .... subcondition;
+   if (!asstResult) break;
+}
+....</pre>
+After the loop finishes, <I>asstResult</I> indicates the overall result of <I>forall:</I> If <I>asstResult</I> is 1, all loop iterations were successful; if it is 0, a loop iteration occurred for which the subcondition was not true. (The initialization of <I>asstResult</I> is necessary in case the loop is not entered at all.) Note that the innocent-looking assignment to <I>asstResult</I> may again be a lot of statements if the subcondition itself includes <I>foralls</I> and <I>exists</I>.<P>
+<h4><FONT COLOR="#000080"><A name="0187_00DC">The <B><I>!</I></B> Operator<A name="0187_00DC"></FONT></h4></P>
+Up to now, things were simple. From here on, the macro gets a little bit weird. All the following complications result from the wish to insert one of three logical operators, namely <I>!</I>, <I>&amp;&amp;</I>, and <I>//</I> between calls to <I>forall</I> and <I>exists</I>. To this end, the beginning and the end of the <I>forall</I> macro must be parts of expressions that can be connected by the logical operators. By a little trial and error, the following form evolves for <I>forall</I>:<P>
+<pre>anAssertCt();
+....
+asstResult = 1;
+for for-specification {
+   asstResult = .... subcondition;
+   if (!asstResult) break;
+}
+....
+asstResult</pre>
+<I>anAssertCt()</I> terminates the expression starting outside the macro call. <I>asstResult</I> at the end starts the next expression. Look at what happens:<P>
+<pre>assert(cond1 || ! forall(....))</pre>
+expands to<P>
+<pre>asstResult = .... cond1 || !
+       anAssertCt();
+       ....
+       asstResult = 1;
+       for for-specification {
+          asstResult = .... subcondition;
+          if (!asstResult) break;
+       }
+       ....
+       asstResult
+, asstResult || (action to be done if assertion fails)</pre>
+where the outer parts come from the <I>assert</I> macro and part of its parameter, and the inner (indented) lines result from expansion of the <I>forall</I> macro. The role of <I>anAssertCt()</I> as an expression terminator should be clear.<P>
+<I>anAssertCt()</I> also serves another purpose: it counts the number of !'s in front of it. This operation works as follows: <I>anAssertCt()</I> returns a result of type <I>AssertCt</I>, a class with an overloaded <I>!</I>-operator:<P>
+<pre>int asstInvert;           // flag; 1 if number of !'s is odd,
+                          // i.e. result of forall must be
+                          // inverted.
+struct AssertCt {
+   // empty
+} asstCt;                 // the only AssertCt object
+                          // ever created
+AssertCt&amp; anAssertCt() {
+   asstInvert = 0;        // initialize !-flag
+   ....
+   return asstCt;
+}
+const AssertCt&amp; operator!(const AssertCt&amp; a)
+{
+   asstInvert = !asstInvert;  // a ! has occurred!
+   return a;
+}</pre>
+Now observe what happens. The statement<P>
+<pre>asstResult = .... cond1 || ! anAssertCt();</pre>
+(the first part of the example shown above) will call <I>anAssertCt()</I> and thereby initialize <I>asstInvert</I> to 0. Since <I>anAssertCt()</I> returns an <I>AssertCt</I>, the operator <I>!</I> is the overloaded <I>!</I> for <I>AssertCt</I>, which will toggle the inversion flag. If there is another <I>!</I> &#151; e.g. in <I>!!forall(...)</I> &#151; this will set <I>asstInvert</I> back to 0, then to 1, and so on, until all <I>!</I>'s are executed. Thus <I>asstInvert</I> indicates whether <I>asstResult</I> must be inverted after the loop.<P>
+(As the situation stands, the code would have to cast the result of the <I>operator!</I> to <I>int</I>, and then (in this example) <I>//</I> it with the previous condition <I>cond1</I>. Later I'll show that the <I>//</I> and the <I>&amp;&amp;</I> operators must also be overloaded for class <I>AssertCt</I>, and that the cast is not necessary.)<P>
+Of course, the inversion flag must be evaluated after the <I>for</I> loop, and since there might be other calls to <I>operator!</I> inside the subcondition, it is necessary to save its value in a local variable, resulting in the following code for <I>forall</I>:<P>
+<pre>anAssertCt();
+{ ....
+   int asstInvert = ::asstInvert;   // save global asstInvert
+   asstResult = 1;
+   for for-specification {
+     asstResult = .... subcondition;
+     if (!asstResult) break;
+   }
+   if (asstInvert) asstResult = !asstResult;
+      ....
+}
+....
+asstResult</pre>
+<h4><FONT COLOR="#000080"><A name="0187_00DD">Conditional Evaluation<A name="0187_00DD"></FONT></h4></P>
+In C++, it is necessary to take some shortcuts when evaluating conditional expressions. Consider the following condition:<P>
+<pre>a || b &amp;&amp; forall(....) &amp;&amp; c || d</pre>
+where <I>a</I>, <I>b</I>, <I>c</I>, and <I>d</I> are simple expressions (without any <I>foralls</I> and <I>exists</I>). This condition should be true if either<P>
+<pre><I>a</I> is 1                      --  and in this case no other part of
+                                the condition should be evaluated, or
+<I>b</I> and <I>forall</I> and <I>c</I> yield 1  --  and then <I>d</I> is not evaluated, or
+<I>d</I> is 1</pre>
+Moreover, in the <I>&amp;&amp;</I> chain, <I>forall</I> need only be evaluated if <I>b</I> is 1; and <I>c</I> need only be evaluated if <I>forall</I> yields 1 as well. It follows that there has to be a way to suppress the evaluation of the <I>forall</I> condition and subsequent conditions; I do this by inserting a simple <I>if</I> statement that calls a function <I>asstDoEval(int &amp;)</I>, which will tell when to run the <I>for</I> loop and when not:<P>
+<pre>anAssertCt();
+{ int asstShortCut;                 // flag to suppress evaluation of following
+                                    // parts of condition
+  if (asstDoEval(asstShortCut)) {
+                                    // suppress execution of for loop
+     int asstInvert = ::asstInvert;
+     asstResult = 1;
+     for for-specification {
+        asstResult = .... subcondition;
+        if (!asstResult) break;
+     }
+     if (asstInvert) asstResult = !asstResult;
+  }                                 // end if (asstDoEval())
+  ::asstShortCut = asstShortCut;
+  // load global asstShortCut
+}
+asstResult = ::asstShortCut ? 1 : asstResult</pre>
+I show later how <I>asstDoEval</I> determines whether the loop should be executed. Function <I>asstDoEval</I> also stores a value in variable <I>asstShortCut</I> which controls whether <I>forall</I> evaluates trailing parts of the assertion. This decision occurs in the last assignment of the <I>forall</I> macro: If <I>asstShortCut</I> is equal to 1, the condition attached to the right is not touched, and <I>asstResult</I> is assigned 1 (I explain why I use 1 in the next section).<P>
+<I>asstShortCut's</I> value follows a somewhat complicated route: It is assigned a value in function <I>asstDoEval</I>, and is copied to a global variable before it is finally used. This detour is necessary because there may be more <I>foralls</I> around and in the subcondition, and each of them must maintain its own flag. On the other hand, the evaluation can only happen in the outermost scope, since the end of the macro must be connectable to arbitrary following conditions. Therefore <I>forall</I> copies the local flag to the global flag immediately before its value is needed.<P>
+<h4><FONT COLOR="#000080"><A name="0187_00DE">Breaking Conditions Apart<A name="0187_00DE"></FONT></h4></P>
+The <I>forall</I> macro shown (it is almost the complete code) brings up two questions:<P>
+1.     hen is <I>forall</I> itself to be evaluated? The answer of this is determined by the result of <I>asstDoEval()</I>; and<P>
+2.     hen are the conditions after the <I>forall</I> macro to be evaluated? This will influence the <I>asstShortCut</I> flag.<P>
+The first question is easily answered. Consider an arbitrary condition<P>
+<pre>.... op a<SUB>i</SUB> op .... op a<SUB>k</SUB> op
+foralL(....) ....</pre>
+where each <I>op</I> is either // or &amp;&amp; and which expands to<P>
+<pre>.... op a<SUB>i</SUB> op .... op a<SUB>k</SUB> op
+anAssertCt(); ....  forall code ....</pre>
+Of course, the <I>forall</I> code must execute if and only if <I>anAssertCt()</I> is called. <I>anAssertCt()</I> makes this information public by setting a global flag <I>asstEval</I>:<P>
+<pre>AssertCt&amp; anAssertCt() {
+   asstInvert = 0;
+   asstEval = 1;   // remember
+                   // evaluation
+   return asstCt;
+}</pre>
+whose value will be returned by <I>asstDoEval</I>. After querying its value, <I>asstDoEval</I> will reset this flag as this value must always be 0 before evaluating a condition:<P>
+<pre>int asstDoEval(int&amp; asstShortCut) {
+   int eval = asstEval;
+   . . . .
+   asstEval = 0;
+   return eval;
+}</pre>
+The second question concerned the <I>asstShortCut</I> flag. For the condition<P>
+<pre>.... op a<SUB>ij</SUB> op .... op a<SUB>nk</SUB> op
+forall(....) op rest</pre>
+must <I>rest</I> be evaluated? That depends. First, is <I>forall</I> itself evaluated? If this is the case (call this case A), <I>rest</I> must be evaluated "together with the result of <I>forall</I>," i.e.,<P>
+<pre>asstResult = asstResult op rest</pre>
+But if <I>forall</I> is not evaluated (case B), a second detail must be considered, namely, whether the evaluation so far (i.e. up to and including <I>a</I><SUB><I>nk</I></SUB>) yielded 1 or 0. If it is 1 <I>and forall</I> is <I>not</I> evaluated, a clause before a preceding <I>//</I> must have succeeded, and no further evaluations are necessary. Therefore, in this case (case B1), the code sets<P>
+<pre>asstResult = 1</pre>
+(this is why I used the value 1 in the previous section). But if the result is 0 (case B2), the evaluation must continue after the <I>forall</I>; again, I can set<P>
+<pre>asstResult = asstResult op rest</pre>
+although this time it is apparent that <I>asstResult</I> is 0. Combining these cases, the last line of the <I>forall</I> macro is<P>
+<pre>asstResult = ::asstShortCut ? 1 : asstResult</pre>
+which can be concatenated to the <I>op rest</I> part, and the value of the <I>asstShortCut</I> flag follows from the previous discussion:<P>
+<pre>int asstDoEval(int&amp; asstShortCut) {
+   int eval = asstIval;
+   asstShortCut = ! asstEval &amp;&amp; asstResult;
+   // set to 1 only if previous result - up to ank - was
+   // 1 and we do not execute for loop, i.e. in case B1.
+   asstEval = 0
+   return eval;
+}</pre>
+One complication remains to be solved: In the second line of the code above, <I>asstDoEval()</I> requires the result of the evaluation up to <I>a</I><I>nk</I>! The current implementation already has an<P>
+<pre>asstResult =</pre>
+in the next macro call "to the left" (either an <I>assert</I>, a <I>forall</I>, or an <I>exists</I>). The problem is that the condition on the right extends one element too far, namely up to the <I>anAssertCt()</I> call:<P>
+<pre>asstResult = ...op a<SUB>ij</SUB> op ... a<SUB>nk</SUB> op anAssertCt();</pre>
+To get the correct result, <I>anAssertCt()</I> should therefore return an <I>int</I> value that makes it "invisible" to the rest of the condition &#151; In other words, we need <I>&amp;&amp;</I> and <I>//</I> operators that ignore their right parameter. I can easily do this by overloading the <I>&amp;&amp;</I> and <I>//</I> operators for a right operand of type <I>AssertCt</I> and have them return their left operand all the time:<P>
+<pre>int operator&amp;&amp;(int left, const AssertCt&amp;)
+{
+   ....
+   return left;
+}
+int operator ||(int left, const AssertCt&amp;)
+{
+   ....
+   return left;
+}</pre>
+But now there is a new problem: These overloaded operators are no longer "shortcut operators." Unlike the standard <I>&amp;&amp;</I> and <I>//</I> operators, they evaluate both operands on each call, regardless of the value of the left operand. This is harmful because in the evaluation of the right operand, which always contains <I>anAssertCt()</I>, the code sets the <I>asstEval</I> flag &#151; which is now set too often! To correct this problem, I reset this flag if an <I>anAssertCt()</I> was called "inadvertently":<P>
+<pre>int operator&amp;&amp;(int left, const AssertCt&amp;)
+{
+   asstEval = left;           // reset asstEval if left == 0
+   return left;
+}
+
+int operator (int left, const AssertCt&amp;)
+{
+   asstEval = !left;          // reset asstEval if left == 1
+   return left;
+}</pre>
+The cast-to-<I>int</I>-operator of class <I>AssertCt</I> anticipated at the beginning of this section is now no longer necessary &#151; almost. If a condition starts with a <I>forall</I>, the resulting code is<P>
+<pre>asstResult = anAssertCt(); ...</pre>
+which is the only place requiring an assignment of an <I>AssertCt</I> to an <I>int</I>. However, this assignment can be avoided by starting each condition with<P>
+<pre>0 || ...</pre>
+which does not change its value. This is necessary in the <I>assert</I> macro, which now becomes<P>
+<pre>#define assert (assert-condition)
+   asstResult = 0 || assert-condition,
+   asstResult || (action to be done if assertion fails)</pre>
+and in the <I>forall</I> macro, where the <I>for</I> loop becomes<P>
+<pre>for for-specification {
+   asstResult = 0 || subcondition;
+   if (!asstResult) break;
+}</pre>
+avoiding a dangerous implicit cast to <I>int</I> and providing a sound implementation of <I>forall</I>.<P>
+I've just presented the complete implementation of <I>forall.</I> To get an overview of this implementation, you can study <A href="list1.htm">Listing 1</a>,
+ where you will find all of the parts again. In the actual implementation, I replace the <I>forall</I> macro by a more general macro <I>asstLoopTest</I>, which implements both <I>forall</I> and <I>exists</I>. All the functions are declared <I>inline</I>, and all the flags are <I>static</I>. Together, this yields an implementation confined to a single header file, without the need to link a separate object file or library to the executable.<P>
+<h4><FONT COLOR="#000080"><A name="0187_00DF">An Application<A name="0187_00DF"></FONT></h4></P>
+In this section I demonstrate the use of the macro extensions with an example. Consider a sort function which can sort any array of different elements (sort functions such as <I>qsort</I> in the C library usually also deal with equal elements in an array, but this complicates the assertions a little bit):<P>
+<pre>template &lt;class T&gt;
+class Array {
+public:
+   T operator[](unsigned index) const;
+   unsigned size() const;
+   ...
+};
+
+template &lt;class T&gt;
+void sort(Array&lt;T&gt;&amp; array)
+{
+   ... sorting algorithm ...
+}</pre>
+Which assertions are useful for this function? Consider the possible post-conditions first. Obviously, one post-condition of this function is that all the elements should be sorted; in other words, elements should increase in size as the array is traversed. This condition is easy to implement with a <I>forall</I> quantifier:<P>
+<pre>Post-condition 1:
+assert( forall((int i = 1; i &lt; array.size();i++), array[i-1]&lt;array[i]) );</pre>
+What would the output of a program look like if Post-condition 1 was violated? As follows:<P>
+<pre>Assertion in line 117, file sort.cxx failed for condition
+   'forall( (int i = 1; i &lt; array.size(); i++), array [i-1] &lt; array[i])'</pre>
+Of course, this is an important message, but tells nothing about the index where the catastrophe happened.<P>
+It is possible to formulate more post-conditions for sorting. Imagine a sorting algorithm that simply replaces the elements of the array by 1, 2, ..., <I>size.</I> These (new) elements would be in ascending order and would thus fulfill the first post-condition, but this could hardly be considered a valid sorting algorithm for an array. Another post-condition therefore specifies that each element in the resulting array must have been present in the original one; at the same time, the size of the array must not have changed during sorting. (Did you ever realize that a sorting routine could do so much evil?).<P>
+<pre>Post-condition 2:
+assert( array.size() == old(array).size()
+       &amp;&amp;
+       forall ((int i = 0; i &lt; array.size(); i++),
+           exists ((int j = 0; j &lt; array.size(); j++),
+              array[i] == old(array)[j]
+           )
+       )
+     );</pre>
+The <I>old(array)</I> construct introduced in this assertion refers to the value of the variable array before the changes made by the sorting algorithm. C++ does not automatically store an "old" value at the beginning of each function. (Eiffel has a facility for this.) Therefore I provide a macro<P>
+<pre>saveold(T,v)</pre>
+to the assert macros that assigns the variable <I>v</I> of type <I>T</I> to a variable with the same name, but prefixed with <I>old_</I>. The <I>old</I> macro then accesses this variable. The call to <I>saveold</I> must be inserted "by hand" into the function:<P>
+<pre>template &lt;class T&gt;
+void sort(Array&lt;T&gt; array)
+{
+   saveold(Array&lt;T&gt;,array);
+   
+   ... sorting algorithm ...
+   ... Postcondition 1...
+   ... Postcondition 2...
+}</pre>
+As a last example, I show a pre-condition to the sort function, namely that all elements in the array must be different:<P>
+<pre>Pre-condition:
+assert( forall((int i = 0; i&lt;array.size();i++),
+        ! exists((int j = 0; j&lt;array.size(); j++), i != j &amp;&amp; array[i]==array[j]
+              )
+      )
+);</pre>
+or in words: For all indices <I>i</I>, there is no index <I>j</I> different from <I>i (i != j)</I>, where <I>array[i]</I> equals <I>array[j]</I>.<P>
+<h4><FONT COLOR="#000080"><A name="0187_00E0">Loop variables<A name="0187_00E0"></FONT></h4></P>
+In each of the <I>foralls</I> and <I>exists</I> in the examples given above, I defined a local loop variable <I>i</I> or <I>j</I>. Inside each <I>forall</I> and <I>exists</I> macro, there is a (hidden) block which contains a corresponding <I>for</I> loop; therefore, these variables can only be accessed inside the immediately following assert condition. Suppose I want to output information about the loop variables when an assertion fails? In this case, I must declare the loop variables at global scope, as in:<P>
+<pre>int i;
+assertp(forall((i = 1; i &lt;array.size();i++), array[i -1]&lt;array[i]));
+            ,"index" &lt;&lt; i);</pre>
+Now the output will be more informative than the one shown previously:<P>
+<pre>Assertion in line 117, file sort.cxx
+failed for index 7</pre>
+where the 'index 7' part of the output comes from the second parameter of <I>assertp</I>.<P>
+After the message prints to the stream <I>cerr</I>, both <I>assert</I> and <I>assertp</I> will call <I>exit(125)</I> by default. However, both the output stream and the exit action can be changed by simply redefining macros <I>ASSERTSTREAM</I> and <I>ASSERTACTION</I>, respectively. (For compilers supporting exception handling, you can redefine <I>ASSERTACTION</I> to throw an exception instead of exiting the program. But look out &#151; due to the definition of <I>assert</I> as an expression, <I>ASSERTACTION</I> must be an expression, too.)<P>
+<h4><FONT COLOR="#000080"><A name="0187_00E1">Restrictions<A name="0187_00E1"></FONT></h4></P>
+A close look at the syntax will reveal a restriction of <I>assert</I> conditions when compared to usual C++ expressions. An assert condition cannot be put inside parentheses. Thus, the following is not a valid use of an <I>assert</I> condition:<P>
+<pre>assert(array.size() &gt; 0 &amp;&amp; &amp;&amp; (array.elements() == 0
+        || forall((i = 1; i &lt; array.size(); i++), 
+             // error!
+             array[i] &gt; array[0])
+           )
+);</pre>
+Here, the forall-condition erroneously occurs in a parenthesized sub-expression for precedence purposes, which will result in a compile-time error. The reason is, of course, that <I>forall</I> and <I>exists</I> are implemented using <I>for</I> loops, which are statements; however, there is no way in C++ to put a statement inside parentheses. (Unfortunately, the error messages given by compilers in this case are not particularly clear, as the error is detected some way inside the <I>forall</I> or <I>exists</I> macro.) The work-around for parenthesized assert conditions is to rearrange the whole condition until it is no longer necessary to put parentheses around a quantified subcondition. The example above is equivalent to<P>
+<pre>assert(array.size() &gt; 0);
+assert(array.elements() == 0 ||
+      forall((i = 1; i &lt; array.size();i++), array[i] &gt; array[0]
+      )
+);</pre>
+which will work.<P>
+Another restriction of this implementation is that <I>assert</I> conditions can only be used inside <I>assert</I> (but not as conditions in <I>if</I> statements, for example). Actually though, this should not be much of a restriction, as they were only designed for this use.<P>
+<h4><FONT COLOR="#000080"><A name="0187_00E2">Conclusion<A name="0187_00E2"></FONT></h4></P>
+This article showed that is is possible to implement powerful logical operators in standard C++ without any language extension and with only minor compromises.<P>
+Besides some useful code, I hope I have presented some C++ programming tricks that are not obvious in the first place. Of course, I wouldn't advise using such intricate macros under all circumstances; they make syntax errors more difficult to find, and they prohibit looking at the actual source code when debugging. Nevertheless, these macros can sometimes help you to produce more understandable (and therefore reliable) code and to maintain this code through a longer period of time.<P>
+<h4>References</FONT></h4></P>
+<a name="1"></a>1.     M. Ellis and B. Stroustrup. <I>The Annotated C++ Reference Manual</I> (Addison-Wesley, 1990).<P>
+<a name="2"></a>2.     B. Meyer. <I>Object-oriented Software Construction</I> (Prentice-Hall, 1988).<P>
+<a name="3"></a>3.     C.A.R. Hoare. "An Axiomatic Basis for Computer Programming," <I>Communications of the ACM</I>, October, 1979, pp. 576-583.<P>
+<a name="4"></a>4.     E. Dijkstra. <I>A Discipline of Programming</I> (Prentice-Hall, 1976).<P>
+<a name="5"></a>5.     D. Gries. <I>The Science of Programming</I> (Springer, 1981).<P>
+
+<h4><a href="../../../source/1994/oct94/mueller.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

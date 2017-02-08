@@ -1,0 +1,118 @@
+<HTML><HEAD>
+<TITLE>December 1994/Emulating C++ Exception Handling/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2<I> Implementation of exception handler</I></A></h4>
+<pre>////////////////////////////////////////////////////////////
+// UNWIND.CPP
+// Copyright 1994 Gregory Colvin.
+// May be distributed free with this notice.
+
+#include "unwind.h"
+
+static Unwindable* Newbie;       // stack of newbies
+static Handler Top;              // default handler
+Handler* Handler::handler=&amp;Top;  // current handler
+unsigned Unwindable::count;      // count of objects
+
+// Set size and push on stack of newbies.
+void* Unwindable::operator new(size_t size) {
+   Unwindable* p = (Unwindable*)::operator new(size);
+   p-&gt;size = size;
+   p-&gt;link = Newbie, Newbie = p;
+   return p;
+}
+
+// True iff *this is a subobject of *w.
+inline int Unwindable::within(Unwindable* w) {
+   return (char*)w &lt;= (char*)this
+        &amp;&amp; (char*)w + w-&gt;size &gt;= (char*)this + size;
+}
+
+// If p is under construction by new then if *p is complete
+// object pop it off stack of newbies, else pop subobjects
+// of *p off of and push p onto stack for current handler.
+void Handler::push(Unwindable* p,size_t sz) {
+   p-&gt;size = sz;
+   if (Newbie &amp;&amp; p-&gt;within(Newbie)) {
+      if (Newbie-&gt;size == p-&gt;size)
+         Newbie = p-&gt;link;
+   } else {
+      for (Unwindable* stack= handler-&gt;link;
+          stack &amp;&amp; stack-&gt;within(p);
+          stack = handler-&gt;link)
+         handler-&gt;link = stack-&gt;link;
+      p-&gt;link = handler-&gt;link, handler-&gt;link = p;
+   }
+}
+
+// Pop and destroy all Unwindables on stack for current
+// handler and restore context of handler.
+void Handler::Throw(int err) {
+   for (Unwindable* stack= handler-&gt;link;
+      stack;
+      stack = handler-&gt;link)
+      handler-&gt;link = stack-&gt;link, stack-&gt;~Unwindable();
+   if (handler!= &amp;Top)
+      longjmp(handler-&gt;buf,err);
+   abort();
+}
+
+#ifdef TEST
+   #include &lt;iostream.h&gt;
+
+   struct Test : Unwindable {
+      int n;
+      Unwindable sub;
+      Unwindable* psub;
+      Test(int i) : n(i) {
+         UNWINDABLE;
+         psub = new Unwindable();
+         cout &lt;&lt; "Test" &lt;&lt; n &lt;&lt; " " &lt;&lt; this &lt;&lt; endl;
+      }
+      virtual ~Test() {
+         cout &lt;&lt; "~Test "&lt;&lt; n &lt;&lt; " " &lt;&lt; this &lt;&lt; endl;
+         n = 0;
+         delete psub;
+      }
+   };
+
+   int test(int n_try, int curt_try=0) {
+      try {
+         cout &lt;&lt; "try in test" &lt;&lt; curr_try &lt;&lt; endl;
+         Test local (curr_try);
+         if (curr_try &lt; n_try)
+            return test(n_try,++curr_try);
+         else {
+            cout &lt;&lt; "throw in test "&lt;&lt; curr_try &lt;&lt; endl;
+            throw(-1);
+         }
+      } catch(int x) {
+         cout &lt;&lt; "catch" &lt;&lt; x &lt;&lt;" and rethrow in test"
+             &lt;&lt; curr_try &lt;&lt; endl;
+         throw(x);
+      }
+      return curr_try;
+   }
+
+   int main() {
+      int n_test;
+      cout &lt;&lt; "enter number of test recursions: ";
+      cin &gt;&gt; n_test;
+      Test* pTest= new Test(-1);
+      try {
+         return test(n_test);
+      } catch(int thrown) {
+         cout &lt;&lt; "catch" &lt;&lt; thrown &lt;&lt;" in main" &lt;&lt; endl;
+      }
+      delete pTest;
+      cout &lt;&lt; "Count" &lt;&lt; Unwindable::Count() &lt;&lt; endl;
+      return 0;
+   }
+#endif
+
+// End of File</pre>
+
+</BODY>
+</HTML>

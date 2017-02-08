@@ -1,0 +1,181 @@
+<HTML><HEAD><TITLE>July 1990/OS/2 Anonymous Pipes/Listing 1</TITLE></HEAD><BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4><A name="0179_00D4"><A name="0179_00D4">Listing 1<A name="0179_00D4"></h4><P>
+<pre>/**********************************************************************/
+/*                                      */
+/*  ROUTEMSG.C - OS/2 utility to invoke a child process and route its STDOUT */
+/*      and STRERR streams to both the video display as well as an */
+/*      ASCII file.                         */
+/*                                      */
+/**********************************************************************/
+/*                Modification Log                   */
+/**********************************************************************/
+/*  --Date--    ----Programmer----   -------------Comments-------------------*/
+/*                                      */
+/*  06/10/89    Bob Withers    Program originally complete       */
+/*                                      */
+/**********************************************************************/
+
+#pragma check_stack(off)
+
+#define INCL_DOS
+#define INCL_VIO
+
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;stdarg.h&gt;
+#include &lt;os2.h&gt;
+
+#define STDOUT_HANDLE            1
+#define STDERR_HANDLE            2
+#define STATIC           static
+
+#ifndef FILE_NORMAL
+#define FILE_NORMAL          0x0000
+#define FILE_CREATE          0x0010
+#define FILE_TRUNCATE        0x0002
+#define OPEN_ACCESS_WRITEONLY    0x0001
+#define OPEN_SHARE_DENYWRITE     0x0020
+#define OPEN_FLAGS_NOINHERIT     0x0080
+#endif
+
+STATIC VOID     NEAR_CDECL       ErrorMsg(CHAR *str, ...);
+
+static HFILE            fh_stdout = STDOUT_HANDLE;
+static HFILE            fh_stderr = STDERR_HANDLE;
+static CHAR             acBuffer[1024];
+static CHAR             szPgmName[128];
+
+INT_CDECL main(INT argc, CHAR **argv)
+{
+   register  SHORT    i;
+   register  CHAR    *p;
+   auto      SHORT    sLen;
+   auto      HFILE    fh_output;
+   auto      HFILE    fh_piperead, fh_pipewrite;
+   auto      USHORT       usRetCode, usAction;
+   auto      RESULTCODES   rc;
+   auto      CHAR     szFailName[64];
+   
+   /*  (A) verify we have the minimum number of command line
+   arguments                                                      */
+   if (argc &lt; 3)
+   {
+  ErrorMsg("Usage: %s &lt;filename&gt; &lt;pgmname&gt; [&lt;args&gt; ...]\n", argv[0]);
+  DosExit(EXIT_PROCESS, 1);
+   }
+   
+   /* (B) open the output file, truncate it if it exists otherwise create */
+   usRetCode = DosOpen(argv[1], &amp;fh_output,
+         &amp;usAction, OL,
+         FILE_NORMAL,
+         FILE_CREATE | FILE_TRUNCATE,
+         OPEN_ACCESS_WRITEONLY | OPEN_SHARE_DENYWRITE
+                     | OPEN_FLAGS_NOINHERIT,
+         OL);
+   if (usRetCode)
+   {
+  ErrorMsg("Unable to open file %s (Error status = %u)\n",
+      argv[1], usRetCode);
+  DosExit(EXIT_PROCESS, 2);
+   }
+   
+   /*  (C) create the pipe to be inherited by the child process   */
+   usRetCode = DosMakePipe(&amp;fh_piperead, &amp;fh_pipewrite, 0);
+   if (usRetCode)
+   {
+  DosClose(fh_output);
+  ErrorMsg("Unable to create pipe (Error status = %u)\n", usRetCode);
+  DosExit(EXIT_PROCESS, 3);
+   }
+   
+   /*  (D) no longer need original STDOUT and STDERR so close them */
+   DosClose(fh_stdout);
+   DosClose(fh_stderr);
+   
+   /*  (E) redirect STDOUT and STDERR to the pipe's write file handle */
+   DosDupHandle(fh_pipewrite, &amp;fh_stdout);
+   DosDupHandle(fh_pipewrite, &amp;fh_stderr);
+   
+   /*  (F) set pipe read handle to NOINHERIT so that it will not reduce the */
+   /*     number of handles available to the child process         */
+   DosSetFHandState(fh_piperead, OPEN_FLAGS_NOINHERIT);
+   
+   /*  (G) the pipe write handle has been redirected, no longer needed */
+   DosClose(fh_pipewrite);
+   
+   /*  (H) format the program name to execute as the child process */
+   if (NULL == strchr(strupr(strcpy(szPgmName, argv[2])), '.'))
+  strcat(szPgmName, ".EXE");
+  
+   /*  (I) format the command line to be passed to the child process  */
+   strcpy(acBuffer, argv[2]);
+   p = acBuffer + strlen(acBuffer) + 1;
+   for (i = 3; i &lt; argc; ++i)
+   {
+  sLen = strlen(argv[i]);
+  memcpy(p, argv[i], sLen);
+  p += sLen;
+  *p++ = ' ';
+   }
+   *p++ = '\0';
+   *p = '\0';
+   
+  /* (J) try to execute the child process         */
+  usRetCode = DosExecPgm(szFailName, sizeof(szFailName),
+          EXEC_ASYNC,
+          acBuffer,
+          NULL,
+          &amp;rc,
+          szPgmName);
+  if (usRetCode)
+  {
+ ErrorMsg("Unable to bid child %s (Error status = %u [%s])\n",
+     szPgmName, usRetCode, szFailName);
+ DosExit(EXIT_PROCESS, 4);
+  }
+  
+  /* (K) no longer need the pipe write handles so close them now     */
+  DosClose(fh_stdout);
+  DosClose(fh_stderr);
+  
+  /* (L) read data from the pipe and route it to screen and file     */
+  while (TRUE)
+  {
+ auto     USHORT     usBytesRead, usBytesWritten;
+ static   BOOL       bError = FALSE;
+ 
+ usRetCode = DosRead(fh_piperead, acBuffer,
+           sizeof(acBuffer), &amp;usBytesRead);
+ if (usRetCode || 0 == usBytesRead)
+      break;
+      
+   VioWrtTTY(acBuffer, usBytesRead, 0);
+   if (!bError)
+   {
+      DosWrite(fh_output, acBuffer, usBytesRead, &amp;usBytesWritten);
+      if (usBytesWritten 1= usBytesRead)
+      {
+      ErrorMsg("Unable to write to output file, disk full?\n");
+      bError = TRUE;
+      }
+   }
+    }
+    
+    /* (M) close the pipe read handle and the output file handle */
+    DosClose(fh_piperead);
+    DosClose(fh_output);
+    return(0);
+}
+
+STATIC VOID NEAR_CDECL ErrorMsg(CHAR *str, ...)
+{
+    auto  va_list  va;
+    
+    va_start(va, str);
+    VioWrtTTY(acBuffer, vsprintf(acBuffer, str, va), 0);
+    va_end(va);
+    return;
+}
+</pre>
+</BODY></HTML>

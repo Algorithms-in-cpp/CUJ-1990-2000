@@ -1,0 +1,267 @@
+<HTML><HEAD>
+<TITLE>May 1991/Questions & Answers/Listing 5</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 5</A></h4>
+<pre>/* soffset and related routines.  C/C++.  Author: Stephen D. Williams */
+/* Structure packing and unpacking routines, with alignment compensation. */
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;ctype.h&gt;
+#include &lt;limits.h&gt;     /* used to set ints to max/min on over/under flow */
+#define yr_of_date(d)   ((int)((d)/10000L))
+#define mo_of_date(d)   ((int)(((d)%10000L)/100L))
+#define dy_of_date(d)   ((int)(((d)%10000L)%100L))
+#define date_of_yrmody(y,m,d)   ((y)*10000L+(m)*100L+(d))
+extern long us_date_to_long(char *dates, char **endptr);//in date.cxx
+int *chkalign(void)
+{
+ /* char, short, int, long, float, double, not used: enum, long double */
+static int alignarry[8]= {0,0,0,0,0,0,0,0};
+   /* if you really have a long double, doubles below should change */
+struct { double a; char b; char c; } c;
+struct { double a; char b; short s; } s;
+struct { double a; char b; int i; } i;
+struct { double a; char b; long l; } l;
+struct { double a; char b; float f; } f;
+struct { double a; char b; double d; } d;
+
+   /* sets number of pad chars to get to boundary */
+alignarry[0]=((char *)&amp;c.c-(char *)&amp;c.b)-1;
+alignarry[1]=((char *)&amp;s.s-(char *)&amp;s.b)-1;
+alignarry[2]=((char *)&amp;i.i-(char *)&amp;i.b)-1;
+alignarry[3]=((char *)&amp;l.l-(char *)&amp;l.b)-1;
+alignarry[4]=((char *)&amp;f.f-(char *)&amp;f.b)-1;
+alignarry[5]=((char *)&amp;d.d-(char *)&amp;d.b)-1;
+
+return(alignarry);
+}
+int num_fields(const char *str)    /* count non digits/spaces */
+{
+ int nf = 0;
+ while(*str)
+   {
+   if(isdigit(*str++))
+      continue;
+//      if(!isspace(*(str-1)))  //  assume any non digit is valid now
+                       // watch for 2 digit lengths to use this
+      nf++;
+   }
+ return(nf);
+ }
+/* gets the offset of the nth item from 0 */
+int soffset(const char *str, int n, char *t, int *numitems, int dat_align)
+{    // type/size is "c20"
+char *endptr;
+int num, size = 0;
+int ind;
+static int *al = NULL;                // only call once
+
+if(!al)
+  al = chkalign();
+while(n--)
+ {
+ char cc;
+ cc = *str++;
+ num = (int)strtol(str, &amp;endptr, 10);
+ str = endptr;
+ num = num ? num : 1;
+ switch(cc)
+   {         /* skip char */
+   case 'c':
+   case 's':
+      break;
+   case 'i':
+   case 'u':
+      num *= sizeof(int);
+      break;
+   case 'D':    /* long date */
+   case 'l':
+   case 'm':    /* unsigned long */
+      num *= sizeof(long);
+      break;
+   case 'f':
+      num* = sizeof(float);
+      break;
+   case 'd':
+      num* = sizeof(double);
+      break;
+   default:
+      return(0);          /* bad format code */
+    }
+ switch(*str)
+   {  /*  look at next char */
+   case 's':
+   case 'c':
+      ind = 0;
+      break;
+   case 'i':
+   case 'u':
+      ind = 2;
+      break;
+   case 'D':   /*  long date */
+   case 'l':
+   case 'm':
+      ind = 3;
+      break;  /*  unsigned long */
+   case 'f':
+      ind = 4;
+      break;
+   case 'd':
+      ind = 5;
+      break;
+   default:
+      ind = 0;     /* either bad format code, or end of string */
+   }
+ size += num;      /* add size of current element */
+  /* this should align to next boundary, if on */
+ if (dat_align)
+   size += ((al[ind] + 1 - (al[ind] &amp; size)) &amp; al[ind]);
+  }
+if(t)
+  *t = *str;    /*  return type */
+str++;
+num = (int)strtol(str, &amp;endptr, 10);
+str = endptr;
+num = num ? num : 1;
+if(numitems)
+  *numitems = num; /* if passed a pointer, return len */
+return(size);
+}
+ /* converts the data to str */
+// fmt is null or "" for not used
+void ttos(char *dest, void *src, int offs, char t, int numitems, char *fmt)
+ {       /* doesn't check for sprintf overflow */
+ int fmtp = (fmt &amp;&amp; *fmt);
+ switch(t &amp; 0xff)
+   {
+   case 'c':       /* this adds a null to end of all strings */
+     if(fmtp)
+        {
+        sprintf(dest, fmt, ((char *)src+offs));
+        }
+     else
+       {
+        strncpy(dest,((char *)src+offs),numitems);
+//            dest[numitems] = 0;    /* delimit string */
+        }
+    break;
+ case 'i':
+    sprintf(dest,fmtp ? fmt : "%d",*((int *)((char *)src+offs)));
+    break;
+ case 'u':
+    sprintf(dest,fmtp ? fmt : "%u",*((unsigned *)((char *)src+offs)));
+    break;
+ case 'l':
+    sprintf(dest,fmtp ? fmt : "%ld",*((long *)((char *)src+offs)));
+    break;
+ case 'm':        /* unsigned long */
+    sprintf(dest,fmtp ? fmt : "%lu",*((unsigned long *)((char *)src+offs)));
+    break;
+ case 'D':        /* long date */
+    {
+    long t;
+    t = *((long *)((char *)src+offs));
+    if((t == 0) || (t == -1))
+       strcpy(dest, " / / ");
+    else
+      {
+      sprintf(dest,fmtp ? fmt : "%02.2d/%02.2d/%02.2d",
+      mo_of_date(t), dy_of_date(t), yr_of_date(t));
+      }
+    }
+    break;
+ case 'f':       /* note: prints ieee max significant */
+    sprintf(dest,fmtp ? fmt : "%.7g", *((float *) ((char *)src+offs)));
+    break;
+ case 'd':
+    sprintf(dest,fmtp ? fmt : "%.15g", *((double*) ((char *)src+offs)));
+    break;
+ }
+}
+ /* converts the str to data, returns success: only for special data types */
+int stot(void *dest, char *src, int offs, char t, int numitems)
+{       /*  doesn't check for sprintf overflow */
+long ttmp;
+char *p;
+
+p = (char *)dest + offs;
+switch(t &amp; 0xff)
+ {
+ case 'c':
+    strncpy(p,src,numitems);
+    break;
+ case 'i':
+    *((int *)(p)) = (int)(ttmp = strtol(src, (char **)NULL, 10));
+    if(ttmp &gt; INT_MAX)
+       *((int *)p) = INT_MAX;
+    else
+      if(ttmp &lt; INT_MIN)
+          *((int *)p) = INT_MIN;
+    break;
+ case 'u':
+    *((unsigned *)(p)) = (int)(ttmp = strtoul(src, (char **)NULL, 10));
+    if(ttmp &gt; UINT_MAX)
+       *((unsigned*)p) = UINT_MAX;
+    break;
+ case 'l':
+    *((long *)(p)) = strtol(src, (char **)NULL, 10);
+    break;
+ case 'm':       /* unsigned long */
+    *((unsigned long *)(p)) = strtoul(src, (char **)NULL, 10);
+    break;
+ case 'D':       /* long date */
+    *((long *)(p)) = us_date_to_long(src, (char **) 0);
+    if (*(long *)p == -1l)
+       return(-1);  /*  bad date */
+    break;
+ case 'f':
+    *((float *)(p)) = (float)strtod(src, (char **)NULL);
+    break;
+ case 'd':
+    *((double *)(p)) = strtod(src, (char **)NULL);
+    break;
+ }
+return(0);           /* good conversion */
+}
+int num_chars_display(char type, int numitems)
+{
+ int num = 1;
+
+ switch(type &amp; 0xff)
+   {        /* skip char */
+   case 'c':
+   case 's':
+      num = numitems;
+      break;
+   case 'i':
+      num = 6;
+      break;
+   case 'u':
+      num = 5;
+      break;
+   case 'D':   /* long date */
+      num = 8;
+      break;
+   case 'l':
+      num = 11;
+      break;
+   case 'm':   /* unsigned long */
+      num = 10;
+      break;
+   case 'f':
+      num = 16;
+      break;
+   case 'd':
+      num = 24;
+      break;
+   default:
+       num = 8;        /* bad format code */
+   }
+return(num);
+}</pre>
+
+</BODY>
+</HTML>

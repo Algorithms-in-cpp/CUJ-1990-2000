@@ -1,0 +1,144 @@
+<HTML><HEAD>
+<TITLE>September 1992/Exception Handling/Listing 6</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 6 A translator built with lex that transforms the formal syntax to the real one.</A></h4>
+<pre>STRING  \" [^"]*
+CHARC   \' [^'] *
+AB  "//"
+CB  "/*"
+CE  "*/"
+ESC "\\"
+BB  "{"
+BE  "}"
+SP  [  \n\t]
+STMNT    .*";"
+TRY "try"{SP}*{BB}
+CATCH   "catch"{SP}*"("{SP}*/.*")"{SP}*"{"
+ELIPS   "..."{SP}*")"{SP}*"{"
+ARGU    .*{SP}*")"{SP}*"{"
+CEMPTY  {SP}*")"{SP}*"{"
+THROW   "throw".*";"
+THROWD  ")"{SP}*"throw"{SP}*"(".*")"/{SP}*"{"
+%START Try Catch CatchArg ThrowD End
+%{
+#include &lt;string.h&gt;
+int scope;
+char *throwArgs[YYLMAX];
+%}
+%%
+{STRING}|{CHARC}    {  /* Skip character or string constants  */
+              if(yytext[yyleng-1] == '\\')
+                 yymore();
+              else
+                 printf("%s%c", yytext, input());
+          }
+{AB}.*$  {  /* C++ comment handling */ ECHO;  }
+{CB}     { /* C comment handling */
+          int c;
+          ECHO;
+          while(1) {
+              output (c=input());
+              /* Check for end of comment */
+              if( c == '*' ) {
+                 if((c=input()) == '/')  {
+                    output(c);
+                    break;
+                 }
+                 unput(c);
+              }
+          }
+       }
+{TRY}  {
+          printf("if(setjmp(*ExH::stk++)==0) {");
+          scope=0;
+          BEGIN Try;
+       }
+&lt;Try&gt;{BE}   {
+          ECHO;
+          if(--scope &lt; 0) {
+                printf("ExH::stk--; }");  /* Pop */
+                BEGIN Catch;
+          }
+        }
+&lt;Catch,End&gt;{CATCH}  { scope = 0; BEGIN CatchArg; }
+&lt;CatchArg&gt;{ELIPS}   {
+          printf("else {");
+          BEGIN 0;
+       }
+&lt;CatchArg&gt;{CEMPTY}  {
+          fprintf(stderr, "ERROR: Catch must have an argument\n");
+          exit(1);
+       }
+&lt;CatchArg&gt;{ARGU}  {
+          char *type, *ref, *var=0;
+          /* Looks for reference */
+          type = strtok(yytext, ")");
+          ref = strchr(type, '&amp;');
+          
+          /* Identifies the type */
+          type = strtok(yytext, "\t\n&amp;");
+          printf("else if( ExH::ex()-&gt;type() == %s::stype()) {", type);
+          
+          /* Looks for a variable declaration */
+          if(var = strtok(NULL, "\t\n)")) {
+             if(ref) ref = "&amp;";
+             else ref = "";
+             printf(" %s%s %s = *((%s*)ExH::ex());", type, ref, var, type);
+          }
+          BEGIN Catch;
+       }
+&lt;Catch,Try,ThrowD&gt;{BB}  {ECHO; ++scope;}
+&lt;Catch&gt;{BE} {
+          ECHO;
+          if(--scope &lt; 0) BEGIN End;
+       }
+&lt;End&gt;{STMNT}    |
+&lt;End&gt;{BE}  {
+          printf("else unexpected();");
+          ECHO;
+          BEGIN 0;
+       }
+{THROW} {   /* Normal throw  */
+          char *p;
+          /* skip 'throw' and pass the rest of the sentence as argument  */
+          p = strtok(yytext+5, ";");
+          if(!p) p = "";
+          printf("ExH::throw(%s);", p);
+       }
+{THROWD}    { /* Throw Declaration ( type f() throw (x1, x2, etc) )  */
+          char *p;
+          p = strstr(yytext, "throw");
+          *p = 0;
+          
+          /* Save throw args for future catches */
+          strcpy(throwArgs, p+5);
+          
+          /* Prints function name and start with try */
+          printf("%s{ if(setjmp(*ExH::try_))==0)", yytext);
+          
+          /* Prints the function body */
+          scope = 0;
+          BEGIN ThrowD;
+       }
+&lt;ThrowD&gt;{BE}    {
+          ECHO;
+          if(--scope &lt;= 0) {
+              char *p;
+              
+              p = strchr(throwArgs, '(') + 1;
+              while(p=strtok(p," ,)")) {
+                 printf("else if( ExH::ex()-&gt;type() == %s::stype()) ", p);
+                 printf("ExH::throw(*ExH::ex());");
+                 p = 0;
+              }
+              printf("else unexpected(); }");
+              BEGIN 0;
+          }
+       }
+%%
+/* End of File */</pre>
+
+</BODY>
+</HTML>

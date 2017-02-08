@@ -1,0 +1,93 @@
+<HTML>
+<HEAD><TITLE>April 1990/Forked Interrupt Systems/Listing 3</TITLE></HEAD><BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4><A name="00CB_0070"><A name="00CB_0070">Listing 3<A name="00CB_0070"></h4><P>
+<pre>/*
+
+  fork_execute() -- Execute the fork queue
+
+  This task executes all elements on the fork queue. While
+  the queue is executing, other elements can be place onto
+  the queue.
+
+  The queue operates by setting up a special TSS to be a
+  duplicate of the queued driver's TSS, except for the current
+  CS:IP and the stack. This allows all forked routines to
+  execute using the exact same environment it would have if
+  the task (or driver) had called the routine directly.
+
+  Actually, one enviromental difference may occur. All
+  routines executing on the fork will be run with
+  interrupts enabled.
+
+  In addition, the forked routine will be called in such a
+  manner that all it needs to do is issue a return to exit
+  the routine. The queue will handle the rest. Any return
+  value issued by the forked routine will be ignored. */
+
+void fork_execute()
+  {
+  DWORD fork_addr;
+  OFFSET fork_sp;
+  SELECTOR fork_ss;
+  FORK_PARAM *owner;
+  unsigned char current_name[NAME_SIZE + 1];
+
+  current_name[NAME_SIZE] = '\0';
+
+/* Initialize some constants, such as the base stack, and
+   the queue startup routine to use.               */
+
+  fork_ss = fdummy_tcb.ss;
+  fork_sp = fdummy_tcb.sp;
+  fork_addr.whole = (unsigned long) fork_start;
+
+  /* Loop to continue task at each invokation */
+  while (1)
+    {
+
+    /* Tell the world that we are running the queue */
+    fork_in_process = 1;
+
+  /* As long as we have something to do.... */
+  while (fork_queue)
+    {
+    /* Get the next element */
+    owner = fork_queue;
+    fork_queue = fork_queue -&gt; link;
+
+    /* Set up the information for fork_start() */
+    current_routine = owner -&gt; routine;
+    current_param = owner -&gt; param1;
+
+    /* Set up the TSS to give the target routine access
+       to the owning task's LDT. Also, set up for
+   interrupts enabled.           */
+
+    movemem(owner-&gt; tcb, &amp;fdummy_tcb, 44);
+
+    fdummy_tcb.cs = fork_addr.high;
+    fdummy_tcb.ip = fork_addr.low;
+    fdummy_tcb.ss = fork_ss;
+    fdummy_tcb.sp = fork_sp;
+    fdummy_tcb.flag_word | = F_IE;
+
+    /* Execute task (Task switch) */
+    fdummy_task();
+
+    /* One less fork fork entry for this driver. */
+    ((DSS *) owner -&gt; tcb) -&gt; current fork count--;
+
+    /* Place used entry back on free list */
+    owner -&gt; link = fork_free;
+    fork_free = owner;
+    fork_count- -;
+    }
+
+  /* Clear fork flag and reschedule */
+  fork_in_process = 0;
+  resume_cl (scheduler_task);
+  }
+ }
+</pre>
+</BODY>
+</HTML>

@@ -1,0 +1,211 @@
+<HTML><HEAD>
+<TITLE>June 1992/Creating Interactive Voice Response Systems in C++/Listing 3</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 3</A></h4>
+<pre>#include  "channel.hpp"
+
+int CHANNEL::wait_for_ring()
+{
+   printf("Waiting For Ring On: %d\n", lineno);
+   clrdtmf(lineno);
+   return 0;
+}
+
+
+void CHANNEL::wait_complete(int evtcode)
+{
+   // if a call detected, set state to go off hook
+   if (evtcode == T_RING)  {
+      printf("Ring Detected on: %d\n", lineno);
+      begin_func = CHANNEL::offhook;
+      end_func   = CHANNEL::offhook_cmplt;
+   }
+}
+
+int CHANNEL::offhook()
+{
+   // call Dialogic library function to go off hook
+   return(sethook(lineno, H_OFFH));
+}
+
+void CHANNEL::offhook_cmplt(int evtcode)
+{
+   // if event was the termination of going
+   // off-hook, go to "hello" state
+   if (evtcode == T_OFFH)  {
+      begin_func = CHANNEL::hello;
+      end_func   = CHANNEL::hello_cmplt;
+   }
+   else {               // otherwise go back on hook
+      begin_func = CHANNEL::onhook;
+      end_func   = CHANNEL::onhook_cmplt;
+   }
+}
+
+
+// set phone back on hook
+int CHANNEL::onhook()
+{
+   // call Dialogic library function to go off hook
+   return (sethook(lineno, H_ONH));
+}
+
+void CHANNEL::onhook_cmplt(int evtcode)
+{
+   // go back to waiting for a ring
+   begin_func = CHANNEL::wait_for_ring;
+   end_func   =  CHANNEL::wait_complete;
+}
+
+int CHANNEL::hello()
+{
+   strcpy(msgname, "hello");   // play "hello" msg
+   return play();
+}
+
+void CHANNEL::hello_cmplt(int evtcode)
+{
+   close(rwb.filehndl);
+   // if message reached EOF, get digits from caller
+   if (evtcode == T_EOF) {
+      begin_func = CHANNEL::get_digits;
+      end_func   = CHANNEL::get_digits_cmplt;
+   }
+   else {          // on error, reset phone line
+      begin_func = CHANNEL::onhook;
+      end_func   = CHANNEL::onhook_cmplt;
+   }
+}
+
+int CHANNEL::get_digits()
+{
+   printf("Getting Digits On: %d\n", lineno);
+   clrrwb(&amp;rwb);     // clear the read-write block
+   
+   // store segment &amp; offset of buffer in the rwb
+   rwb.xferoff  = FP_OFF(digits);
+   rwb.xferseg  = FP_SEG(digits);
+   rwb.maxdtmf  = 2;     // request 2 keypad digits
+   rwb.maxsec   = 10;    // wait 10 seconds
+   rwb.loopsig  = 1;     // terminate on loop signal
+   
+   // call Dialogic library function to get digits
+   return (getdtmfs(lineno, &amp;rwb));
+}
+
+void CHANNEL::get_digits_cmplt(int evtcode)
+{
+   // check for maximum dtmf or timeout event
+   if (evtcode == T_MAXDT || evtcode == T_TIME) {
+      if(!strcmp((char *)digits, "11")) {
+         begin_func = CHANNEL::product_info;
+         end_func   = CHANNEL::product_info_cmplt;
+         return;
+      }
+      else if(!strcmp((char *)digits, "22")) {
+         begin_func = CHANNEL::playback;
+         end_func   = CHANNEL::playback_cmplt;
+         return;
+      }
+      else if(!strcmp((char *)digits, "33")) {
+         begin_func = CHANNEL::rec_msg;
+         end_func   = CHANNEL::rec_msg_cmplt;
+         return;
+      }
+   }
+   begin_func = CHANNEL::invalid;
+   end_func = CHANNEL::invalid_cmplt;
+}
+
+int CHANNEL::product_info()
+{
+   strcpy(msgname, "PRODUCTS");
+   return play();
+}
+
+void CHANNEL::product_info_cmplt(int evtcode)
+{
+   close(rwb.filehndl);
+   begin_func = CHANNEL::goodbye;
+   end_func   = CHANNEL::goodbye_cmplt;
+}
+
+
+int CHANNEL::playback()
+{
+   // play back the message which was recorded
+   strcpy(msgname, RECORD_FNAME);
+   return play();
+}
+
+
+void CHANNEL::playback_cmplt(int evtcode)
+{
+   close(rwb.filehndl);
+   begin_func = CHANNEL::goodbye;
+   end_func   = CHANNEL::goodbye_cmplt;
+}
+
+int CHANNEL::goodbye()
+{
+   strcpy(msgname, "goodbye");
+   return play();
+}
+
+void CHANNEL::goodbye_cmplt(int evtcode)
+{
+   close(rwb.filehndl);
+   begin_func = CHANNEL::onhook;
+   end_func   = CHANNEL::onhook_cmplt;
+}
+
+int CHANNEL::invalid()
+{
+   strcpy(msgname, "invalid");
+   return play();
+}
+
+void CHANNEL::invalid_cmplt(int evtcode)
+{
+   close(rwb.filehndl);
+   begin_func = CHANNEL::onhook;
+   end_func   = CHANNEL::onhook_cmplt;
+}
+
+
+int CHANNEL::rec_msg()
+{
+   char fname[13];
+   sprintf(fname, "%s%s", RECORD_FNAME, SPEECH_EXT);
+   
+   clrrwb(&amp;rwb);      // clear the read/write block
+   rwb.filehndl = open(fname, 0_WRONLY | 0_BINARY |
+          0_CREAT | 0_TRUNC, S_IWRITE | S_IREAD);
+   rwb.maxsec  = 20;  // maximum recording length
+   rwb.termdtmf= '@'; // stop on any touch tone
+   rwb.maxsil  = 5;   // stop if 5 seconds of
+                   // silence
+   rwb.loopsig = 1;   // stop if loop signal
+   rwb.rwbflags= 0x02;// beep before starting record
+   rwb.rwbdatal= 3;   // beep for .6 second
+   
+   // call Dialogic library to start recording
+   return (recfile(lineno, &amp;rwb, RM_NORM));
+}
+
+
+void CHANNEL::rec_msg_cmplt(int evtcode)
+{
+   // clear any touch tone used to stop recording
+   close(rwb.filehndl);
+   clrdtmf(lineno);
+   // set to now play goodbye message
+   begin_func = CHANNEL::goodbye;
+   end_func   = CHANNEL::goodbye_cmplt;
+}
+// End of File
+</pre>
+</BODY>
+</HTML>

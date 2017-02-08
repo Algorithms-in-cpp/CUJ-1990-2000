@@ -1,0 +1,82 @@
+
+
+<HTML>
+<HEAD>
+
+<TITLE>December 1994/Emulating C++ Exception Handling</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocdec.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Emulating C++ Exception Handling<A name="01ED_0104"><A name="01ED_0104"></font></h2><P>
+<h3 align="center"><font color="#800000"><A name="01ED_0000"><A name="01ED_0000">Gregory Colvin</font></h3><hr><blockquote><P>
+<P><i><A name="01ED_0000"><A name="01ED_0000">Dr. Greg Colvin, a.k.a. The Macro Meister, represents Information Management Research on the ANSI/ISO committee now standardizing C++. Greg is on the internet as gregor@netcom.com.</i></P><P>
+<h4><FONT COLOR="#000080"><A name="01ED_0105">Exceptions in C++<A name="01ED_0105"></FONT></h4></P>
+An exception is any condition that prevents code from proceeding normally, such as calling a function with invalid arguments, exhausting memory or file space, failing to acquire a database lock, failing to complete a communication, and so on. Exception handling in C code is typically done in four different ways:<P>
+<UL><li>returning an error value, e.g. <I>NULL</I></li>
+<li>setting a global error code, e.g. <I>errno</I></li>
+<li>calling an installed function, e.g. <I>signal</I></li>
+<li>uonditionally transferring control, e.g. <I>goto</I> or <I>longjmp</I></li></UL>
+These techniques remain useful and valid in C++, but <I>longjmp</I> presents difficulties.<P>
+To use <I>longjmp</I> you first call <I>setjmp(jmp_buf)</I> to save the current execution context. To handle an exception you can call <I>longjmp(jmp_buf, int)</I> to restore the saved context. For example:<P>
+<pre>jmp_buf handler;
+void fun() {
+   .....
+   if (bad)
+      longjmp(handler, -1);
+   }
+void attempt() {
+   .....
+   fun();
+   .....
+   }
+void f() {
+   int error = setjmp(handler);
+   if (!error)
+      attempt();
+   else
+   report(error);
+   }</pre>
+When <I>setjmp(handler)</I> is called it returns zero. When <I>longjmp(handler, -1)</I> is called it causes <I>setjmp</I> to return -1, having skipped over the intervening call <I>attempt()</I>. For C++ the problem is that any <I>auto</I> objects constructed by <I>attempt()</I> or <I>fun()</I> will not be destroyed, as they would be by a normal function return.<P>
+Rather than change the semantics of <I>longjmp</I>, which are already given in Standard C, the C++ language provides its own exception handling facility:<P>
+<pre>void fun() {
+   .....
+   if (bad)
+      throw -1;
+   }
+void attempt() {
+   .....
+      fun();
+   .....
+   }
+void f() {
+   try {
+   attempt();
+} catch (int error) {
+   report(error);
+   }
+}</pre>
+The <I>throw</I> expression transfers control to the nearest corresponding <I>catch</I> clause, having called the destructors for all intervening <I>auto</I> objects. This facility is much more flexible and easy to use than the <I>longjmp</I> facility, allowing for multiple <I>catch</I> clauses which can accept any type of object, with no need for the <I>throw</I> expression to know which handler to invoke.<P>
+Unfortunately, not all C++ compilers support exception handling, which makes portability a problem. Since I wanted to use exception handling in code that had to be widely portable, I chose to emulate a subset of C++ exception handling. My emulation is based on the classes <I>Unwindable and Handler</I>, and the macros <I>try, catch, throw</I>, and <I>UNWINDABLE</I>. Since we are doing without language support there are some restrictions:<P>
+<UL><li>you must explicitly make objects unwindable (properly destroyed when they go out of scope) by deriving from <I>Unwindable</I> and putting the <I>UNWINDABLE</I> macro at the start of all <I>Unwindable</I> constructors;</li>
+<li>you should declare static <I>Unwindable</I> objects only at file scope;</li>
+<li>you must have one and only one <I>catch</I> clause for each <I>try</I> block;</li>
+<li>you can have only one <I>try</I> block in any scope;</li>
+<li>you can throw only non-zero integers.</li></UL>
+<h4><FONT COLOR="#000080"><A name="01ED_0106">How the Code Works<A name="01ED_0106"></FONT></h4></P>
+So how does this emulation work? <A href="list1.htm">Listing 1</a>
+shows the header file unwind.h that you include when you want to use his package. <A href="list2.htm">Listing 2</a>
+shows the file unwind.cpp, which contains the executable code. The package defines several macros:<P>
+1.     The <I>try</I> macro calls <I>setjmp</I> to save the current execution context on a stack of exception <I>Handlers</I>.<P>
+2.     The <I>UNWINDABLE</I> macro in the constructor for <I>Unwindable</I> objects pushes constructed objects onto a stack of objects for the current exception <I>Handler</I>.<P>
+3.     The <I>throw</I> macro pops and destroys all <I>Unwindable</I> objects on the stack for the current handler, pops the stack of exception handlers, and calls <I>longjmp</I> to restore the execution context of the current <I>Handler</I>.<P>
+4.     The <I>catch</I> macro makes a local copy of the thrown integer and continues execution.<P>
+Implementing this emulation takes very little code, but phase 2 is a bit tricky. When an exception is thrown the code has to ensure that incompletely constructed objects are not destroyed, that objects allocated by <I>operator new</I> are not destroyed, and that <I>auto</I> objects are destroyed only once.<P>
+The <I>UNWINDABLE</I> macro declares a <I>Pusher</I> object whose destructor pushes the now constructed <I>Unwindable</I>. New objects are detected by having <I>Unwindable::operator new</I> keep a stack of objects under construction by <I>operator new</I>. As each object <I>0</I> is pushed, the code checks whether <I>0</I> is a subobject of the top newbie. If so, the code pops <I>0</I> off the stack of newbies when it is the complete object on the stack. If not, it pops any subobjects of <I>0</I> off of, and <I>0</I> itself onto, the stack for the current handler. The stacks are maintained via link fields in the <I>Unwindable</I> and <I>Handler</I> objects.<P>
+Note that the <I>within</I> function for detecting subobjects is not strictly conforming. Some hardware does not support comparing pointers which do not point into the same object. However, I have seen this function work on Intel and Macintosh personal computers, as well as Apollo, HP, IBM, and Sun workstations.<P>
+I have found exception handling to be an invaluable aid to building reliable applications. Although incomplete, my emulation has provided adequate functionality at reasonably low cost. Pete Becker at Borland has used similar techniques to port OWL exception handling from the Borland C++ compiler, which supports exceptions, to the Symantec compiler, which does not. If you need portable exception handling, emulation has proven to be a viable approach.<P>
+
+<h4><a href="../../../source/1994/dec94/colvin.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

@@ -1,0 +1,202 @@
+<HTML><HEAD><TITLE>May 1990/An Adaptive Data Analyzer/Listing 1</TITLE></HEAD><BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4><A name="00FB_0098"><A name="00FB_0098">Listing 1<A name="00FB_0098"></h4><P>
+<pre>#include "math.h"
+#include "stdlib.h"
+
+double adapt (x,y,n,res,err,lambda,numlambda,norm)
+/*
+ *  This routine adaptively fits a Hermite cubic to the data points
+ *  x[i],y[i] i = 0,1,...,n-1 according to the value of norm.
+ *          norm = 1  L1 (Robust) fit,
+ *               = 2  L2 (Least Squares) fit,
+ *               = 3  Minimax fit.
+ *  Output are the resulting coefficients in res[] and the errors
+ *  err[] at each point. The final fit is achieved using numlambda
+ *  knots lambda[].
+ *  The return value is the final value of the norm.
+ */
+double *x,*y,*res,*err,*lambda;
+int n,*numlambda,norm;
+{
+double m,capm,xm,*newlambda,*s,z,aic1,aic2;
+int j1,j2,i,k,l,newknots,numknots,flag=0;
+extern double (*faic)();
+/* Allocate space */
+newlambda = (double*)calloc(2*n,sizeof(double));
+s = newlambda + n;
+/* Fit two knots */
+newlambda[0] = x[0]; newlambda[1] = x[n-1];
+z = Hermite (x,y,n,norm,newlambda,2,flag,res,err);
+aic1 = AIC(err,n,4,norm);
+/* Fit three knots */
+newlambda[2] = newlambda[1]; newlambda[1] = point(newlambda,res,1);
+z = Hermite(x,y,n,norm,newlambda,3,flag,res,err);
+aic2 = AIC(err,n,6,norm);
+numknots = newknots = 3;
+while (aic1&gt;aic2)   /* Test for minimum AIC */
+  {
+    aic1 = aic2;
+    for (i=0; i&lt;numknots; i++) lambda[i] = newlambda[i];
+    numknots = newknots;
+    j2 = 0;
+    for (capm=0.0,i=0; i&lt;n; i++) capm += err[i]*err[i];
+    capm /= (double)n;
+    /*
+     * Test each interval (lambda[k],lambda[k+1])
+     */
+    for (k=0; k&lt;numknots-1; k++)
+      {
+        j1 = j2;
+        l = numpoints (x,n,lambda[k],lambda[k+1],&amp;j2);
+        for (m=0.0,i=j1; i&lt;j2+1; i++) m += err[i]*err[i];
+        m /= l;
+        if (m&gt;capm) /* Candidate point */
+          {
+            xm = point(lambda,res,k+1);
+            if (test_point(x,n,lambda,k) || k==0 || k-1==numknots)
+              {
+              /* Add the knot to newlambda */
+                for (i=k+1; i&lt;newknots; i++)
+                newlambda[i+1] = newlambda[i];
+                newknots++;
+                newlambda[k+1] = xm;
+              }
+          }
+      }
+    z = Hermite (x,y,n,norm,newlambda,newknots,flag,res,err);
+    aic2 = AIC(err,n,2*newknots,norm);
+  }
+/*  Fit is complete now optimize on minimum AIC */
+z = Hermite(x,y,n,norm,lambda,numknots,flag,res,err);
+for (i=1; i&lt;numknots-2; i++)
+  s[i] = log((lambda[i+1]-lambda[i])/(lambda[i]-lambda[i-1]));
+z = QN_BFGS_f(faic,s,numknots-3,err);
+return(z);
+}
+
+double AIC (obs,n,p,flag)
+/*
+ *  This function computes the Akaike Information Criterion for
+ *  the n observation obs[] with p parameters. The distribution
+ *  assumed is given by flag, where
+ *        flag = 1 Cauchy,
+ *             = 2 Normal,
+ *             = 3 Minimax
+ */
+double *obs;
+int n,p,flag;
+{
+double xn,xp,sum,a,aic,xx,xbar;
+int i;
+xn = (double)n; xp = (double)p;
+
+switch (flag)
+  {
+    case 1:
+      for (sum=0.0, i=0; i&lt;n; i++) sum += obs[i]*obs[i];
+      a = sqrt(sum/xn);
+      for (aic=0.0, i=0; i&lt;n; i++) aic += log(a*a + obs[i]*obs[i]);
+      aic -= (xn*log(a) - xp);
+      break;
+    case 2:
+      for (xbar=0.0,sum=0.0,i=0; i&lt;n; i++)
+        { sum += obs[i]*obs[i]; xbar += obs[i]; }
+      xx = sum/xn - (xbar/xn)*(xbar/xn);
+      aic = xn*log(xx) + 2.0*xp;
+      break;
+    default:
+      for (sum=0.0,i=0; i&lt;n; i++) sum += pow(obs[i],20.0);
+      aic = xn*log(sum)/20.0 + 2.0*xp;
+      break;
+  }
+return aic;
+}
+
+double point (lambda,res,i)
+/*
+ *  This function computes the possible placement of an extra knot.
+ *  The present set of 'numknots' knots is given by lambda[] with a
+ *  present set of results res[]. The interval lambda[i-1],lambda[i]
+ *  is tested.
+ */
+double *lambda,*res;
+int i;
+{
+double a,b,c,dist,x[3],s,middle,xm,half,p;
+int k,k1,k2,k3,k4;
+k1 = 2*i - 2; k2 = k1 +1; k3 = k2 + 1; k4 = k3 +1;
+dist = lambda[i] - lambda[i-1];
+
+/*
+ *   Compute derivative of cubic
+*/
+a = 6.0*res[k1] + 3.0*res[k2]*dist - 6.O*res[k3] + 3.0*res[k4]*dist;
+b = -6.0*(dist + 2.0*lambda[i-1])*res[k1];
+b -= 2.0*dist*(lambda[i-1] + 2.0*lambda[i]*res[k2];
+b += 6.0*(dist + 2.0*lambda[i-1])*res[k3];
+b -= 2.0*dist*(lambda[i] + 2.0*lambda[i-1])*res[k4];
+c = 6.0*lambda[i-1]*(dist + lambda[i-1]*res[k1];
+c += dist*lambda[i]*[lambda[i] + 2.0*lambda[i-1])*res[k2];
+c -= 6.0*lambda[i-1]*(dist + lambda[i-1])*res[k3];
+c += dist*lambda[i-1]*(lambda[i-1] + 2.0*lambda[i])*res[k4];
+/*
+ * compute new knot
+ */
+x[0] = lambda[i-1]; x[1] = x[0];
+s = b*b - 4.0*a*c;
+if (s &gt; 0.0)
+  {
+    s = sqrt(s);
+    x[0] =(-b + s)/(2.0*a);
+    x[1] = c/x[0];
+  }
+
+x[2] = -b/(2.0*a);
+half = (lambda[i] - lambda[i-1])/2.0;
+p = middle = lambda[i-1] + half;
+for (k=0; k&lt;3; k++)
+  if ((xm = fabs(middle - x[k])) &lt; half) { half = xm; p = x[k]; }
+return p;
+}
+
+numponts (x,n,xl,xr,k)
+/*
+ * Compute the number of values from the data set x[n] in
+ * the interval [xl,xr] starting with x[k]. Output the last
+ * subscript in k.
+ */
+double *x,xl,xr;
+int n,*k; 
+{
+int count = 0, j = *k;
+while (x[j] &lt; xr)
+  if (x[j] &gt; xl)
+    { count++; j++; )
+*k = j-1;
+return count;
+}
+
+test_point (x,n,lambda,xm,k)
+/*
+ * Routine to test whether the point xm is to be added to the
+ * new set of knots in the interval (lambda[k],lambda[k+1]).
+ */
+double *x,*lambda,xm;
+int n,k;
+{
+double x1,x2,x3; 
+int insert,11,12,j=0;
+/* Count points in the interval */
+l1 = numpoints (x,n,lambda[k],xm,&amp;j);
+l2 = numpoints (x,n,xm,lambda[k+1],&amp;j);
+x1 = xm - lambda[k]; x2 = lambda[k+1] - xm;
+x3 = ((x1&lt;x2) ? x1 : x2)/(x1 + x2);
+insert = (x3 &gt; 0.1 &amp;&amp; ((x1&lt;x2)? l1 : l2) &gt; 10) ? 1 : 0;
+if (!insert)   /* Exchange the knots */
+  if (x1&lt;x2) lambda[k] = xm;
+  else lambda[k+1] = xm;
+return insert;
+}</pre>
+</BODY>
+</HTML>
+

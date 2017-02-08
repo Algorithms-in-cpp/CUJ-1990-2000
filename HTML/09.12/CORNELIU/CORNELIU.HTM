@@ -1,0 +1,81 @@
+
+
+
+<HTML>
+<HEAD>
+
+<TITLE>December 1991/Using 1KHz Interrupts On AT Clones</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocdec.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Device Control</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Using 1KHz Interrupts On AT Clones<A name="0270_014A"><A name="0270_014A"></font></h2><P>
+<h3 align="center"><font color="#800000"><A name="0270_0000"><A name="0270_0000">Paul A. Cornelius</font></h3><hr><blockquote><P>
+<P><i><A name="0270_0000"><A name="0270_0000">Paul Cornelius is manager of software engineering at Coherent, Inc., a supplier of software controlled laser systems to the scientific research community. He can be reached at Coherent Laser Group, 3210 Porter Dr., Palo Alto, CA 94303.</i></P><P>
+<h4><FONT COLOR="#000080"><A name="0270_014B">Timing Periodic Events With The 1KHz AT Interrupt<A name="0270_014B"></FONT></h4></P>
+The PC compatibles family is widely used for data acquisition and device control. One problem that plagues the PC programmer in this application domain is the measurement of time intervals and the generation of periodic events. The difficulties are especially acute if the requirement is to manage time intervals in a hardware-independent fashion across a variety of CPU speeds and types. Most PC programmers are familiar with the BIOS Time of Day interrupt, which "ticks" at 18.2 Hz on all PCs. However, the resolution afforded by this service is inadequate for many data acquisition and control applications. Alternatively, the 1024 Hz Real Time Clock Interrupt on AT clones (not on true PCs or XTs) provides millisecond time resolution. The use of this interrupt presents some practical obstacles, however, owing to the limited support available in the BIOS and the generally poor documentation of this feature.<P>
+The first part of this article describes a simple method for using the Real Time Clock to time events with millisecond precision. The second part of the article presents C+ + classes that manage a list of periodic event handlers, driven by the 1024 Hz interrupt.<P>
+<h4><FONT COLOR="#000080"><A name="0270_014C">Theory Of Real-Time Clock Interrupt 70h<A name="0270_014C"></FONT></h4></P>
+The Real-Time Clock interrupt (<I>70h</I>) can be enabled through BIOS <I>INT 15h</I>, functions <I>83h</I> and <I>86h</I>. Function <I>86h</I> causes the executing program to be suspended; it is not useful for periodic timing and will not be discussed further. See <A href="tab1.htm">Table 1</a>.
+<P>
+<h4><FONT COLOR="#000080"><A name="0270_014D">BIOS <B><I>INT 0x15</I></B> Function <B><I>0x83</I></B> Description<A name="0270_014D"></FONT></h4></P>
+BIOS <I>INT 15h</I>, function <I>83h</I> (<I>SET INTERVAL</I>) uses the Real Time Clock to time an interval. During the interval, the calling program continues to execute and the Real Time Clock Interrupt (<I>70h</I>) is enabled. When the interval ends, the BIOS signals the calling program by setting a bit in memory and disables the interrupt. See <A href="tab2.htm">Table 2</a>.
+<P>
+To invoke the <I>SET INTERVAL</I> service, the CPU registers are loaded according to <A href="tab1.htm">Table 1</a>
+and an <I>INT 15h</I> call is made. The BIOS copies both the interval count and the wait flag pointer to specific RAM locations (see <A href="tab2.htm">Table 2</a>)
+. Then the BIOS enables the Real Time Clock Interrupt <I>70h</I> and returns control to the calling program.<P>
+Once enabled, <I>INT 70h</I> occurs every 976 microseconds (1024 Hz). For each interrupt event, a BIOS-installed <I>INT</I> <I>70h</I> handler subtracts 976 from the "Interval microseconds remaining" at address <I>40h:9Ch</I>. When the subtraction causes the value to pass through zero, the BIOS sets bit 7 in the wait flag address and disables the Real Time Clock Interrupt.<P>
+The largest interval that can be timed with this service is <I>FFFFFFFFh</I> microseconds, which is just under 72 minutes. To make the service useful for general periodic timing applications, this eventual timeout must be circumvented.<P>
+<h4><FONT COLOR="#000080"><A name="0270_014E">Periodic Timing Based On BIOS <B><I>INT 15h</I></B> Function <B><I>83h</I><A name="0270_014E"></B></FONT></h4></P>
+My first goal is to write a set of low-level drivers that facilitate the use of the Real Time Clock Interrupt. I wish to exploit the BIOS as much as possible, both to maximize the portability of the implementation and also to simplify the code.<P>
+The approach is to install a custom handler for the Real Time Clock Interrupt, then to enable the Real Time Clock using the BIOS <I>SET INTERVAL</I> function. We will show a simple method of defeating the timeout. Three low-level functions are defined: the interrupt driver itself, an installation function that enables the clock interrupt, and a de-installation function that disables the clock and restores the original BIOS interrupt vector.<P>
+The implementation is in C++ and has been compiled and tested with Version 2.1 of the Zortech MS-DOS C++ compiler. Though the code necessarily relies on non-ANSI library functions, conversion to other platforms should be relatively straightforward. The drivers can also be modified easily for a C, rather than C+ +, environment.<P>
+<h4><FONT COLOR="#000080"><A name="0270_014F">Library Support<A name="0270_014F"></FONT></h4></P>
+The Zortech library supports interrupts through the function <I>int_intercept</I>, which installs a standard C function as an interrupt handler. The previous interrupt vector is saved; control can be chained to the old handler by returning a value of <I>0</I> from the new handler. The companion function <I>int_restore</I> puts the old vector back in place.<P>
+<h4><FONT COLOR="#000080"><A name="0270_0150">Driver Implementation<A name="0270_0150"></FONT></h4></P>
+The interrupt driver <I>int_70</I> is shown in <A href="list1.htm">Listing 1</a>
+and <A href="list2.htm">Listing 2</a>.
+ Circumvention of the <I>SET INTERVAL</I> timeout is accomplished by a single executable statement: a value greater than 976 is poked directly into the RAM interval count address each time the driver is called. This allows the process to run forever by preventing the timer count from decrementing through zero.<P>
+The interrupt driver itself does not do anything useful, but calls a function <I>handle_tick</I>. The intention of this design is to keep the driver as general as possible; each specific application will define its own function <I>handle_tick</I> to carry out any desired real-time processing. The simplest possible example of a <I>handle_tick</I> function is a counter that increments at 1024 Hz:<P>
+<pre>volatile long unsigned count;
+void handle_tick() //elementary
+        //counter {    count++; }</pre>
+After <I>handle_tick</I> has done its work, the driver chains to the original BIOS handler by returning <I>0</I>. (Note that this is a feature of the Zortech implementation and not a general property of interrupt handlers!) The BIOS handler manages all of the hardware details concerned with interrupt termination.<P>
+The installation of the driver and activation of the Real Time Clock Interrupt are likewise quite straightforward. The function <I>start_timer</I> accomplishes this as follows:<P>
+<UL><li>It first installs the driver <I>int_70</I> using the <I>int_intercept</I> function.</li>
+<li>It sets up the CPU registers for the BIOS <I>SET INTERVAL</I> call. The static variable dummy is used to receive the wait flag.</li>
+<li>It enables the Real Time Clock Interrupt by calling the BIOS.</li>
+<li>It checks the state of the carry flag after the BIOS returns; carry <I>TRUE</I> indicates an error condition. In actual practice we have not seen this error occur.</li></UL>
+De-installation of the driver and termination of the Real Time Clock Interrupts are done by <I>stop_timer</I>. First the original interrupt vector is recovered by calling <I>int_restore</I>. The BIOS <I>SET INTERVAL</I> routine resumes normal operation and will time out in 64k microseconds (the value that <I>int_70</I> poked into the counter). On expiration of the count, bit 7 of dummy will be set. To test for proper termination, <I>stop_timer</I> delays for 200 milliseconds and then tests the value of dummy, which will be nonzero if all is well.<P>
+<h4><FONT COLOR="#000080"><A name="0270_0151">C++ Classes For Periodic Events<A name="0270_0151"></FONT></h4></P>
+Using <A href="list1.htm">Listing 1</a>
+and <A href="list2.htm">Listing 2</a>
+as a foundation, the 1024 Hz interrupt can be built into applications with as much ease as the more commonly used 18.2 Hz Time of Day Clock. In this section, I illustrate the use of the driver by developing a set of C++ classes for periodic event control. The code is an example of the often underrated value of C++ for device control applications. Furthermore, the classes are not strongly tied to the particulars of the Real Time Clock and could be adapted easily to other hardware environments.<P>
+<h4><FONT COLOR="#000080"><A name="0270_0152">Class <B><I>RepRate</I></B>: Periodic Event Handlers<A name="0270_0152"></FONT></h4></P>
+The class <I>RepRate</I> associates a function pointer - the "user function" &#151; with a desired repetition rate in Hz. Once the Real Time Clock Interrupt is activated, the user function will be called as an interrupt process at the desired repetition rate. Several features of the implementation of <I>RepRate</I> are noteworthy (see <A href="list3.htm">Listing 3</a>
+and <A href="list4.htm">Listing 4</a>)
+.<P>
+The design of the class <I>RepRate</I> allows for many <I>RepRate</I> objects having different repetition rates. The class <I>RepRateList</I>, of which there can be only one instance, is responsible for managing a list of active <I>RepRate</I> objects and coupling them to the "ticks" of the Real Time Clock. Each time the clock ticks, <I>RepRateList</I> invokes the member function <I>HandleTick()</I> for every active <I>RepRate</I> object. <I>HandleTick()</I> has been made private to enforce the fact that it can only be invoked through the friend class <I>RepRateList</I>.<P>
+For each <I>RepRate</I> object, the desired repetition rate is achieved as closely as possible by a simple "counting down" of the 1024 Hz clock. For example, to obtain a 20 Hz rate the 1024 Hz clock will be divided by 51, achieving a true repetition rate of 20.0784 Hz. The instance variable <I>tick_interval</I>, the value of which is computed during the constructor call, holds the divide-by count. A second instance variable, <I>count_now</I>, is incremented each time the member function <I>HandleTick()</I> is called. When <I>count_now</I> reaches the value of <I>tick_interval</I>, the user function is called and <I>count_now</I> is reset to zero.<P>
+<h4><FONT COLOR="#000080"><A name="0270_0153">Class RepRateList: A List Of Event Handlers<A name="0270_0153"></FONT></h4></P>
+A <I>RepRate</I> object can be in either an active or an inactive state. Active objects are those whose <I>HandleTick()</I> function is being called periodically. A <I>RepRate</I> object is made active when it is linked to the <I>RepRateList</I>. It becomes inactive when it is linked out of the list.<P>
+<I>RepRateList</I> has a simple interface: a constructor, a function to link in a <I>RepRate</I> object, and a function to link out a <I>RepRate</I> object. As soon as the first <I>RepRate</I> object is linked in, <I>RepRateList</I> turns on the Real Time Clock Interrupt. When the last <I>RepRate</I> object is linked out (or when the <I>RepRateList</I> destructor is called) the Real Time Clock is turned off. The implementation makes use of the Zortech C+ + Toolkit class for doubly linked lists.<P>
+<h4><FONT COLOR="#000080"><A name="0270_0154">Example Program<A name="0270_0154"></FONT></h4></P>
+<A href="list5.htm">Listing 5</a>
+shows a trivial but complete program using all of the facilities developed here. Two <I>RepRate</I> objects are created, one having a repetition rate near 100 Hz (actually 102.4 Hz) and another near 1 Hz (1.024 Hz). The user functions display their total accumulated count on the screen; for amusement the 100 Hz object also sounds a click on the PC speaker.<P>
+Until the user presses a key, neither of the <I>RepRate</I> objects is linked to the <I>RepRateList</I>. The Real Time Clock is not activated; nothing happens on the screen. After the first keypress, the 100 Hz object is linked in and begins to count. The second keypress links in the 1 Hz object, at which point the two objects count at their respective rates. A third keypress links the 1 Hz object out again, and its count stops. A fourth keypress terminates the program.<P>
+<h4><FONT COLOR="#000080"><A name="0270_0155">Limitations Of The Design<A name="0270_0155"></FONT></h4></P>
+The design shown here has certain limitations, the seriousness of which depends on the intended application:<P>
+If the worst-case execution time of the <I>RepRate</I> list exceeds 976 microseconds, the consequences are "unpredictable" &#151; the programmer's euphemism for possible disaster.<P>
+For all but the first object in the <I>RepRateList</I>, there can be jitter in the latency between the Real Time Clock tick and the invocation of the user function.<P>
+The linked list of <I>RepRate</I> objects must be traversed for every clock tick; the resulting performance overhead may be unacceptable.<P>
+While it is beyond the scope of this article to address these concerns, I hope to have shown the possibilities inherent in this little-used PC feature. I also hope that the code given here will stimulate interest in the potential of C++ for device control.<P>
+<h4><FONT COLOR="#000080"><A name="0270_0156">Bibliography<A name="0270_0156"></FONT></h4></P>
+<I>System BIOS for IBM PC/XT/AT Computers and Compatibles</I>,<I> Phoenix Technologies Ltd</I>., Addison-Wesley, Reading, Massachusetts 1989.<P>
+<I>Programmer's Problem Solver for the IBM PC</I>,<I> XT</I>,<I> and AT</I>, Robert Jourdain, Prentice Hall, New York, New York 1986.<P>
+<I>C++ Function Reference V2.1</I>, Zortech Inc., Arlington, Massachusetts 1991.<P>
+
+<h4><a href="../../../source/1991/dec91/corneliu.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

@@ -1,0 +1,244 @@
+<HTML><HEAD>
+<TITLE>August 1992/Writing a Small CAD Package/Listing 3</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 3 (SCAD.C)</A></h4>
+<pre>/*******************************************************************
+*                                                                  *
+*  The code is written in Microsoft C Version 5.1, Large Model.    *
+*                                                                  *
+*******************************************************************/
+
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;math.h&gt;
+#include &lt;malloc.h&gt;
+
+#include &lt;wm.h&gt;
+#include &lt;graphics.h&gt;
+#include &lt;halo.h&gt;
+#include "dlcodes.h"
+
+
+/*******************************************************************
+* Window Toolkit data objects                                      *
+******************************************************************/
+
+/* the background window structure : */
+WINDOW Background =
+   {
+   { 0,                        /* Exclusive                   */
+     0,                        /* Redrawable                  */
+     0,                        /* SubWindow                   */
+     0,                        /* Opened                      */
+     1,                        /* Accept Key                  */
+     0,                        /* Invisible                   */
+     0,                        /* Moving                      */
+     0 },                      /* Not Used                    */
+   { 0, 0, 0, 0 },             /* window shape and position    */
+   BgMessage,                  /* background message function  */
+   NULL,                       /* this window has no parent    */
+   };
+
+/* Local global variables */
+static int     moveit = FALSE;
+
+/*************** Application Global Variables *********************/
+
+
+void Init_globals()
+{
+   FILE *fc;
+   int i, red, green, blue;
+   int func, err;
+   float f;
+
+   cursortype = CUR_PLUS;
+   LineType = 1;
+   LineWidth = 1;
+   Text_height = 1;
+   Text_path = 0;
+
+   dl_free();                  /* clear display list     */
+}
+
+
+void main (int argc, char *argv[])
+{
+   read_cnf(argc, argv);       /* standard halo setup    */
+   WmInitialize (argc, argv);
+   Init_globals();
+   WindowManager (&amp;Background);
+   GmDisplayClose ();
+}
+
+
+/*****************************************************************
+*  redraw -- Redraw display list
+*****************************************************************/
+
+void redraw ()
+{
+   int xi, yi;
+
+   /* Clear the screen and draw the display list */
+   setcolor (&amp;colors[Back_color]);
+   clr();
+   dl_run();
+}
+
+/*---------------------------------------------------------------------
+|  BgMessage
+|    Background window message processor.
+|    Handle messages from the HWT kernel and from child windows.
+|    Since all other windows are descended from the background window,
+|    this function is essentially the main function of the application.
+|    Messages come as a set of three parameters. The first parameter is
+|    the message ID, a simple integer defined in wm.h. The second is the
+|    window Handle to this window which allows multiple instances
+|    of a window to be handle by one code segment (not used here). The
+|    third parameter is a pointer to some data which is specific to the
+|    type of message being sent.
+|--------------------------------------------------------------------*/
+
+int BgMessage (int MessageID, WINDOW *Window, void *Argument)
+{
+   static CIRCLE circle;
+   static RECTANGLE Rect;
+   int xor;
+   int lt;
+   int x1, x2, y1, y2;
+
+   switch (MessageID)
+      {
+      /*----------------------------------------------
+      |  Kernel messages to the background
+      |----------------------------------------------*/
+
+      case WMsg_Open:              /* Initialization message */
+      WmAlwaysHideCsr ();
+      CmdBarWin = WmOpenCmdBar (Window, CommandBarDef, CB_SIZE CommandBarDef));
+      WmSetCsrColor (CUR_PLUS, WIN_WHITE);
+      WmSetCsrSizeAbs (CUR_PLUS, 100, 100);
+      WmSetCsr (cursortype);
+      setcolor (&amp;colors[Back_color]);
+      clr();
+      WmShowCsr ();
+      break;
+
+      case WMsg_Move:      /* Mouse Moved, check for rubberbanding  */
+      if (!First_point)
+         switch (Pick_Mode)
+            {
+            case DR_TEXT: /* XOR text to move it around */
+            case ED_MOVE:
+            xorobj();
+            break;
+
+            case DR_POLYGN:/* Draw XOR line from last point to cursor */
+            case DR_POLYLN:
+            case DR_FPOLY:
+            movabs (&amp;Mouse.x, &amp;Mouse.y);
+            rlnabs (&amp;PickCorners.x1, &amp;PickCorners.y1);
+            break;
+            }
+      break;
+
+      case WMsg_RightDn:              /* Right button pressed */
+      if (!First_point)
+         {
+         WmAlwaysHideCsr ();
+         switch (Pick_Mode)
+            {
+            case DR_POLYGN:   /* end polyline drawing */
+            case DR_POLYLN:
+            case DR_FPOLY:
+            close_poly();
+            break;
+
+            case DR_RECT:  /* Cancel drawing a rectangle */
+            case DR_RECT:
+            delbox ();
+            break;
+            }
+         WmShowCsr ();
+         }
+      First_point = TRUE;
+      break;
+
+      case WMsg_LeftDn:                /* Pick button pressed */
+      GmSetColor (colors[Draw_color]);
+      WmAlwaysHideCsr ();
+      if (First_point)
+         {
+         switch (Pick_Mode)
+            {
+            case ED_MOVE:    /* move the object at the cursor */
+            moveit = FALSE;
+            mx = Mouse.x + 8;
+            my = Mouse.y + 8;
+            objend = Disp_List;
+            move_obj();
+            break;
+
+            case DR_POLYLN:  /* Picked the first vertex */
+            case DR_POLYGN:
+            case DR_FPOLY:
+            Poly_count = 0;
+            PickCorners.x1 = Mouse.x;
+            PickCorners.y1 = Mouse.y;
+            locx= PickCorners.x1;
+            locy = PickCorners.y1;
+            First_point = FALSE;
+            break;
+            }
+         }
+      else
+         {
+         switch (Pick_Mode)
+            {
+            case ED_MOVE:
+            if (moveit)  /* object moving now */
+               {
+               del_obj();      /* draw over the original position */
+               mx = Mouse.x;   /* with background color */
+               my = Mouse.y;
+               moveobj (select);
+               }
+            objdraw (select);  /* draw object in new position */
+            cursortype = CUR_BOX;
+            WmSetCsr (cursortype);
+            moveit = FALSE;
+            First_point = TRUE;
+            break;
+
+            case DR_POLYLN:
+            case DR_POLYGN:
+            case DR_FPOLY:
+            delln ();
+            PickCorners.x2 = Mouse.x - PickCorners.x1;
+            PickCorners.y2 = Mouse.y - PickCorners.y1;
+            Xarray[Poly_count] = PickCorners.x2;
+            Yarray[Poly_count++] = PickCorners.y2;
+            movabs (&amp;PickCorners.x1, &amp;PickCorners.y1);
+            lnrel (&amp;PickCorners.x2, &amp;PickCorners.y2);
+            PickCorners.x1 = Mouse.x;
+            PickCorners.y1 = Mouse.y;
+            break;
+            }
+         }
+      WmShowCsr ();
+      break;
+
+      default:                   /* Message was NOT handled  */
+      return (FALSE);
+      }
+
+   return (TRUE);                 /* Message WAS handled      */
+}
+/* End of File */</pre>
+
+</BODY>
+</HTML>

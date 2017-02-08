@@ -1,0 +1,229 @@
+
+
+<HTML>
+<HEAD>
+
+<TITLE>November 1993/Stepping Up To C++</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocnov.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Columns</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Stepping Up To C++<A name="0327_0117"><A name="0327_0117"></font></h2><P>
+<h3 align="center"><A name="0327_0000"><A name="0327_0000">Temporary Inconvenience, Part 2</h3><P>
+<h3 align="center"><font color="#800000">Dan Saks</font></h3><hr><blockquote><P>
+<P><i><A name="0327_0000"><A name="0327_0000">Dan Saks is the founder and principal of Saks &amp; Associates, which offers consulting and training in C++ and C. He is secretary of the<I></I> <I></I>ANSI and ISO C++ committees. Dan is coauthor of C++ Programming Guidelines, and codeveloper of the Plum Hall Validation Suite for C++ (both with Thomas Plum). You can reach him at 393 Leander Dr., Springfield OH, 45504-4906, by phone at<I></I> <I></I>(513)324-3601, or electronically at dsaks@wittenberg.edu.</i></P><P>
+The emerging C++ standard lets C++ compilers introduce temporary objects into the object program as needed to implement proper run-time behavior. If the object program employs a temporary that has a constructor, it must call a constructor for that temporary. Similarly, if a temporary has a destructor, the object program must call that destructor for the temporary.<P>
+The lifetime of a temporary object is the period of time during program execution from the temporary's construction until its corresponding destruction. <I>The Annotated C</I>++ <I>Reference Manual</I> (ARM) (Ellis and Stroustrup [1990]) and, until recently, the Working Paper for the C++ standard left the lifetime of temporary objects created during expression evaluation "implementation dependent." Thus, a program might destroy each temporary almost immediately, or it might save them up and destroy them all at program termination.<P>
+Ideally, C++ programmers shouldn't have to concern themselves with exactly when the temporaries come and go. In practice, they must. Under the worst circumstances, a program might inadvertently destroy a temporary before it's done with that temporary. Or a program might tie up resources by keeping temporaries around long after they've ceased being useful.<P>
+For a few years now, the C++ standards committee has generally agreed that the Working Paper leaves programmers with too little guidance for writing portable programs. But only recently could we agree on what to do about it.<P>
+Last month ("Temporary Inconvenience: Part 1", <I>CUJ</I>, October 1993) I explained why C++ programs create temporary objects. This month I'll explain how variations in the lifetime of temporary objects cause problems, and how the new rules adopted by the standards committee eliminate many of those problems.<P>
+<h4><FONT COLOR="#000080"><A name="0327_0118">The Canonical Example<A name="0327_0118"></FONT></h4></P>
+Section 12.2 of the ARM describes the implementation-dependent nature of temporary objects. It includes extensive commentary that explains problems that can arise from different policies for destroying temporaries. The commentary uses a string class for all of its examples. Much of the standards committee's discussion followed suit and used similar examples (Koenig 1992). I will too. <A href="list1.htm">Listing 1</a>
+shows the string class I'll use for my examples.<P>
+The <I>String</I> class in <A href="list1.htm">Listing 1</a>
+is very similar to the one I presented in "Function Name Overloading" (<I>CUJ</I>, November 1991) including corrections I noted in "Rewriting and Reconsidering" (<I>CUJ</I>, September 1993). The class stores variable-length strings in character arrays allocated from the free store. Each <I>String</I> has a data member <I>str</I> that stores the pointer to the first character in the array, and another member <I>len</I> that stores the array length (plus one for a null character at the end of the string). Each concatenation operation allocates a new, larger character array from the free store, and deletes the old array.<P>
+The <I>String</I> class defines a conversion operator<P>
+<pre>operator const char *() { return str; }</pre>
+that returns the pointer to the first character in the underlying array representation of a string. This conversion operator lets you pass a <I>String</I> to a function that expects a <I>char *</I> argument, as in<P>
+<pre>void foo(const char *s);
+// ...
+String s = "Hello";
+foo(s);</pre>
+It also lets you write calls like<P>
+<pre>printf("%s\n", (const char *)s);</pre>
+The class defines <I>operator[] (size_t)</I> so that <I>s[i]</I> returns a reference to the <I>ith</I> character of <I>String s</I>. This lets you select and modify individual characters in a string, as in<P>
+<pre>String s;
+...
+cout &lt; s[i] &lt; '\n';</pre>
+or<P>
+<pre>s [0] = toupper(s[0]);</pre>
+The class implements concatenation using<P>
+<pre>String &amp;operator+=(const String &amp;s);</pre>
+so that given<P>
+<pre>String s1 = "foo";
+String s2 = "bar";</pre>
+then<P>
+<pre>s1 += s2;</pre>
+places <I>foobar</I> in <I>s1</I>.<P>
+<A href="list1.htm">Listing 1</a>
+also defines a non-member function<P>
+<pre>String operator+(const String &amp;s1, const String &amp;s2)</pre>
+so that given<P>
+<pre>String s1 = "foo";
+String s2 = "bar";</pre>
+then<P>
+<pre>String s3 = s1 + s2;</pre>
+places <I>foobar</I> in <I>s3</I>.<P>
+Notice that this <I>operator</I>+ returns a <I>String</I> (not a <I>String</I> &amp; or a <I>String</I> *). Thus, the program may create a temporary <I>String</I> object to hold the function's return value.<P>
+<h4><FONT COLOR="#000080"><A name="0327_0119">Alternative Lifetimes<A name="0327_0119"></FONT></h4></P>
+The committee considered several different alternative policies for destroying temporaries:<P>
+<UL><li><I>Immediately</I>: The program destroys each temporary object immediately after using the object's value. (I believe GNU <I>g</I>++ uses this approach.)</li>
+<li><I>At end of statement (EOS)</I>: The program destroys each temporary object at the end of the statement that creates it.</li>
+<li><I>At end of block (EOB)</I>: The program destroys each temporary object at the end of the block that creates it. (I believe AT&amp;T's <I>cfront</I> uses this approach.)</li></UL>
+A compiler that employs immediate destruction may actually destroy temporaries in the middle of the expression that creates them. For example, a declaration statement like<P>
+<pre>String w = x + y + z;</pre>
+translates into something like<P>
+<pre>String temp1 = x + y;
+String temp2 = temp1 + z;
+destroy temp1;
+w = temp2;
+destroy temp2;</pre>
+In contrast, a compiler that destroys temporaries at EOS translates the same declaration into something like<P>
+<pre>String temp1 = x + y;
+String temp2 = temp1 + z;
+w = temp2;
+destroy temp1;
+destroy temp2;</pre>
+A compiler that destroys temporaries at EOB produces essentially the same object code as a compiler that destroys at EOS, except the object program delays destroying <I>temp1</I> and <I>temp2</I> until it reaches the end of the block enclosing the declaration.<P>
+<h4><FONT COLOR="#000080"><A name="0327_011A">The Dangers of Immediate Destruction<A name="0327_011A"></FONT></h4></P>
+Immediate destruction uses memory very economically. For example, an application that performs arithmetic on large matrices typically can't afford to keep many of those objects in memory. If a single expression generates several temporary matrix objects before destroying any of them, the program might easily run out of memory. Immediate destruction reduces the risk of that happening.<P>
+On the other hand, immediate destruction renders some expressions meaningless. The ARM illustrates the problem with an example like:<P>
+<pre>void foo(const char *s);
+void bar()
+   {
+   String s("foo");
+   String t("bar");
+   foo(s + t);
+   }</pre>
+Using immediate destruction, the generated code looks something like:<P>
+<pre>String temp1 = s + t;
+const char *temp2 = temp1.str;
+destroy temp1;
+foo(temp2);</pre>
+Destroying <I>temp1</I> deletes the array addressed by <I>temp1.str</I>, leaving <I>temp2</I> as a dangling pointer. The resulting behavior is undefined.<P>
+The ARM gives a good indication of just how soon "immediate" can be when it says (in section 12.2) that:<P>
+There are only two things that can be done with a temporary: fetch its value (implicitly copying it) to use in some other expression, or bind a reference to it. If the value of the temporary is fetched, that temporary is dead and can be destroyed immediately. If a reference is bound to a temporary, the temporary must not be destroyed until the reference is. This destruction must take place before exit from the scope in which the temporary is created.<P>
+In the example immediately above,<P>
+<pre>f(s + t);</pre>
+binds a pointer to part of the (internal) representation of the temporary resulting from <I>s</I> + <I>t</I>. It neither fetches the value of nor binds a reference to the temporary. Thus, a compiler may destroy the temporary even before calling <I>f</I>.<P>
+Immediate destruction is hazardous in other similar situations. For <I>Strings s</I> and <I>t</I>,<P>
+<pre>printf("%s\n", (const char *)(s + t));</pre>
+might destroy the result of <I>s</I> + <I>t</I> immediately after it passes the result of <I>(const char *) (s</I> + <I>t)</I> to, but before it actually calls, <I>printf</I>. Essentially the same problem occurs in<P>
+<pre>printf("%s\n", (s + t)[i]);</pre>
+You might argue that the problem with all these examples is that they each use implementations of operator <I>const char</I> * or <I>operator[]</I> that violate a well-known guideline (Plum and Saks 1991, Meyers 1992, and others): a public member function should not return a pointer or reference to some part of the internal (private or protected) representation of an object. However, violating the guideline for these two operators seems to be common practice. The committee was reluctant to leave such code outside the standard.<P>
+Koenig 1992 showed that even examples that bind references only to entire objects can fail when using immediate destruction. He gave an example like the one in <A href="list2.htm">Listing 2</a>.
+ Here, the compiler can't tell in the context of <I>foo</I> that the reference returned from <I>passthru</I> is bound to the temporary resulting from <I>s </I>+ <I>t</I>. Therefore, it may conclude that it's safe to destroy the temporary before calling <I>len</I>.<P>
+In fact, even<P>
+<pre>size_t len = String("foo").len();</pre>
+fails when using immediate destruction. <I>String ("foo")</I> creates a temporary by a constructor call and passes the address of that temporary as the <I>this</I> pointer for <I>len</I>. But the member function call neither fetches the value of the temporary nor binds a reference to it, so the compiler may destroy the temporary before calling <I>len</I>.<P>
+In light of these and other similar examples, the committee decided that immediate destruction was too hostile to existing code. Most C++ programs expect temporaries to have longer lifetimes.<P>
+<h4><FONT COLOR="#000080"><A name="0327_011B">Later Destruction<A name="0327_011B"></FONT></h4></P>
+Delaying destruction of a temporary until the end of the statement (EOS) that creates it cures the problems shown above. However, it still doesn't cure everything. For example,<P>
+<pre>void bar()
+   {
+   String s("foo");
+   String t("bar");
+   const char *p = s + t;
+   printf("%s\n", p);
+   }</pre>
+If the program destroys temporaries at EOS, then it will destroy the temporary resulting from <I>s</I> + <I>t</I> before it calls <I>printf</I>.<P>
+Delaying destruction of a temporary until the end of the block (EOB) that creates it fixes the previous problem, but can't handle the program fragment in <A href="list3.htm">Listing 3</a>.
+ If the program destroys temporaries at EOB, then it will destroy the temporary resulting from <I>s</I> + <I>t</I> at the closing brace of the block inside the <I>if</I> statement. The subsequent <I>printf</I> will attempt to dereference a dangling pointer.<P>
+The ARM provides still more examples of later destruction. Ultimately, this pursuit leads to the conclusion that the only safe policy is to destroy a temporary only after all pointers or references to any part of the object have been destroyed. But this policy adds run-time overhead that's inconsistent with the "lean and mean" philosophy of C++.<P>
+Furthermore, just as immediate destruction might be too soon for some constructs, delaying destruction until EOB (or later) might be too late for others. As I mentioned earlier, late destruction might tie up resources with temporary objects no longer in use. It can also wreak havoc in multi-threaded applications that require resource locking and process synchronization.<P>
+For example, a <I>Mutex</I> class can provide mutually exclusive access to a shared resource through member functions <I>lock</I> and <I>unlock</I>. (You might not be able to write a <I>Mutex</I> class entirely in C++, but that shouldn't prevent you from using it.) Your application creates a <I>Mutex</I> object for each shared resource, such as<P>
+<pre>Mutex printer;</pre>
+A particular process (a thread) gains exclusive access to the resource by locking the corresponding <I>Mutex</I> object, and it releases control by unlocking that object. For example, a print spooler might access a shared printer using<P>
+<pre>printer.lock();
+// access the printer (exclusively)
+printer.unlock();</pre>
+The code between the calls to <I>lock</I> and <I>unlock</I> is called a "critical section."<P>
+If the critical section creates a temporary object, and destroying that temporary requires access to the shared resource, then the process should destroy the temporary before leaving the critical section. But with destruction at EOB, the process might not destroy the temporary until after it leaves the critical section. If another process is in the critical section when the first process finally calls that destructor, then mutual exclusion fails and the shared resource might be corrupted.<P>
+After years of discussion, the C++ standards committee chose to destroy each temporary object at end of the full expression (EOFE) that created it. EOFE is a generalization of EOS. As in C, a full expression is an expression that is not part of another expression. It includes an expression statement, as well as<P>
+<UL><li>an initializer</li>
+<li>the controlling expression of an <I>if</I> or <I>switch</I> statement</li>
+<li>the controlling expression of <I>while</I> or <I>do</I> statement</li>
+<li>each of the three (optional) expressions of a <I>for</I> statement</li>
+<li>the optional expression in a <I>return</I> statement</li></UL>
+Thus, for <I>Strings s</I> and <I>t</I>, each of the following will work. The ^ marks the point where the temporary is destroyed:<P>
+<pre>foo(s + t);
+         ^
+printf("%s\n", (const char *)(s+t));
+                                  ^
+printf("%s\n", (s+t)[i]);
+                       ^
+if ((s+t).len() == 0) ... ;
+                    ^</pre>
+However, the example in <A href="list3.htm">Listing 3</a>
+won't work, nor will the following:<P>
+<pre>const char *p = s + t;
+                     ^
+printf("%s\n", p);</pre>
+In both cases, destruction at EOFE destroys the object addressed by <I>p</I> before calling <I>printf</I>.<P>
+<h4><FONT COLOR="#000080"><A name="0327_011C">Conditional Temporaries<A name="0327_011C"></FONT></h4></P>
+Evaluating an expression that includes the conditional operator <I>?:</I> might not evaluate the entire expression. It's possible that one branch of the expression might create a temporary object while the other branch might not. For example,<P>
+<pre>printf("%s\n", e ? (const char*)(s + t) : "");</pre>
+creates a temporary only if <I>e</I> is true. (The temporary results from evalutating <I>s</I> + <I>t</I>.) In effect, requiring compilers to destroy temporaries at EOFE forces them to introduce additional code into conditional expressions to determine if conditionally constructed temporaries must be destroyed.<P>
+For example, a compiler must translate the <I>printf</I> above into code like that shown in <A href="list4.htm">Listing 4</a>.
+ <A href="list4.htm">Listing 4</a>
+uses an additional variable, <I>destroy_temp2</I>, as a Boolean that indicates whether temporary <I>String temp2</I> requires destruction at the end of the statement.<P>
+The same problem arises in expressions that use the logical operators <I>&amp;&amp;</I> and | |. Operators <I>&amp;&amp;</I> and | | evaluate sequentially from left to right. A program need not evaluate the entire <I>&amp;&amp;</I> or | | expression if it can determine the result from the left operand. In effect, <I>e1 &amp;&amp; e2</I> is equivalent to <I>e1 ? e2 : 0,</I> and <I>e1 | | e2</I> is equivalent to <I>e1 ? 1 : e2</I>.<P>
+The committee considered adding special rules for conditional operators to avoid the overhead of EOFE, such as<P>
+&#151;     temporaries created in the right operand of a <I>&amp;&amp;</I> or | | are destroyed before the <I>&amp;&amp;</I> or  | | yields its result<P>
+&#151;     temporaries created in the second or third operand of a <I>?:</I> are destroyed before the <I>?:</I> yields its result.<P>
+But these rules reintroduce many of the problems associated with immediate destruction. For example,<P>
+<pre>printf("%s\n", e ? (const char *)(s + t : "");</pre>
+won't work. So, despite the small runtime overhead, the committee opted for unconditional destruction at EOFE.<P>
+In short, the new rules for the lifetime of temporaries are:<P>
+1.     temporaries are destroyed at end of a full expression<P>
+2.     temporaries are destroyed in the reverse order of their creation.<P>
+<h4><FONT COLOR="#000080"><A name="0327_011D">Style Ramifications<A name="0327_011D"></FONT></h4></P>
+In the long run, these new rules should simplify the task of writing reliable and portable C++ programs. But programmers who've become hooked on late destruction may find the transition a bit painful.<P>
+I still recommend programming in a style that avoids creating temporary objects. For example, if you have a choice between using an overloaded binary operator like + or its corresponding assignment operator +=, use the assignment operator. The expression<P>
+<pre>s1 = s1 + s2;</pre>
+may create a temporary object, whereas<P>
+<pre>s1 += s2;</pre>
+almost surely will not.<P>
+<h4><FONT COLOR="#000080"><A name="0327_011E">A <B><I>class</I></B> is a <B><I>struct</I><A name="0327_011E"></B></FONT></h4></P>
+On a different note, one of my recent columns prompted the following query:<P>
+Mr. Saks,<P>
+In talking about one of the examples using nested classes ("Looking Up Names," <I>CUJ,</I> August 1993), you mentioned that in C++, "a <I>struct</I> is a class and a class is a <I>struct</I>." Does this mean that the size of a <I>struct</I> can be just as ambiguous as the size of a class? Specifically, can the size of a <I>struct</I> increase due to compiler-supplied code, such as a copy constructor, address operator, etc?<P>
+Does this mean that a <I>struct</I> such as:<P>
+<pre>struct P
+   {
+   int x, y;
+   };</pre>
+is not necessarily just the size of two <I>ints</I>? That if I assign one <I>P struct</I> to another, a copy constructor may be generated? And that if I take the address of this <I>struct,</I> an address-of operator may be generated? Any help and insight you can provide about this would make me sleep better at night.<P>
+Thanks,<P>
+Peter Jones<br>
+SQA Engineer, Symantec<br>
+Internet: <I>peterjon@symantec. com</I><br>
+Compuserve: 73370,66<P>
+When I said "a <I>struct</I> is a class, and a class is a <I>struct</I>," I meant that the only difference between a <I>struct</I> and a class is their default access specifiers. In the absence of an explicit access specifier, the members of a class are private and the members of a <I>struct</I> are public. For example,<P>
+<pre>struct P
+   {
+   int x, y;
+   };
+struct P
+   {
+public:
+   int x, y;
+   };
+class P
+   {
+public:
+   int x, y;
+   };</pre>
+are all equivalent. Also, in the absence of a base class access specifier, the base case is private if the class is declared as a class, and public if the class is declared as a <I>struct.</I> For example, aside from the access to members declared in <I>D</I>,<P>
+<pre>class D : public B { ... };
+struct D : public B { ... };
+struct D : B { ... };</pre>
+are all equivalent.<P>
+A C <I>struct</I> should have the same size and alignment when compiled for the same architecture using C++. Compiler-generated functions, such as copy constructors or assignment operators, do not increase the size of objects of a class (or <I>struct</I>) type. The compiler-generated functions may occupy code space, but compilers often eliminate the extra code by inlining these functions. In general, non-virtual member functions do not consume any space in class (or <I>struct</I>) objects.<P>
+Finally, C++ will generate at most four special member functions for a class that doesn't supply them:<P>
+1.     copy constructor<P>
+2.     default constructor<P>
+3.     destructor<P>
+4.     assignment operator<P>
+It will not generate an address-of operator. You can always take the address of a class object, just as you could always take the address of a <I>struct</I>.<P>
+<h4>References</FONT></h4></P>
+Ellis and Stroustrup [1990]. Margaret A. Ellis and Bjarne Stroustrup, <I>The Annotated C++ Reference Manual.</I> Reading, MA: Addison-Wesley.<P>
+Koenig 1992. Andrew Koenig, "Lifetime of Temporaries." ANSI C++ committee document X3J16/92-0020 and ISO C++ Working Group document N0098. January, 1992.<P>
+Meyers 1992. Scott Meyers, <I>Effective</I> <I>C</I>++. Reading, MA: Addison-Wesley.<P>
+Plum and Saks 1991. Thomas Plum and Dan Saks, <I>C</I>++ <I>Programming Guidelines</I>. Plum Hall.<P>
+Stroustrup 1986. Bjarne Stroustrup, <I>The C++ Programming Language</I> (1st ed.). Reading, MA: Addison-Wesley.<P>
+
+<h4><a href="../../../source/1993/nov93/saks.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

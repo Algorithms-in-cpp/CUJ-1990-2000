@@ -1,0 +1,195 @@
+<HTML><HEAD>
+<TITLE>May 1992/Implementing Direct Memory Access (DMA) in C/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1 (adtest.c) Application for High-Speed Data Acquisition Using DMA on the Lab Master AD</A></h4>
+<pre>/****************************************************
+
+       Copyright Don Bradley, 1991.
+
+       Permission is granted for used of these routines
+       in any manner as long as this copyright notice is
+       included.
+
+       Tested using Quick C 2.5 and MSC 6.0 on a
+       Toshiba T5200.
+
+***********************************************/
+
+#include &lt;math.h&gt;
+#include &lt;conio.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;process.h&gt;
+#include &lt;fcntl.h&gt;
+#include &lt;io.h&gt;
+#include &lt;sys\types.h&gt;
+#include &lt;sys\stat.h&gt;
+#include &lt;malloc.h&gt;
+
+#include "labmastr.h"
+#include "dma.h"
+
+#define ESC 0x1B
+#define FILEBUFFSIZE 0x4000
+
+#define OK_EXIT                      0
+#define MISSING_PARAMETERS_ERROR     1
+#define NOT_ENABLED_ERROR            2
+#define CANT_OPEN_FILE_ERROR         3
+#define CANT_INITIALIZE_ERROR        4
+
+void main(int argc, char *argv[]);
+void dma_handler(int value);
+
+static int file_buffer[FILEBUFFSIZE];
+static int file_handle;
+static int file_buff_ptr = 0;
+static int channel_buffer[MAX_CHANNELS];
+static int channel_number = 0;
+
+
+static double freq = 1000.0;
+static long num_of_samples: = 6000L;
+static int dma_channel = 5;
+static int num_of_channels = 1;
+
+
+void main(int argc, char *argv[])
+       {
+       unsigned long num_collected = 0L;
+       long loop_count = 0l;
+       int ch;
+
+       if(argc &lt; 4){
+              printf("Format:\n\n");
+              printf("   ADCTEST &lt;number of channels&gt; ");
+              printf("&lt;number of samples&gt; &lt;sampling ");
+              printf("frequency (Hz)&gt;\n\n");
+              exit(MISSING_PARAMETERS_ERROR);
+              }
+
+       num_of_channels = atoi(argv[1]);
+       num_of_samples = atol(argv[2]);
+       freq = atof(argv[3]);
+
+       if (!LabMasterAD_Enable()) {
+              printf("LabMasterAD %u V%u was not enabled.\n",
+                      LabMasterAD_Product(),
+                      LabMasterAD_Version());
+              exit(NOT_ENABLED_ERROR);
+              }
+
+       printf("\n\nLabMasterAD %u", LabMasterAD_Product());
+       printf(" V%u Enabled for\n", LabMasterAD_Version());
+       printf("%d channels, ", num_of_channels);
+       printf("%ld samples at ", num_of_samples);
+       printf("at %lf Hz.\n", freq);
+
+       if((file_handle = open("DATAFILE.DAT", 0_BINARY |
+                              0_WRONLY | 0_CREAT | 0 TRUNC, S_IWRITE)) &lt; 0){
+              printf("DATAFILE.DAT could not be opened.\n\n");
+              exit(CANT_OPEN_FILE_ERROR);
+              }
+
+       timer_reset();
+       if(!init_adc_dma(num_of_channels, num_of_samples,
+                    &amp;freq, dma_channel, dma_handler)){
+              printf("Errors initializing DMA transfer.\n\n");
+              exit(CANT_INITIALIZE_ERROR);
+              }
+
+       printf("\nPress SPACE bar to start.\n\n");
+
+       while ((ch = getch()) != ' ' &amp;&amp; ch != 0x1b)
+              ;
+
+       if(ch == ESC) {
+              printf("Execution Prematurly Terminated.\n\n");
+              exit(OK_EXIT);
+              }
+
+       printf("ADC DMA has been started.\n");
+       printf("Press ESC to exit from ADC DMA.\n\n");
+
+       enable_dma(dma_channel);
+       enable_adc();
+
+       while (!adc_dma_done()) {
+              if (kbhit())
+                     if (getch() == ESC)
+                            terminate_adc_dma();
+
+              get_next_adc_values();
+
+              /*
+              // Insert here required main loop processing.
+              {
+              int i;
+
+              for(i=0; i&lt;num_of_channels; i++)
+                    printf("%4X    ", channel_buffer[i]);
+              for(i=0; i&lt;num_of_channels; i++)
+                    printf("\b\b\b\b\b\b\b\b");
+              }
+              */
+
+              loop_count++;
+              }
+
+       // Write remaining values in file buffer.
+       write(file_handle, file_buffer, file_buff_ptr*
+              sizeof(int));
+
+       printf("\n\nADC DMA was initialized for\n");
+       printf("\t%d channels, %ld samples at %lf Hz\n\n",
+              num_of_channels, num_of_samples, freq);
+
+       printf("    Status:%8X\n", adc_status());
+       printf(" Collected:%8ld\n",
+              adc_dma_conversion_count());
+       printf("Loop Count:%8ld\n\n", loop_count);
+       printf("Finished...    ");
+
+       if(adc_dma_conversion_count() &lt; num_of_channels *
+                    num_of_samples)
+              printf("OVERRUN ERROR\n\n");
+       else
+              printf("NO ERRORS\n\n");
+
+       LabMasterAD_Disable();
+       exit(OK_EXIT);
+       }
+
+void dma_handler(int value)
+/*&amp; DMA handler routine. Used for processing each piece
+        of     data. */
+       {
+
+       file_buffer[file_buff_ptr] = value;
+
+       if(++file_buff_ptr &gt;= FILEBUFFSIZE) {
+
+              write(file_handle, file_buffer,
+                    FILEBUFFSIZE*sizeof(int));
+
+              file_buff_ptr = 0;
+              }
+
+       channel_buffer[channel_number] = value;
+
+       if(++channel_number &gt;= num_of_channels)
+              channel_number = 0;
+
+       // Insert here any further process that may be
+       // required.
+       // Be carful that the new code does not cause the
+       // duration of this routine to exceed the required
+       // limits for the selected data acquisition
+       // specification.
+       }
+/*  End of File */
+</pre>
+</BODY>
+</HTML>

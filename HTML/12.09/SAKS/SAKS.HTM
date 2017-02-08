@@ -1,0 +1,160 @@
+
+
+<HTML>
+<HEAD>
+
+<TITLE>September 1994/Stepping Up To C++</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocsep.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Columns</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Stepping Up To C++<A name="017D_00CF"><A name="017D_00CF"></font></h2><P>
+<h3 align="center"><A name="017D_0000"><A name="017D_0000">Designing Generic Container Classes, Part 3: Iterators</h3><P>
+<h3 align="center"><font color="#800000">Dan Saks</font></h3><hr><blockquote><P>
+<P><i><A name="017D_0000"><A name="017D_0000">Dan Saks is the president of Saks &amp; Associates, which offers consulting and training in C++ and C++ and C. He is secretary of the ANSI and ISO C++ committees. Dan is coauthor of C++ Programming Guidelines, and codeveloper of the Plum Hall Validation Suite for C++ (both with Thomas Plum). You can reach him at 393 Leander Dr., Springfield OH, 45504-4906, by phone at (513)324-3601, or electronically at dsaks@wittenberg.edu.</i></P><P>
+In my past two articles, I've been exploring the design and implementation of generic container classes. (See "Stepping Up to C++: Designing Generic Container Classes, Part 1," <I>CUJ,</I> June, 1994 and Part 2, August, 1994.) A container (or collection) is a data structure, such as a list, tree, or vector, that holds other objects. C++ encourages you to implement each type of container as a class. A generic container class is a single class definition for a particular type of container that you can readily adapt to hold objects of various types. This is in contrast with a specific container class which holds only objects of a specific type.<P>
+My focus thus far has been on one particular design for generic containers, namely, as containers of <I>void *.</I> With this design, a generic container actually holds pointers to the elements, rather than holding the elements themselves. In C++, as in C, <I>void *</I> is the generic pointer type, meaning a <I>void *</I> can hold the address of any type of data object. Thus, a container of <I>void *</I> can indeed manage objects of any type.<P>
+As my example, I've been using a class called <I>genq</I> that implements a generic first-in-first-out queue as a list of void pointers. A <I>genq </I>object is actually a pair of pointers to the first and last cell, respectively, in a linked list of cells. Each cell contains a pointer (of type <I>void *</I>) to a queued element along with a pointer to the next cell in the list.<P>
+<I>genq</I> has undergone several revisions over the past months. The latest version of <I>genq</I>'s the class definition appears in <A href="list1.htm">Listing 1</a>.
+ As before, <I>genq</I> provides a default constructor and a destructor, along with the following operations:<P>
+<UL><li><I>void append(void *e)</I> &#151; append element <I>e</I> to the end of a queue.</li>
+<li><I>void clear() </I>&#151; discard all elements in a queue.</li>
+<li><I>void apply(void f(void *e, void *a), void *args)</I> &#151; invoke <I>f(&amp;obj, args)</I> for each object <I>obj</I> in the queue.</li>
+<li><I>int remove(void *&amp;e)</I> &#151; for a non-empty queue, remove an element from the head of the queue, place it in <I>e</I>, and return non-zero; for an empty queue, simply return zero without changing <I>e</I>.</li></UL>
+The corresponding member function definitions appear in <A href="list2.htm">Listing 2</a>.
+<P>
+This design has both good and bad points. On the plus side, a generic container of <I>void *</I> provides truly reusable code. Every <I>genq</I> object in a program, regardless of the type of the elements in the queue, uses the same object code for the non-inline member functions. In contrast, each class for a queue of a specific type (such as <I>intq</I> and <I>strq</I> from Part 1 of this series) employs different object code for its non-inline member functions.<P>
+On the minus side, <I>genq'</I>s generality relies on the very weak type checking applied to <I>void *.genqs</I> are heterogeneous. That is, a single <I>genq</I> can hold objects of differing types. By itself, a <I>genq</I> cannot enforce the homogeneity that most applications require. In other words, a <I>genq</I> cannot guarantee that all objects it contains have the same type.<P>
+Last month I showed how to adapt a generic container for a specified element type by writing a type-safe wrapper class around the generic container. You simply embed a generic container object as a private data member of the wrapper class. Then you write a public interface for the wrapper class that tailors the public interface of the generic class to the specified element type. The wrapper class guarantees at compile-time that all objects in the wrapped container have the same type.<P>
+<A href="list3.htm">Listing 3</a>
+shows the class and inline member-function definitions for <I>strq,</I> a queue of <I>str</I> (varying-length strings presented in Part 1) implemented as a wrapper around <I>genq.</I> <A href="list4.htm">Listing 4</a>
+shows the corresponding non-inline member function definitions. The wrapper adds a little extra code to some of the queue operations. However, applications must do this work anyway each time they use a <I>genq</I> as a queue of some specific element type, so the true cost of the wrapper is actually quite small.<P>
+Last month, I also reexamined iteration (apply) functions. This culminated in new versions of <I>genq::apply</I> and <I>strq::apply</I> that now appear in <A href="list2.htm">Listing 2</a>
+and <A href="list4.htm">Listing 4</a>,
+ respectively. Though effective, iteration functions like these do not meet all needs. This month, I'll introduce iterator objects, an alternative mechanism for iterating through the elements in a container.<P>
+<h4><FONT COLOR="#000080"><A name="017D_00D0">Iteration Functions, Again<A name="017D_00D0"></FONT></h4></P>
+Good container classes implement abstractions. That is, a good container provides a mechanism for storing and retrieving objects without exposing how that mechanism actually works.<P>
+For example, I could have implemented <I>genq</I> using an array instead of a list. I don't want <I>genq</I> users programming in a way that depends on my implementation decisions, otherwise I may find that I can't improve the implementation without breaking some user's code. Therefore, <I>genq'</I>s public interface shouldn't reveal the underlying data structure.<P>
+Quite often, an application using a container needs to <I>iterate</I> through that container. That is, it needs to apply some operation to each object in the container. For example, the application may want to write each object to a stream, or locate the object with the largest value.<P>
+In a C program, you'd probably iterate through a <I>genq</I> using a loop such as:<P>
+<pre>genq_cell *p;
+...
+for (p = q.first; p != 0; p = p-&gt;next)
+     /* do something with *p */</pre>
+Even though this violates the <I>genq</I> abstraction, you might not notice because C doesn't enforce access control. However, you can't get away with this in C++ because both the <I>genq</I><I>'</I>s cell type and <I>first</I> data member are inaccessible outside <I>genq</I>. Container classes, written in C++, should provide more abstract iteration mechanisms.<P>
+Iteration functions like <I>genq::apply</I> are one such mechanism. An iteration function for a container applies a given function to each object in that container. For example, <I>genq</I><I>'</I>s iteration function (declared in <A href="list1.htm">Listing 1</a>
+and defined in <A href="list2.htm">Listing 2</a>)
+ is:<P>
+<pre>void apply(void f(void *e, void *a),
+void *args);</pre>
+which calls <I>f(&amp;obj, args)</I> for each object <I>obj</I> in the queue.<P>
+The <I>strq</I> wrapper class propagates <I>genq</I><I>'</I>s apply function to the <I>strq</I> public interface. <A href="list5.htm">Listing 5</a>
+shows a program for testing <I>genq</I> (<A href="list1.htm">Listing 1</a>
+and <A href="list2.htm">Listing 2</a>)
+ and the <I>strq</I> wrapper (<A href="list3.htm">Listing 3</a>
+and <A href="list4.htm">Listing 4</a>)
+. That program uses <I>strq::apply</I> inside<P>
+<pre>ostream &amp;operator&lt;&lt;(ostream &amp;, strq &amp;);</pre>
+to print a <I>strq</I> by applying<P>
+<pre>void print_str(void *e, void *args);</pre>
+to each element in the queue.<P>
+Unlike <I>strq</I><I>'</I>s other public members, <I>strq::apply</I> doesn't replace any of the <I>void </I>* parameters in <I>genq::apply'</I>s signature with parameters of type <I>str</I> (or <I>str </I>* or <I>str &amp;</I>). Rather, <I>strq::apply</I> has the exact same signature as <I>genq::apply,</I> and it's peppered with <I>void </I>*. Here's why.<P>
+<I>strq::apply</I> doesn't know how to iterate through a <I>genq;</I> it invokes <I>genq::apply</I> to do the iterating. Consequently, <I>strq::apply</I> doesn't know what to do with its arguments (<I>f</I> and <I>args</I>) other then pass them along to <I>genq::apply. genq::apply</I> deals only with <I>void *</I>, so the <I>f</I> passed to <I>genq::apply</I> had better be prepared to accept <I>void</I> * arguments. Thus, the application must declare all applied functions (such as <I>print_str</I>) with the same type. Each applied function must then cast its parameters to the "right" type.<P>
+Why, you ask, can't I declare <I>strq::apply</I> to accept an applied function such as<P>
+<pre>void print_str(str *s, ostream *os)</pre>
+and cast this to<P>
+<pre>void (void *, void *)</pre>
+inside <I>strq::apply</I> before passing it to <I>genq::apply</I>? Because calling a function of one type through a pointer to a function of another type yields undefined behavior, meaning all bets are off. Thus, iteration functions like <I>strq::apply</I> require that users employ casts in their application code, and that's unfortunate.<P>
+Aside from depending on <I>void *</I> and casts, the problem with iteration functions is that they force you to bundle the applied operation into a separate function. Sometimes, this causes very artificial partitions in the program's logic.<P>
+<h4><FONT COLOR="#000080"><A name="017D_00D1">Iterator Objects<A name="017D_00D1"></FONT></h4></P>
+Iterator objects are an alternative to iteration functions. An iterator is an object that can iterate through a container. The iterator is not part of the container, but it knows enough about the container's innards to be able to locate each object in the container.<P>
+You typically initialize an iterator by attaching it to a particular container object. Then you apply member functions to the iterator to access each element in the container, and determine when you've seen them all. For instance, <A href="list6.htm">Listing 6</a>
+shows the output operator for <I>strq</I> (from <A href="list5.htm">Listing 5</a>)
+ rewritten using an iterator.<P>
+The declaration<P>
+<pre>strq::iterator sqi(q);</pre>
+declares <I>sqi</I> as an object of type <I>strq::iterator</I> attached to <I>strq q. strq::iterator</I> is the fully-qualified name for <I>strq's</I> iterator type declared as a publicly-accessible nested class within class <I>strq</I> (details forthcoming). The subsequent loop:<P>
+<pre>while ((ps = sqi.next()) != 0)
+   os &lt;&lt; ' ' &lt;&lt; *ps;</pre>
+calls <I>sqi.next()</I> to obtain, in turn, the address of each <I>str</I> object in the queue. <I>sqi.next()</I> returns a null pointer to indicate that <I>sqi</I> has reached the end of the queue. The body of this loop is essentially the same as the body of <I>print_str</I> from <A href="list5.htm">Listing 5</a>,
+ minus those horrible casts.<P>
+Why is the iterator an object distinct from the container? Why not just declare the iterator's member functions as members of <I>strq</I> itself so that you can write something like the following?<P>
+<pre>q.reiterate();
+while ((ps = q.next()) != 0)
+   os &lt;&lt; ' ' &lt;&lt; *ps;</pre>
+Here, calling <I>q.reiterate()</I> resets <I>q</I>'s internal iterator, and calling <I>q.next()</I> returns the address of the next <I>str</I> object in the queue, or null.<P>
+The problem with this approach is that it doesn't allow multiple iterators concurrently. For example, it's not that uncommon to see nested loops such as<P>
+<pre>int a[N];
+...
+for (i = 0; i &lt; N; ++i)
+   for (j = 0; j &lt; N; ++j)
+      // do something with a[i] and a[j]</pre>
+which iterate simultaneously through a single array. If you try something similar using a <I>strq</I> with an internal iterator, you get code something like<P>
+<pre>q.reiterate();
+while ((psi = q.next()) != 0)
+   {
+   q.reiterate();
+   while ((psj = q.next()) != 0)
+      // do something with *psi and *psj
+   }</pre>
+This doesn't work because the calls to <I>q.iterate()</I> and <I>q.next()</I> inside the loop interfere with the calls to <I>q.next()</I> in the outer loop. This interference doesn't occur when iterators are distinct objects, where the code for nested loops looks like<P>
+<pre>strq::iterator sqi(q);
+while ((psi = sqi.next()) != 0)
+   {
+   strq::iterator sqj(q);
+   while ((psj = sqj.next()) != 0)
+      // do something with *psi and *psj
+   }</pre>
+<h4><FONT COLOR="#000080"><A name="017D_00D2">Implementing Iterators<A name="017D_00D2"></FONT></h4></P>
+Let's peek inside and see how this iterator works. <A href="list7.htm">Listing 7</a>
+shows the header for class <I>genq</I> with <I>iterator</I> as a nested type. Much of the class definition is the same as in <A href="list1.htm">Listing 1</a>,
+ but I rearranged the order of the member declarations for reasons I'll explain a bit later.<P>
+The iterator class itself is quite simple. It has a single data member, <I>pc</I>, that's a pointer to a <I>strq</I> cell. The iterator constructor attaches an <I>iterator</I> to a <I>strq</I> by initializing <I>pc</I> to point to the first cell in that <I>strq.</I> The iterator's <I>next</I> function (<A href="list8.htm">Listing 8</a>)
+ returns the next element's address, or null if no such address exists.<P>
+Class <I>genq</I> includes this curious sequence of declarations:<P>
+<pre>class iterator;
+friend class iterator;
+class iterator
+   {
+   // ...
+   };</pre>
+The last of these three declarations defines <I>iterator</I> as a nested class inside <I>genq. iterator</I>'s definition includes the declaration<P>
+<pre>cell *pc;</pre>
+referring to type <I>genq::cell</I>, a private member of <I>genq.</I> However, a nested class like <I>iterator,</I> although in the scope of its enclosing class, cannot normally access the non-public members of that enclosing class. Thus, <I>genq</I> must declare <I>iterator</I> as a friend so that <I>iterator</I> can refer to <I>cell</I>.<P>
+In my experience most programmers find it surprising that a nested class cannot access the non-public members of its enclosing class. Even though a nested class is a member, it's apparently not a member in full standing. My current view is that this is an error in the language specification. It's neither the first, nor the last.<P>
+Okay, that explains the friend declaration before the class definition. Why does <I>genq</I> declare<P>
+<pre>class iterator;</pre>
+as an incomplete type before the friend declaration? Normally, a class or function name first mentioned in a friend declaration is declared in the innermost enclosing non-class scope. If you removed the incomplete type declaration, the first mention of <I>iterator</I> would appear in the friend declaration, which would inject the name <I>iterator</I> into the global scope. In other words, the friend declaration would grant friendship to some global class named <I>iterator</I>, not to the nested class <I>genq::iterator.</I><P>
+Thus, the purpose of the incomplete type declaration is to enter the class name <I>iterator</I> into the scope of class <I>genq</I>, so that the subsequent friend declaration is not the first mention of the name <I>iterator</I>. Hence, the compiler associates the friend declaration with the nested class <I>iterator.</I><P>
+I haven't seen anyone else declare their iterators as nested types. Every other book or article I've seen that uses iterators declares iterator classes at file scope. To avoid name conflicts, they prefix each iterator class name with the name of its associated container, as in <I>genq_iterator</I> or <I>genqIter</I>. Despite the slightly awkward declarations, I still prefer using nested classes to show the association of an iterator with its container.<P>
+You may have noticed that I almost always define my classes with the public members before the private members. C++ imposes no such requirement; its just my personal preference. However, I switched the order of the member declarations in <A href="list8.htm">Listing 8</a>
+to be sure I got the name bindings right. In particular, <I>genq</I>'s public member <I>iterator</I> has a private member <I>pc</I> whose declaration refers to <I>genq</I>'s private member <I>cell</I>. I placed the declaration for <I>cell</I> before the declaration for <I>iterator</I> to insure that <I>pc</I>'s declaration (inside class <I>iterator</I>) referred to the nested <I>cell</I> type, rather than to some global <I>cell</I> type.<P>
+Then again, using forward-declared nested classes is even better. <A href="list9.htm">Listing 9</a>
+shows the class definitions for <I>genq</I> and its nested classes, rearranged using forward-declared nested classes. Much neater. Unfortunately, too few compilers handle these forward-declarations, so I have to restrain myself.<P>
+<A href="list10.htm">Listing 10</a>
+shows the class and inline member function definitions for a <I>strq</I> class (with an iterator) implemented as a type-safe wrapper around the <I>genq</I> class from <A href="list7.htm">Listing 7</a>.
+ Just as the <I>strq</I> wrapper has a private data member of type <I>genq</I>, <I>strq::iterator</I> is a wrapper with a private data member of type <I>genq::iterator</I><P>
+The non-inline member functions corresponding to the <I>strq</I> wrapper in <A href="list10.htm">Listing 10</a>
+are identical to those in <A href="list4.htm">Listing 4</a>.
+ You can test the <I>strq</I> iterator using the test program in <A href="list5.htm">Listing 5</a>,
+ after replacing the definition for <I>operator&lt;&lt;</I> in <A href="list5.htm">Listing 5</a>
+with the definition in <A href="list6.htm">Listing 6</a>.
+<P>
+<h4><FONT COLOR="#000080"><A name="017D_00D3">Design Issues<A name="017D_00D3"></FONT></h4></P>
+Although the <I>strq::iterator</I> doesn't reveal the underlying structure of the container, it weakens the container abstraction by returning a non-const pointer to an object in the container. This non-const pointer lets users modify objects that are still in the container. For data structures like <I>strq</I> where the retrieval mechanism doesn't use the values in the container as search keys, this might not be a problem. But for ordered data structures, like b-trees or hash tables, writing through the pointer returned from an iterator could corrupt the container. At the very least, the iterator should discourage such behavior by returning a <I>const</I> pointer.<P>
+When you design containers and iterators, you should decide the answer to a very basic question: Does the container own the objects in it, or is the container just keeping track of objects owned by somebody else? With containers that accept and/or return pointers to contained objects, you can never be quite sure. Container that traffic only in values demostrate their ownership of objects explicitly.<P>
+My advice is to design containers that "own" the objects they contain. Another way to say this is: Design containers that have value (rather than pointer or reference) semantics. Specifically, when you put an object into a container:<P>
+<UL><li>The container should make a copy of the object.</li>
+<li>The container should not save nor return the address of an object.</li></UL>
+If copying is expensive, then repackage the objects you put into the containers using optimizing techniques, such as handle classes and reference counting, that reduce the copying cost. (See any of the references listed below for a discussion of these techniques.)<P>
+Theres's much more to iterator design than I can cover in this article, and I still have other issues to cover regarding containers themselves. I will stick with this imperfect iterator design for the time being and take another look at iterators some time in the future. For those of you who are impatient, refer to <a href="#stroustrup">Stroustrup [1991]</a> and <a href="#murray">Murray [1993]</a> for further discussion of iterators.<P>
+<h4>References</FONT></h4></P>
+Adams [1994]. Robert M. Adams. "Temporary Object Management through Dual Classes," <I>The C Users Journal</I>, May, 1994.<P>
+Meyers [1992]. Scott Meyers. <I>Effective C</I>++. Addison-Wesley.<P>
+<a name="murray"></a>Murray [1993]. Robert B. Murray. <I>C</I>++ <I>Strategies and Tactics</I>. Addison-Wesley.<P>
+<a name="stroustrup"></a>Stroustrup [1991]. Bjarne Stroustrup. <I>The C</I>++ <I>Programming Language</I>, 2nd. ed. Addison-Wesley.<P>
+
+<h4><a href="../../../source/1994/sep94/saks.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

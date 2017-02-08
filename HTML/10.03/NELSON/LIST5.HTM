@@ -1,0 +1,271 @@
+<HTML><HEAD>
+<TITLE>March 1992/The Device Driver As State Machine/Listing 5</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 5 (tape.c) State Machine Constructs for TAPE Device</A></h4>
+<pre>/* -----------------------------------------------------
+ *  Author:             T.W. Nelson
+ *  Compile options:
+ *  Version:            1.00
+ *  Date:               07-Oct-1991
+ *  Notes:
+ *
+ *  Source code Copyright (c) 1991 T.W. Nelson.
+ *  May be used only with appropriate
+ *  acknowledgement of copyright.
+ * -------------------------------------------------- */
+
+#include "driver.h"
+#include "tape.h"
+
+extern void putstr( const char *str );
+
+extern int initialize(), status(), eject(), record(),
+   play(), fforward(), rewind(), stop(), cstate(),
+   shutdown();
+
+//Arrays of function pointers to be executed
+//in the order listed, to effect transition from
+//the current state to next desired state.....
+//
+int (*f_init[])() = { initialize, cstate, 0 };
+
+int (*f_stat[])() = { status, cstate, 0 };
+
+int (*f_off[])() = { shutdown, cstate, 0 };
+
+int (*f_ejoff[])() = { eject, shutdown, cstate, 0 };
+
+int (*f_eject[])() = { eject, cstate, 0    };
+
+int (*f_rec[])() = { record, cstate, 0     };
+
+int (*f_play[])() = { play, cstate, 0     };
+
+int (*f_ffwd[])() = { fforward, cstate, 0   };
+
+int (*f_rwnd[])() = { rewind, cstate, 0    };
+
+int (*f_stop[])() = { stop, cstate, 0   };
+
+int (*f_steject[])() = { stop, eject, cstate, 0   };
+
+int (*f_strec[])() = { stop, record, cstate, 0   };
+
+int (*f_stplay[])() = { stop, play, cstate, 0    };
+
+int (*f_stffwd[])() = { stop, fforward, cstate, 0  };
+
+int (*f_strwnd[])() = { stop, rewind, cstate, 0    };
+
+//Event (Command) Tables describing valid events for a
+//state, the next state to transition to, as well as
+//the functions to effect the transition......
+//
+S TAB s_off[] = {
+/*  command         n_state funcs
+  --------------------------------- */
+   CMD_POWER_ON,   ON,     f_init,
+   CMD_CHK_STATUS, OFF,    f_stat,
+   END,            END,    0,    };
+
+S_TAB s_on[] = {
+/*  command         n_state     funcs
+  ------------------------------------ */
+   CMD_POWER_OFF,  OFF  ,      f_off,
+   CMD_INSERT   ,  READY,      f_stat,
+   CMD_CHK_STATUS, ON,         f_stat,
+   END          ,  END  ,      0,    };
+
+S_TAB s_ready[] = {
+/*  command         n_state     funcs
+  ------------------------------------ */
+   CMD_POWER_OFF , OFF     ,   f_ejoff,
+   CMD_EJECT     , ON      ,   f_eject,
+   CMD_RECORD    , RECORD  ,   f_rec,
+   CMD_PLAY      , PLAY    ,   f_play,
+   CMD_FFORWARD  , FFORWARD,   f_ffwd,
+   CMD_REWIND    , REWIND  ,   f_rwnd,
+   CMD_CHK_STATUS, READY   ,   f_stat,
+   END           , END     ,   0,    };
+
+S_TAB s_record[] = {
+/*  command         n_state     funcs
+  ------------------------------------ */
+   CMD_STOP      , READY   ,   f_stop,
+   CMD_EJECT     , ON      ,   f_steject,
+   CMD_FFORWARD  , FFORWARD,   f_stffwd,
+   CMD_PLAY      , PLAY    ,   f_stplay,
+   CMD_REWIND    , REWIND  ,   f_strwnd,
+   CMD_CHK_STATUS, RECORD  ,   f_stat,
+   END           , END     ,   0,    };
+
+S_TAB s_play[] = {
+/*  command         n_state     funcs
+  ------------------------------------ */
+   CMD_STOP      , READY   ,   f_stop,
+   CMD_EJECT     , ON      ,   f_steject,
+   CMD_FFORWARD  , FFORWARD,   f_stffwd,
+   CMD_REWIND    , REWIND  ,   f_strwnd,
+   CMD_RECORD    , RECORD  ,   f_strec,
+   CMD_CHK_STATUS, PLAY    ,   f_stat,
+   END           , END     ,   0,    };
+
+S_TAB s_fforward[] = {
+/*  command         n_state     funcs
+  ------------------------------------ */
+   CMD_STOP      , READY   ,   f_stop,
+   CMD_EJECT     , ON      ,   f_steject,
+   CMD_PLAY      , PLAY    ,   f_stplay,
+   CMD_REWIND    , REWIND  ,   f_strwnd,
+   CMD_RECORD    , RECORD  ,   f_strec,
+   CMD_CHK_STATUS, FFORWARD,   f_stat,
+   END           , END     ,   0,    };
+
+S_TAB s_rewind[] = {
+/*  command         n_state     funcs
+  ------------------------------------ */
+   CMD_STOP      , READY   ,   f_stop,
+   CMD_EJECT     , ON      ,   f_steject,
+   CMD_PLAY      , PLAY    ,   f_stplay,
+   CMD_RECORD    , RECORD  ,   f_strec,
+   CMD_FFORWARD  , FFORWARD,   f_stffwd,
+   CMD_CHK_STATUS, REWIND  ,   f_stat,
+   END           , END     ,   0,    };
+
+//The actual "state table" that connects all
+//the foregoing initialized data into one. enum
+//'device states' is an index into this array
+//of struct pointers. These MUST be in same order
+//as the enum in 'tape.h' ........
+//
+S_TAB *s_table[] = {
+   s_off, s_on, s_ready, s_record, s_play,
+   s_fforward, s_rewind,
+   };
+
+unsigned tape_io( CMDARG far *arg )
+{
+  /* State Machine Driver. Called by DOS thru driver
+   * interrupt routine, command codes 3 &amp; 12.
+   */
+
+   int i;
+   S_TAB *pcmd;        //-&gt; event (cmd) table
+   int (**pfun)(CMDARG far *arg);  //-&gt; function list
+
+   //point to the correct event table .....
+   if( arg-&gt;c_state &gt;= MAX_STATE )
+          return IS_ERROR-+ INV_COMMAND;
+
+   pcmd = s_table[arg-&gt;c_state];
+
+   //find the specified command in the event table...
+   for( i = 0; pcmd[i].event != END; i++ )
+          if( pcmd[i].event == arg-&gt;cmd )
+                 break;
+
+   //check for invalid command .....
+   if( pcmd[i].event == END ) {
+          putstr("Invalid command specified\r\n");
+          return IS_ERROR + INV_COMMAND;
+   }
+
+   //indicate next state for application .......
+   arg-&gt;c_state - pcmd[i].n_state;
+
+   //execute the function list ........
+   pfun = pcmd[i].procs;
+
+   for( i = 0;pfun[i]; i++)
+      (*pfun[i])(arg);
+
+   return 0;
+}
+
+int status(CMDARG far *arg)
+{
+   arg-&gt;status = OK;
+   return 0;
+}
+
+int initialize(CMDARG far *arg)
+{
+   putstr("Device initialized\r\n");
+   status(arg);
+   return 0;
+}
+
+int eject(CMDARG far *arg)
+{
+   putstr( "Cassette ejected\r\n");
+   status(arg);
+   return 0;
+}
+
+int record(CMDARG far *arg)
+{
+   putstr( "Recording\r\n");
+   status(arg);
+   return 0;
+}
+
+int play(CMDARG far *arg)
+{
+   putstr( "Playing\r\n");
+   status(arg);
+   return 0;
+}
+
+int fforward(CMDARG far *arg)
+{
+   putstr( "Fast forwarding\r\n");
+   status(arg);
+   return 0;
+}
+
+int rewind(CMDARG far *arg)
+{
+   putstr( "Rewinding\r\n");
+   status(arg);
+   return 0;
+}
+
+int stop(CMDARG far *arg)
+{
+   putstr( "Stopping\r\n"};
+   status(arg);
+   return 0;
+}
+
+int shutdown(CMDARG far *arg)
+{
+   putstr( "Powered down\r\n");
+   status(arg);
+   return 0;
+}
+
+int cstate(CMDARG far *arg)
+{
+   /*Print current state, after transition ....*/
+
+   static char *s_name[] = {
+      "OFF",        //0
+      "ON",         //1
+      "READY",      //2
+      "RECORD",     //3
+      "PLAY",       //4
+      "FFORWARD",   //5
+      "REWIND",     //6
+      };
+
+   putstr( "Current state is");
+   putstr( s_name[arg-&gt;c_state] );
+   putstr( "\r\n" );
+   return 0;
+
+/* ----- End of File ------------------------ */
+</pre>
+</BODY>
+</HTML>

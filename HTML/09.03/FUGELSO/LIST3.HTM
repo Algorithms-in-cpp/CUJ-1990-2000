@@ -1,0 +1,122 @@
+<HTML><head><TITLE>March 1991/Real-Time Data Acquisition/Listing 3</TITLE></head>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 3 (lidar_acq.c)</A></h4>
+<pre>/* ---
+  lidar_acq task. This is the task synchronization task.
+  This program initialiazes shared memory and the message
+  queues for the real-time portion of the lidar program.
+--- */
+
+#include   "lidar.h"
+
+main()
+{
+   int     i, j, trigger_fd, alive_sem, shm_seg_id;
+   int     avail_qid, graph_qid, read_qid, write_qid;
+   message mptr;
+   trigger_clock cycles;
+   
+   /* --- set routine priority --- */
+   setpriority (PRIO_PROCESS, 0, LIDAR_ACQ);
+   
+   /* --- open task alive semaphore --- */
+   alive_sem = sem_get(ALIVE_KEY, 0);
+   
+   /* --- open message queues --- */
+   avail_qid = msgget (AVAILABLE_Q, 0666 | IPC_CREAT);
+   graph_qid = msgget (GRAPHICS_Q, 0666 | IPC CREAT);
+   read_qid = msgget (READ_Q, 0666 | IPC_CREAT);
+   write_qid = msgget (WRITE_Q, 0666 | IPC_CREAT);
+   
+   /* --- create shared memory segment ids --- */
+   shm_seg_id = shmget (FB_KEY, FRAME_SIZE * N_FRAMES,
+                    0666 | IPC_CREAT);
+   
+   /* --- create messages for shared memory
+         indexing and place them in the available
+         message queue --- */
+   for (i = 0; i &lt; N_FRAMES; i++) {
+      mptr.key = i;
+      if (msgsnd (avail_qid, &amp;mptr, MSG_SIZE, 0) &lt; 0) {
+         printf ("Queue problem.\n");
+         exit (1);
+         }
+      }
+   
+   /* --- wait for the read, write, and graph
+         tasks to check in --- */
+   sem_wait (alive_sem);
+   sem_wait (alive_sem);
+   sem_wait (alive_sem);
+   
+   /* --- open trigger timing device and set to
+         10 Hz for N_RUNS pulses --- */
+   trigger_fd = open("/dev/tclock", O_RDWR);
+   cycles.count = 250;         /* 250 cycles = .1 sec */
+   cycles.int_count = N_RUNS;  /* number of pulses    */
+   i = write (trigger_fd, &amp;cycles, 4);
+   
+   /* --- real time data acquisition loop --- */
+   for (i = 0; i &lt; N_RUNS; i++) {
+      /* --- wait for trigger --- */
+      if (read (trigger_fd, &amp;cycles, 2)) {
+         printf ("Missed a pulse. Fatal Error\n");
+         break;
+         }
+      
+      /* --- get a free frame buffer --- */
+      j = msgrcv (avail_qid, &amp;mptr, MSG_SIZE, 0, IPC_NOWAIT);
+      
+      /* --- if there aren't any available buffers --- */
+      if (j &lt; 0) {
+         /* --- remove all of the frame buffers
+                from the graph message queue and
+                 lace them in the available queue --- */
+         while (msgrcv(graph_qid, &amp;mptr, MSG_SIZE,
+                ANYTYPE, IPC_NOWAIT) &gt;= 0)<P>
+            msgsnd (avail_qid, &amp;mptr, MSG_SIZE, 0);
+         /* --- if there still are no buffers,
+                fatal error has occured --- */
+         if (msgrcv (avail_qid, &amp;mptr, MSG_SIZE,
+                   ANYTYPE, IPC_NOWAIT) == -1) {
+            printf ("Fatal queue problem. Terminating\n");
+            break;
+            }
+         }
+      
+      /* --- start the acquisition process --- */
+      msgsnd (read_qid, &amp;mptr, MSG_SIZE, IPC_NOWAIT);
+      }
+   
+   /* --- terminate data acquisition --- */
+   close(trigger_fd);
+   
+   /* --- signal other processes to quit --- */
+   mptr.key = QUIT;
+   msgsnd (read_qid, &amp;mptr, MSG_SIZE, NOFLAGS);
+   
+   /* --- wait for all messages to be placed
+         on available Q and retire --- */
+   for (i = 0; i &lt; N_FRAMES; i++)
+      msgrcv(avail_qid, &amp;mptr, MSG_SIZE, ANYTYPE, NOFLAGS);
+   
+   /* --- and the terminate message --- */
+   msgrcv (avail_qid, &amp;mptr, MSG_SIZE, ANYTYPE, NOFLAGS);
+   
+   /* --- delete queues --- */
+   msgctl (avail_qid, IPC_RMID, 0);
+   msgctl (read_qid, IPC_RMID, 0);
+   msgctl (write_qid, IPC_RMID, 0);
+   msgctl (graph_qid, IPC_RMID, 0);
+   
+   /* --- release semaphore --- */
+   sem_delete (ALIVE_KEY);
+   
+   /* --- delete shared memory segments --- */
+   shmctl (shm_seg_id, IPC_RMID, 0);
+}
+</pre>
+</BODY>
+</HTML>

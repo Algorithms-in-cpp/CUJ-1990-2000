@@ -1,0 +1,189 @@
+<HTML><HEAD>
+<TITLE>August 1994/Multithreading with OS/2 and Borland C++/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2 <I>Implementation of class</I> filefilter</A></h4>
+<pre>#include "ffilter.hpp"
+
+int FileFilter::count = 0;
+
+FileFilter::FileFilter( const char *file2read,
+                    const char *file2write,
+                    data_block* (*filter_func)
+                           ( data_block *inblock ) )
+{
+  long file_size;
+
+    filter = filter_func;
+
+    if( !file2read | | !file2write | | !filter )
+       filter_valid = 0;
+    else {
+       rfile = fopen( file2read, "rb" );
+       wfile = fopen( file2write, "wb" );
+       if( rfile &amp;&amp; wfile &amp;&amp; create_sem() &amp;&amp; create_queue() ) {
+          fseek( rfile, 0L, SEEK_END );
+          file_size = ftell( rfile );
+          fseek( rfile, 0L, SEEK_SET );
+          blocks2read = file_size/INBUF_SIZE;
+          if( file_size % INBUF_SIZE )
+             ++blocks2read;
+          blocks2write = blocks2read;
+          filter_valid = 1;
+          _beginthread( read_thread, 4096, (void *)this );
+          _beginthread( write_thread, 4096, (void *)this );
+       }
+       else
+             filter_valid = 0;
+    }
+}
+
+FileFilter::~FileFilter()
+{
+    if( rfile )
+       fclose( rfile );
+
+    if( wfile )
+       fclose( wfile );
+
+    rfile = wfile = 0;
+    filter_valid = 0;
+}
+
+void read_thread( void *filterptr )
+{
+    data_block *db, *db2;
+    FileFilter *ff = (FileFilter *)filterptr;
+
+    while( ff<I>-</I>&gt;blocks2read<I>--</I>-- ) {
+
+       db = new data_block;
+       db<I>-</I>&gt;block = new char[ INBUF_SIZE ];
+       db<I>-</I>&gt;data_size = fread( db<I>-</I>&gt;block, 1, INBUF_SIZE, ff<I>-</I>&gt;rfile );
+       if( db<I>-</I>&gt;data_size ) {
+           db2 = ff<I>-</I>&gt;filter( db );
+             delete db<I>-</I>&gt;block;
+             delete db;
+             db = db2;
+             if( !ff<I>-</I>&gt;put_queue( db )) {
+                printf("\nCould not Put to Data Queue!\n");
+                exit( 1 );
+             }
+       }
+    }
+}
+
+void write_thread( void *filterptr )
+{
+    data_block *db;
+    FileFilter *ff = (FileFilter *)filterptr;
+    int n, s;
+    APIRET rc;
+
+    while( ff<I>-</I>&gt;blocks2write<I>--</I> ) {
+       if( !( db = ff<I>-</I>&gt;get_queue()) ) {
+          printf("\n\tBIG Error! : Queue is EMPTY!\N");
+          exit( 1 );
+       }
+
+       s = db<I>-</I>&gt;data_size;
+       n = fwrite( db<I>-</I>&gt;block, 1, s, ff<I>-</I>&gt;wfile );
+       delete db<I>-</I>&gt;block;
+       delete db;
+       if( n != s ) {
+          printf("\n\tWrite Block Write Error : Terminating!\n");
+          exit( 1 );
+       }
+    }
+    rc = DosPostEventSem( ff<I>-</I>&gt;done_sem );
+    ff<I>-</I>&gt;filter_error = (ULONG)rc;
+}
+
+int FileFilter::create_queue()
+{
+    APIRET rc;
+    char n[ 16 ];
+
+    strcpy( qname, "\\QUEUES\\Q");
+    sprintf( n, "%ld", count );
+    strcat( qname, n );
+
+    rc = DosCreateQueue( &amp;qhandle, QUE_FIFO |
+                     QUE_CONVERT_ADDRESS, qname );
+
+    if( !rc ) ++count;
+    return !rc;
+}
+int FileFilter::put_queue( data_block *data )
+{
+  ULONG  Request = 0;
+  ULONG  DataLength;
+  PVOID  DataBuffer;
+  ULONG  ElemPriority = 0;
+  APIRET rc;                    // OS/2 QUEUE API stuff
+
+  data_block *d;        // data structure from ffilter.hpp
+
+    if( !data )
+       return 0;
+
+    DataLength = data<I>-</I>&gt;data_size;
+    DataBuffer = data<I>-</I>&gt;block;
+
+    rc = DosWriteQueue(qhandle, Request, DataLength,
+             DataBuffer, ElemPriority);
+
+    delete data;
+    return ( rc ) ? 0 : 1;
+}
+
+data_block* FileFilter::get_queue()
+{
+  REQUESTDATA   Request;        // OS/2 QUEUE API stuff
+  ULONG         DataLength;
+  PVOID         DataAddress;
+  ULONG         ElementCode = 0;
+  BOOL32        NoWait = 0;
+  BYTE          ElemPriority = 0;
+  HEV           SemHandle = 0;
+  APIRET        rc;
+
+  data_block *data = 0; // data structure from ffilter.hpp
+
+    rc = DosReadQueue(qhandle, &amp;Request, &amp;DataLength, &amp;DataAddress,
+             ElementCode, NoWait, &amp;ElemPriority, SemHandle);
+
+    if( rc )
+       return 0;
+
+    data = new data_block;
+    if( data ) {
+
+       data<I>-</I>&gt;data_size = DataLength;
+       data<I>-</I>&gt;block = (char *)DataAddress;
+    }
+
+    return data;
+}
+
+int FileFilter::create_sem()
+{
+  ULONG attr = 0;
+  BOOL32 state = 0;
+  APIRET rc;
+
+    max_sem_wait = 60000UL;
+    rc = DosCreateEventSem( 0, &amp;done_sem, attr, state );
+    return ( rc ) ? 0 : 1;
+}
+
+APIRET FileFilter::wait4completion( ULONG max_wait )
+{
+    return DosWaitEventSem( done_sem, max_wait );
+}
+
+// End of File
+</pre>
+</BODY>
+</HTML>

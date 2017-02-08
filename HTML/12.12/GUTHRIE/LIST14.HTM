@@ -1,0 +1,423 @@
+<HTML><HEAD>
+<TITLE>December 1994/A Text Translation Tool for C Programmers/Listing 14</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 14<I> File</I> xlate.c &#151; <I>defines text translation functions</A></I></h4>
+<pre>/*******************************************************************
+*  File Name    :XLATE.C
+*  Description  :Text Substitution Software tool for Multi Language
+*                Support.
+*  Author       :R. Scott Guthrie / All Rights Reserved
+*  History      :01/13/94 - Modification to add Speed-Up code for
+*                           loading '.TRB' files.
+*                01/20/94 - Function names changed to avoid possible
+*                           conflicts with users code.
+*******************************************************************/
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;io.h&gt;
+#include &lt;fcntl.h&gt;
+#include &lt;alloc.h&gt;
+#include &lt;assert.h&gt;
+#include "xlate.h"
+
+/* GLOBAL VARAIBLES */
+XLATE *XlateBase = NULL;
+int XlateLines = 0;
+char *XlateFile = XlateDefaultFileName;
+
+/* FUNCTION DEFINITIONS */
+/*=======================================*/
+  void XlateSet(char *translate_file_name)
+/*=======================================*/
+/* Establish Translation Table Name*/
+{
+  XlateFree();                      /* clear any existing table */
+  XlateFile = translate_file_name;  /* set to new file name. */
+  return;
+} /* end function 'XlateSet()' */
+/*=============================*/
+9 char *Xlate(char *key_string)
+/*=============================*/
+/* Translate a given KEY string to a Translated version by searching */
+/* through the Translation table. */
+{
+  XLATE *node;                  /* Allocate pointer to an XLATE node */
+  static char Default[] =  "?"; /* Default String */
+
+  /* If the translation file has not been read in, then load it. */
+  if(!XlateBase)
+    (void) XlateLoad(XlateFile);
+
+  if(!XlateBase)                  /* If file wasn't loaded (found), */
+    return(Default);              /* Return the default string */
+
+  /* Search translation block for matching key string. */
+  if((node = (XLATE *)bsearch(key_string, XlateBase,
+    XlateLines, sizeof(XLATE), XlateSearchCompare)) == NULL)
+    return(Default);                 /* If no KEY is found */
+
+  /* Return pointer to the translated value. */
+  return(node-&gt;translated_value);
+
+} /* end function 'Xlate()' */
+
+/*=============================*/
+  int XlateLoad(char *filename)
+/*=============================*/
+/* This function is used to load a translation definition file. */
+/* Returns the number of Translate Table Entires or:            */
+/*    0 if no file is found. (either ".TRB" or ".TRN")          */
+/*   -1 if memory allocation error encountered.                 */
+{
+  char filenamebuf[128];   /* Filename Buffer */
+  FILE *fd;                /* Translation File Descriptor */
+  int retval = 0;          /* return variable */
+
+   /* Delete any existing 'in memory' translate table */
+   XlateFree();
+
+   /* Attempt to open a Binary Version of the translate file. */
+   sprintf(filenamebuf, "%s.TRB", filename);
+   if((fd = fopen(filenamebuf, "rb")) ! = NULL)
+   {
+     retval = XlateLoadBinary(fd);
+     fclose(fd);                     /* Finished with file */
+   }
+   else                              /* Binary file did not open */
+   {
+     /* Attempt to open a Text Version of the translate file. */
+     sprintf(filenamebuf, "%s.TRN", filename);
+     if((fd = fopen(filenamebuf, "r")) != NULL)
+     {
+      retval = XlateLoadText(fd);
+      fclose(fd);                   /* Finished with file */
+  }
+}
+/* If there was an error, then free any memory that did happen */
+/* to get allocated for the table and any Keys or Results.  */
+if(retval &lt;= 0)
+  XlateFree();
+
+  return(retval);
+} /* end 'XlateLoad()' */
+
+/*============================*/
+  int XlateLoadBinary(FILE *fd)
+/*============================*/
+/* Loads the binary version of the translate file. This loads */
+/* faster than the Text version.                              */
+{
+ /* Binary File format is:                          */
+ /*  4 bytes = ".TRB" (File Signature)              */
+ /*  integer # of lines                             */
+ /*  integer # of line sets of:                     */
+ /*    integer size of key string                   */
+ /*    null terminated key string                   */
+ /*    integer size of result string                */
+ /*    null terminated result string                */
+ /*  (Note: The file is pre-sorted by Key Strings)  */
+
+ char signature[5]; /* buffer for signature string  */
+ int i;             /* Loop Variable */
+ int length;        /* string length read from file */
+ XLATE *node;       /* Allocated Node */
+
+/* Get the file Signature */
+if(fread(signature, 4 * sizeof(char), 1, fd) != 1)
+  return 0;             /* Bad read from File */
+signature[4] = '\0';    /* terminating NULL for signature string */
+if(strcmp(signature, ".TRB") ! = 0)
+  return 0;             /* Not a ".TRB" Binary Translate File */
+
+/* Get the number of entries */
+if(fread(&amp;XlateLines, sizeof(XlateLines), 1, fd) != 1)
+  return 0;             /* File Error - No Size Found. */
+
+/* Allocate the translate table memory */
+if(XlateCreateTable(XlateLines) == -1)
+  return (-1);          /* Allocation Error */
+
+node = XlateBase;       /* point node to the table */
+
+for(i=0; i&lt; XlateLines; i++)
+{
+  /* PROCESS KEY VALUE */
+  /*Get Length of Key Value */
+  if(fread(&amp;length, sizeof(length),1,fd) != 1)
+  return(0); /* File Error - No Length Found. */
+
+ /* Allocate Key String space */
+ if((node-&gt;translate_key = (char*)malloc(sizeof(char) * length)) == NULL)
+  return(-1);         /* File Error - Allocation Failed */
+
+ /*Read Key String into translate table */
+
+ if (fread(node-&gt;translate_key, length, 1, fd !=1)
+  return(0);         /* File Error - String not read correctly */
+
+ /* PROCESS RESULT VALUE */
+ /* Get Length of Result Value */
+ if(fread(&amp;length, sizeof(length),1,fd) != 1)
+  return(0);         /* File Error - No Length Found. */
+
+ /* Allocate Result String space */
+ if((node-&gt;translated_value = (char*)malloc(sizeof(char) * length)) == NULL)
+  return(-1);        /* File Error - Allocation Failed */
+
+ /* Read Result String into translate table */
+ if(fread(node-&gt;translated_value, length, 1, fd) != 1)
+  return(0);         /* File Error - String not read correctly */
+
+  node++;            /* Bump Node Pointer */
+ }
+ return(XlateLines);
+} /* end 'XlateLoadBinary()' */
+
+/*======================================*/
+  int XlateGetString(FILE *fd, char *str)
+/*======================================*/
+/* Parser State Machine's Operation and Rules                         */
+/*                                                                    */
+/* - Text Delimeters are square brackets. '[' and ']'                 */
+/* - 'Strings' are text values within delimeters.                     */
+/* - Whitespace is ignored except within Strings.                     */
+/* - Key and Result values are Strings.                               */
+/* - Any non-string text is ignored. (Considered a comment)           */
+/* - Delimeters can be escaped with backslash '\' character.          */
+/* - Backslash can be escaped with Blackslash. '\\'                   */
+/* - Key and Result values are interpreted as a Pair of Strings.      */
+/*   ( [Key value] followed by [Result value] )                       */
+/* - The Key value and the Result value need not be on the same line, */
+/*   but must be contigious.                                          */
+/* - String values can be split across multiple lines, but newline    */
+/*   characters are NOT preserved.                                    */
+/* - String lengths will be truncated to 'XlateMaxLength' characters. */
+/*                                                                    */
+/* Returns: Length of string returned, or -1 for EOF                  */
+{
+ /* Define State Types */
+ enum {WhiteSpace, String, WhiteSpaceEscape,
+      Escape, Truncate, TruncateEscape);
+
+ int count;                        /* # of characters copied to str */
+ int state = WhiteSpace;           /* Current State of Parser */
+ char *pos;                        /* Current position in str */
+ char ch;                          /* Character being processed */
+
+ count= 0;
+ while((ch = (char) fgetc(fd)) != (char)EOF)
+ {
+  /* Test for full buffer */
+  if(count == XlateMaxLength - 1)  /* If the buffer is full, */
+    state = Truncate;              /* change state to Truncate. */
+
+  switch(state)
+  {
+   case WhiteSpace:               /* PROCESS WHITE SPACE */
+    switch(ch)                    /* switch on char received */
+    {
+     case XlateOpenDelimeter:
+       pos = str;                /* Position to beginning of str */
+       count = 0;                /* zero the count value */
+       state = String;           /* Change state */
+       break;
+     case XlateEscapeCharacter:  /* Escape Character encountered */
+       state = WhiteSpaceEscape;
+       break;
+     default:                    /* ignore all other characters */
+       break;
+    }
+    break;
+
+   case String:                  /* PROCESS STRING VALUE */
+     switch(ch)                  /* switch on char received */
+     {
+      case XlateCloseDelimeter:  /* Close Delimeter encountered */
+       *pos = '\0';              /* terminate buffer */
+
+       return count;            /* return string length */
+     case XlateEscapeCharacter:  /* Escape Character encountered */
+       state = Escape;          /* Change state */
+       break;
+     case '\n':                  /* Ignore newline character */
+       break;
+     default:                    /* Other character encountered */
+       *pos++ = ch;              /* Copy char to the buffer */
+       count++;                  /* Bump character count */
+       break;
+     }
+     break;
+
+   case WhiteSpaceEscape:        /* Ignore character found */
+     state = WhiteSpace;         /* after an escape while */
+     break;                      /* scanning WhiteSpace. */
+
+   case Escape:                  /* PROCESS ESCAPE */
+     *pos++ = ch;                /* Copy whatever it is... */
+     count++;                    /* bump character count */
+     state = String;             /* reset to String State */
+     break;
+
+   case Truncate:                /* Don't Copy Characters */
+     switch(ch)                  /* switch on char received */
+     {
+      case XlateCloseDelimeter:  /* Close Delimeter encountered */
+        *pos = '\0';             /* terminate buffer */
+        return count;            /* return string length */
+      case XlateEscapeCharacter: /* Escape Character encountered */
+        state = TruncateEscape;  /* Change state to process Escape */
+        break;
+      default:                   /* Other Character encountered */
+        break;                   /* Do Nothing... */
+      }
+      break;                     /* Break Truncate Case */
+
+     case TruncateEscape:        /* Ignore character found */
+       state = Truncate;         /* after an escape while */
+       break;                    /* Truncating.  */
+
+     default:
+       assert(0);                /* unreachable code */
+       break;
+
+    }  /* end switch 'state' */
+  }  /* end while '!EOF' */
+
+  *str = '\0';                   /* Return NULL in str */
+
+  return(-1);                    /* EOF reached */
+} /* end 'XlateGetString()' */
+
+/*=========================*/
+ int XlateLoadText(FILE *fd)
+/*=========================*/
+/* This function is used to load a translation definition file. */
+/* Returns the number of lines processed or:                    */
+/*  0 if no such file, or                                       */
+/* -1 Out of Memory or other memory allocation error.           */
+{
+ char buffer[XlateMaxLength];    /* Text Buffer (data from file)   */
+ int i;                          /* Local Index Variable */
+ XLATE *node;                    /* Translate Node */
+ int length;                     /* Length of string */
+
+ /* PASS 1 - Begin Processing */
+ XlateLines = 0;                 /* Initialize string count. */
+
+ /* Count number of String Values */
+ while(XlateGetString(fd, buffer) &gt;= 0)  /* returns -1 at EOF */
+ XlateLines++;
+
+ /* XlateLines = number of strings found. (Half are Keys and Half   */
+ /* are Results) If there isn't an even number, then there won't be */
+ /* a Result value for the last Key value. (or someone mis-counted) */
+
+ if((XlateLines % 2) == 1)       /* (Last Key value will be   */
+ XlateLines--;                   /* ignored since there is no */
+ XlateLines /= 2;                /* Result value for it.)     */
+
+ /* PASS 2 - Build in-memory table */
+ /* Reset the translation file (to the top) */
+ rewind(fd);
+
+ /* Allocate the translate table memory */
+ if(XlateCreateTable(XlateLines) == -1)
+  return (-1);                   /* Allocation Error */
+
+ /* Read the file entries into the Translate Table. */
+
+ node = XlateBase;               /* establish pointer to table */
+ for(i = 0; i &lt; XlateLines; i++) /* Loop for number of lines */
+ {
+   /* Get KEY value */
+   length = XlateGetString(fd, buffer);
+
+   /* Store KEY value in the table */
+   if((node-&gt;translate_key = (char *)malloc(sizeof(char) *
+                         (length + 1))) == NULL)
+     return(-1);                    /* Allocation Error */
+   strcpy(node-&gt;translate_key, buffer); /* Move Value to Table */
+
+   /* Get RESULT value */
+   length = XlateGetString(fd, buffer);
+
+   /* Store RESULT value in the table */
+   if((node-&gt;translated_value = (char *)malloc(sizeof(char) *
+                           (length + 1))) == NULL)
+
+     return(-1);                   /* Allocation Error */
+   strcpy(node-&gt;translated_value, buffer);
+
+   node++;                         /* Advance Table Pointer */
+ } /* end 'for loop' */
+
+ /* Sort the TRANSLATE Block. */
+ qsort(XlateBase, XlateLines, sizeof(XLATE), XlateSortCompare);
+
+ return(XlateLines);               /* good return */
+
+} /* end function 'XlateLoadText' */
+/*===============================*/
+ int XlateCreateTable(int entries)
+/*===============================*/
+{
+ /* Allocate space for the file entries (XLATE structures) */
+ if((XlateBase = (XLATE *) malloc(sizeof(XLATE) * entries)) == NULL)
+ return (-1); /* return memory allocation error */
+ memset(XlateBase, 0, (sizeof(XLATE) * entries)); /* zero table */
+ return (1);
+}
+
+/*=================*/
+ void XlateFree(void)
+/*=================*/
+/* Free allocated translate table (if any) */
+{
+ XLATE *node;                       /* Translate Node Pointer */
+ int i;                             /* local index variable */
+
+ /* If allocated, Free the XLATE structure memory */
+ if(XlateBase)
+ {
+  node = XlateBase;                 /* Establish node pointer */
+  for(i = 0; i &lt; XlateLines; i++)   /* loop through table */
+  {
+   if(node-&gt;translate_key)          /* Check for allocation */
+     free(node-&gt;translate_key);     /* Free key memory*/
+   if(node-&gt;translated_value)       /* Check for allocation */
+     free(node-&gt;translated_value);  /* Free value memory */
+   node++;                          /* Bump the Table pointer */
+  }
+
+  free(XlateBase);                   /* Free the Base memory */
+  XlateBase = NULL;                  /* Reset base to NULL */
+ }
+ return;
+} /* end function 'XlateFree()' */
+
+/*===================================================*/
+ int XlateSearchCompare(const void *a, const void *b)
+/*===================================================*/
+/* Compare function for searching the Translation Block. */
+{
+ return(strcmp((char *) a, ((XLATE *) b)-&gt;translate_key));
+
+} /* end function 'XlateSearchCompare()'  */
+/*=================================================*/
+ int XlateSortCompare(const void *a, const void *b)
+/*=================================================*/
+/* Compare function for sorting the Translation Block. */
+{
+ return(strcmp(((XLATE *) a)-&gt;translate_key,
+             ((XLATE *) b)-&gt;translate_key));
+
+} /* end function 'XlateSortCompare()' */
+
+/* end source file 'xlate.c' */
+/* End of File */</pre>
+
+</BODY>
+</HTML>

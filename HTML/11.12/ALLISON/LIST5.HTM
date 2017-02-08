@@ -1,0 +1,457 @@
+<HTML><HEAD>
+<TITLE>December 1993/Code Capsules/Listing 5</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 5 <I>Bitstring Class Implementation</I></A></h4>
+<pre>// bitstr.cpp
+#include &lt;assert.h&gt;
+#include &lt;iostream.h&gt;
+#include &lt;string.h&gt;
+#include "string.hpp"
+#include "bitstr.h"
+
+// Public Functions:
+bitstring::bitstring(unsigned long val, size_t n)
+{
+    assert(n &lt; NPOS);
+
+    // val == 0 is easy...
+    if (val == 0)
+    {
+        init(n);
+        return;
+    }
+
+    // Find highest significant bit
+    unsigned long temp = val;
+    int high_bit = 0;
+    for (int i = 0; temp; ++i)
+    {
+        if (temp &amp; 1)
+            high_bit = i;
+        temp &gt;&gt;= 1;
+    }
+
+    // Determine nbits_ and construct
+    nbits_ = high_bit + 1;
+    if (nbits_ &lt; n)
+        nbits_ = n;
+    init(nbits_);
+
+    // Store bit pattern
+    for (i = 0; i &lt; nbits_; ++i)
+    {
+        if (val &amp; 1)
+            set_(i);
+        val &gt;&gt;= 1;
+    }
+}
+bitstring::bitstring(const string&amp; s)
+{
+    // Validate that s has only 0's and 1's
+    for (int i = 0; i &lt; s.length(); ++i)
+    {
+        char c = s.get_at(i);
+        if (c != '0' &amp;&amp; c != '1')
+            break;
+    }
+    assert(i == s.length());
+
+    from_string(s);
+}
+
+bitstring::bitstring(const bitstring&amp; b)
+{
+    init(b.nbits_);
+    memcpy(bits_,b.bits_,nblks_ * sizeof bits_[0]);
+}
+
+string bitstring::to_string() const
+{
+    char *s = new char[nbits_+1];
+    for (int i = 0; i &lt; nbits_; ++i)
+        s[i] = '0' +test_(i);
+
+    s[nbits_] = '\0';
+    string s2(s);
+    delete [] s;
+    return s2;
+}
+
+bitstring&amp; bitstring::operator=(const bitstring&amp; b)
+{
+    if (this != &amp;b)
+    {
+        delete [] bits_;
+        init(b.nbits_);
+        memcpy(bits_,b.bits_,nblks_ * sizeof bits_[0]);
+    }
+    return *this;
+}
+
+int bitstring::operator==(const bitstring&amp; b) const
+{
+    return (nbits_ == b.nbits_) &amp;&amp;
+      !memcmp(bits_,b.bits_,nblks_ * sizeof bits_[0]);
+}
+
+bitstring&amp; bitstring::set()
+{
+    memset(bits_,~0u,nblks_* sizeof bits_[0]);
+    cleanup();
+    return *this;
+}
+
+bitstring&amp; bitstring::set(size_t pos, int val)
+{
+    assert(pos &lt;= nbits_);
+    if (pos == nbits_)
+       length(nbits_ + 1); // Append
+
+    set_(pos,val);
+    return *this;
+}
+
+bitstring&amp; bitstring::reset(size_t pos)
+{
+    assert(pos &lt;= nbits_);
+    if (pos == nbits_)
+    length(nbits_ + 1); // Append
+
+    reset_(pos);
+    return *this;
+}
+
+bitstring&amp; bitstring::reset()
+{
+    memset(bits_,0,nblks_ * sizeof bits_[0]);
+    return *this;
+}
+
+bitstring&amp; bitstring::toggle()
+{
+    size_t nw = nblks_;
+    while (nw--)
+      bits_[nw] = ~bits_[nw];
+    cleanup();
+    return *this;
+}
+
+int bitstring::any() const
+{
+    for (int i = 0; i &lt; nblks_; ++i)
+      if (bits_[i])
+        return 1;
+    return 0;
+}
+
+size_t bitstring::count() const
+{
+    size_t sum = 0;
+    for (int i = 0; i &lt; nbits_; ++i)
+      if (test_(i))
+        ++sum;
+    return sum;
+}
+
+bitstring&amp; bitstring::operator&amp;=(const bitstring&amp; b)
+{
+    bitstring rhs(b);
+
+    equalize(rhs);
+    for (int i = 0; i &lt; nblks_;++i)
+        bits_[i] &amp;= rhs.bits_[i];
+    return *this;
+}
+
+bitstring&amp; bitstring::operator|=(const bitstring&amp; b)
+{
+    bitstring rhs(b);
+
+    equalize(rhs);
+    for (int i = 0; i &lt; nblks_; ++i)
+        bits_[i] |= rhs.bits_[i];
+    cleanup();
+    return *this;
+}
+
+bitstring&amp; bitstring::operator^=(const bitstring&amp; b)
+{
+    bitstring rhs(b);
+
+    equalize(rhs);
+    for (int i = 0; i &lt; nblks_; ++i)
+        bits_[i] ^= rhs.bits_[i];
+    cleanup();
+    return *this;
+}
+
+bitstring&amp; bitstring::operator&gt;&gt;=(size_t n)
+{
+    if (n &gt;= nbits_)
+        reset();
+    else
+    {
+        for (int i = nbits_ - 1; i &gt;= n; --i)
+            (void) set_(i,test_(i-n));
+        for (i = 0; i &lt; n;++i)
+            reset_(i);
+    }
+    return *this;
+}
+
+bitstring&amp; bitstring::operator&lt;&lt;=(size_t n)
+{
+    if (n &gt;= nbits_)
+        reset();
+    else
+    {
+        for (int i = 0; i &lt; nbits_ - n; ++i)
+            (void) set_(i,test_(i+n));
+        for (i = nbits_ - n; i &lt; nbits_; ++i)
+            reset_(i);
+    }
+    return *this;
+}
+
+bitstring&amp; bitstring::operator+=(const bitstring&amp; b)
+{
+    assert(nbits_ + b.nbits_ &lt; NPOS);
+    int oldlen = nbits_;
+
+    length(nbits_ + b.nbits_);
+    for (int i = 0; i &lt; b.nbits_; ++i)
+        (void) set_(oldlen+i,b.test_(i));
+
+    return *this;
+}
+
+bitstring&amp; bitstring::insert(size_t pos, const bitstring&amp; b)
+{
+    assert(pos &lt;= nbits_);
+    size_t oldlen = nbits_;
+    size_t newlen = nbits_ + b.nbits_;
+
+    // Grow to accommodate insertion
+    length(newlen);
+
+    // Move tail to right
+    for (int i = 0; i &lt; oldlen - pos;++i)
+        set_(newlen-i-1,test_(oldlen-i-1));
+
+    // Replicate b in between
+
+    for (i = 0; i &lt; b.nbits_;++i)
+        set_(pos+i,b.test_(i));
+
+    return *this;
+}
+
+bitstring&amp; bitstring::remove(size_t pos, size_t n)
+{
+    assert(pos &lt; nbits_);
+
+    if (n &gt; nbits_ - pos)
+       n = nbits_ - pos;
+
+    // Slide tail down to cover gap
+    for (int i = 0; i &lt; nbits_ - pos - n; ++i)
+        set_(pos+i,test_(pos+n+i));
+
+    // Shrink
+    length(nbits_ - n);
+    return *this;
+}
+
+bitstring&amp; bitstring::replace(size_t pos, size_t n,
+                         const bitstring&amp; b)
+{
+    assert(pos &lt;= nbits_);
+    if (n &gt; nbits_ - pos)
+        n = nbits_ - pos;
+
+    size_t oldlen= nbits_;
+    size_t newlen = oldlen - n + b.nbits_;
+    int diff = newlen - oldlen;
+
+    // Adjust length and move tail as needed
+    if (diff &gt; 0)
+    {
+        // Grow
+        length(newlen);
+        for (int i = oldlen - 1; i &gt;= pos + n; --i)
+        (void) set_(i+diff,test_(i));
+    }
+    else if (diff &lt; 0)
+    {
+        // Shrink
+        for (int i = pos + n; i &lt; oldlen; ++i)
+            (void) set_(i+diff,test_(i));
+        length(newlen);
+    }
+
+    // Copy b into place
+    for (int i = 0; i &lt; b.nbits_;++i)
+        (void) set_(pos+i,b.test_(i));
+
+    return *this;
+}
+
+size_t bitstring::find(int val, size_t pos) const
+{
+
+    assert(pos &lt; nbits_);
+
+    for (size_t i = pos; i &lt; nbits_; ++i)
+{
+    int t = test_(i);
+    if (val &amp;&amp; t || !val &amp;&amp; !t)
+        return i;
+}
+    return NPOS;
+}
+
+size_t bitstring::rfind(int val, size_t pos) const
+
+{
+    assert(pos &lt; nbits_);
+
+    for (int i = pos; i &gt;= 0; --i)
+    {
+        int t = test_(i);
+        if (val &amp;&amp; t || !val &amp;&amp; !t)
+            return i;
+    }
+    return NPOS;
+}
+
+bitstring bitstring::substr(size_t pos, size_t n) const
+{
+    assert(pos &lt;= nbits_);
+    if (n &gt; nbits_ - pos)
+        n = nbits_ - pos;
+
+    bitstring b(0,n);
+    for (int i = 0; i &lt; n; ++i)
+        b.set_(i,test_(pos + i));
+    return b;
+}
+
+size_t bitstring::length(size_t n, int val)
+{
+    size_t oldlen = nbits_;
+    size_t nw1 = nblks_;
+    size_t nw2 = nblks(n);
+
+    // Alter the size of a bitstring
+    if (nw1 != nw2)
+    {
+        Block *newbits = new Block[nw2];
+        for (int i = 0; i &lt; nwl &amp;&amp; i &lt; nw2; ++i)
+            newbits[i] = bits_[i];
+
+        delete [] bits_;
+        bits_ = newbits;
+
+        for (i = nw1; i &lt; nw2;++i)
+            bits_[i] = val ? ~Block(0) : Block(0);
+        nblks_ = nw2;
+    }
+    nbits_ = n;
+    make_clean_mask();
+    cleanup();
+    return oldlen;
+}
+
+size_t bitstring::trim()
+{
+    for (int i = nbits_ - 1; i &gt;= 0; --i)
+        if (test_(i))
+            break;
+    size_t newlen = i + 1;
+    length(newlen);
+    return newlen;
+}
+
+ostream&amp; operator&lt;&lt;(ostream&amp; os, const bitstring&amp; b)
+{
+    os &lt;&lt; b.to_string();
+    return os;
+}
+
+istream&amp; operator&gt;&gt;(istream&amp; is, bitstring&amp; b)
+{
+    const size_t N = 256;
+    char *buf = new char[N];
+    char c;
+
+    // Consume bit characters
+    is &gt;&gt; ws;
+    for (int i = 0; i &lt; N &amp;&amp; is.get(c); ++i)
+    {
+        if (c == '0' || c == '1')
+            buf[i] = c;
+        else
+        {
+            is.putback(c);
+            break;
+        }
+    }
+    buf[i] = '\0';
+
+    if (i == 0)
+        is.clear(ios::failbit);
+    else
+    {
+        delete [] b.bits_;
+        b.from_string(string(buf));
+    }
+
+    delete buf;
+    return is;
+}
+
+// Private Functions:
+int bitstring::set_(size_t n, int val)
+{
+    if (val)
+        set_(n);
+    else
+        reset_(n);
+    return !!val;
+}
+
+void bitstring::from_string(const string&amp; s)
+{
+    // Assumes string contains only 0's and 1's
+    init(s.length());
+    for (int i = 0; i &lt; s.length(); ++i)
+        if (s.get_at(i) == '1')
+            set_(i);
+}
+
+void bitstring::init(size_t n)
+{
+    nbits_ = n;
+    nblks_ = nblks(n);
+    if (n &gt; 0)
+        bits_ = new Block[nblks_];
+    else
+        bits_ = 0;
+    memset(bits_,0,nblks_ * sizeof bits_[0]);
+    make_clean_mask();
+}
+
+void bitstring::equalize(bitstring&amp; b)
+{
+    // Make the smaller the size of the larger
+    if (b.nbits_ &lt; nbits_)
+        b.length(nbits_);
+    else if (nbits_ &lt; b.nbits_)
+        length(b.nbits_);
+}
+
+// End of File</pre>
+</BODY>
+</HTML>

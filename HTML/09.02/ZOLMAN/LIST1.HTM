@@ -1,0 +1,187 @@
+<HTML><HEAD>
+<TITLE>February 1991/A Login Shell For MS-DOS/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1</A></h4>
+<pre> 1: /*
+ 2:  *  Login management program for DOS
+ 3:  *
+ 4:  *  Written by Leor Zolman, 5/1/89
+ 5:  *
+ 6:  *  Usage (typcially in autoexec.bat):
+ 7:  *    login
+ 8:  *
+ 9:  *  Control file (PASSWD_FILE) format:
+10:  *
+11:  *  -----------------------------------
+12:  *    name [password]
+13:  *    name [password]
+14:  *    .
+15:  *    .
+16:  *    .
+17:  *  -----------------------------------
+18:  *
+19:  *  The directory STARTUP_DIR should contain a batch
+20:  *  file for each user, named name.BAT. Upon successful
+21:  *  login, the batch file named for the user will be
+22:  *  be executed.
+23:  *  The file named by CURRENT_USER (c:\etc\startup\user.id
+24:  *  as configured below) will be written containing the
+25:  *  user id after a successful login.
+26:  */
+27:
+28: #include &lt;stdio.h&gt;
+29: #include &lt;conio.h&gt;
+30: #include &lt;stdlib.h&gt;
+31:               // name of startup batch directory, current
+32:               // id file, and password control files:
+33: #define STARTUP_DIR   "c:\\etc\\startup\\"
+34: #define CURRENT_USER  STARTUP_DIR"user.id"
+35: #define PASSWD_FILE   STARTUP_DIR"passwd.dat"
+36:
+37:
+38: #define MAXUSERS 100    // Max number of different users
+39: #define MAXLINE 100     // For login line input buffer
+40:
+41: #define ECHO 1          // Parameters to zgets()
+42: #define NOECHO 0
+43:
+44: char *zgets(char *buffer, int echo);  // prototypes
+45: int zputs(char *str);
+46:
+47: struct {                // name/password structure
+48:   char name[15];
+49:   char passwd[15];
+50: } users[MAXUSERS];
+51:
+52: void main()
+53: {
+54:   int i;
+55:   FILE *fp;
+56:   int nusers;
+57:   char linbuf[MAXLINE];
+58:                         // open password file
+59:   if ((fp = fopen(PASSWD_FILE, "r")) == NULL)
+60:     exit(cprintf("Can't open %s\a\n", PASSWD_FILE));
+61:
+62:                         // read in user name/password data
+63:   for (nusers = 0; nusers &lt; MAXUSERS; nusers++)
+64:   {                     // default to null password:
+65:     *users[nusers].passwd = '\0';
+66:     if (fscanf(fp, "%s %s", users[nusers].name,
+67:       users[nusers].passwd) &lt; 1)  // scan a line
+68:         break;          // break if empty
+69: #if DEBUG
+70:     else                // for debugging, show data
+71:       cprintf("read user name: \"%s\", password: \"%s\"\n",
+72:         users[nusers].name, users[nusers].passwd);
+73: #endif
+74:   }
+75:   if (!nusers)
+76:     exit(zputs("No valid entries in log file.\a\n"));
+77:
+78:   fclose(fp);         // close password file
+79:
+80:   while (1)           // mail loop
+81:   {
+82:     zputs("login: "); // initial prompt
+83:     zgets(linbuf, ECHO);    // get user id w/echo
+84:
+85:     for (i = 0; i &lt; nusers; i++)  // look it up
+86:       if (!strcmp(users[i].name, linbuf))
+87:         break;
+88:
+89:                        // found user id. need password?
+90:     if (i != nusers &amp;&amp; !*users[i].passwd)
+91:         break;         // if not, don't prompt
+92:
+93:     zputs("\npassword: ");  // prompt for password
+94:     zgets(linbuf, NOECHO);  // read w/o echo
+95:     if (i != nusers &amp;&amp; !strcmp(linbuf, users[i].passwd))
+96:       break;          // if correct, break out of loop
+97:
+98:     zputs("\nlogin incorrect.\n");
+99:   }
+100:
+101:   zputs("\n\n");      // success!
+102:                       // write id file
+103:   if ((fp = fopen(CURRENT_USER, "w")) == NULL)
+104:     cprintf("Couldn't create %s\a\n", CURRENT_USER);
+105:   else
+106:   {
+107:     if (fputs(users[i].name, fp) == EOF)
+108:       cprintf("Couldn't write to %s\n", CURRENT_USER);
+109:     fclose(fp);
+110:   }
+111:
+112:   strcpy(linbuf, STARTUP_DIR);    // construct startup batch
+113:   strcat(linbuf, users[i].name);  //     filename
+114:   strcat(linbuf, ".bat");
+115:   if ((fp = fopen(linbuf, "r")) != NULL) // is one there?
+116:   {
+117:     fclose(fp);             // yes. close it up.
+118:     if (system(linbuf))     // attempt to run it
+119:       cprintf("Couldn't execute %s\a\n", linbuf);
+120:   }
+121:   else
+122:     cprintf("Couldn't find %s\a\n", linbuf);
+123: }
+124:
+125:
+126: /*
+127:  * function zgets():
+128:  *    Read a string from the console with optional echo,
+129:  *      and all Ctrl-C / Ctrl-Breka checks disabled:
+130:  */
+131:
+132: char *zgets(char *str, int echo)
+133: {
+134:   char c, *save = str;        // save address of buffer
+135:
+136:   while ((c = zgetch()) != '\n')  // read a char
+137:   {
+138:     *str++= c;
+139:     if (echo)                 // echo if required
+140:       putch(c);
+141:   }
+142:   *str = '\0';                // terminate string
+143:   return save;
+144: }
+145:
+146:
+147: /*
+148:  * function zgetch():
+149:  *    Read a character from the keyboard, without echo,
+150:  *    performing newline conversion:
+151:  */
+152:
+153: int zgetch()
+154: {
+155:   char c;
+156:
+157:   c = bdos(7,0,0);            // Use a direct BDOS call
+158:   return (c == '\r') ? '\n' : c;  // Convert CR to newline
+159: }
+160:
+161:
+162: /*
+163:  * function zputs():
+164:  *    Print a string to the console, with newlines expanded:
+165:  */
+166:
+167: int zputs(char *str)
+168: {
+169:   char c;
+170:
+171:   while (c = *str++)
+172:   {
+173:     if (c == '\n')
+174:       putch('\r');
+175:     putch(c);
+176:   }
+177:   return 0;
+178: }</pre>
+
+</BODY>
+</HTML>

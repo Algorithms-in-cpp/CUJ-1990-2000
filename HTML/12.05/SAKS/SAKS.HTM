@@ -1,0 +1,176 @@
+
+
+<HTML>
+<HEAD>
+
+<TITLE>May 1994/Stepping Up To C++</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocmay.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Columns</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Stepping Up To C++<A name="00FE_0079"><A name="00FE_0079"></font></h2><P>
+<h3 align="center"><A name="00FE_0000"><A name="00FE_0000">Compilation Firewalls, Part 2</h3><P>
+<h3 align="center"><font color="#800000">Dan Saks</font></h3><hr><blockquote><P>
+<P><i><A name="00FE_0000"><A name="00FE_0000">Dan Saks is the president of Saks &amp; Associates, which offers consulting and training in C++ and C. He is secretary of the ANSI and ISO C++ committees. Dan is coauthor of C++ Programming Guidelines, and codeveloper of the Plum Hall Validation Suite for C++ (both with Thomas Plum). You can reach him at 393 Leander Dr., Springfield OH, 45504-4906, by phone at (513)324-3601, or electronically at dsaks@wittenberg.edu.</i></P><P>
+C++ programmers commonly package classes as a pair of files: a header (.h) file and a source (.cpp) file. A header contains the class definition, which in turn contains the declarations for all the class members, private and protected as well as public. A header may also contain inline member function definitions. The correspending source file contains the definitions for any members not defined in the header, typically the non-inline member functions and static data members. Compiling that source file creates the class object file.<P>
+Client source files (source files that use a class) <I>#include</I> the class header to gain access to the public class members during compilation. The resulting client object files link with the class object file to form an executable program.<P>
+For the most part, this packaging scheme works pretty well. Its main drawback seems to be that it doesn't completely insulate users of a class from changes to the class implementation. Typically, changes in the class implementation require changes in the declarations of one or more non-public members. Since those declarations are in the class header, class users must recompile every source file that directly or indirectly includes the revised header, even if they haven't changed any of those sources.<P>
+This is the second part in a series describing programming conventions you can use to physically separate a class interface from its implementation. By following these conventions, you can build a "compilation firewall" between the class header and the corresponding class source, so that changes in the class implementation don't require recompilation of client sources.<P>
+The two most common techniques for building compilation firewalls use "Cheshire Cat" classes and protocol classes. I presented Cheshire Cat classes last month. Along the way, I introduced forward-declared nested classes, a recent extension to C++. This month I'll explain protocol classes and consider the performance costs of these techniques.<P>
+As before, I'll demonstrate the techniques by applying them to the line number sequences in <I>xr</I>, a cross-reference generator application program. <I>xr</I> writes to standard output an alphabetized list of words read from standard input. Their program prints each word on a separate line followed by the sequence of line numbers on which that word appears in the input.<P>
+The main source file for <I>xr</I> appears in <A href="list1.htm">Listing 1</a>.
+ It scans the input and counts input line numbers, and delegates all other work for maintaining the crossreference table to an object of type <I>xrt</I> (the cross-reference table class). The header for <I>xrt</I> appears in <A href="list2.htm">Listing 2</a>,
+ and its corresponding source file appears in <A href="list3.htm">Listing 3</a>.
+<P>
+Class <I>xrt</I> maintains the cross-reference as a binary tree of <I>treenodes</I>. Each <I>treenode</I> associates the spelling of a word with a sequence of line numbers. <I>treenode</I> actually uses a pointer, called <I>word</I>, to a dynamically allocated null-terminated character string that holds the spelling. <I>treenode</I> also uses an object, <I>lines,</I> of type <I>Ins</I> (the line number sequence class) to hold the set of line numbers associated with that word. Class <I>lns</I> is the one we're really interested in.<P>
+Class <I>lns</I> has many possible implementations. I've been working with two: a "small" version that uses a single pointer to the head of a singly linked list of nodes, and a "fast" version that uses a pair of pointers to the head and tail of the list. The small version uses less memory for each <I>lns</I> object, but it's relatively slow because it searches the entire list to find the last node every time it adds a line number. The fast version avoids that search by using a second pointer pointing directly to the tail of the list.<P>
+<A href="list4.htm">Listing 4</a>
+is the header for the small version of <I>lns,</I> and <A href="list5.htm">Listing 5</a>
+is the corresponding source file. <A href="list6.htm">Listing 6</a>
+and <A href="list7.htm">Listing 7</a>
+are the header and source, respectively, for the fast version. (Last month I referred to the small and fast versions as versions <I>a</I> and <I>b</I>, respectively. Small and fast are a bit more descriptive.)<P>
+Both <I>lns</I> implementations are in uninsulated form. That is, their class definitions include private members so that changes in the implementation may force recompilation of client source files. (Last time I used the term <I>canonical</I> instead of <I>uninsulated</I><I>,</I> and attributed this use of <I>canonical</I> to <a href="#coplien">Coplien [1992]</a>. However, I've since reread parts of Coplien's book, and I'm not sure I used the term as he intended. <I>Uninsulated</I> is more descriptive anyway.)<P>
+The two versions of <I>Ins</I> have exactly the same public interface, but different underlying implementations. Building a firewall means writing the class header so that it contains only the public interface by moving all the implementation details to the class source file. The Cheshire Cat technique approximates this ideal by reducing the private data to a single pointer to an implementation object with incomplete type. The protocol class technique uses an abstract base class instead of an incomplete type.<P>
+<h4><FONT COLOR="#000080"><A name="00FE_007A"><I>lns</I><B> as an Abstract Base Class<A name="00FE_007A"></B></FONT></h4></P>
+<A href="list8.htm">Listing 8</a>
+shows a header that defines <I>lns</I> as an abstract base class (ABC). An ABC is a class with at least one pure virtual function. A pure virtual function is a virtual function with a pure virtual specifier ( = 0 ) at the end of its declaration. (I introduced pure virtual functions and ABCs in "Stepping Up to C++: How Virtual Functions Work," <I>CUJ</I><I>,</I> January, 1994.)<P>
+A virtual function declared in a base class specifies an abstract operation that may have a different implementation in a class derived from that base. An ordinary ("impure") virtual function has a definition (a function body) that accompanies the declaration, so that derived classes inherit a default implementation for that function. A derived class can override that default as appropriate.<P>
+A pure virtual function specifies an abstract operation without a default implementation. You cannot create objects of an ABC. However, you can declare pointers and references to an ABC that will refer at run time to objects of types derived from the ABC. (Such pointers and references refer to objects whose <I>static</I> type is an ABC, but whose <I>dynamic</I> type is some class derived from that ABC.) Thus, an ABC specifies a common interface for a variety of derived types, rather than the exact type of any real-live objects.<P>
+A class derived from an ABC can override any inherited pure virtual function with an <I>"impure"</I> virtual function declaration and corresponding function definition. Derived classes inherit pure virtual functions as pure virtual functions. Thus, if a derived class does not override every inherited pure virtual function with an impure virtual function, then that derived class is also an ABC. On the other hand, a derived class that overrides all its inherited pure virtual functions becomes a "concrete" class, so that you can create objects of that type.<P>
+Class <I>lns</I> in <A href="list8.htm">Listing 8</a>
+is an ABC that consists entirely of public members that are pure virtual functions. It specifies an inheritable interface with absolutely no implementation details. That interface is the same as the public interface in both the small and fast <I>lns</I> classes (<A href="list4.htm">Listing 4</a>
+and <A href="list6.htm">Listing 6</a>)
+, except that ABC <I>lns</I> doesn't have a constructor. ABC <I>lns</I> has no base classes nor data members, so there's nothing for the constructor to initialize. Each concrete class derived from <I>Ins</I> will have its own constructor.<P>
+Why didn't I declare a pure virtual constructor in <I>Ins?</I> Because constructors cannot be virtual, and for good reason. A virtual function lets a client ask an object known only by its static type to perform a particular abstract operation in whatever way is appropriate for that object's dynamic type. How then does a client ask an object that doesn't yet exist to initialize itself in a way that's appropriate for whatever dynamic type it will have after it initializes itself? No way.<P>
+Destructors can be pure virtual. The <I>Ins</I> destructor in <A href="list8.htm">Listing 8</a>
+is pure virtual. But, unlike other pure virtual functions, you must provide a definition for the destructor, however trivial. Why do you need this definition? Even though you can't create objects of type <I>lns</I>, you can derive concrete classes from <I>lns</I> and create objects of those types. The destructor for a derived class automatically invokes the destructors for its base classes and members, even for a base that's an ABC.<P>
+Although ABC <I>lns</I> has no data members, in general an ABC can have data members. These data members provide a common partial implementation for all classes derived from the ABC. The destructor for such a derived class automatically calls the ABC's destructor to destroy resources used by inherited data members. The derived class destructor insists on calling the ABC's destructor even if the ABC's destructor is completely empty. If you don't supply a definition for the <I>lns</I> destructor, the linker complains when it can't find a definition.<P>
+<h4><FONT COLOR="#000080"><A name="00FE_007B">ABCs as Protocols<A name="00FE_007B"></FONT></h4></P>
+ABC <I>lns</I> defines a protocol that all derived classes must observe. The <I>Ins</I> header (<I>Ins.h</I>) contains only this class definition and no implementation details. Thus the header completely insulates client sources, such as <I>xr.cpp</I> and <I>xrt.cpp</I> in <A href="list1.htm">Listing 1</a>
+and <A href="list3.htm">Listing 3</a>,
+ from changes in the <I>Ins</I> implementation.<P>
+You can create a concrete <I>lns</I> object by deriving it from the <I>Ins</I> protocol, adding the appropriate data members, and overriding all the inherited pure virtual functions to provide the desired behavior. Placing the derived class in the source file <I>(Ins.cpp)</I> keeps the implementation details out of the header.<P>
+<A href="list9.htm">Listing 9</a>
+shows a class definition for <I>lns_fast,</I> a concrete "fast" <I>lns</I> class derived from ABC <I>lns.</I> Notice that this <I>ns_fast</I> is nearly identical to the "fast" <I>lns</I> class in <A href="list6.htm">Listing 6</a>:
+ both have a constructor as well as private data. But all the member functions in <A href="list9.htm">Listing 9</a>
+are virtual because they override inherited virtual functions. The bodies for the <I>lns_fast</I> member functions (omitted from <A href="list9.htm">Listing 9</a>
+for brevity) are identical to the corresponding function bodies in <A href="list7.htm">Listing 7</a>.
+<P>
+This scheme for building a compilation firewall seems simple enough. It appears that all you need do is define an ABC that specifies a protocol (abstract behavior) for all implementations, and then derive one or more concrete implementation classes from the ABC. However, it's just a little too simple, and fails to insulate clients from changes to the implementation. Here's why.<P>
+Somewhere in the client source code (in this case, <I>xrt.cpp</I> in <A href="list3.htm">Listing 3</a>)
+, there must be declarations or statements that create concrete <I>lns</I> objects. For example, class <I>treenode</I> in <A href="list3.htm">Listing 3</a>
+has a member, <I>lines,</I> of type <I>lns:</I><P>
+<pre>class treenode
+   {
+   ...
+   lns lines;
+   ...
+   };</pre>
+initialized by a member initializer in the <I>treenode</I> constructor:<P>
+<pre>treenode::
+treenode(const char *w, unsigned n)
+   : lines(n)
+   {
+   ...
+   }</pre>
+Thus, creating a <I>treenode</I> object creates an <I>lns</I> as a member object.<P>
+Unfortunately, when you change <I>lns</I> to an ABC, <I>xrt.cpp</I> can no longer create concrete objects of type <I>lns</I>, only pointers or references to <I>lns</I> objects. Therefore, you must change the <I>lines</I> member to a pointer, as in<P>
+<pre>class treenode
+   {
+   ...
+   lns *lines;
+   ...
+   };</pre>
+and rewrite the constructor to dynamically allocate a concrete <I>lns</I> object. But even that dynamic allocation is a problem.<P>
+Rewriting the member initializer as<P>
+<pre>: lines(new lns(n))</pre>
+is still an error because you can't create objects of an ABC by using a <I>new</I> expression either. You can create objects of concrete types derived from <I>lns,</I> such as <I>lns_fast.</I> However, if you change the initializer to<P>
+<pre>: lines(new lns_fast(n))</pre>
+you must move the class definition for <I>lns_fast</I> into <I>lns.h,</I> which breaks through the insulation provided by the header.<P>
+An alternative to defining the derived class in the header is to add a static member function to the ABC called <I>create</I> as shown in <A href="list10.htm">Listing 10</a>.
+ The <I>create</I> function is a pseudo-constructor that dynamically allocates an object of a concrete type derived from the ABC. The corresponding definition for <I>lns::create</I> looks something like:<P>
+<pre>lns *lns::create(n)
+   {
+   return new lns_fast(n);
+   }</pre>
+If you place this definition in <I>lns.cpp</I>, you need not move the definition for <I>lns_fast</I> into <I>lns.h.</I> Then you can rewrite the member initializer in the <I>treenode </I>constructor as<P>
+<pre>: lines(lns::create(n))</pre>
+This create function effectively restores the compilation firewall.<P>
+<h4><FONT COLOR="#000080"><A name="00FE_007C">Restoring Concrete Behavior<A name="00FE_007C"></FONT></h4></P>
+Defining<I> lns</I> as an ABC has a serious drawback: clients can't manipulate <I>lns</I> objects as concrete objects. They must deal with <I>lns</I> objects only through pointers and references to dynamically-allocated <I>lns</I> objects.<P>
+You can restore the concrete appearance of class <I>Ins</I> using a handle class similar to that used in the Cheshire Cat technique. The key insight comes from recognizing that the ABC <I>lns</I> should be a protocol for <I>lns</I> implementation objects, not for <I>lns</I> objects themselves. Thus, <I>Ins</I> becomes a handle (a concrete class implemented as a single pointer) for an implementation object of a class derived from a protocol class, as shown in <A href="list11.htm">Listing 11</a>.
+ As in the Cheshire Cat technique, each member function in the handle class delegates the bulk of its work to the corresponding member function of implementation object.<P>
+You transform a class from its concrete, uninsulated form (<I>lns</I> as in either <A href="list4.htm">Listing 4</a>
+or <A href="list6.htm">Listing 6</a>)
+ to its protocol-based insulated form (<A href="list11.htm">Listing 11</a>)
+ by following these steps:<P>
+1.     Add a public member <I>protocol</I> as a forward-declared nested class.<P>
+2.     Delete the private members and replace them with a single pointer to a protocol object.<P>
+3.     Define the nested protocol class as an ABC with:<P>
+<UL><li>no constructor,</li>
+<li>a public virtual destructor with an empty function body, and</li>
+<li>a public pure virtual function corresponding to each public member function in the handle class (other than the constructors and destructor)</li></UL>
+If your compiler does not support forward-declared nested classes, change <A href="list11.htm">Listing 11</a>
+as follows:<P>
+1.     Delete the nested-declaration for <I>protocol</I> inside class <I>lns.</I><P>
+2.     Change all occurrences of either <I>lns::protocol</I> or just <I>protocol</I> to <I>Ins_protocol.</I><P>
+3.     Move the definition for class <I>lns_protocol</I> above the definition for class <I>lns.</I><P>
+The protocol pointer <I>pp</I> points to an implementation object, much like the <I>details</I> pointer <I>dp</I> in a Cheshire Cat class. In a Cheshire Cat class, the pointer points to a <I>details</I> object of incomplete type. In a protocol-based class, the pointer points to an object of some concrete type derived from an ABC. Thus, the member function definitions for a concrete protocol-based class are nearly identical to their Cheshire Cat counterparts, with one key difference: you can define the protocol-based class members (except the constructor) as inline functions in the header, as in <A href="list11.htm">Listing 11</a>.
+<P>
+<A href="list12.htm">Listing 12</a>
+shows an implementation for the <I>Ins</I> class defined in <A href="list11.htm">Listing 11</a>.
+ <I>lns_fast</I> derives from <I>lns::protocol</I> and implements the "fast" line number sequence (using two pointers as in <A href="list6.htm">Listing 6</a>
+and <A href="list7.htm">Listing 7</a>)
+.<P>
+The <I>lns</I> constructor appears at the end of <A href="list12.htm">Listing 12</a>.
+ It cannot be defined inline because it creates the implementation object of type <I>lns_fast</I>. In order to preserve the compilation firewall, <I>lns_fast</I> must not appear outside this source file.<P>
+<h4><FONT COLOR="#000080"><A name="00FE_007D">Different Implementations Simultaneously<A name="00FE_007D"></FONT></h4></P>
+As we've seen, protocol-based classes bear many similarities to Cheshire Cat classes, but they have one powerful advantage. Protocol-based classes can support different implementations for the same class at the same time in a single program.<P>
+For example, you can implement both the "fast" and "small" <I>lns</I> classes, and expand the <I>lns</I> interface to let users select, at run time, either implementation. In fact, users can create both fast and small <I>lns</I> objects in the same program.<P>
+A simple way to let users select the implementation is to add an argument to the constructor. That is, declare the <I>lns</I> constructor (in the header) as<P>
+<pre>lns(unsigned n, style s = SMALL);</pre>
+where <I>style</I> is an enumeration defined as<P>
+<pre>enum style { FAST, SMALL };</pre>
+The style parameter in the constructor has a default argument value, so a user who doesn't care gets the small implementation by default. A user who wants the fast implementation simply asks for it by name, as in<P>
+<pre>treenode::
+treenode(const char *w, unsigned n)
+   : lines(n, FAST)
+   {
+   ...
+   }</pre>
+The corresponding definition for the constructor looks like:<P>
+<pre>lns::lns(unsigned n, style s)
+   {
+   if (s == SMALL)
+      pp = new lns_small(n);
+   else // if (s == FAST)
+      pp = new lns_fast(n);
+   }</pre>
+You can even use protocol-based classes to build objects that monitor themselves and automatically switch to the most efficient implementation. For example, when an <I>lns</I> contains only a few elements, searching the list takes little time, so you might as well save memory and use the small implementation. But for longer lists, you probably prefer using the fast implementation.<P>
+Most of the work in implementing this self-adjusting <I>lns</I> (<A href="list13.htm">Listing 13</a>)
+ is in changes to the <I>add</I> function. The <I>lns</I> constructor always initializes <I>lns</I> objects as <I>lns_small</I> objects. The <I>add</I> function simply computes the length of the list each time it searches the list. If the length ever grows beyond a certain threshold, <I>add</I> creates a new <I>lns_fast</I> object that holds the list, and deletes the <I>lns_small</I> object.<P>
+The header for this self-adjusting <I>lns</I> is the same as the header in <A href="list11.htm">Listing 11</a>,
+ except that:<P>
+1.     the <I>protocol::add</I> returns a pointer to a <I>protocol</I> object instead of void, as in<P>
+<pre>   virtual protocol
+       *add(unsigned n) = 0;</pre>
+2.     the definition for <I>lns::add</I> is moved to the source file (it cannot be an inline).<P>
+<I>protocol::add</I> returns a pointer to the <I>protocol</I> object. <I>lns::add</I> applies protocol's virtual <I>add</I> function to its <I>protocol</I> object, and compares the returned pointer with the previous protocol pointer. If the values ever differ, it means the <I>protocol</I> object mutated. In that case, <I>lns::add</I> discards the old <I>protocol</I> objects, and saves the new one.<P>
+<I>lns_small</I> objects can change into <I>lns_fast</I> objects, but not vice versa. Therefore, the <I>lns_small::add</I> does all the work to monitor the length of the list and decide when to mutate. The mutation does not create an entirely new copy of the linked list. Rather, it creates a new <I>lns_fast</I> object that shares the same list. Then it disconnects the <I>lns_small</I> object (by storing null in the pointer to the first element in the linked list).<P>
+<h4><FONT COLOR="#000080"><A name="00FE_007E">So What Does This Cost?<A name="00FE_007E"></FONT></h4></P>
+Both Cheshire Cat and protocol-based classes add considerable flexibility to class designs. Of course, this flexibility comes with a small price. Compared to an uninsulated implementation, a Cheshire Cat class:<P>
+<UL><li>occupies a little more storage (one pointer's worth)</li>
+<li>requires an extra level of indirection to access data members</li>
+<li>requires an extra call to <I>new</I> (during construction) and <I>delete</I> (during destruction) for the implementation object</li></UL>
+A protocol-based class is even a little more expensive. In addition to the cost for a Cheshire Cat class, a protocol-based class:<P>
+<UL><li>occupies more storage (a virtual function pointer in each implementation object)</li>
+<li>uses virtual function calls, which are typically a couple of instructions longer than non-virtual calls.</li></UL>
+Neither Cheshire Cat classes nor protocol-based classes can do much inlining.<P>
+These techniques are typically inappropriate for small classes. But for larger classes with many possible implementations, the productivity gains from greater abstraction typically outweigh the performance costs.<P>
+<h4>References</FONT></h4></P>
+<a name="coplien"></a>Coplien [1992]. James O. Coplien, <I>Advanced C++ Programming Styles and Idioms</I>. Addison-Wesley.<P>
+
+<h4><a href="../../../source/1994/may94/saks.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

@@ -1,0 +1,69 @@
+<HTML><HEAD><TITLE>December 1990/An Object-Based Real-Time Executive/Listing 12</TITLE></HEAD><BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4><A name="027C_018A"><A name="027C_018A">Listing 12 (kclient.c) Keyboard Client Task<A name="027C_018A"></h4><P>
+<pre>#include &lt;synrtx.h&gt;
+
+#define REL (((word)0x0100) | ((word)'r'))
+
+/* handler numbers */
+#define GRANT     0
+#define GETCHAR  1
+
+static word character;
+
+static handler Grant(msg_t *msg_p) { /* for synchronization only */
+}
+
+static handler GetChar(msg_t *msg_p) {
+   character = msg_p-&gt;value.w;
+}
+
+task KeyboardClient(void) {
+   register task_t self = task_self();
+   register task_t ksTid = task_idOf("KeyboardServer");
+   msg_t msg;
+
+   task_setHandler(2, Grant, GetChar);
+
+   loop {
+      /* interrupt KeyboardServer.Acquire, then wait on Grant */
+      msg.srcTid = self;
+      msg.dstTid = ksTid;
+      msg.dstHid = 0; /* Acquire = 0 */
+      msg.type   = msg_type_SYNC;
+      task_interruptEnableWait(&amp;msg, NO_TIMEOUT, 1, GRANT);
+      io_puts("\nKeyboardClient: Acquired\n");
+      character = 0;
+      loop {
+         /* interrupt if KeyboardServer.Hit and wait for GetChar */
+         msg.srcTid = self;
+         msg.dstTid = ksTid;
+         msg.dstHid = 2; /* Hit = 2 */
+         msg.type = msg_type_SYNC;
+         task_interruptEnableWait(&amp;msg, NO_TIMEOUT, 1, GETCHAR);
+         /*
+          *  a legal character is a word 0x01xx where "xx" (LSB) is the
+          *  actual character. The character 0x0000 means no key hit.
+          */
+         if (character) {
+            io_putc((char)character);
+            if (character == REL) break; /* then 'r'elease */
+            character = 0;
+         }
+      }
+      
+      /* interrupt KeyboardServer.Release */
+      msg.srcTid = self;
+      msg.dstTid = ksTid;
+      msg.dstHid = 1; /* Release = 1 */
+      msg.type = msg_type_SYNC;
+      task_interrupt(&amp;msg);
+      io_puts("\nKeyboardClient: Released and delayed for 10 secs ...\n");
+      /*
+       *  10 seconds of freedom for the keyboard. All the characters typed
+       *  during that time will flushed at the time of next Acquirement.
+       */
+      task_delay(500L);
+   }
+}</pre>
+
+</BODY></HTML>

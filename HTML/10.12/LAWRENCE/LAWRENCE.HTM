@@ -1,0 +1,86 @@
+
+
+
+<HTML>
+<HEAD>
+
+<TITLE>December 1992/A MIDI Device Driver for XENIX</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocdec.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Device Control</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">A MIDI Device Driver for XENIX<A name="02A0_0130"><A name="02A0_0130"></font></h2><P>
+<h3 align="center"><font color="#800000"><A name="02A0_0000"><A name="02A0_0000">Danny Lawrence</font></h3><hr><blockquote><P>
+<P><i><A name="02A0_0000"><A name="02A0_0000">Danny Lawrence is the systems manager for the Grants Pass Daily Courier in Oregon. He has been programming professionally for seven years. He can<I></I> <I></I>be contacted at 1310 Rogue River Hwy #5, Grants Pass, OR 97527, (503)<I></I> <I></I>479-1801 or (503) 474-3809.</i></P><P>
+Several MS-DOS programs support the Roland MPU-401, a common MIDI interface for MS-DOS machines, but you can't use the MPU if you run UNIX or XENIX. Why? No drivers. In MS-DOS, every program has access to I/O ports and interrupts, but in XENIX, user processes are unable to talk directly to the hardware. They can only communicate with a device through a driver. Since no drivers are available, no programs can use the MPU.<P>
+Its multitasking capabilities would seem to make XENIX a natural for MIDI applications. If applications were available, users could run patch editors, librarians, sequencers, and other MIDI applications simultaneously. MIDI connections between processes could be established through the XENIX IPC facilities. Virtual MIDI mergers and patch bays could be in software.<P>
+Unfortunately, XENIX is a timeshared system, not a real-time system. Implementing a sequencer in a user process probably wouldn't work too well. The kernel just cannot guarantee anything would be done in time.<P>
+The driver presented here doesn't solve this timing problem, but can go a long way toward building other less time- critical applications like patch editors and librarians. This driver implements the full MPU command protocol in intelligent mode, and can toggle the MPU between UART and intelligent mode.<P>
+<h4><FONT COLOR="#000080"><A name="02A0_0131">Device Drivers in XENIX<A name="02A0_0131"></FONT></h4></P>
+The XENIX kernel itself is device-independent. The kernel communicates with devices through well-defined entry points in device drivers. The drivers hide the low-level details related to specific devices to I/O porting and handling device interrupts.<P>
+Through drivers, the kernel makes all devices look like files. Processes open the device, read and write, then close it, just as they would do to files. For example, if you want to print something on the printer, you open <I>/dev/lp</I> and write to it. When <I>/dev/lp</I> is opened, the kernel discovers that <I>/dev/lp</I> is really a device and not a regular file. The kernel then routes the byte stream through the driver. Unless your program takes special action, it can't tell if it is writing to a device or a real file.<P>
+Because devices must look like files, they must have entries in the file system. These entries in the file system are called device nodes or device special files. When you do a long listing of files in <I>/dev</I>, two numbers separated by a comma replace the normal file size. These numbers tell users and the kernel that the file is actually a device.<P>
+The first number is the major device number. The kernel uses this number to determine which driver to call. The second number is the minor device number. The kernel uses this to differentiate between units using the same driver, such as different serial ports on a multiport board.<P>
+A driver is just a function library. The kernel calls the driver functions on behalf of user processes whenever it needs the driver or device to do something. When you configure the kernel for the new driver, you are telling it which functions are included in the driver.<P>
+Drivers are linked with the kernel and have all the processor privileges of kernel code, so you must be careful when you're writing and testing. If the driver has a bug, you don't just get a core dump; you usually end up crashing the system.<P>
+<h4><FONT COLOR="#000080"><A name="02A0_0132">Programming the MIDI Card<A name="02A0_0132"></FONT></h4></P>
+I actually wrote this driver for the Music Quest MIDI card (MPU-401 compatible). The MPU runs in two modes: UART and intelligent or co-processor mode. On power up and after reset, it is in co-processor mode.<P>
+In UART mode, the MPU acts almost exactly like a serial port. Bytes sent to the port are passed to the midi port without any processing. Bytes received from the midi port are buffered and made available to applications. No event timing information is available.<P>
+In intelligent mode, the MPU becomes a co-processor, relieving the CPU of almost everything having to do with timing and sequencing. It has functions for recording and playing midi events and messages, buffering midi data, filtering and clocking.<P>
+In intelligent mode, the CPU no longer must handle timing during record and playback. When recording, the MPU tags each event with a timing indicator as it is received. This timing tag is passed to the CPU along with the event data. All the CPU has to do is store timing and event data in a buffer. On playback, the timing and event information is passed back to the MPU in the same order as it was recorded. The MPU plays back the events at the right time.<P>
+Both modes are useful. The MPU has more buffer space in UART mode, so this mode is good for patch editors, sample editors and sysex dumps; things that transfer a lot of data, but aren't so timing critical. Intelligent mode is best for sequencing.<P>
+The CPU and the MPU communicate through two I/O ports and an interrupt. Data is transferred a byte at a time by reading or writing to <I>BASE</I>, the data port address. The status and command port is located at <I>BASE</I>+<I>1</I>. Switches on the board allow you to configure several <I>BASE</I> addresses and interrupts.<P>
+Two negative-logic bits, the Ready-to-Receive (RR) bit and the Data-Available (DA) bit, in the status byte determine whether the MPU is ready to receive a command or data, or has data ready for the CPU. When these bits are low, the MPU can respond to commands or transfer data.<P>
+Communication between the CPU and the MPU follows a simple protocol. To send a byte to the MPU, wait until the status register says the MPU is ready to receive, then output the byte to the data port. The MPU does not generate an interrupt when it is ready to receive; the status port must be polled repeatedly until the MPU is ready. MS-DOS drivers usually employ busy-waiting, but a XENIX driver should go to sleep whenever the MPU is not ready. The next clock tick awakens the driver.<P>
+Reading a byte from the MPU is similar, however, the MPU does generate an interrupt whenever it has data to send to the CPU. If the status byte indicates data is available, the driver reads a byte from the data port. If the status byte says data is not available, the driver will go to sleep until the MPU interrupts.<P>
+Sending a command is a little more complex since a command may have operands or results, and the MPU may be receiving MIDI at the same time you are trying to give it a command.<P>
+The CPU sends a command to the command port when the MPU indicates it is ready to receive. Then the MPU returns a command acknowledge (<I>ACK</I>) and possibly a result code. Any required command operands must be sent out the data port as the very next data bytes sent following the command <I>ACK</I>.<P>
+The complication comes while the CPU waits for the <I>ACK</I>. If it reads the data port and finds a byte other than <I>ACK</I>, the byte read must belong to some other data stream. The CPU could poll the data port for several bytes while it awaits the command <I>ACK</I>. The driver queues up these bytes for the read routine to get later.<P>
+No commands except <I>Reset</I> can be given to the MPU unless the MPU indicates it is ready to receive. Because it uses a different protocol, <I>Reset</I> can be given almost any time.<P>
+On all other commands, the CPU learns if the MPU acknowledged the command by waiting for the <I>ACK</I> byte on the data port. If the MPU is in intelligent mode, it will return the <I>ACK</I> right away. When it is reset but doesn't acknowledge, the MPU is in its other mode, the UART mode. So, this driver repeats the <I>Reset</I> command if it doesn't receive an <I>ACK</I> after a given timeout. If the MPU was in UART mode, it will have switched to intelligent mode and will now be able to acknowledge the second <I>Reset</I>.<P>
+<h4><FONT COLOR="#000080"><A name="02A0_0133">The Code<A name="02A0_0133"></FONT></h4></P>
+This simple character driver (see <A href="list1.htm">Listing 1</a>
+and <A href="list2.htm">Listing 2</a>)
+ implements no complicated queueing. I assumed the MPU can buffer just fine by itself. Only the interesting routines are highlighted here. For detailed information on driver entry points and kernel support routines, see Egan (1988) in the references.<P>
+Two details complicate the driver:<P>
+<UL><li>If data or commands need to be sent to the MPU, but the MPU is not ready to receive, the driver cannot busy-wait. The MPU doesn't generate an interrupt when it becomes ready, so you must wait for the next clock tick. XENIX clock ticks occur at 60 Hz.</li>
+<li>In the command protocol, data unrelated to the command may be received while awaiting <I>ACK</I>. The driver saves these bytes in a <I>clist</I> for the read routine to pick up later. If there is a shortage of <I>cblocks</I>, the driver will go to sleep on <I>lbolt</I>, hoping in the meantime that some other driver will give up a <I>cblock</I>. This can cause an unpredictable delay in executing a command when heavy character I/O is occuring.</li></UL>
+<I>mpuioctl</I> is used to send commands to the MPU and to retrieve response codes. It is also used to get and set certain parameters in the driver, such as debug level and driver version ID.<P>
+Applications call <I>ioctl</I> with a command number and a pointer to a <I>struct</I> containing command arguments and a place for the results. The structure looks like this:<P>
+<pre>   struct mpustuff {
+        int opsize;
+        int ressize;
+        char
+        *opbuf;
+        char *resbuf;
+   };</pre>
+<I>opsize</I> is the number of command operand bytes contained in <I>opbuf</I><I>. </I><I>ressize</I> is the number of result bytes to retrieve from the MPU and place in <I>resbuf</I>.<P>
+For a command with no operands and no results, <I>mpustuff</I><I> </I>would be used like this:<P>
+<pre>struct mpustuff m;
+
+m.opsize = 0;
+m.ressize = 0;
+m.opbuf = NULL;
+m.resbuf = NULL;
+ ret = ioctl(fd, CMD_CODE, &amp;m);
+if (ret == -1) { error message }</pre>
+Whenever the MPU generates an interrupt, it calls the interrupt routine, <I>mprintr</I>. The interrupt routine just wakes up any sleeping readers. A more complex driver implementing sequencer primitives might have the interrupt routine automatically send the MPU the next MIDI event without even telling the application.<P>
+<h4><FONT COLOR="#000080"><A name="02A0_0134">Compiling and Installing the Driver<A name="02A0_0134"></FONT></h4></P>
+The driver should be compiled with the same compiler switches and preprocessor defines used to compile the kernel. Stack probes must be disabled and structures must be packed as in the rest of the kernel. Reasonable optimizing can be used, but beware, optimizers sometimes really blow your code. See the sidebar <a href="sidebar1.htm"><I>Steps to Installing the Driver</I></a>.<P>
+<h4><FONT COLOR="#000080"><A name="02A0_0135">Using the Driver<A name="02A0_0135"></FONT></h4></P>
+Using the driver in your applications is straightforward. Open <I>/dev/mpu</I> and begin sending commands to the MPU using <I>ioctl</I>. Read and write data using the normal <I>read</I> and <I>write</I> system calls.<P>
+A weakness of this driver is the gaping hole in the <I>ioctl</I> routine. If a bogus pointer or nonsense-size field is sent, the driver could go into never-never land, blow the kernel or lock up the MPU &#151; probably not what you want. So just be careful you pass decent pointers and give correct sizes. If the operand or result sizes are wrong, the protocol will get out of sync.<P>
+<h4><FONT COLOR="#000080"><A name="02A0_0136">More Code<A name="02A0_0136"></FONT></h4></P>
+If you would like a copy of a MIDI trace utility, in addition to the source code, call me at the numbers listed in my bio. (Source code for the driver is also available on the CUG code disk, Usenet, or BIX.) The trace utility allows you to display the MPU version and revision numbers, get and set driver debug level, and display an interpreted MIDI trace, an unformatted hex trace, or raw bytes to be captured in a binary data file. The trace utility can also be used to send a binary file out the MIDI port, as in a super cheap patch librarian.<P>
+<h4><FONT COLOR="#000080"><A name="02A0_0137">Future<A name="02A0_0137"></FONT></h4></P>
+I hope this driver will generate some interest in using XENIX for MIDI applications. It is a good starting point for MIDI experimentation under XENIX. It can easily be ported to other flavors of UNIX such as Interactive, or Microport.<P>
+I would like to see somebody implement sequencer primitives in the interrupt routine to get around XENIX timing constraints. I would also like to hear of any bugs in the driver and any improvements anyone makes.<P>
+<h4>References</FONT></h4></P>
+Egan, Teixeira. 1988. <I>Writing a UNIX Device Driver</I>. John Wiley &amp; Sons, Inc.<P>
+XENIX Programmer's Reference Guides.<P>
+MIDI Co-Processor Card Technical Reference, 1988.<P>
+
+<h4><a href="../../../source/1992/dec92/lawrence.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

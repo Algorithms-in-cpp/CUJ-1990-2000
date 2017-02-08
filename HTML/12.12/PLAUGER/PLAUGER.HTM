@@ -1,0 +1,143 @@
+
+
+<HTML>
+<HEAD>
+
+<TITLE>December 1994/Standard C/C++</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocdec.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Columns</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Standard C/C++<A name="01F1_0108"><A name="01F1_0108"></font></h2><P>
+<h3 align="center"><A name="01F1_0000"><A name="01F1_0000">The Header &lt;iomanip&gt;</h3><P>
+<h3 align="center"><font color="#800000">P.J. Plauger</font></h3><hr><blockquote><P>
+<P><i><A name="01F1_0000"><A name="01F1_0000">P.J. Plauger is senior editor of C/C++ Users Journal. He is convener of the ISO C standards committee, WG14, and active on the C++ committee, WG21. His latest books are The Draft Standard C++ Library, and Programming on Purpose (three volumes), all published by Prentice-Hall. You can reach him at pjp@plauger.com.</i></P><P>
+<h4><FONT COLOR="#000080"><A name="01F1_0109">Introduction<A name="01F1_0109"></FONT></h4></P>
+The header <I>&lt;iomanip&gt;</I> presents several <I>templates</I> and a handful of manipulators that exploit them. It is the standardized version of the traditional iostream header <I>&lt;iomanip.h),</I> which contained several clever macros. Those macros have been replaced by several clever templates, which take some careful describing.<P>
+This is the first of several headers I intend to present, in my implementation of the Standard C++ library, that define templates. Until recently, it was also arguably the trickiest use of templates in the Standard C++ library. (The Standard Template Library beats it cold, however.) I begin, therefore, by sketching the history that led to the templates in <I>&lt;iomanip).</I> I also include here a general discussion of templates, current template technology, and how I have chosen to implement templates used by the Standard C++ library.<P>
+<h4><FONT COLOR="#000080"><A name="01F1_010A">Manipulators<A name="01F1_010A"></FONT></h4></P>
+Manipulators have lots of uses. The ones I've shown in recent columns let you alter the formatting information stored in an object based on class <I>ios,</I> extract white space, insert special characters, and flush output streams. And they let you do so in the guise of inserting or extracting a function designator with a reasonably mnemonic name. Perhaps the happiest example of all is:<P>
+<pre>   cout &lt;&lt; endl;</pre>
+which inserts a newline character to end the current text line and flushes the output to any waiting interactive display.<P>
+For all their power, however, these inserters share a common limitation. You have no way to convey any additional, variable information. The name of the function says what it does, but that's also <I>all</I> it says. The limitation is intrinsic in the operator notation:<P>
+<pre>ostream&amp; operator&lt;&lt;(ostream&amp; os, X x);</pre>
+It is clear that you can pass only one additional argument to the left shift (insertion) operator, besides the necessary <I>ostream&amp;</I> left argument. For a manipulator, that additional argument <I>x</I> of type <I>X</I> must convey the address of the function to call, as in <I>(*x)(os)</I>. (<I>X</I> is presumably some pointer to function type, defined earlier in the translation unit.) There's hardly any room to convey additional arguments.<P>
+Or is there? Remember, <I>X</I> can be an arbitrary class. You can construct a class that stores <I>both</I> a function pointer and an extra argument, as in:<P>
+<pre>class X {
+public:
+   X(ostream&amp; (*pf_arg)(ostream&amp;, T),
+     T val_arg)
+      : pf(pf_arg), val(val_arg) {}
+   friend ostream&amp; operator&lt;&lt;
+      (ostream&amp;, X);
+private:
+   ostream&amp; (*pf)(ostream&amp;&amp;, T);
+   T val;
+   };</pre>
+Presumably, <I>T</I> is defined as a type earlier in the translation unit. You can then overload the insertion operator, as in:<P>
+<pre>ostream&amp; operator&lt;&lt;(ostream&amp; os,
+                 X x)
+   {        // assemble function
+          // call and do it
+   return ((*x.pf)(os, x.val));
+   }</pre>
+This inserter accepts an object of class <I>X</I>, digs out the pieces, and makes the desired function call. (It is a friend of the class so it can see the pieces.)<P>
+To use this machinery, you have to supply a <I>pair</I> of functions:<P>
+<UL><li>the visible function, taking a single argument of type <I>T</I>, that you call to obtain the right operand of an insertion operator</li>
+<li>the hidden function, taking two arguments, that does the actual work</li></UL>
+The visible function assembles an object of class <I>X</I>. Inserting that object causes the hidden function to get called.<P>
+<h4><FONT COLOR="#000080"><A name="01F1_010B">An Example Manipulator<A name="01F1_010B"></FONT></h4></P>
+Here's a realistic example. Say you want to insert an occasional integer in hexadecimal format, but you don't want to have to keep fiddling the format bits. After each such insertion, you want the integer base to revert to whatever it was before the hexadecimal insertion. To do so, you can write the function:<P>
+<pre>ostream&amp; insert_hex(ostream&amp; os, int val)
+   {                // insert a hex integer
+   ios::fmtflags old = os.setf(ios::hex, ios::basefield);
+   os &lt;&lt; val;
+   os.setf(old, ios::basefield);
+   return (os);
+   }</pre>
+You can then write calls such as <I>insert_hex(cout, mask)</I>. But that doesn't play so nicely with the inserter notation. Better to make this the hidden function, using the machinery I showed above. The visible function might then overload the name <I>hex</I>, as in:<P>
+<pre>X hex(int val)
+   {                // save info to call insert_hex(val)
+   return (X(&amp;insert_hex, val));
+   }</pre>
+Now you can write something like:<P>
+<pre>   cout &lt;&lt; "mask is "&lt;&lt; hex(mask) &lt;&lt; endl;</pre>
+The new <I>hex</I> assembles an object of class <I>X</I> which, when inserted, calls <I>insert_hex</I> with the stored argument. The net effect is that <I>mask</I> is inserted in hexadecimal format, regardless of the current settings for the <I>basefield</I> format flags, which are left unaltered.<P>
+Neat, huh? Even neater is the fact that you can define manipulators that work just with inserters, as above, or just with extractors, or with both. In the last case, you probably want the left operand to be an object of the base class <I>ios.</I> A subobject of class <I>ios</I> captures what is common to objects of class <I>ostream</I> (the subject of inserters) and of class <I>istream</I> (the subject of extractors). You have lots of choices.<P>
+The problem is, you have too many choices. And you have too much tedious work to do for each choice you make. It's nuisance enough to have to write a pair of functions for each manipulator, but that's the most visible, problem-specific part. Just to <I>prepare</I> for writing this pair of functions, you need to define a class and overload one or two operators on that class. And you have to define a different class for each argument type you wish to pass, and for each object you wish to operate on <I>(ios, istream,</I> or <I>ostream).</I><P>
+<h4><FONT COLOR="#000080"><A name="01F1_010C">Generic Macros<A name="01F1_010C"></FONT></h4></P>
+The traditional approach to replicating chunks of code in C is to define macros to do it for you. In fact, typical implementations of the header <I>&lt;iostream.h&gt;</I> (note the <I>.h</I> suffix) contained some truly impressive macro definitions. Such <I>generic macros</I> let you write the hairy code once, then expand it on demand with a given type, or types, filled in at the critical places.<P>
+The modern approach in C++ is to define <I>templates</I> instead. A <I>template class</I> defines an open-ended set of classes with one or more parameters. Typically, a parameter specifies a type, which you write as <I>class T,</I> regardless of whether or not <I>T</I> is truly a class. That's the special power of templates that removes one more excuse to write messy macros. A parameter can also supply a value, however, such as the number of bits in a set (as with the library class <I>bits&lt;N&gt;,</I> to be described later).<P>
+The class <I>X</I> I defined earlier, for example, converts easily to a template class. All you need to do is add a prefix to the class definition:<P>
+<pre>template&lt;class T&gt; class X {
+public:
+   X(ostream&amp; (*pf_arg)(ostream&amp;, T), T val_arg)
+      : pf(pf_arg), val(val_arg) {}
+   friend ostream&amp; operator&lt;&lt;(ostream&amp;, X);
+private:
+   ostream&amp; (*pf)(ostream&amp;, T);
+   T val;
+   }</pre>
+Now <I>T</I> has quite a different meaning. Before, you were obliged to define <I>T</I> as a type before writing the definition for class <I>X.</I> If you wanted the same shaped class for a different type <I>T2</I>, you had to replicate all the code and alter all the references to <I>T.</I> With a template class<I>,</I> however, <I>T</I> is a parameter name. Much like the name of a parameter to a function call, it has special meaning within, and only within, the body of the definition that follows.<P>
+<h4><FONT COLOR="#000080"><A name="01F1_010D">Instantiating Templates<A name="01F1_010D"></FONT></h4></P>
+To make use of such a template class, you write an <I>instantiation.</I> If, for example, you want an object that stores an argument value of type <I>int,</I> you write its type as <I>X&lt;int&gt;.</I> Construct such an object and the translator generates on your behalf a version of the constructor that traffics in <I>int</I> second arguments. Declare another such object and the translator can probably recycle the special code for an <I>int</I> template parameter. Declare an object of type <I>X&lt;double&gt;,</I> however, and the translator will most likely generate a whole 'nother constructor just for a <I>double</I> template parameter.<P>
+The point is, you can instantiate as many flavors of a given template class as your heart desires. The translator supplies whatever executable code that's necessary, on demand. If it can find clever ways to recycle existing code, so much the better for space efficiency. But in any event, you benefit from the coding convenience of writing something once and using it multiple times. And unlike macros, the translator can better check the sanity of template classes, both when they're defined and when they're instantiated.<P>
+You can also write <I>template functions.</I> Template parameters can supply types for the parameters of the function, as in:<P>
+<pre>template&lt;class T&gt; ostream&amp; insert_hex(ostream&amp; os, T val)
+   {                 // insert a hex integer of type T
+   ios:: fmtflags old = os. setf(ios::hex, ios::basefield);
+   os &lt;&lt; val;
+   os.setf(old, ios::basefield);
+   return (os);
+   }</pre>
+A call to <I>insert_hex&lt;long&gt;(cout, mask)</I> instantiates a version of the function with a second parameter of type <I>long.</I><P>
+That's handy, but the machinery doesn't stop there. You can even write <I>insert_hex(cout, (long)mask),</I> or any call whose second argument is implicitly of type <I>long,</I> and the translator will instantiate the flavor <I>insert_hex&lt;long&gt;</I> for you(!) No need to spell out in advance the instantiations you expect to need. Just write the function call and leave it to the translator to guess which instantiation works best.<P>
+You can even count on a limited amount of argument type conversion, and back fitting, as part of the matching process. Here, for example, is the template function that accompanies our template class:<P>
+<pre>template&lt;class T&gt; ostream&amp; operator&lt;&lt;(ostream&amp; os, X&lt;T&gt; x)
+   {                // assemble function call and do it
+   return ((*x.pf)(os, x.val));
+   }</pre>
+Inserting an <I>X&lt;int&gt;</I> does indeed instantiate the <I>int</I> version of this function.<P>
+<h4><FONT COLOR="#000080"><A name="01F1_010E">Template Limitations<A name="01F1_010E"></FONT></h4></P>
+Such powerful notation is a two-edged sword. The translator is obliged to guess, from the argument types, what corresponding template parameters you must have intended. You are thus obliged to help the translator in some ways:<P>
+<UL><li>Every template function parameter must affect the type of one or more function parameters in some way, however else it is used in the function definition.</li>
+<li>Value parameters cannot be used as template function parameters, since they seldom can influence overload resolution.</li></UL>
+The Committee has eliminated some of these constraints, but current implementations still have them. You can also find differences of interpretation among implementations &#151; no surprise with any fairly new technology. So the bottom line is, don't ask too much of the machinery for automatically instantiating template functions.<P>
+Templates have other limitations as well, at least for now. Current implementations have fundamental differences in how they manage template definitions. You can, in principle, write a template class like any other. You define the template class itself in a header, but keep the member function definitions in a separate source file or files. In practice, however, not all implementations deal with this approach well, if at all. And some implementations have limited capacity for dealing with complex template definitions.<P>
+Writing inline definitions for template functions of all flavors seems to work most reliably in current implementations. Of course, you run risks in doing so, at least with certain compilers. A nontrivial inline function definition may still expand to inline code, so the compiler generates an excess of code. Other compilers choose not to inline code that contains loops, such as <I>for</I> or <I>while</I> statements. (The cfront preprocessor won't even translate such code. It favors a different template style.) Whether or not that is a good decision, the compilers still see fit to complain repeatedly about such code. I have had reasonable programs fail to compile simply because the compiler decided it had emitted too many (gratuitous) diagnostics.<P>
+The style I chose for this implementation is to write only inline definitions for all template functions. I try to keep them small, for a host of reasons. Occasionally, I offload some work to secret functions that are shared across template instantiations. But the basic risks of this approach remain, as I outlined above. Still, I find this approach best for the sake of portability and clear presentation today. You may need to alter the representation of some templates presented here, if for no other reason than to improve translation speed, execution speed, or generated code size.<P>
+<h4><FONT COLOR="#000080"><A name="01F1_010F">Using the Header<A name="01F1_010F"></FONT></h4></P>
+You include the header <I>&lt;iomanip&gt;</I> for one of two reasons:<P>
+<UL><li>to use one or more of the predefined manipulators that take an argument</li>
+<li>to define one or more additional manipulators that take an argument</li></UL>
+I showed how to use the predefined manipulators much earlier, in conjunction with the <I>ios</I> member functions that access and alter formatting information. (See "Standard C: The Header <I>&lt;ios&gt;,"</I><I> CUJ</I> May '94.) All are based on the template class <I>smanip&lt;T&gt;,</I> to work with both extractors and inserters. Very briefly:<P>
+<UL><li><I>resetiosflags(fmtflags)</I>, clears the specified format flags</li>
+<li><I>setiosflags(fmtflags)</I>, sets the specified format flags</li>
+<li><I>setbase(int)</I>, sets the <I>basefield</I> format flags to match the specified numeric base</li>
+<li><I>setfill(int)</I>, alters the fill character</li>
+<li><I>setprecision(int)</I>, alters the floating-point precision</li>
+<li><I>setw(int)</I>, alters the field width</li></UL>
+The manipulator notation usually results in more code generated and executed than for direct calls to the <I>ios</I> member functions. But unless you can demonstrate, in a particular case, that the cost is important, you should probably use manipulators wherever possible, if only for clarity.<P>
+You can define your own manipulators as well, using the templates defined in <I>&lt;iomanip&gt;</I>. (See <A href="list1.htm">Listing 1</a>
+for usage examples.) The header defines three template classes:<P>
+<UL><li><I>smanip&lt;T&gt;</I>, for use with both extractors and inserters</li>
+<li><I>imanip&lt;T&gt;, </I>for use with extractors only</li>
+<li><I>omanip&lt;T&gt;</I>, for use with inserters only</li></UL>
+Each template class also one or two associated template functions for performing insertions and extractions.<P>
+A few guidelines:<P>
+<UL><li>Use these templates only when you have <I>variable</I> information to convey. Manipulators that take no arguments are much easier to write.</li>
+<li>Some objects don't suffer copying about. (Objects of class <I>streambuf</I> are an obvious example.) For these, pass a pointer instead, if the object does not always exist. Otherwise, pass a reference to the object.</li>
+<li>If you need to pass more than one value, define a class that holds all the needed values. Call the manipulator with a constructor for the composite value as its single argument value.</li>
+<li>Use class <I>smanip&lt;T)</I> only for a manipulator that makes sense as both an inserter and an extractor, and only when the <I>ios</I> subobject is all you need to manipulate. Otherwise, use class <I>imanip&lt;T&gt;</I> or class <I>omanip&lt;T&gt;,</I> as appropriate.</li></UL>
+As always, I encourage you to find an existing manipulator that does something similar to what you want to do, then imitate its structure.<P>
+<h4><FONT COLOR="#000080"><A name="01F1_0110">Implementing <B><I>&lt;iomanip&gt;</I><A name="01F1_0110"></B></FONT></h4></P>
+<A href="list1.htm">Listing 1</a>
+shows the file <I>iomanip,</I> which implements the standard header <I>&lt;iomanip&gt;.</I> All template functions appear within the header as inline definitions, as I discussed earlier. Note that the template classes have public (but secret) member objects, so the template functions need not be declared as friend functions.<P>
+As you might guess, the macros <I>_TRY _BEGIN, CATCH_ALL,</I> and <I>_CATCH_END</I> encapsulate exception handling. How they expand depends on whether a given translator implements exceptions. The draft C++ Standard says that an exception thrown within a manipulator is supposed to set <I>ios::failbit</I> in the stream and continue. The implementation of these template classes and functions is otherwise as I outlined earlier.<P>
+The remaining code implements the predefined manipulators. All follow the same pattern, which I also outlined earlier. I present here just one representative example. <A href="list2.htm">Listing 2</a>
+shows the file <I>setw.c,</I> which defines the manipulator <I>setw.</I> Note how it defines (locally) the hidden function that the manipulator calls.<P>
+
+<h4><a href="../../../source/1994/dec94/pjp.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

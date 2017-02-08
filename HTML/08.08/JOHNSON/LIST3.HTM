@@ -1,0 +1,312 @@
+<HTML><HEAD><TITLE>August 1990/Detecting Video Adapters At Runtime/Listing 3</TITLE></HEAD><BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4>video.c</h4><P>
+<pre>/*--------------------------------------------------------------------\
+|       Marcus W. Johnson 1990.                                       |
+|                                                                     |
+|       Code to identify video display adaptors and display devices   |
+|                                                                     |
+|       Adapted from:  Programmer's Guide to PC and PS/2 Video Systems|
+|                      Richard Wilton                                 |
+|                      Microsoft Press                                |
+|                      Redmond, Washington                            |
+\--------------------------------------------------------------------*/
+
+#include       &lt;dos.h&gt;
+#include       "video.h"
+
+enum    boolean
+       {
+       NO,
+       YES
+       };
+
+#define N_SYSTEMS    (2)
+
+static struct video  Device[ N_SYSTEMS ];
+
+/*---------------------------------------------------------------------\
+|       Detects whether or not a given I/O address is that of a CRT    |
+|       Controller; the Cursor Location Low register of the alleged    |
+|       CRTC is written with an arbitrary value (I used the one Wilton |
+|       uses in his Find6845 procedure), we wait an arbitrary period of|
+|       time (I waited a millisecond), and we see if the value is still|
+|       there, then this is probably the CRTC.                         |
+\---------------------------------------------------------------------*/
+
+static int      FindCRTC(int Port)
+       {
+       unsigned char  CursorLow;
+       unsigned char  NewCursorLow;
+       
+       outportb(Port++, 0x0F);
+       CursorLow = inportb(Port);
+       outportb(Port, 0x66);
+       delay(1);
+       NewCursorLow = inportb(Port);
+       outportb(Port, CursorLow);
+       return (NewCursorLow == 0x66);
+       }
+
+/*---------------------------------------------------------------------\
+|       Places the specified adaptor and monitor data in the next      |
+|       unused element of the Device array.                            |
+\---------------------------------------------------------------------*/
+
+static void      FoundDevice(enum adaptor AType, enum monitor MType)
+       {
+       if (Device[ 0 ].VideoAdaptor == UnknownAdaptor)
+              {
+              Device[ 0 ].VideoAdaptor = AType;
+              Device[ 0 ].VideoMonitor = MType;
+              }
+       else
+              {
+              Device[ 1 ].VideoAdaptor = AType;
+              Device[ 1 ].VideoMonitor = MType;
+              }
+       }
+
+/*---------------------------------------------------------------------\
+|       Attempt to find a monochrome adaptor; attempts to detect a CRTC|
+|       at I/O address at 0x3B4. If this is successful, we read the    |
+|       vertical sync bit, and wait a while to see a transition; if it |
+|       occurs, it's a plain monochrome display adaptor, otherwise it's|
+|       a Hercules card of some sort. What type is decided by bits 4-6 |
+|       of the CRTC port.                                              |
+\---------------------------------------------------------------------*/
+
+static void  DetectMono(void)
+      {
+      if {FindCRTC{0x3B4))
+            {
+            auto unsigned char    VSync;
+            auto unsigned int     k;
+            auto enum boolean     FoundIt;
+            
+            VSync = inportb(0x3BA)&amp; 0x80;
+            FoundIt = NO;
+            for (k = 0; k &lt; 0x8000; k++)
+                  {
+                  if (VSync != (inportb(0x3BA) a 0x80))
+                        {
+                        switch (inportb(0x3BA) &amp; 0x70)
+                              {
+                              case 0x10:
+                                  FoundDevice(HGCPlus, MDA);
+                                  break;
+                              case 0x50:
+                                  FoundDevice(HerculesInColor,
+                                        EGAColor);
+                                  break;
+                              default:
+                                  FoundDevice(HGC, MDA);
+                                  break;
+                              }
+                        FoundIt = YES;
+                        break;
+                        }
+                  }
+            if (FoundIt == NO)
+                  FoundDevice(MDA, MDAMonochrome);
+            }
+      }
+
+/*---------------------------------------------------------------------\
+|       Attempt to find a CGA adaptor; if a CRTC is detected at I/O    |
+|       address 3D4, must be CGA...                                    |
+\---------------------------------------------------------------------*/
+
+static void     DetectCGA(void)
+       {
+       if (FindCRTC(0x3D4))
+              FoundDevice(CGA, CGAColor);
+       }
+
+/*---------------------------------------------------------------------\
+|       Fills in the Device array and returns its address to the       |
+|       caller, who can then examine its contents.                     |
+\---------------------------------------------------------------------*/
+
+struct video    *IdentifyVideo(void)
+       {
+       int             k;
+       union REGS      r;
+       
+       for (k = 0; k &lt; N_SYSTEMS; k++)
+              {
+              Device[ k ].VideoAdaptor = UnknownAdaptor;
+              Device[ k ].VideoMonitor = UnknownMonitor;
+              }
+       
+       /*------------------------------------------------------------\
+       |      Attempt to detect PS/2-type systems by making a BIOS   |
+       |      call to get the video display combination from the     |
+       |      video BIOS. On return, the AL register is set to 1A,   |
+       |      BL will contain the display code for the active display|
+       |      and BH will contain the display code for the inactive  |
+       |      display. The BL and BH registers are used to index     |
+       |      arrays containing codes for the appropriate display and|
+       |      display adaptor.                                       |
+       \------------------------------------------------------------*/
+
+r.x.ax = 0x1A00;
+int86(0x10, &amp;r, &amp;r);
+if (r.h.al == 0x1A)
+       {
+       static struct video     DeviceList[ ] =
+              {
+              {      UnknownAdaptor, UnknownMonitor  },
+              {      MDA,            MDAMonochrome   },
+              {      CGA,            CGAColor        },
+              {      UnknownAdaptor, UnknownMonitor  },
+              {      EGA,            EGAColor        },
+              {      EGA,            MDAMonochrome   },
+              {      UnknownAdaptor, UnknownMonitor  },
+              {      VGA,            PS2Monochrome   },
+              {      VGA,            PS2Color        },
+              {      UnknownAdaptor, UnknownMonitor  },
+              {      MCGA,           EGAColor        },
+              {      MCGA,           PS2Monochrome   },
+              {      MCGA,           PS2Color        },
+              };
+       if (r.h.bh != 0)
+              {
+              Device[ 1 ].VideoAdaptor =
+                     DeviceList[ r.h.bh ].VideoAdaptor;
+              Device[ 1 ].VideoMonitor =
+                     DeviceList[ r.h.bh ].VideoMonitor;
+              }
+       Device[ 0 ].VideoAdaptor = DeviceList[ r.h.bl ].VideoAdaptor;
+       Device[ 0 ].VideoMonitor = DeviceList[ r.h.bl ].VideoMonitor;
+       if (Device[ 0 ].VideoAdaptor == MDA ||
+              Device[ 1 ].VideoAdaptor == MDA)
+              {
+              
+              /*----------------------------------------------\
+              |       If either the active display or the     |
+              |       inactive display is identified as MDA,  |
+              |       we clear the system and display         |
+              |       information for that display; we need   |
+              |       to further identify the system as       |
+              |       possibly a Hercules card.               |
+              \----------------------------------------------*/
+              
+              if (Device[ 0 ].VideoAdaptor == MDA)
+                     {
+                     Device[ 0 ].VideoAdaptor = UnknownAdaptor;
+                     Device[ 0 ].VideoMonitor = UnknownMonitor;
+                     }
+              else
+                     {
+                     Device[ 1 ].VideoAdaptor = UnknownAdaptor;
+                     Device[ 1 ].VideoMonitor = UnknownMonitor;
+                     }
+              DetectMono();
+              }
+       }
+else
+       {
+       /*------------------------------------------------------\
+       |       detect an EGA card; make a call to the BIOS to  |
+       |       get the video subsystem configuration. On       |
+       |       return, BL will be set to 0, 1, 2 or 3 (which   |
+       |       is the number of 64K blocks of RAM in addition  |
+       |       to the default 64K block on the video card),    |
+       |       and the least 4 bits of CL contain the          |
+       |       configuration switch settings for the card.     |
+       |       This includes information as to the display     |
+       |       type.                                           |
+       \------------------------------------------------------*/
+       r.h.bl = 0x10;
+       r.h.ah = 0x12;
+       int86(0x10, &amp;r, &amp;r);
+       if (r.h.bl != 0x10)
+              {
+              auto enum monitor    Display;
+              static enum monitor  EGADisplay[ ] =
+                     {
+                     CGAColor,    EGAColor,      MDAMonochrome
+                     };
+              
+              Display = EGADisplay[ (r.h.cl % 6) &gt;&gt; 1 ];
+              FoundDevice(EGA, Display);
+              
+              /*-----------------------------------------------\
+              |       If a monochrome display is found, any    |
+              |       other system must be color, and          |
+              |       vice-versa.                              |
+              \-----------------------------------------------*/
+              
+              if (Display == MDAMonochrome)
+                     DetectCGA();
+              else
+                     DetectMono();
+              }
+       else
+              {
+              DetectCGA();
+              DetectMono();
+              }
+       }
+/*---------------------------------------------------------------\
+|       Resolve discrepancies between systems with multiple      |
+|       display types and the current video state; not a         |
+|       problem if only one type was found, or one of the types  |
+|       found was MCGA or VGA. Basically, the active display,    |
+|       which is in Device[ 0 ], should match the color          |
+|       specification of the current video mode. Incidently,     |
+|       the device swap is performed by the trick of using the   |
+|       mathematical properties of the exclusive or operator to  |
+|       avoid having to declare a temporary holding variable.    |
+\---------------------------------------------------------------*/
+
+if (Device[ 1 ].VideoAdaptor != UnknownAdaptor &amp;&amp;
+       Device[ 0 ].VideoAdaptor != VGA &amp;&amp;
+       Device[ 0 ].VideoAdaptor != MCGA &amp;&amp;
+       Device[ 1 ].VideoAdaptor != VGA &amp;&amp;
+       Device[ 1 ].VideoAdaptor != MCGA)
+       {
+       r.h.ah = 0x0F;
+       int86(0x10, &amp;r, &amp;r);
+       if ((r.h.al &amp; 7) == 7)
+              {
+              if (Device[ 0 ].VideoMonitor != MDAMonochrome)
+                     {
+                     Device[ 0 ].VideoMonitor ^=
+                            Device[ 1 ].VideoMonitor;
+                     Device[ 1 ].VideoMonitor ^=
+                            Device[ 0 ].VideoMonitor;
+                     Device[ 0 ].VideoMonitor ^=
+                            Device[ 1 ].VideoMonitor;
+                     Device[ 0 ].VideoAdaptor ^=
+                            Device[ 1 ].VideoAdaptor;
+                     Device[ 1 ].VideoAdaptor ^=
+                            Device[ 0 ].VideoAdaptor;
+                     Device[ 0 ].VideoAdaptor ^=
+                            Device[ 1 ].VideoAdaptor;
+                     }
+              }
+       else
+              {
+              if (Device[ 0 ].VideoMonitor == MDAMonochrome)
+                     {
+                     Device[ 0 ].VideoMonitor ^=
+                            Device[ 1 ].VideoMonitor;
+                     Device[ 1 ].VideoMonitor ^=
+                            Device[ 0 ].VideoMonitor;
+                     Device[ 0 ].VideoMonitor ^=
+                            Device[ 1 ].VideoMonitor;
+                     Device[ 0 ].VideoAdaptor ^=
+                            Device[ 1 ].VideoAdaptor;
+                     Device[ 1 ].VideoAdaptor ^=
+                            Device[ 0 ].VideoAdaptor;
+                     Device[ 0 ].VideoAdaptor ^=
+                            Device[ 1 ].VideoAdaptor;
+                     }
+              }
+       }
+return (Device);
+}</pre>
+
+</BODY>
+</HTML>

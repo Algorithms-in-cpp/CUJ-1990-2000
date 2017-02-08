@@ -1,0 +1,216 @@
+<HTML><HEAD><TITLE>June 1990/Decoding Group 3 Images/Listing 3</TITLE></HEAD><BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4><A name="0148_00B8"><A name="0148_00B8">Listing 3<A name="0148_00B8"></FONT></h4><P>
+<pre>Listing 3 - Table build routines
+
+#define BLACK 1
+#define WHITE 0
+#define MSB_FIRST 0
+#define LSB_FIRST 1
+#define INVALID_CODE -1
+#define INCOMPLETE_CODE -2
+#define EOL_CODE -3
+
+struct
+{ char x_color; long x_prefix; short x_index;
+} index_table [216];
+short index_table_fill = 0;
+
+long branch_table_fill = 0, action_table_fill = 0;
+char bit_order = MSB_FIRST; /* this is the sequence of bits
+in the group 3 data file for which the table will be used */
+int action_handle, branch_handle;
+
+/* build decoding tables for group 3 compressed images */
+int main () {
+  branch_handle = open (...file to contain branch_table...);
+  action_handle = open (...file to contain action_table...);
+  build_table (0, WHITE);
+  close (branch_handle); close (action_handle);
+}
+
+long append_0 (long prefix) {
+  return (prefix + 0x10000); /* incr bit strng lngth */
+}
+long append_1 (long prefix) {
+  unsigned short prefix_length;
+  static unsigned short prefix_mask [16] = {0x8000, 0x4000,
+    0x2000, 0x1000, 0x0800, 0x0400, 0x0200, 0x0100, 0x0080,
+    0x0040, 0x0020, 0x0010, 0x0008, 0x0004, 0x0002, 0x0001};
+  prefix_length = 0xFF &amp; (prefix &gt;&gt; 16);
+  return (prefix + 0x10000 + prefix_mask [prefix_length]);
+}
+
+/* add a table entry for the specified prefix */
+short build_table (long prefix, char color) {
+  short table_index;
+  unsigned short byte_value;
+  long *branch_record;
+  if ((table_index = search_offset (prefix, color)) != -1)
+    /* if already done */ return (table_index);
+  branch_record = malloc (256 * sizeof (long));
+  table_index = branch_table_fill++;
+  index_table [index_table_fill].x_prefix = prefix;
+  index_table [index_table_fill].x_color = color;
+  index_table [index_table_fill].x_index = table_index;
+  index_table_fill++;
+for (byte_value = 0; byte_value &lt; 256; byte_value++) {
+  unsigned char bit_mask;
+  unsigned short bit_number; /* the first bit examined
+    is bit zero */
+  static unsigned char msb_mask [8] = {0x80, 0x40, 0x20,
+    0x10, 0x08, 0x04, 0x02, 0x01};
+  static unsigned char lsb_mask [8] = {0x01, 0x02, 0x04,
+    0x08, 0x10, 0x20, 0x40, 0x80};
+  long working_prefix;
+  char working_color;
+  working_prefix = prefix;
+  working_color = color;
+  branch_record [byte_value] = action_table_fill;
+  for (bit_number = 0; bit_number &lt; 8; bit_number++) {
+    if (bit_order == MSB_FIRST)
+      bit_mask = msb_mask [bit_number];
+    else bit_mask = lsb_mask [bit_number];
+    if (bit_mask &amp; byte_value)
+      working_prefix = append_1 (working_prefix);
+    else working_prefix = append_0 (working_prefix);
+   if (working_color == WHITE) {
+     short runlength;
+     runlength = white_run_length (working_prefix);
+     if (runlength == INVALID_CODE) {
+       emit_byte (1); bit_number = 8;
+       working_prefix = 0;
+     }
+     else if (runlength == EOL_CODE) {
+       emit_byte (0); working_prefix = 0;
+     }
+     else if (runlength != INCOMPLETE_CODE) {
+       if (runlength &lt; 64) emit_byte (runlength + 2);
+       else emit_byte ((runlength / 64) + 65);
+       if (runlength &lt; 64) working_color = BLACK;
+       working_prefix = 0;
+     }
+     /* else incomplete code */
+   }
+   else /* working_color == BLACK */ {
+     short runlength;
+     runlength = black_run_length (working_prefix);
+     if (runlength == INVALID_CODE) {
+       emit_byte (1); bit_number = 8;
+       working_prefix = 0;
+     }
+     else if (runlength == EOL_CODE) {
+       emit_byte (0); working_color = WHITE;
+       working_prefix = 0;
+     }
+     else if (runlength != INCOMPLETE_CODE) {
+       if (runlength &lt; 64) emit_byte (runlength + 106);
+       else emit_byte ((runlength / 64) + 169);
+       if (runlength &lt; 64) working_color = WHITE;
+       working_prefix = 0;
+     }
+     /* else incomplete code */
+   }
+ } /* bit number loop */
+ { /* descend and update table */
+   long saved_fill, position_1, position_2;
+   short newstate;
+   position_1 = tell (action_handle); /* save position */
+   emit_state (0); /* hold place in file */
+   newstate = build_table (working_prefix,
+      working_color);
+   position_2 = tell (action_handle);
+   saved_fill = action_table_fill;
+   lseek (action_handle, position_1, SEEK_SET);
+   emit_state (newstate);
+   lseek (action_handle, position_2, SEEK_SET);
+   action_table_fill = saved_fill;
+ }
+} /* byte value loop */
+  lseek (branch_handle, 256L * (long) sizeof (long)
+    *(long) table_index, SEEK_SET); /* position to row */
+  write (branch_handle, (char *) branch_record,
+    256 * sizeof (long)); /* write row of table */
+  free (branch_record);
+  return (table_index);
+}
+
+void emit_byte (unsigned char value) {
+  write (action_handle, &amp;value, 1);
+  action_table_fill++;
+}
+
+void emit_state (short newstate) {
+  emit_byte (255);
+  emit_byte ((unsigned char) newstate);
+}
+
+/* determine if the table for a prefix already exists - if
+it does, return its offset in the table, else return -1 */
+short search_offset (long prefix, char color) {
+  short j;
+  for (j = 0; j &lt; index_table_fill; j++)
+    if (prefix == index_table [j].x_prefix
+      &amp;&amp; color == index_table [j].x_color)
+        return (j);
+  return (-1);
+}
+
+short search_run_length_table (long prefix, long *p_table) {
+  short table_offset = 0;
+  long prefix_length, prefix_value;
+  prefix_length = 0xFF &amp; (prefix &gt;&gt; 16);
+  prefix_value = 0xFFFF &amp; prefix;
+  while (p_table [table_offset]) {
+    if (p_table [table_offset] == prefix_length
+      &amp;&amp; p_table (table_offset + 1] == prefix_value)
+        return ((short) p_table [table_offset + 2]);
+    table_offset += 3; /* move on to next entry */
+  }
+  return (INCOMPLETE_CODE); /* no entry found in table */
+}
+
+short white_run_length (long prefix) {
+  static long code table [] = {
+    8, 0x3500, 0, /* 0011 0101 */
+    6, 0x1C00, 1, /* 0001 11 */
+... lines omitted: fill in from <A href="table1.htm">Table 1</a>
+...
+    12, 0x01F0, 2560, /* 0000 0001 1111 */
+    12, 0x0010, EOL_CODE, /* 0000 0000 0001 */
+    9, 0x0080, INVALID_CODE, /* 0000 0000 1 */
+    10, 0x0040, INVALID_CODE, /* 0000 0000 01 */
+    11, 0x0020, INVALID_CODE, /* 0000 0000 001 */
+    12, 0x0000, INVALID_CODE, /* 0000 0000 0000 */
+    0 /* end-of-table */ };
+  return (search_run_length_table (prefix, code_table));
+}
+
+short black_run_length (long prefix) {
+  static long code_table [] = {
+    10, 0x0DC0, 0, /* 0000 1101 11 */
+    3, 0x4000, 1, /* 010 */
+... lines omitted: fill in from <A href="table1.htm">Table 1</a>
+...
+    12, 0x01F0, 2560, /* 0000 0001 1111 */
+    12, 0x0010, EOL_CODE, /* 0000 0000 0001 */
+    9, 0x0080, INVALID_CODE, /* 0000 0000 1 */
+    10, 0x0040, INVALID_CODE, /* 0000 0000 01 */
+    11, 0x0020, INVALID_CODE, /* 0000 0000 001 */
+    12, 0x0000, INVALID_CODE, /* 0000 0000 0000 */
+    0 /* end-of-table */ };
+  return (search_run_length_table (prefix, code_table));
+}</pre>
+<P>
+<P>
+<P>
+<P>
+<P>
+<P>
+<P>
+<P>
+<P>
+<P>
+<P>
+</BODY>
+</HTML>
+

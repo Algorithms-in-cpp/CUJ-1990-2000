@@ -1,0 +1,666 @@
+<HTML><HEAD>
+<TITLE>June 1993/Curve Fitting with Extrapolation/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2 <I>RPFT. C</I></A></h4>
+<pre>/******************************************************
+ * RPFT.C -- Curve fitting with optional extrapolation.
+ * Fits either polynomial or rational function. Based
+ * on algoritms defined in Press, et al., "Numerical
+ * Recipes", 2nd ed., Cambridge University Press, 1992
+ * Developed using the Borland C compiler.
+ *
+ *   Lowell Smith
+ *   3368 Crestwood Drive
+ *   Salt Lake City, UT 84109-3202
+ *******************************************************/
+#include &lt;stdio.h&gt;
+#include &lt;math.h&gt;
+#include &lt;string.h&gt;
+#include &lt;dir.h&gt;
+#include &lt;ctype.h&gt;
+#include &lt;stddef.h&gt;
+#include &lt;stdlib.h&gt;
+
+#define NPFAC 8
+#define PI 3.141592653589793
+#define PI02 (PI/2.0)
+#define SIGN(a,b) ((b) &gt; 0.0 ? fabs(a) : -fabs(a))
+void ratlsq(double xs[],double fs[],int npt,int mm,
+     int kk, double cof[], double *dev);
+double *dvector(long nl, long nh, const char *ner);
+double **dmatrix(long nrl,long nrh,long ncl,long nch,
+        const char *ner);
+void free_dvector(double *v, long ncl);
+void free_dmatrix(double **m, long nrl, long ncl);
+
+/******************************************************/
+void main(int argc, char **argv)
+{ double a,b,*xs,*fs,cof[42],dev=0.,sumd,x,yy;
+  int i,j,nn,nd,ncof,dig,npt=0,xln,yln;
+  char nar[90];
+  char filenam[80];
+  void commd(int argc, char**argv, double *a,double *b,
+       int *nn, int *nd, int *dig, int *xln,
+       int *yln, char *filenam);
+  void inpt(int nn,int npt,double a, double b, int xln,
+       int yln, double *xs,double *fs,char filenam[]);
+  void pcshft(double a,double b,double d[],int n);
+  void chebpc(double c[],double d[],int n);
+  
+  commd(argc,argv,&amp;a,&amp;b,&amp;nn,&amp;nd,&amp;dig,&amp;xln,&amp;yln,
+       filenam);
+  if (xln) { a=log(a); b=log(b); }
+  if (nd)            /* Fit rational function */
+  { ncof=nn+nd+1;   npt=NPFAC*ncof;
+    xs=dvector(1L,(long)npt,"xs in main");
+    fs=dvector(1L,(long)npt,"fs in main");
+    inpt(0, npt, a, b, xln, yln, xs, fs, filenam);
+    ratlsq(xs,fs,npt,nn,nd,&amp;cof[0],&amp;dev);
+    fprintf(stderr,"Est. max error = %.7G\n",dev);
+    free_dvector(xs,1L);
+    free_dvector(fs,1L);
+  }
+  else               /* Fit polynomial */
+  { ncof=nn+5; xs=dvector(0L,(long)ncof,"xs in main");
+    fs=dvector(0L,(long)ncof,"fs in main");
+    inpt(ncof, npt, a, b, xln, yln, xs, fs, filenam);
+    chebpc(fs,cof,nn+1);
+    pcshft(a,b,cof,nn+1);
+    free_dvector(xs,0L); free_dvector(fs,0L);
+  }
+  for (i=0;i&lt;=nn+nd;++i)
+  { sprintf(nar,"%.*G ",dig,cof[i]);
+    sscanf(nar,"%lf",&amp;cof[i]);
+  }
+  if (nd) printf("\n      Rational function coefficien"
+     "ts\n Numerator                Denominator\n\n");
+  else printf("\n Polynomial\n  Coefficients\n\n");
+  for (i=0;i&lt;max(nd,nn)+1;++i)
+  { if (i&lt;=nn) printf("%-24.16G",cof[i]);
+    else printf("%*s",24," ");
+    if (i&lt;nd) printf("%-24.16G\n",cof[i+nn+1]);
+    else printf("\n");
+  }
+  for(;;)            /* Calculate trial values */
+  { i=-1;
+    fprintf(stderr,
+         "Enter E to quit or a trial X value: ");
+    i=scanf("%lf",&amp;x);
+    if (i&lt;1) exit(1); if (xln) x=log(x);
+    yy=cof[nn]; for (j=nn-1;j&gt;=0;j--) yy=yy*x+cof[j];
+    if (nd)
+    { for (sumd=0.,j=nn+nd;j&gt;=nn+1;j--)
+          sum=(sumd+cof[j])*x;
+      yy=yy/(1.0+sumd);
+    }
+    if (yln) yy=exp(yy); if (xln) x=exp(x);
+    fprintf(stderr,"For X=%.8G Y=%.8G\n",x,yy);
+  }
+}
+/*******************************************************
+ * COMMD - Parses the command line
+ ******************************************************/
+void commd(int argc, char**argv, double *a,double *b,
+       int *nn, int *nd, int *dig, int *xln,
+       int *yln, char *filenam)
+{ struct ffblk ffblk;
+  int i,j,k,l;
+  void help(char *msg);
+  *a=1.11e300; *b=-1.11e300; *nn=-32768; *nd=-32768;
+  *dig=7, *xln=0, *yln=0;
+  if (argc&lt;2) help(""); filenam[0]=0;
+  for (i=1,k=0;i&lt;argc;k=0,++i)
+  { for (j=0; j&lt;(l=strlen(argv[i])); ++j)
+    { argv[i][j]=toupper(argv[i][j]);
+      if (argv[i][j]=='=') ++k;
+    }
+    if (k)
+    { if (k&gt;1 || (!isdigit(argv[i][l-1])
+                  &amp;&amp; argv[i][l-1] !='.'))
+      { fprintf(stderr,"Invalid command line parameter" "%s\n",argv[i]);
+        help("");
+      }
+      if (!strncmp(argv[i],"LL=",3))
+      { k=sscanf(&amp;argv[i][3],"%lf",a);
+        if (k&lt;1) help("Invalid value for command line"
+                 "parameter LL\n");   continue;
+      }
+      if (!strncmp(argv[i] ,"UL=",3))
+      { k=sscanf(&amp;argv[i][3],"%lf",b);
+        if (k&lt;1) help("Invalid value for command line"
+                 "parameter UL\n");   continue;
+      }
+      if (!strncmp(argv[i],"ND=",3))
+      { k=sscanf(&amp;argv[i][3],"%d",nd);
+        if (k&lt;1) help("Invalid value for command line"
+                 "parameter ND\n");   continue;
+      }
+      if (!strncmp(argv[i],"NN=",3))
+      { k=sscanf(&amp;argv[i][3],"%d",nn);
+        if (k&lt;1) help("Invalid value for command line"
+                 "parameter NN\n");   continue;
+      }
+      if (!strncmp(&amp;argv[i][0],"-DIG=",5))
+      { k=sscanf(&amp;argv[i][6],"%d",dig);
+        if (k&lt;1) help("Invalid value for optional"
+                 "command line parameter DIG\n");
+        continue;
+      }
+      fprintf(stderr,"Invalid command line parameter"
+                 "%s\n",argv[i]);
+      help("");
+    }
+    else
+    { if (!strncmp(&amp;argv[i][0],"-XLN",4))
+      { *xln=1; continue; }
+      if (!strncmp(&amp;argv[i][0],"-YLN",4))
+      { *yln=1; continue; }
+      if (!filenam[0] &amp;&amp; argv[i][0] != '-')
+      { strcpy(filenam,argv[i]);
+        if (findfirst(filenam,&amp;ffblk,0))
+        { fprintf(stderr,"Input file %s doesn't"
+           "exist\n",filenam); help("");
+        }
+      }
+      else
+      { fprintf(stderr,"Invalid command line parameter"
+                 "%s\n",argv[i]);    help("");
+      }
+    }
+  }
+  k=0;
+  if (*a&gt;1.1e300)
+  { fprintf(stderr,"Parameter LL undefined\n"); ++k; }
+  if (*b&lt;-1.1e300)
+  { fprintf(stderr,"Parameter UL undefined\n"); ++k; }
+  if (*nn==-32768)
+  { fprintf(stderr,"Parameter NN undefined\n"); ++k;
+    *nn=5;
+  }
+  if (*nd==-32768)
+  { fprintf(stderr,"Parameter ND undefined\n"); ++k;
+    *nd=5;
+  }
+  if (filenam[0]==0)
+    { fprintf(stderr,"Input file is not defined\n");
+      ++k;
+    }
+  if (*nn&lt;1 || (*nd==0 &amp;&amp; *nn&gt;20) || (*nd &amp;&amp; *nn&gt;10))
+  { fprintf(stderr,"Invalid value %d for "
+          "command line parameter NN\n",*nn); ++k;
+  }
+  if (*nd&lt;0 || *nd&gt;10)
+  { fprintf(stderr,"Invalid value %d for "
+         "command line parameter ND\n",*nd); ++k;
+  }
+  if (*a&gt;*b)
+  { fprintf(stderr,"Lower limit &gt; upper limit\n");
+    ++k;
+  }
+  if (*dig&lt;1 || *dig&gt;20)
+  { fprintf(stderr,"Invalid value %d for "
+        "command line option DIG\n",*dig); ++k;
+  }
+  if (*xln &amp;&amp; *a&lt;=0.)
+  {fprintf(stderr,"Lower limit is &lt;=0 with "
+      "logarithmic transform of X values\n"); ++k;
+  }
+  if (k) help("");
+}
+/*******************************************************
+ * HELP - Prints the help screen
+ ******************************************************/
+void help(char *msg)
+{ char *hlp[] =
+  { "USAGE: rpft LL=a UL=b NN=n ND=m [-DIG=n -XLN -YLN"
+    "] file","","   LL=a   a is the lower limit of the"
+    "region for fit","   UL=b   b is the upper limit o"
+    "f the region for fit","","   ND=m | m&gt;0: rational"
+    " function, denominator degree m,","   NN=n |     "
+    "numerator degree n. 1&lt;=m&lt;=10 1&lt;=n&lt;=10","         "
+    " | m=0: Polynomial degree n.   1&lt;=n&lt;=20",""," -DI"
+    "G=n   (optional) n = number of significant digits"
+    ,"              for coefficients on output. Defaul"
+    "t=7.","    -XLN  (optional) Transform X values to"
+    "ln(X)","     -YLN   (optional) Transform Y values"
+    "to ln(Y)","","   file    File with input X Y data"
+    "points, 1 per line","","All command line paramete"
+    "rs except DIG, XLN and YLN are ","required. They "
+    "may be in any order, upper or lower case."
+   };
+   int i,n=sizeof(hlp)/sizeof(char *)-1;
+
+   fprintf(stderr,"%s\n",msg);
+   for (i=0; i&lt;n; ++i) fprintf(stderr,"%s\n",hlp[i]);
+   fprintf(stderr,"%s",hlp[n]); exit(1);
+}
+/******************************************************
+ * INPT - Read input data and calculate data for the
+ *        Chebyshev polynomial or rational polynomial
+ *        curve fit.
+ *****************************************************/
+void inpt(int nn, int npt, double a, double b, int xln,
+       int yln,double *xs, double *fs, char filenam[])
+{ double bma,bpa,hth,yy,*xa,*ya,*c,*d;
+  int i,j,n=0;
+  char nar[82];
+  FILE *infile;
+  void ratint(double xa[], double ya[], double *c,
+       double *d, int n, double x, double *y);
+
+  if ((infile=fopen(filenam,"r"))==NULL)
+    { fprintf(stderr,"Can't open file\n"); exit(1); }
+  while (!feof(infile) &amp;&amp; fgets(nar,80,infile))
+  { i=sscanf(nar,"%lf%lf",&amp;hth,&amp;yy);
+  if (i&lt;1) break;
+    ++n;
+    if (i&lt;2)
+    { fprintf(stderr,"Need 2 numbers on line %d\n",n);
+      exit(1);
+    }
+    if (xln &amp;&amp; hth&lt;=0.)
+    { fprintf(stderr,"Nonpositive X = %.8G on line %d "
+          "with ln(X) transformation\n",hth,n);
+      exit(1);
+    }
+    if (yln &amp;&amp; yy&lt;=0.)
+    { fprintf(stderr,"Nonpositive Y = %.8G on line %d"
+          "with ln(Y) transformation\n",yy,n);
+      exit(1);
+    }
+  }
+  if (n&lt;3)
+  { fprintf(stderr,
+     "You provided only %d data points\n",n);
+    exit(1);
+  }
+  fseek(infile,0L,0);
+  xa=dvector(1L,(long)n,"xa in inpt");
+  ya=dvector(1L,(long)n,"ya in inpt");
+  c=dvector(1L,(long)n,"c in inpt");
+  d=dvector(1L,(long)n,"d in inpt");
+  for (i=1; i&lt;=n; ++i)
+  { (void)fgets(nar,80,infile);
+  sscanf(nar,"%lf%lf",&amp;xa[i],&amp;ya[i]);
+  if (xln) xa[i]=log(xa[i]);
+  if (yln) ya[i]=log(ya[i]);
+ }
+ fclose(infile);
+ if (!nn)
+ /* Calculate arrays of abcissa and function values
+  * for rational function evaluation in ratlsq.
+  * Return in xs and fs
+  */
+ { for (i=1;i&lt;=npt;i++)
+   { if (i &lt; npt/2)
+     { hth=P1O2*(i-1)/(npt-1.0);
+       yy=sin(hth); xs[i]=a+(b-a)*yy*yy;
+     }
+     else
+     { hth=P102*(npt-i)/(npt-1.0);
+       yy=sin(hth); xs[i]=b-(b-a)*yy*yy;
+     }
+     ratint(xa, ya, c, d, n, xs[i], &amp;yy);
+     fs[i]=yy;
+   }
+ }
+ else
+ /* Calculate Chebyshev coefficients and return in
+  *the array fs
+  */
+ { bma=0.5*(b-a); bpa=0.5*(b+a);
+   for (i=0;i&lt;nn;i++)
+      { ratint(xa,ya,c,d,n,
+           cos(PI*(i+0.5)/nn)*bma+bpa,&amp;xs[i]); }
+   for (i=0;i&lt;nn;i++)
+   { yy=0.; for (j=0;j&lt;nn;j++)
+      yy += xs[j]*cos(PI*i*(j+0.5)/nn);
+     fs [i]=2.0*yy/nn;
+   }
+ }
+ free_dvector(xa,1L); free_dvector(ya,1L);
+ free_dvector(c,1L); free_dvector(d,1L); return;
+}
+/*******************************************************
+ * RATLSQ - Returns in cof[0..mm+kk] the coefficients
+ * of a rational function approximation to the X,Y data
+ * points xs[1..npt],fs[1..npt]. The deviation of the
+ * approximation (insofar as is known) returned as dev.
+ ******************************************************/
+void ratlsq(double xs[],double fs[],int npt, int mm,
+       int kk, double cof[], double *dev) 
+{ void dsvbksb(double **u, double w[], double * v,
+       int m, int n, double b[], double x[]);
+  void dsvdcmp(double **a, int m, int n, double w[],
+       double **v);
+  int i,it,j,ncof;
+  double devmax,e=0.0,power,sum,sumn,sumd,*bb,*coff,
+       *ee,**u,**v,*w,*wt;
+
+  ncof=mm+kk+1;
+  bb=dvector(1L,(long)npt,"bb in ratlsq");
+  ee=dvector(1L,(long)npt,"ee in ratlsq");
+  coff=dvector(0L,(long)(ncof-1),"coff in ratlsq");
+  u=dmatrix(1L,(long)npt,1L,(long)ncof,"u in ratlsq");
+  v=dmatrix(1L,(long)ncof,1L,(long)ncof,"v in ratlsq");
+  w=dvector(1L,(long)ncof,"w in ratlsq");
+  wt=dvector(1L,(long)npt,"wt in ratlsq");
+  *dev=1.e50;
+  for (i=1;i&lt;=npt;++i) { wt[i]-1.0; eei=1.0; }
+  for (it=1;it&lt;=5;it++)
+  { for (i=1;i&lt;=npt;i++)
+    { power=wt[i]; bb[i]=power*(fs[i]+SIGN(e,ee[i]));
+      for (j=1;j&lt;=mm+1;j++)
+            { u[i][j]=power; power *= xs[i]; }
+      power = -bb[i];
+      for (j=mm+2;j&lt;=ncof;j++)
+            { power *= xs[i]; u[i][j]=power; }
+    }
+    dsvdcmp(u,npt,ncof,w,v);
+    dsvbksb(u,w,v,npt,ncof,bb,coff-1);
+    devmax=sum=0.0;
+    for (j=1;j&lt;=npt;j++)
+    { e=xs[j]; for (sumn=coff[mm],i=mm-1;i&gt;=0;i--)
+                    sumn=sumn*e+coff[i];
+      for (sumd=0.0,i=mm+kk;i&gt;=mm+1;i--)
+                    sumd=(sumd+coff[i])*e;
+      ee[j]=sumn/(1.0+sumd)-fs[j];
+      wt[j]=fabs(ee[j]); sum += wt[j];
+      if (wt[j] &gt; devmax) devmax=wt[j];
+    }
+    e=sum/npt;
+    if (devmax &lt;= *dev)
+    { for(j=0;j&lt;ncof;j++)cof[j]=coff[j]; *dev=devmax; }
+    fprintf(stderr,"For ratlsq iteration %d max error="
+        " %.5G\n",it,devmax);
+  }
+  free_dvector(wt,1L); free dvector(w,1L);
+  free_dmatrix(v,1L,1L); free_dmatrix(u,1L,1L);
+  free_dvector(ee,1L); free_dvector(coff,0L);
+  free_dvector(bb,1L);
+}
+/*******************************************************
+ * DSVDCMP - Computes singular value decomposition of
+ * the matrix a[1..m] [1..n].
+ ******************************************************/
+void dsvdcmp(double **a, int m, int n, double w[],
+       double **v)
+{ double dpythag(double a, double b);
+  int flag,i,its,j,jj,k,l=0,nm=0;
+  double anorm,c,f,g,h,s,scale,x,y,z,*rv1;
+
+  rv1=dvector(1L,(long)n,"rv1 in dsvdcmp");
+  g=scale=anorm=0.0;
+  for (i=1;i&lt;=n;i++)
+  { l=i+1; rv1[i]=scale*g; g=s=scale=0.0;
+    if (i &lt;= m)
+    { for (k=i;k&lt;=m;k++) scale += fabs(a[k][i]);
+      if (scale)
+      { for (k=i;k&lt;=m;k++)
+           { a[k][i] /= scale; s += a[k][i]*a[k][i]; }
+        f=a[i][i]; g =-SIGN(sqrt(s),f); h=f*g-s;
+        a[i][i]=f-g;
+        for (j=l;j&lt;=n;j++)
+        { for(s=0.0,k=i;k&lt;=m;k++) s += a[k][i]*a[k][j]];
+          f=s/h;
+          for (k=i;k&lt;=m;k++) a[k][j] += f*a[k][i];
+        }
+        for (k=i;k&lt;=m;k++) a[k][i] *= scale;
+      }
+    }
+    w[i]=scale*g; g=s=scale=0.0;
+    if (i &lt;= m &amp;&amp; i != n)
+    { for (k=l;k&lt;=n;k++) scale += fabs(a[i][k]);
+      if (scale)
+      { for (k=l;k&lt;=n;k++)
+          { a[i][k] /= scale; s += a[i][k]*a[i][k]; }
+        f=a[i][l]; g = -SIGN(sqrt(s),f); h=f*g-s;
+        a[i][l]=f-g;
+        for (k=l;k&lt;=n;k++) rv1[k]=a[i][k]/h;
+        for (j=l;j&lt;=m;j++)
+        { for(s=0.0,k=l;k&lt;=n;k++) s += a[j][k]*a[i][k];
+          for (k=l;k&lt;=n;k++) a[j][k] += s*rv1[k];
+        }
+        for (k=l;k&lt;=n;k++) a[i][k] *= scale;
+      }
+    }
+    x=fabs (w[i])+fabs (rv1[i]); if (x&gt;anorm) anorm=x;
+  }
+  for (i=n;i&gt;=1;i--)
+  { if (i &lt; n)
+    { if (g)
+      { for (j=l;j&lt;=n;j++)
+             v[j][i]=(a[i][j]/a[i][l])/g;
+        for (j=l;j&lt;=n;j++)
+        { for(s=0.0,k=l;k&lt;=n;k++) s += a[i][k]*v[k][j];
+          for (k=l;k&lt;=n;k++) v[k][j] += s*v[k][i];
+        }
+      {
+      for (j=l;j&lt;=n;j++) v[i][j]=v[j][i]=0.0;
+    }
+    v[i][i]=1.0; g=rv1[i]; l=i;
+  }
+  for (i=min (m,n);i&gt;=1;i--)
+  { l=i+1; g=w[i];
+    for (j=l;j&lt;=n;j++) a[i][j]]=0.0;
+    if (g)
+    { g=1.0/g;
+      for (j=l;j&lt;=n;j++)
+      { for (s=0.0,k=l;k&lt;=m;k++) s += a[k][i]*a[k][j];
+        f=(s/a[i][i])*g;
+        for (k=i;k&lt;=m;k++) a[k][j] += f*a[k][i];
+      }
+      for (j=i;j&lt;=m;j++) a[j][i] *= g;
+    }
+    else for (j=i;j&lt;=m;j++) a[j][i]=0.0;
+    ++a[1][i];
+  }
+  for (k=n;k&gt;=1;k--)
+  { for (its=1;its&lt;=30;its++)
+    { flag=1;
+      for (l=k;l&gt;=1;l--)
+      { nm=l-1;
+        if ((fabs(rv1[l])+anorm) == anorm)
+        { flag=0; break; }
+        if ((fabs(w[nm])+anorm) == anorm) break;
+      }
+      if (flag)
+      { c=0.0; s=1.0;
+        for (i=l;i&lt;=k;i++)
+        { f=s*rv1[i]; rv1[i]=c*rv1[i];
+          if ((fabs(f)+anorm) == anorm) break;
+          g=w[i]; h=dpythag(f,g); w[i]=h; h=1.0/h;
+          c=g*h; s = -f*h;
+          for (j=1;i&lt;=m;j++)
+          { y=a[j] [nm]; z=a[j] [i]; a[j] [nm] =y*c+z*s;
+            a[j][i]=z*c-y*s;
+          }
+        }
+      }
+      z=w[k];
+      if(l == k)
+      { if (z &lt; 0.0)
+        { w[k] =-z;
+          for (j=1;j&lt;=n;j++) v[j][k] = -v[j][k];
+        }
+          break;
+      }
+      if (its == 30)
+      { fprintf(stderr,"No convergence in 30"
+              "dsvdcmp iterations\n");
+       exit(1);
+      }
+      x=w[l]; nm=k-1; y=w[nm]; g=rv1[nm]; h=rv1[k];
+      f=((y-z)*(y+z)+(g-h)*(g+h)) / (2.0*h*y);
+      g=dpythag(f, 1.0);
+      f=((x-z)*(x+z)+h*((y/(f+SIGN(g,f)))-h))/x;
+      c=s=1.0;
+      for (j=l;j&lt;=nm;j++)
+      { i=j+1; g=rv1[i]; y=w[i]; h=s*g; g=c*g;
+        z=dpythag(f,h); rv1[j]=z; c=f/z; s=h/z;
+        f=x*c+g*s; g=g*c-x*s; h=y*s; y *= c;
+        for (jj=1;jj&lt;=n;jj++)
+        { x=v[jj][j]; z=v[jj][i]; v[jj][j]=x*c+z*s;
+          v[jj][i]=z*c-x*s;
+        }
+        z=dpythag(f,h); w[j]=z;
+        if (z) { z=1.0/z; c=f*z; s=h*z; }
+        f=c*g+s*y; x=c*y-s*g;
+        for (jj=1;jj&lt;=m;jj++)
+        { y=a[jj][j]; z=a[jj][i]; a[jj][j]=y*c+z*s;
+          a[jj][i]=z*c-y*s;
+        }
+      }
+      rv1[l]=0.0; rv1[k]=f; w[k]=x;
+    }
+  }
+  free_dvector (rv1,1L);
+}
+/*******************************************************
+ * DPYTHAG - Computes sqrt(a*a + b*b) without
+ * destructive underflow or overflow.
+ ******************************************************/
+double dpythag(double a, double b)
+{ double aba,abb,xx,yy;
+  aba=fabs(a); abb=fabs(b); xx=abb/aba; yy=aba/abb;
+  if (aba &gt; abb) return aba*sqrt(1.0+xx*xx);
+  else return (abb == 0.0 ? 0.0 : abb*sqrt(1.0+yy*yy));
+}
+/*******************************************************
+ * DSVBKSB - Solves A.X = B for a vector X, where A is
+ * specified by the arrays u[1..m][1..n], w[1..n],
+ * v[1..n][1..n] as returned by dsvdcmp.
+ *******************************************************/
+void dsvbksb(double **u, double w[], double **v, int m,
+         int n, double b[], double x[])
+{ int jj,j,i;
+  double s,*tmp;
+
+  tmp=dvector(1L,(long)n,"tmp in dsvbksb");
+  for (j=1;j&lt;=n;j++)
+  { s=0.0;
+    if (w[j])
+    { for (i=1;i&lt;=m;i++) s += u[i][j]*b[i]; s /= w[j];}
+    tmp [j]=s;
+  }
+  for (j=1;j&lt;=n;j++)
+  { s=0.0;
+    for (jj=1;jj&lt;=n;jj++) s += v[j][jj]*tmp[jj];
+    x[j]=s;
+  }
+  free_dvector(tmp, 1L);
+}
+/*******************************************************
+ * CHEBPC - Transformation of Chebyshev coefficients
+ * generated in INPT to the interval -1 to 1
+ ******************************************************/
+void chebpc(double c[],double d[],int n)
+{ int k,j;
+  double sv,*dd;
+
+  dd=dvector(0L,(long)n-1,"dd in chebpc");
+  for (j=0;j&lt;n;j++) d[j]=dd[j]=0.0;
+
+  d[0]=c[n-1];
+  for (j=n-2;j&gt;=1;j--)
+  { for (k=n-j;k&gt;=1;k--)
+    { sv=d[k]; d[k]=2.0*d[k-1]-dd[k]; dd[k]=sv; }
+    sv=d[0]; d[0] = -dd[0]+c[j]; dd[0]=sv;
+  }
+  for (j=n-1;j&gt;=1;j--) d[j]=d[j-1]-dd[j];
+  d[0] = -dd[0] +0.5*c [0];
+  free_dvector(dd,0L);
+}
+/*************************************************
+ * PCSHFT - Generate the polynomial coefficients
+ * using the Chebyshev coefficients from CHEBPC
+ *************************************************/
+void pcshft(double a,double b,double d[],int n)
+{ int k,j;
+  double fac,cnst;
+
+  cnst=2.0/(b-a); fac=cnst;
+  for (j=1;j&lt;n;j++) { d[j] *= fac; fac *= cnst; }
+  cnst=0.5* (a+b);
+  for (j=0;j&lt;=n-2;j++)
+        for (k=n-2;k&gt;=j;k--) d[k] -= cnst*d[k+1];
+}
+/******************************************************
+ * RATINT - Diagonal rational function interpolation in
+ * the arrays xa[1..n] and ya[1..n].
+ ******************************************************/
+void ratint(double xa[], double ya[], double *c,
+       double *d, int n, double x, double *y)
+{ int m,i,ns=1;
+  double w,t,hh,h,dd;
+
+  hh=fabs (x-xa [1] );
+  for (i=1;i&lt;=n;i++)
+  { h=fabs (x-xa[i]);
+    if (h == 0.0) { *y=ya[i]; return; }
+    else if (h &lt; hh) { ns=i; hh=h; }
+    c[i]=ya[i]; d[i] =ya[i]+1.e-50;
+  }
+  *y=ya[ns--];
+  for (m=1;m&lt;n;m++)
+  { for (i=1;i&lt;=n-m;i++)
+    { w=c[i+1]-d[i] ; h=xa[i+m]-x; t=(xa[i]-x)*d[i]/h;
+      dd=t-c[i+1];
+      if (dd == 0.0)
+      { fprintf(stderr,"Error in routine ratint\n");
+        exit(1); /* The function may have a pole */
+      }           /* at the requested value of x. */
+      dd=w/dd; d[i] =c [i+1]*dd; c[i]=t*dd;
+    }
+    *y += (2*ns &lt; (n-m) ? c[ns+l] : d[ns--]);
+  }
+  return;
+}
+/***************************************************
+ * Utility routines based on Numerical Recipes
+ ***************************************************/
+double *dvector(long nl, long nh, const char *ner)
+{ double *v;
+
+  v=(double *)malloc((size_t) ((nh-nl+1+1)*
+           sizeof(double)));
+  if (!v)
+  { fprintf(stderr,"Allocation failure for vector %s\n"
+         ,ner);    exit(1);
+  }
+  return v-nl+1;
+}
+double **dmatrix(long nrl,long nrh,long ncl,long nch,
+             const char *ner)
+{ long i, nrow=nrh-nrl+l,nco1=nch-ncl+1;
+  double **m;
+
+  m=(double **) malloc((size_t)((nrow+1)*
+            sizeof (double*)));
+  if (m)
+  { m += 1; m -= nrl;
+    m[nrl]=(double *) malloc((size_t)((nrow*ncol+1)*
+            sizeof(double)));
+  }
+  if (m[nrl])
+  { m[nrl] += 1; m[nrl] -= ncl;
+    for(i=nrl+1;i&lt;=nrh;i++) m[i]=m[i-1] +ncol;
+  }
+  if (!m || !m[nrl])
+  { fprintf(stderr,"Allocation failure for matrix %s\n"
+          ,ner); exit(1);
+  }
+  return m;
+}
+void free_dvector(double *v, long nl)
+{ free(v+n1-1); }
+
+void free_dmatrix(double **m, long nrl, long ncl)
+{ free(m[nrl]+ncl-1); free(m+nrl-1); }
+
+/* End of File */</pre>
+
+</BODY>
+</HTML>

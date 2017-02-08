@@ -1,0 +1,115 @@
+<HTML><HEAD>
+<TITLE>November 1994/Encapsulating the DOS IOCTL Interface/Listing 6</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 6 chandle.cpp &#151; <I>adds character-device specific capability to class </I>IoctlHandle</A></h4>
+<pre>#include &lt;string.h&gt;
+#include "chandle.h"
+
+struct { char *dname;
+       int dtype;
+       } static dcat[]= { { "COM", 1 },{ "AUX", 1 },
+                       { "CON", 3 },{ "LPT", 5 },
+                       { "PRN", 5 },{ 0, 0 }   };
+static int getcat( const char *dname )    {
+   for( int i = 0; dcat[i].dname; i++ )
+      if( strnicmp( dcat[i].dname, dname, 3 ) == 0 )
+             break;
+   return dcat[i].dtype;
+}
+charHandle::charHandle( const char *device )
+                    : IoctlHandle( device )    {
+  _cat = getcat( device );
+}
+charHandle *charHandle::Init(const char *device)   {
+   charHandle *obj = new charHandle( device );
+
+   if( obj-&gt;_handle == -1 ||   //bad handle
+      obj-&gt;isFile()      ||   //can't be a file
+      obj-&gt;_cat == 0        )  {   //unknown device
+             delete obj;
+             return (charHandle *) 0;
+   }
+   return obj;
+}
+void charHandle::handle_info( int handle,
+                         unsigned info )  {
+  /* Set device information word  */
+   _iregs.x.dx = info &amp; 0x00ff;   //dh must be 0
+   _iregs.x.bx = handle;
+   int21_44h(set_handle_info);
+}
+unsigned charHandle::ioctl_data( ioctl_cmd fn,
+                            unsigned count,
+                            void *buffer )   {
+  /* Send/receive I/O Control data to char device */
+   _iregs.x.bx = _handle;
+   _iregs.x.cx = count;     //#bytes to read/write
+   _iregs.x.dx = FP_OFF( (void far *) buffer );
+   _sregs.ds   = FP_SEG( (void far *) buffer );
+   int21_44h(fn);          //function number (2/3)
+   return _oregs.x.ax;     //#bytes xfered
+}
+int charHandle::char_ioctl( char_cmd minor_code,
+                       void *param_block ) {
+  /* Access DOS int21h/44h/0Ch for the current
+   * handle and device category, generic ioctl for
+   * character devices.
+   */
+   _iregs.x.bx = _handle;
+   _iregs.h.ch = (char) _cat;
+   _iregs.h.cl = (char) minor_code;
+   _iregs.x.dx = FP_OFF( (void far *) param_block );
+   _sregs.ds   = FP_SEG( (void far *) param_block );
+   int21_44h( gen_ioctl_char );
+   return_dos_error ? _oregs.x.ax: 0;
+}
+int charHandle::sendIoctl( unsigned *count,
+                       void *data      )   {
+  /* Send ioctl data to current device.  */
+   *count = ioctl_data( send_ioctl_char,
+                        *count, data );
+   return _dos_error ? _oregs.x.ax : 0;
+}
+int charHandle::readIoctl( unsigned *count,
+                       void *data      )   {
+   *count = ioctl_data( read_ioctl_char,
+                        *count, data );
+
+   return _dos_error ? _oregs.x.ax : 0;
+}
+unsigned charHandle::busyCount( void )     {
+  /* Return LPTx device busy count, 0 on error. */
+   unsigned count_buf;
+   if( _cat != 5 ) return 0;      //error
+   char_itoctl ( get_iter count, (void *) &amp;count_buf );
+   return _dos_error ? 0 : count_buf;
+}
+unsigned charHandle::busyCount( unsigned count )   {
+  /* Set LPTx device busy count. Return new count,
+   * or 0 on error........      */
+   if( _cat != 5 ) return 0;      //error
+   char_ioctl( set_iter_count, (void *) &amp;count);
+   return busyCount();
+}
+int charHandle::getANSIdata( struct ANSIdata *dis) {
+  /* Get config data for an ANSI display driver.   */
+   if( _cat != 3 ) return -1;       //error
+   dis-&gt;info = 0;
+   dis-&gt;block_length = 14;
+   char_ioctl( get_display_mode, (void *) dis);
+   return _dos_error ? -1 : 0;
+}
+int charHandle::setANSIdata( struct ANSidata *dis) {
+  /* Set config data for an ANSI display driver. */
+   if( _cat != 3 ) return -1;       //error
+   dis-&gt;info = 0;
+   dis-&gt;block_length = 14;
+   char_ioctl( set_display_mode, (void *) dis);
+   return _dos_error ? -1 : 0;
+}
+// End of File
+</pre>
+</BODY>
+</HTML>

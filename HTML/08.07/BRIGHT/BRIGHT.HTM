@@ -1,0 +1,112 @@
+
+
+
+<HTML>
+<HEAD>
+
+<TITLE>July 1990/Virtual Memory For 640K DOS</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocjul.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Virtual Memory For 640K DOS<A name="017B_00D1"><A name="017B_00D1"></font></h2><P>
+<h3 align="center"><font color="#800000"><A name="017B_0000"><A name="017B_0000">Walter Bright</font></h3><hr><blockquote><P>
+<P><i><A name="017B_0000"><A name="017B_0000">Walter is the director of the compiler development division at Zortech Ltd. He has a degree from Cal Tech and can be reached at 4819 118th Ave. N.E., Kirland, WA 98033.</i></P><P>
+<I>[Ed. Note: Zortech's newest release v21 includes a virtual code manager (VCM) which allows even 8088-based machines to ignore the 640K barrier. Here the implementor, Walter Bright, describes how the technology works.]</I><P>
+As time goes by, programs tend to steadily increase in size and complexity. Customers want more features, unanticipated problems require more code to solve, programming in a high-level language results in larger programs than assembler. As code size grows, so does the amount of data memory needed. Pretty soon you start bumping up against the notorious "640K barrier" that all MS-DOS programmers have learned to love.<P>
+The solutions available are:<P>
+<B>Recode to reduce code size,</B> or "How I learned to stop worrying and love assembler language". This alternative may produce modest decreases in program size, but is very costly in terms of schedule slides.<P>
+<B>Stop adding features.</B> Yeah, right!<P>
+<B>Port to OS/2</B> &#151; if you and all your customers can afford the hardware and software costs.<P>
+<B>Use a DOS Extender.</B> This approach works well, and is cheaper than the OS/2 route, but requires a 286 or better, with lots of extended memory.<P>
+<B>Use overlays.</B> This traditional technique involves swapping code off disk instead of keeping it resident in memory all the time. Overlays will be discussed shortly.<P>
+<B>Use VCM (Virtual Code Manager).</B> VCM is a technique whereby virtual memory can be simulated, even on lowly 8088-based machines. VCM, what it is and how it works, is the primary focus of this article.<P>
+<h4><FONT COLOR="#000080"><A name="017B_00D2">Tradional Overlay Methods<A name="017B_00D2"></FONT></h4></P>
+Overlay schemes work by dividing a program's code into a root segment and various overlay segments. The root segment is always resident in memory. The overlay segments are placed into a reserved section of memory, called the overlay region. An overlay is loaded only when the program calls a function in that overlay. When an overlay is loaded, it replaces any existing overlay in the overlay region. The size of the overlay region is the size of the largest overlay segment. The layout in memory of a typical program with three overlays is shown in <A href="fig1.htm">Figure 1</a>.
+ Since Overlay <I>C</I> is the largest, it determines the size of the overlay region.</FONT></FONT><P>
+The linker sets up overlays. A command to the linker to set up the overlays in <A href="fig1.htm">Figure 1</a>
+is something like:<P>
+<pre>LINK
+rootl+root2+(ovla)+(ovlb)+(ovlc),prog;</pre>
+The linker replaces all calls to functions in the overlays with calls to the overlay manager, which loads the appropriate overlay into the overlay region before jumping to the called function.<P>
+The overlay process begins to break down when more than a few overlays are needed. It seems that every function called is in a different overlay, and that overlays therefore always need to be loaded in from disk. This is a condition known as "thrashing", and results in terrible performance. For a simplistic example, imagine the following code:<P>
+<pre>for (i = 0; i &lt; 10; i++)
+    // in overlay A
+{ funcb();     // in overlay B
+  funcc();     // in overlay c
+}</pre>
+Running this code will cause the disk drive light to come on, and stay on. One time through the loop will cause overlay A to be loaded two times, and overlay B and C to be overloaded once each. That seems rather silly when lots of memory might be available.<P>
+More sophisticated overlay linkers try to deal with this problem by allowing overlay 'hierarchies', that is, the overlay structure looks like an inverted tree (see <A href="fig2.htm">Figure 2</a>)
+. Here, overlay <I>B</I> can be in memory at the same time as overlay <I>B1</I>, and <I>B</I> at the same time as <I>B2</I>, and <I>C</I> at the same time as <I>C2</I>. But no other simultaneous combinations are possible. Some implementations don't even allow calls between leaves, that is, <I>B1</I> cannot call C<I>1</I>. Most programs simply don't decompose into such simple trees.</FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT><P>
+It is important to remember that the overlays are <I>statically</I> located by the linker. They are loaded on demand into a fixed location in the program, regardless of what other memory is available. The program is organized into an overlay structure at compile/link time. There is no flexibility based on user usage patterns or memory available at runtime.<P>
+What's needed is a scheme with the following capabilities:<P>
+<UL><li>Overlay segments are loaded into whatever free memory might be available.</li>
+<li>As the demand for data memory increases (via calls to <I>malloc</I>), the overlay manager discards overlay segments from memory, using a least recently used (LRU) algorithm.</FONT></FONT></li>
+<li>Decent performance on both 640K XT and AT machines.</li>
+<li>Requires no special attention from programmers.</li>
+<li>Works with pointers to functions (necessary to work with virtual function in C++).</li>
+<li>Works with debuggers.</li></UL>
+VCM is a solution that meets these requirements. Instead of a fixed overlay region, when the VCM manager needs memory to load an overlay segment (or <I>vseg</I>, virtual code segment), it calls <I>malloc()</I> to get the memory. The <I>vseg</I> is then loaded from disk into this region. When <I>malloc()</I> runs out of free memory, it calls the VCM manager, which discards <I>vseg</I>s from memory until the request to <I>malloc()</I> can be satisfied. Thus, the layout of code in memory is dynamically adjusted to reflect the memory available and the usage pattern. Only under worst case conditions does the performance degrade to that of the traditional static overlay schemes (a buffer is set aside so that there is always room to load at least one <I>vseg</I>). The layout in memory of a VCM program at one particular instant is shown in <A href="fig3.htm">Figure 3</a>.
+</FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT><P>
+How does VCM work? The 8088 does not support position-independent code. A <I>far</I> function call consists of five bytes:</FONT></FONT><P>
+<pre>0x9A, offset-low, offset-high,
+seg-low, seg-high</pre>
+With VCM, functions can't be invoked with <I>far</I> calls because we don't know at link time where a <I>vseg</I> will wind up. The possible cases are:</FONT></FONT></FONT></FONT><P>
+1. Call from root to another function in the root. A <I>far</I> call will work; this is what the linker normally does anyway!</FONT></FONT><P>
+2. Call from root to a function in a <I>vseg</I>. The <I>far</I> function calls are replaced with these five bytes:</FONT></FONT></FONT></FONT><P>
+<pre>INT 3Fh     ;call VCM manager
+db vcsnum   ;number of virtual code segment
+dw voffset  ;offset within that code segment</pre>
+Note that this scheme implies a maximum of 255 virtual code segments. If the <I>vseg</I> is resident, VCM jumps to the start of the <I>vseg </I>offset by the <I>voffset</I> word. ff the <I>vseg</I> is not resident, VCM allocates space for it via <I>malloc</I>, loads it from disk, and jumps to it.</FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT><P>
+3. Call from a <I>vseg</I> to another function in the same <I>vseg</I>. This call is converted to a <I>near</I> function call:</FONT></FONT></FONT></FONT></FONT></FONT><P>
+<pre>push  CS  ;the function will do a far return
+         ;call near ptr function
+nop       ;to fill it out to 5 bytes</pre>
+Fortunately, <I>near</I> function calls <I>are</I> position independent. Note that a <I>vseg</I> has only one code segment, separate from any other segment, so <I>near </I>function calls never cross <I>vseg</I> boundaries.</FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT><P>
+4. Call from a <I>vseg</I> to another function in a different <I>vseg</I>: Do the same thing as with case 2.</FONT></FONT></FONT></FONT><P>
+5. Call from a <I>vseg</I> to a function in the root: Do the same thing as with case 1. However, since the linker at link time can't know at what segment value the root will be loaded, when VCM loads a <I>vseg</I>, it must be relocated, much like .<I>EXE</I> files are relocated when loaded.</FONT></FONT></FONT></FONT></FONT></FONT><P>
+<h4><FONT COLOR="#000080"><A name="017B_00D3">Other Problems<A name="017B_00D3"></FONT></h4></P>
+How about pointers to functions? A <I>far</I> function pointer is a 32-bit value: the segment and offset. How can this address be fixed, when the code can move around at runtime? The trick here is to replace the address of the function with the address of a <I>thunk</I>. The thunk is a 5-byte entity that the linker adds to the program. The thunk is always resident and stays at a fixed address. The thunk consists off:</FONT></FONT><P>
+<pre>INT3Fh      ;call VCM manager
+db vcsnum   ;number of virtual code segment
+dw voffset  ;offset within that code segment</pre>
+These pointers to functions are converted to VCM calls using the same mechanism which converts direct function calls to VCM calls. The function pointer now points to this reload thunk. When the function pointer is called, control is actually transferred to the reload thunk, which calls the <I>VCM</I> manager to load the <I>vseg</I>, which then jumps to the actual function.</FONT></FONT></FONT></FONT><P>
+So far, it's all fairly straightforward. Now comes the tricky part. Suppose the code in <I>vseg A</I> calls a function in <I>vseg B</I>. Now <I>B</I> calls <I>malloc()</I> a few times and causes <I>vseg A</I> to get discarded from memory. The return address into <I>vseg A</I> is still on the stack, but now points into data! Returning from that function will cause a crash. Thus, when <I>vseg A</I> is discarded, the stack must be walked to find any return addresses into <I>vseg A</I>. These return addresses are then replaced with the addresses of reload thunks for <I>vseg A</I>. In order to walk the stack, and distinguish <I>far</I> return addresses from any other stuff that might be on the stack, some conventions must be carefully observed. A typical stack frame generated for a function looks like:</FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT><P>
+<pre>func  proc  far
+   push  BP
+   mov   BP, SP
+   sub   SP,10   ;make space for local variables
+   ....
+   add   SP, 10
+   pop   BP      ;get caller's BP
+   ret
+func endp</pre>
+So the return address is always a fixed offset from <I>BP</I>, and <I>BP</I> can be used to find the stack frames as the stack is walked backwards. Since we must skip any <I>near</I> function calls (recall that the return addresses are position independent and no <I>near</I> calls could cross a <I>vseg</I> boundary), we must also find a way to distinguish a <I>near</I> call on the stack from a <I>far</I> one.</FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT><P>
+The trick is to notice that the stack is always word aligned, that is, the least significant bit is always <I>0</I>. This bit can be used as a flag to indicate a <I>far</I> stack frame. The stack frame code is modified to:</FONT></FONT></FONT></FONT><P>
+<pre>func  proc  far 
+   inc   BP  ;indicate far return
+            ;address on stack
+   push  BP
+   mov   BP,SP
+   sub   SP,10  ;make space for
+              ;local variables
+   ....
+   add   SP,10
+   pop   BP  ;get caller's BP
+   dec   BP  ;counteract previous inc
+   ret
+func      endp</pre>
+<I>near</I> functions would not have the <I>inc</I> <I>BP / dec BP</I> pair. The stack walker now looks at bit <I>0</I> of <I>BP</I> for each frame to see if the return address is <I>far</I> or <I>near</I>.</FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT><P>
+The same syntax to the linker is used to specify <I>vseg</I> modules, as was used for the older overlay schemes, i.e.:</FONT></FONT><P>
+<pre>BLINK
+root1+root2+(vcsa+vcsb)+(vcsc)+(vcsd),
+prog,,(mlib.lib);</pre>
+Three <I>vsegs</I> are created (<I>vcsa</I> and <I>vcsb </I>are combined into one <I>vseg</I>). Enclosing the library <I>mlib</I> in parentheses tells the linker to place each module pulled in from the library in its own <I>vseg</I>. Interestingly, even <I>main()</I> can be put into a <I>vseg</I>! The only thing that cannot be put into a <I>vseg</I> is the C runtime library, cause that contains the <I>VCM</I> initialization code, which had better not get discarded.</FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT><P>
+That's how it works. There's one more problem, though. The compiler must be modified to produce the <I>inc</I> <I>BP / dec BP</I> pairs. The trouble is, if one module is linked to another, and one has the pairs and the other doesn't, mysterious and erratic program crashes may occur. The solution is to create a new memory model in addition to the standard T,S,C,M,L models, called the V model. All modules are compiled with the V model, and the VCM linker verifies that all were compiled with the V model.</FONT></FONT></FONT></FONT><P>
+For assembler programmers, the linker cannot verify that the stack frame conventions are followed, so the responsibility rests with the programmer. The stack frame is required for any function that calls <I>malloc</I> or calls another function which might call <I>malloc</I> or exist in another <I>vseg</I>. When in doubt, put the stack frame on all functions which call other functions.</FONT></FONT></FONT></FONT></FONT></FONT><P>
+All the information and <I>vseg</I> code needed by VCM is stored into the <I>.EXE</I> program file. It is disguised as a Microsoft-style overlay, so that various programs that fiddle around with <I>.EXE</I> files will not disturb it. Since the <I>vsegs</I> are loaded from the <I>.EXE</I> file, the runtime performance of VCM can be improved by running the program from a RAM disk.</FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT><P>
+Typical debuggers cannot deal with code that moves around at runtime. Zortech's debugger was modified to work with VCM so debugging VCM programs is as easy as debugging regular programs.<P>
+VCM does not overlay data. VCM helps make room for data by discarding code that is not in use, but it cannot swap data to disk.<P>
+In conclusion, VCM is the ideal solution to a certain class of programming problems. It is well suited to programs that have large amounts of code, have widely varying amounts of data, and that must run on 8088 machines. A program fitting this criteria is a word processor. Word processing programs typically are loaded with features, each requiring significant code to implement. Different customers use different features. The code to implement these features takes away from the memory needed for the data. With VCM, only those features which are actually being used have the code for them in memory. If there is not much data in the document being edited, the needed code is all resident in memory and the program runs at maximum speed. As the data grows in size, less frequently used code is discarded. Performance gets slower, and eventually reaches the worst case, which is that of the traditional static overlay scheme.<P>
+Since VCM's worst case performance is that of static overlays, and typically will be far superior, VCM completely obsoletes those old overlay schemes.<P>
+</BODY>
+</HTML>

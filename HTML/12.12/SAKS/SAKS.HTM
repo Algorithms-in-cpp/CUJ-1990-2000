@@ -1,0 +1,160 @@
+
+
+<HTML>
+<HEAD>
+
+<TITLE>December 1994/Stepping Up To C++</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocdec.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Columns</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Stepping Up To C++<A name="01F7_010E"><A name="01F7_010E"></font></h2><P>
+<h3 align="center"><A name="01F7_0000"><A name="01F7_0000">Designing Generic Container Classes, Part 6: Templates</h3><P>
+<h3 align="center"><font color="#800000">Dan Saks</font></h3><hr><blockquote><P>
+<P><i><A name="01F7_0000"><A name="01F7_0000">Dan Saks is the president of Saks &amp; Associates, which offers consulting and training in C++ and C. He is secretary of the ANSI and ISO C++ committees. Dan is coauthor of C++ Programming Guidelines, and codeveloper of the Plum Hall Validation Suite for C++ (both with Thomas Plum). You can reach him at 393 Leander Dr., Springfield OH, 45504-4906, by phone at (513)324-3601, or electronically at dsaks@wittenberg.edu.</i></P><P>
+This is the sixth and final installment of my series on designing and implementing generic container classes. A generic container class is a single definition for a particular kind of container class that you can adapt to hod objects of different types.<P>
+As I have throughout this series, in this installment I build on my example of a generic first-in-first-out queue with elements of type <I>T</I>. This generic queue began in Part 1 (<I>CUJ</I>, June 1994) as a class called <I>genq</I> that implemented a container with elements of type <I>void</I> *. Using <I>void</I> *as the element type relaxes static type checking enough so that a <I>genq</I> can hold the address of any type of data object. Unfortunately, using <I>void</I> * sacrifices too much safety and ease of use.<P>
+Part 2 (August, 1994) showed how a type-specific wrapper class can make a <I>genq</I> much safer and easier to use. It also explored different forms of iteration functions as a way to visit (iterate over) all the elements in a container and, in the process, apply some operation to each element. Part 3 (September, 1994) introduced iterator objects as a more general mechanism tor iterating through a container. An iterator is not part of its associated container, but it "knows" enough about the container's internals to be able to step from one object in the container to the next.<P>
+In Part 4 (October, 1994) I considered, and rejected, using polymorphism (inheritance and virtual functions) instead of wrapper classes as a way to provide a generic container with type information about the objects in the container. That is, I rewrote <I>genq</I> as <I>comq</I>, a queue with elements of type <I>common</I> * instead of <I>void</I> *, where common is an abstract base class for containable objects. It just didn't pan out.<P>
+Last month's Part 5 (November, 1995) explored the preprocessor as a tool for instantiating type-specific wrapper classes. The commonly available (but non-standard) header <I>generic.h</I> defines a small set of macros for automating the production of type-specific wrapper classes. The author of a generic class fashions additional macros that work with the <I>generic.h</I> macros so that users (application programmers) need only a few simple macro calls to instantiate and use the generic class for a particular type parameter <I>T</I>.<P>
+The general approach of using macros to instantiate generics shows a lot of promise, but still comes up short. While writing the macro calls that instantiate the generics is pretty easy and instantiated classes are indeed type-safe, the resulting code can be extremely hard to debug.<P>
+The crux of the problem is that each macro call expands on a single logical line. If you call the macro with an invalid argument, or there's a bug in the macro itself, the best that most compilers can do is tell you there's an error somewhere in the macro expansion. Furthermore, some (possibly many) symbolic debuggers won't let you set more than one breakpoint per line, or set a breakpoint in the interior of a line, making it hard to isolate problems in the member function bodies.<P>
+<h4><FONT COLOR="#000080"><A name="01F7_010F">Templates to the Rescue<A name="01F7_010F"></FONT></h4></P>
+C++ programmers lived with these macros through the mid-1980s, but by the end of the decade, many felt they needed something better. In the fall of 1988, Bjarne Stroustrup (the inventor of C++) proposed adding a new language feature called templates, specifically for writing generic classes with compile-time type parameters <a href="#1">[1]</a>. The Annotated Reference Manual (ARM) <a href="#2">[2]</a> described templates as part of C++, but only as an experimental feature. The ANSI  C++ standards committee added the ARM's description of templates (with minor changes) to the draft standard in July 1990, but template implementations weren't available to the general public until 1991.<P>
+Templates are now available in many, but not all, C++ implementations. However, there's still so much variation among compilers that writing portable templates is, to say the least, a challenge. I'm not sure if it will ever be easy. The standards committee recently approved a major overhaul of the rules for templates. Most of the changes are clarifications, which should bring implementations into agreement. But some of the changes are new features, which usually cause more disagreements, at least temporarily.<P>
+This month, I provide my final example of a design approach for implementing generic queues &#151; this time via templates. Along the way I explain how templates work and how to use them. I present a variety of styles for writing generic classes with templates, along with some thoughts on why you might prefer one style over another. I also alert you to some of the ways that templates vary across implementations.<P>
+<h4><FONT COLOR="#000080"><A name="01F7_0110">Template Basics<A name="01F7_0110"></FONT></h4></P>
+In many ways, templates are like macros, but they're part of the language itself, not the preprocessor. Therefore, they offer implementers the opportunity to produce better compile-time diagnostics for erroneous instantiations, and better symbolic information for browsers, linkers, debuggers, profilers, and other development tools.<P>
+A class template definition looks very much like any other class definition, except a class template begins with a heading of the form<P>
+<pre>template &lt; parameter-list &gt;</pre>
+<I>template</I> is a keyword in C++. The <I>&lt; &gt;</I> are delimiters (called "angle brackets" in this context) that enclose the template parameter list. The template parameter list is typically a type declaration of the form<P>
+<pre>class T</pre>
+indicating that the class template accepts a single argument that names a type. For example, a declaration of the form<P>
+<pre>template &lt;class T&gt;
+class queue
+   {
+   ...
+   };</pre>
+defines <I>queue</I> as a class template with type parameter T. A template parameter list can have more than one parameter (separated by commas), and other forms of parameters, but for now, we'll consider just this one simple form.<P>
+The <I>T</I> in &lt;<I>class T</I>&gt; is the formal type parameter name. You use <I>T</I> as needed in the body of the template to refer to the actual type argument. (You can use any identifier instead of <I>T</I>; <I>T</I> is just a very popular choice.) The keyword <I>class</I> seems to suggest that <I>T</I> must be a class type, but it can be absolutely any type.<P>
+Once you've defined a <I>queue</I> template, <I>queue&lt;t&gt;</I> becomes a type name designating an instantiation of the template for some actual type <I>t</I>. For example, <I>queue&lt;int&gt;</I> is the type name for a <I>queue</I> with elements of type <I>int</I>. This notation is remarkably similar to that used with the <I>generic.h</I> macros. With the macros, you write <I>queue&lt;t&gt;</I> as <I>queue(t)</I>.<P>
+You can use an instantiated template class name anywhere you can use any other type name. For instance,<P>
+<pre>queue&lt;str&gt; q;</pre>
+declares <I>q</I> as an object of type <I>queue&lt;str&gt;</I>. You can also use <I>queue&lt;str&gt;</I> in other contexts, such as <P>
+<pre>void reverse(queue&lt;str&gt; &amp;q);</pre>
+or<P>
+<pre>typedef queue&lt;str&gt; str_queue;</pre>
+The construct <I>queue&lt;str&gt;</I> really is just another type name.<P>
+<h4><FONT COLOR="#000080"><A name="01F7_0111">A Queue Class Template<A name="01F7_0111"></FONT></h4></P>
+With this general background, let's look at a real class template. <A href="list1.htm">Listing 1</a>
+shows header <I>queue9.h</I> containing a complete definition for a queue class template. (The 9 in <I>queue9.h</I> indicates that this is the 9th version of the generic queue class since the start of this series.) As with the last version of the macro-based generic queue class (<A href="list5.htm">Listing 5</a>
+from Part 5), this queue is not a wrapper around a <I>genq.genqs</I> contained pointers to objects, but the cells in this queue hold objects rather than pointers.<P>
+Before we get too involved in the innards of the template, you might want to see how to use it. <A href="list2.htm">Listing 2</a>
+contains my test program for generic queues rewritten using the <I>queue</I> class template. The function <I>test</I> contains the declaration<P>
+<pre>queue&lt;str&gt; q[4];</pre>
+which declares <I>q</I> as an array with four elements of type <I>queue(str).test</I> doesn't contain any more explicit uses of the template notation, but the last line in the function<P>
+<pre>cout &lt;&lt; i &lt;&lt; ':' &lt;&lt; q[i] &lt;&lt; '\n';</pre>
+calls the <I>operator&lt;&lt;</I> declared near the top of the listing to put <I>q[i]</I> to <I>cout</I>.<P>
+Said output operator uses the template twice, in the parameter list:<P>
+<pre>ostream &amp;operator&lt;&lt;(ostream &amp;os, queue&lt;str&gt; &amp;q)</pre>
+and in the object declaration:<P>
+<pre>queue&lt;str&gt;::iterator sqi (q);</pre>
+The latter declares <I>sqi</I> as an object of type <I>queue&lt;str&gt;::iterator</I>, constructed to iterate through the <I>queue&lt;str&gt;</I> referenced by <I>q</I>. Class <I>iterator</I> is defined in <A href="list1.htm">Listing 1</a>
+as a public member of <I>queue&lt;T&gt;. iterator</I> is a member of a template; it is not a template itself. Therefore, you can't write the declaration as<P>
+<pre>queue::iterator&lt;str&gt; sqi(q);</pre>
+Now let's return to the template definition in <A href="list1.htm">Listing 1</a>.
+ The <I>queue</I> template uses <I>T</I> in various places to refer to the type argument. For example, the nested <I>cell</I> type:<P>
+<pre>struct cell
+   {
+   cell *next;
+   T element;
+   cell(const T &amp;e, cell *p)
+      : element(e), next(p) { }
+   };</pre>
+has a data member of type <I>T</I>, and a constructor with a parameter of type <I>const T &amp;</I>. The <I>queue</I> template even uses <I>queue&lt;T&gt;</I> to refer to another queue of the same type. For example, the nested <I>iterator</I> class has a constructor with a parameter of type<P>
+<pre>const queue&lt;T&gt; &amp;</pre>
+This means that the argument to the iterator for a <I>queue&lt;T&gt;</I> must also be an object (or reference to an object) of type <I>queue&lt;T&gt;</I>.<P>
+Note that the queue class template's constructor and destructor are declared as<P>
+<pre>queue();
+~queue();</pre>
+not as<P>
+<pre>queue&lt;T&gt;();
+~queue&lt;T&gt;();</pre>
+In both cases, you need not supply the type argument because the compiler can infer it from the context. Unfortunately, the ARM never explicitly stated when it was okay to omit the type parameter after the template name, and whether the omission was optional or mandatory. Compiler writers had to infer the rules from the examples and commentary. Needless to say, they inferred differently.<P>
+The current working draft standard for C++ now says that within the scope of<P>
+<pre>template &lt;class T&gt; class X { ... };</pre>
+<I>X</I> and <I>X&lt;T&gt;</I> are equivalent. Thus, you can write the constructor for X as either <I>X()</I> or <I>X&lt;T&gt;()</I>.<P>
+A template definition can refer explicitly to an instantiation of the template for some other type <I>U</I>, by writing <I>X&lt;U&gt;</I>. For example,<P>
+<pre>template &lt;class T&gt;
+class X
+   {
+   X *p1;
+   X&lt;T&gt; *p2;
+   X&lt;int&gt; *p3;
+   };</pre>
+defines class template <I>X</I> with three data members. <I>p1</I> and <I>p2</I> both have type <I>X&lt;T&gt;</I> *, but <I>p3</I> has type <I>X&lt;int&gt;</I> *. Thus, if you declare<P>
+<pre>X&lt;str&gt; a;</pre>
+then both <I>a.p1</I> and <I>a.p2</I> have type <I>X&lt;str&gt;</I> *, but <I>a.p3</I> has type <I>X&lt;int&gt; *</I>.<P>
+This clarification of the rules for templates is fairly recent. I haven't yet seen a compiler that behaves accordingly. For the time being, it appears that your safe bet is to<P>
+<UL><li>omit the template argument(s) after the template name when it's used to form the name of the constructor or destructor,</li>
+<li>use the template argument(s) after the template name when it's used in all other contexts.</li></UL>
+<h4><FONT COLOR="#000080"><A name="01F7_0112">Template Member Definitions<A name="01F7_0112"></FONT></h4></P>
+As with any other class definition, a class template definition contains member function declarations. You can define a member function in situ (by including the function body as part of the function declaration), but that leads to cluttered class definitions. I recommend writing the function definitions elsewhere.<P>
+Every member function definition for a class template must begin with<P>
+<pre>template &lt;class T&gt;</pre>
+and must include the <I>&lt;T&gt;</I> after the template name in the fully-qualified function name. For example,<P>
+<pre>template &lt;class T&gt;
+ void queue&lt;T&gt;::append(const T &amp;e)
+   {
+   ...
+   }</pre>
+defines the <I>append</I> function for <I>queue&lt;T&gt;</I>. To declare the function as inline, add the keyword <I>inline</I> after the template parameter list, as in<P>
+<pre>template &lt;class T&gt;
+inline queue&lt;T&gt;::~queue()
+   {
+   clear();
+   }</pre>
+Just as I prefer writing member function definitions outside the class, I prefer writing nested class definitions outside their enclosing class too. Unfortunately, forward-declared nested classes don't seem to work with class templates. I can't find a compiler that will let me declare <I>queue&lt;T&gt;::cell</I> or <I>queue&lt;T&gt;::iterator</I> as forward-declared nested classes, as I tried to do in <A href="list3.htm">Listing 3</a>.
+ My reading of the draft C++ standard is that the forward-declarations should work, but maybe I missed something.<P>
+I encountered a similar problem in writing the function definitions for member functions of classes nested within the class template. In particular, I tried defining the body of the <I>cell</I> constructor outside the <I>queue</I> class template definition, as shown in <A href="list4.htm">Listing 4</a>.
+ Again, none of the half dozen compilers I use (under DOS/Windows) would accept it. I don't mind so much defining the cell and iterator constructors in situ; they're short enough. However, <I>iterator::next()</I> is much longer, and I really don't like defining it in situ.<P>
+Given the current state of C++ compilers, your safest bet might be to avoid mixing nested classes and templates. Rather than implement the <I>cell</I> and <I>iterator</I> types as members of the <I>queue</I> class template, implement them as separate class templates <I>queue_cell&lt;T&gt;</I> and <I>queue_iterator&lt;T&gt;</I>, respectively. The header <I>queue10.h</I> in <A href="list5.htm">Listing 5</a>
+shows the definition for <I>queue&lt;T&gt;</I> rewritten using <I>queue_cell&lt;T&gt;</I> and <I>queue_iterator&lt;T&gt;</I>.<P>
+When an application includes <I>queue9.h</I> (which uses nested cell and iterator classes), <I>queue9.h</I> introduces only one name, <I>queue</I>, into the application's global namespace. The application can access <I>queue&lt;T&gt;::iterator</I> because <I>iterator</I> is a public member. This is as it should be; the iterator is part of the queue interface. The application can't access <I>queue&lt;T&gt;::cell</I> because <I>cell</I> is private. This too is as it should be because the <I>cell</I> type is an implementation detail, which should be inaccessible to the application.<P>
+In contrast, including <I>queue10.h</I> (which avoids nested classes) introduces three global names: <I>queue_cell</I> and <I>queue_iterator</I>, as well as <I>queue</I>. Declaring <I>queue_iterator</I> as a global name doesn't really make it any more accessible than when it was a public nested class. However, declaring <I>queue_cell</I> as global is akin to declaring the <I>cell</I> type as part of the queue's public interface. This is not good.<P>
+The solution to this problem is a technique I introduced in Part 1 of this series (June 1994). That is, declare all of <I>queue_cell's</I> members, including the constructor, as <I>private.</I> Hence, an application can't create objects of type <I>queue_cell&lt;T&gt;</I> because the constructor is inaccessible. This effectively removes <I>queue_cell</I> from the <I>queue</I> interface. But the members of <I>queue&lt;T&gt;</I> and <I>queue_iterator&lt;T&gt;</I> must be able to create <I>queue_cell&lt;T&gt;</I> objects, so <I>queue_cell&lt;T&gt;</I> declares both <I>queue&lt;T&gt;</I> and <I>queue_iterator&lt;T&gt;</I> as friend classes.<P>
+<h4><FONT COLOR="#000080"><A name="01F7_0113">Template Instantiation<A name="01F7_0113"></FONT></h4></P>
+The <I>generic.h</I> macros provide two macros, <I>declare</I> and <I>implement</I>, for explicitly instantiating templates. A macro call of the form<P>
+<pre>declare(C, T)</pre>
+generates the class and inline member function definitions for genetic class <I>C</I> instantiated with type argument <I>T</I>. For example, if <I>queue</I> is a generic class, then<P>
+<pre>declare(queue, int)</pre>
+instantiates the class definition for a <I>queue</I> of <I>int</I>. A macro call of the form<P>
+<pre>implement(C, T)</pre>
+instantiates the non-inline parts of the implementation for generic class <I>C</I> with type argument <I>T</I>. For example,<P>
+<pre>declare(queue, str)</pre>
+instantiates the non-inline member functions for a <I>queue</I> of <I>str</I>. <A href="list1.htm">Listing 1</a>
+and <A href="list5.htm">Listing 5</a>
+both contain comments to indicate which parts of the template definition correspond to the declarations that would be generated by the <I>declare</I> and <I>implement</I> macros, respectively.<P>
+Template classes do not require explicit instantiation. The translator instantiates the templates automatically. C++ implementations differ in the way they instantiate templates, but most follow a common conceptual model.<P>
+When the compiler encounters the name of a template instantiation such as <I>queue&lt;str&gt;</I> for the first time in a compilation unit, it automatically instantiates the class definition (the "declare" part) for <I>queue&lt;str&gt;</I>. When the linker combines all the compilation units into a single program, it must insure that there's exactly one copy of the non-inline member function definitions and static data member definitions (the "implement" part) for each instantiation of the template anywhere in the program.<P>
+Some compilers require you to put both the "declare" and "implement" parts of the template definition in the header (as in <A href="list1.htm">Listing 1</a>
+and <A href="list5.htm">Listing 5</a>)
+. When the compiler sees a template instantiation such as <I>queue&lt;str&gt;</I>, it generates a class definition and code for the member functions of <I>queue&lt;str&gt;</I>. In other words, it generates both the "declare" and "implement" parts of the template class as part of the current object module. When the linker combines the object modules, it merges all the duplicate copies of a template class member function into a single function. (If you prefer, you can say the linker throws away the duplicates.)<P>
+Other compilers allows you to put only the "declare" part of the template definition in the header, and put the "implement" part in a separate source file. (The compiler might insist that the header and source file have the same file name but different file extensions.) When the compiler encounters a template instantiation, it generates the "declare" part of the template, and makes a notation in the object code that it will need a copy of the "implement" part somewhere along the line. As the linker combines the object modules, it locates the "implement" parts it needs and links them in.<P>
+Many compilers offer more than one strategy for instantiating templates, and provide compiler switches or pragmas that let you choose. Everybody does it differently. Read your user's guide.<P>
+<h4><FONT COLOR="#000080"><A name="01F7_0114">Code Bloat<A name="01F7_0114"></FONT></h4></P>
+Each instantiation of a template for a different type argument generates an entirely new copy of the member functions. For example, <I>queue&lt;int&gt;</I> instantiates one copy of the template member functions, and <I>queue&lt;str&gt;</I> generates another.<P>
+Templates share source code, but they generally do not share object code. Thus, if a single program instantiates a template with many different type arguments, the program may become bloated with many copies of nearly identical code.<P>
+You can reduce this bloating by extracting the code that's common to every instantiation and placing it in a separate class. Then you rewrite the template member functions as shorter functions that delegate work to an object of this common type. If this approach sounds familiar, that's because it is. It's essentially a wrapper class design.<P>
+<A href="list6.htm">Listing 6</a>
+shows class <I>queue</I> as a template for a generic queue implemented as a wrapper around a <I>genq. genq</I> captures much of the logic common to every queue instantiation. As a consequence, each template instantiation generates less code.<P>
+<h4><FONT COLOR="#000080"><A name="01F7_0115">That's a Wrap<A name="01F7_0115"></FONT></h4></P>
+Despite their imperfections, templates are extremely useful. Dare I say they may be more useful than virtual functions. I think they are the right tool for implementing many common data structures. As with any relatively new feature, use templates conservatively and cheek your templates against more than one compiler.<P>
+<h4>References</FONT></h4></P>
+<a name="1"></a>[1]     Bjarne Stroustrup. "Parameterized Types for C++," appearing in both <I>Proceedings of the USENIX C++ Conference, Denver, CO</I>, October: 1988, and in <I>USENIX Computer Systems</I>, Vol. 2, No. 1, Winter: 1989.<P>
+<a name="2"></a>[2]     Margaret Ellis and Bjarne Stroustrup. <I>The Annotated C++ Reference Manual</I>. (Addison-Wesley, 1990).<P>
+
+<h4><a href="../../../source/1994/dec94/saks.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

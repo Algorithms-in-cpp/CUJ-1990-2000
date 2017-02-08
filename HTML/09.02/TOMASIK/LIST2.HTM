@@ -1,0 +1,296 @@
+<HTML><HEAD>
+<TITLE>February 1991/Removing Duplicate Files Across Disk Drives/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2 (no_dup.c)</A></h4>
+<pre>/*
+   Find multiple copies of the same file on a single disk
+   drive. Compiled under Microsoft C 6.0 using:
+      cl /Fs /W4 /Ox /AC no_dup.c
+   Compiles without modifications undder TURBO C integrated
+   environment.
+   In both cases requires compact memory model libraries.
+*/
+
+#include "no_dup.h"
+
+Flag first_call = True;
+
+GlobalOpt globalopt = { False, False, 0, 0L };
+
+int main( int argc, char **argv )
+   {
+   DirEntry *current_file, *next_file;
+   DirList *path, *root, *new_path;
+   char current_path[MAX_PATH], file_spec[MAX_FLEN];
+   PtrList *ptrbase, *ptrlist;
+   Flag duplicate = False;
+
+   for( ; argc &gt; 1; argc-- )
+      {
+      if(argv[argc-1][1] == 'f' || argv[argc-1][1] == 'F')
+         globalopt.file = True;
+      else if( argv[argc-1][1] == 'd'
+             || argv[argc-1] [1] == 'D' )
+         globalopt.dir = True;
+      else
+         fprintf( stderr,
+                "Invalid command line switch: %s\n",
+                argv[argc-l] );
+      }
+
+   strcpy( file_spec, "*.*" );
+   current_file = NULL;
+   (void) getcwd( current_path, MAX_PATH );
+   fprintf( stderr, "%s\n", VERSION );
+   printf( "Processing %s\n", current_path );
+   path = make_path( current_path, "", NULL );
+   new_path = root = path;
+   if( (ptrbase = malloc( sizeof( PtrList ) * MAX_FILES ))
+          == NULL )
+      {
+      fprintf( stderr, "Insufficient near memory.\n" );
+      exit( EXIT_FAILURE );
+      }
+   ptrlist = ptrbase;
+
+   while( (path = get_path( root ) ) != NULL )
+      {
+      strcpy( current_path, path-&gt;pathname );
+      strcat( current_path, file_spec );
+      first_call = True;
+
+      while( (current_file = get_direntry(current_path))
+             ! = NULL )
+         {
+         current_file-&gt;path = path-&gt;pathname;
+         if( current_file-&gt;attrib &amp; FA_DIREC )
+            {
+            new_path = make_path( path-&gt;pathname,
+                   current_file-&gt;name, new_path );
+            }
+         else
+            {
+            ++globalopt.file_count;
+            globalopt.total_file_size
+                   += current_file-&gt;size;
+            if( globalopt.file_count == MAX_FILES )
+                {
+                fprintf( stderr,
+                    "Too many files\n"
+                    "Program is limited to %u files.\n",
+                    MAX_FILES );
+                exit( EXIT_FAILURE );
+                }
+            *ptrlist = ( char * ) current_file;
+            ++ptrlist;
+            }
+         }
+         path-&gt;dir_processed = True;
+      }
+      *ptrlist = NULL;
+      printf( "Processed %d files occupying %lu bytes.\n",
+             globalopt.file_count,
+             globalopt.total_file_size );
+
+      qsort( (void *) ptrbase,
+             (size_t) globalopt.file_count,
+             (size_t) sizeof( PtrList ), name_comp );
+
+      if( globalopt.file )    /* optionally list files */
+         {
+         printf( SEPARATOR );
+         printf( "Listing of all files below %s\n",root);
+         for( ptrlist = ptrbase; *ptrlist; ptrlist++ )
+            fprint_direntry( stdout,
+                  (DirEntry *) *ptrlist );
+         }
+
+      printf( SEPARATOR );
+      printf( "Duplicate files below %s\n", root );
+      for( ptrlist = ptrbase, duplicate = False;
+            *ptrlist; ptrlist++ )
+         {
+         current_file = ( DirEntry * ) *ptrlist;
+         next_file    = ( DirEntry * ) *(ptrlist+1);
+         if( !strcmp(current_file-&gt;name,next_file-&gt;name))
+            {
+            duplicate = True;
+            fprint_direntry( stdout, current_file );
+            {
+         else if( duplicate == True )
+            {
+            /* print the last file in a group */
+            /* otherwise we'll miss it */
+            current_file = ( DirEntry * ) *ptrlist;
+            fprint_direntry( stdout, current_file );
+            printf( SEPARATOR );
+            duplicate = False;
+            }
+         }
+
+      return EXIT_SUCCESS;
+   }
+
+/*
+   get file info from DOS directory and allocate memory
+*/
+DirEntry *get_direntry( char *path )
+   {
+   static struct ffblk file_info;
+   DirEntry *new_entry;
+
+   if( first_call == True )
+      {
+      if( findfirst( path, &amp;file_info, FA_DIREC ) )
+         return NULL;
+      first_call = False;
+      }
+   else
+      {
+      if( findnext( &amp;file_info ) )
+         {
+         return NULL;
+         }
+      }
+   if( (new_entry = malloc(sizeof(DirEntry))) == NULL )
+      {
+      fprintf( stderr, "Insufficient far memory.\n" );
+      exit( EXIT_FAILURE );
+      }
+
+   strcpy( new_entry-&gt;name, file_info.ff_name );
+   new_entry-&gt;attrib = file_info.ff_attrib;
+   if( new_entry-&gt;attrib &amp; FA_DIREC )
+      new_entry-&gt;dir_processed = False;
+   new_entry-&gt;time   = file_info.ff_ftime;
+   new_entry-&gt;date   = file_info.ff_fdate;
+   new_entry-&gt;size   = file_info.ff_fsize;
+
+   return new_entry;
+   }
+
+/*
+   build a directory path by appending subdir to basedir
+*/
+DirList *make_path( char *basedir, char *subdir,
+      DirList *prev )
+   {
+   DirList *new_dir;
+
+   if( (new_dir = malloc( sizeof( DirList ) ) ) == NULL )
+      {
+      fprintf( stderr, "Insufficient near memory.\n" );
+      exit( EXIT_FAILURE );
+      }
+   strcpy( new_dir-&gt;pathname, basedir );
+   strcat( new_dir-&gt;pathname, subdir );
+   if( *(new_dir-&gt;pathname + strlen(new_dir-&gt;pathname) - 1)
+         != '\\' )
+      strcat( new_dir-&gt;pathname, "\\" );
+   if( strcmp( subdir, "." ) &amp;&amp; strcmp( subdir, ".." ) )
+      {
+      /* only "real" directories meet the condition */
+      new_dir-&gt;dir_processed = False;
+      if( globalopt.dir )
+         printf( "Directory:%s\n", new_dir-&gt;pathname );
+      }
+   else
+      new_dir-&gt;dir_processed = True;
+   if( prev )
+      {
+      new_dir-&gt;prev = prev;
+      new_dir-&gt;next = NULL;
+      prev-&gt;next = new_dir;
+      }
+   else
+      {
+      new_dir-&gt;prev = NULL;
+      new_dir-&gt;next = NULL;
+      }
+   return new_dir;
+   }
+
+/*
+   find an unprocessed directory
+*/
+DirList *get_path( DirList *root )
+   {
+   DirList *path;
+
+   path = root;
+   while( path-&gt;next &amp;&amp; (path-&gt;dir_processed == True) )
+      {
+      path = path-&gt;next;
+      }
+   if( path-&gt;dir_processed == True)
+      return NULL;
+   else
+      return path;
+
+   }
+
+/*
+   DirEntry comparison function
+*/
+int name_comp( const void *p1, const void *p2 )
+   {
+   PtrList *ptr1, *ptr2;
+   DirEntry *f1, *f2;
+   int status;
+
+   ptr1 = (PtrList *) p1;
+   ptr2 = (PtrList *) p2;
+   f1   = (DirEntry *) *ptr1;
+   f2   = (DirEntry *) *ptr2;
+
+   if( status = strcmp( f1-&gt;name, f2-&gt;name ))
+      return( status );
+   else if( status = f1-&gt;date - f2-&gt;date )
+      return( status );
+   else if( status = f1-&gt;time - f2-&gt;time )
+      return( status );
+   else
+      return( strcmp( f1-&gt;path, f2-&gt;path ) );
+   }
+
+/*
+   print file information to the ouptut stream
+*/
+void fprint_direntry( FILE *fout, DirEntry *current_file )
+   {
+   char date_buf[10], time_buf[10];
+
+   fprintf( fout, "%-14s %6ld %c%c %s %s %s\n",
+          current_file-&gt;name,
+          current_file-&gt;size,
+          (current_file-&gt;attrib &amp; FA_RDONLY ) ? 'R' : '.',
+          (current_file-&gt;attrib &amp; FA_ARCH   ) ? 'A' : '.',
+          datestr( current_file-&gt;date, date_buf ),
+          timestr( current_file-&gt;time, time_buf ),
+          current_file-&gt;path );
+
+   }
+
+/*
+   The following functions are copied from QC 2.0 online
+   help. These functions convert wr_time and wr_date into
+   strings.
+*/
+char *timestr( unsigned t, char *buf )
+{
+   int h = (t &gt;&gt; 11) &amp; 0x1f, m = (t &gt;&gt; 5) &amp; 0x3f;
+   sprintf( buf, "%2.2d:%02.2d", h, m );
+   return buf;
+}
+
+char *datestr( unsigned d, char *buf )
+{
+   sprintf( buf, "%2.2d/%02.2d/%02.2d",
+         (d &gt;&gt; 5) &amp; 0x0f, d &amp; 0x1f, (d &gt;&gt; 9) + 80 );
+   return buf;
+}</pre>
+
+</BODY>
+</HTML>

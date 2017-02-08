@@ -1,0 +1,156 @@
+<HTML><HEAD>
+<TITLE>March 1992/The Device Driver As State Machine/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1 (start.asm) Device Driver Startup Module for C</A></h4>
+<pre>; -----------------------------------------------------
+;  This module must appear first in the link order.
+;
+;  Coded for TASM 2.0
+;
+;  Source code Copyright (c) 1991 T.W. Nelson.
+;  May be used only with appropriate
+;  acknowledgement of copyright.
+; -----------------------------------------------------
+;
+; define segment order first ....
+;
+
+_TEXT   segment byte   public  'CODE'
+_TEXT   ends
+-DATA   segment word   public  'DATA'
+-DATA   ends
+-BSS    segment word   public  'BSS'
+-BSS    ends
+ENDSEG  segment word   public  'ENDSEG'
+ENDSEG  ends
+
+; Establish TINY model segment group ....
+;
+DGROUP  group   _TEXT,_DATA,_BSS,ENDSEG
+ASSUME  cs:DGROUP,ds:DGROUP,es:NOTHING,ss:NOTHING
+
+STACKSIZ    equ     256     ;stack size, words
+
+_TEXT   segment
+
+org 0            ;all driver headers start at 0
+
+; driver header data .......
+;
+
+   db  4 dup(Offh)     ;points to ground (NULL)
+   dw  8000h + 4000h   ;driver attributes: char device
+                    ;...and ioctl read/write
+   dw  _dev_strategy   ;offset to strategy routine
+   dw  _dev_interrupt  ;offset to interrupt routine
+   db  'TAPEXXXX'      ;device name = 8 bytes
+
+rhdr_seg    dw  ?              ;request header segment
+rhdr_off    dw  ?              ;request header offset
+caller_ss   dw  ?              ;for stack setup
+caller_sp   dw  ?
+
+; Function  appears in module 'exec.c' and must be
+; defined  as:
+;
+;   void exec_command( REQHDR far *rhdr )
+;
+extrn_exec_command:near
+
+; First part of two-step driver call from DOS. This
+; only saves a pointer to the request header used in
+; the interrupt routine ......
+;
+_dev_strategy   proc    far      ;always far DOS call
+       mov     cs:rhdr_seg,es
+       mov     cs:rhdr_off,bx
+       ret
+_dev_strategy   endp
+
+; Second (workhorse) part of 2-step driver call.
+; Although called an 'interrupt' function, this is
+; not a true interrupt handler .......
+;
+_dev_interrupt proc    far     ;always far DOS call
+
+;----- Save caller's CPU state and stack context ....
+      push    ax
+      push    bx
+      push    cx
+      push    dx
+      push    di
+      push    si
+      push    bp
+      push    ds
+      push    es
+      pushf
+      mov     cs:caller_ss,ss
+      mov     cs:caller_sp,sp
+
+;----- Setup segment addressability and driver
+;      stack frame ............
+      mov     ax,cs               ;local data seg
+      cli
+      mov     ds,ax
+      mov     es,ax
+      mov     ss,ax
+      mov     sp,offset cs:stack_top
+      mov     bp,sp               ;set C stack frame
+      sti
+
+;----- Pass pointer to req hdr and execute command....
+      mov     ax,cs:rhdr_seg
+      push    ax
+      mov     ax,cs:rhdr_off
+      push    ax
+      call    _exec_command
+      pop     ax
+      pop     ax
+
+;----- restore  CPU state ..........
+      cli
+      mov     ss,cs:caller_ss
+      mov     sp,cs:caller_sp
+      sti
+      popf
+      pop     es
+      pop     ds
+      pop     bp
+      pop     si
+      pop     di
+      pop     dx
+      pop     cx
+      pop     bx
+      pop     ax
+      ret
+_dev_interrupt endp
+
+_TEXT ends
+
+; ------------------------------------------------------
+
+_DATA segment
+
+         dw STACKSIZ dup(?)      ;driver's stack
+stack_top  dw ?
+
+_DATA ends
+
+; ------------------------------------------------------
+
+ENDSEG  segment
+
+__TheEnd label byte   ;location of cs:__TheEnd
+                  ;marks break address for DOS
+public __TheEnd
+
+ENDSEG  ends
+
+   END
+
+; ------ End of File -----------------------------------
+</pre>
+</BODY>
+</HTML>

@@ -1,0 +1,115 @@
+<HTML><HEAD>
+<TITLE>June 1991/Linking C And APL/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1 (rescrn.asm)</A></h4>
+<pre>;                 APL to C Interface Routine
+;
+;                 When called from APL,
+;                  - BX contains argument pointer,
+;                  - CX contains result pointer.
+;
+;                 Note that this will create a Binary Image!
+
+_TEXT      SEGMENT           ; define code segment
+          assume cs:_TEXT, ds:_TEXT, ss:_TEXT, es:_TEXT
+EXTRN      _result_size:NEAR
+EXTRN      _read_screen_blocks:NEAR
+
+          org      Oh        ; APL starts at 0 
+start:     db 10 dup(90h)      ;need 10 NOPs to get offsets
+                          ;(relative to CS) correct.
+                          ;These would be dropped in APL
+          jmp    short begin
+
+; ... insert constants and data here - will be relative to CS
+arg_ptr     dw        0      ; stptr of arg
+arg_data    dw        0      ; where data starts in argument
+arg_rows    dw        0      ; number of rows in argument
+res_ptr     dw        0      ; stptr of result
+res_type    db        1      ; define result type of char
+res_rank    db        2      ;   "     rank as 2 dim matrix
+res_rows    dw        0      ; nbr rows in result - filled in later
+res_cols    dw        0      ; nbr cols in result      "     "    "
+
+begin:
+main      proc    far                ; APL needs far return
+         push    cx
+         push    dx
+         push    ds
+         push    si
+
+         int     3                 ; useful for debugging purposes!
+
+         mov     cs:arg_ptr,bx     ; save argument pointer
+         mov     cs:res_ptr,cx     ; save result pointer
+
+         ; check that input variable proper type, rank and size
+         mov     ds,[bx]           ; load argument SEGMENT to DS
+         mov     si,6              ; SI pts to rank,type of APL arg
+         lodsw                     ; load rank,type to AX
+         cmp     al,2              ; is 2 byte integer?
+         jne     bummer            ; no, quit
+         mov     cx,1              ; for vector,init CX w/1 row in arg
+         cmp     ah,1              ; is vector? (ie,rank=1)
+         je      arg_chk           ; yes, get on with it,check arg size
+         cmp     ah,2              ; is 2 dim matrix? (ie,rank=2)
+         jne     bummer            ; nope, quit
+         mov     cx,[si]           ; yes, get next word, 1st dim to CX
+         inc      si               ; get SI to pt to last dimension
+         inc      si               ; for rank 2 matrix
+         jmp     arg_chk           ; ok .. check argument size
+
+bummer:  int     0                   ; signal domain error + quit
+
+arg chk: ; check  that last dimension = 4
+         lodsw                      ; load last dimension to AX
+         cmp     ax,4               ; if not 4
+         jne     bummer             ; quit with error
+         mov     cs:arg_data,si     ; save this for posterity
+         mov     cs:arg_rows,cx     ;         d i t t o
+
+res_size: ; Call RESULT_SIZE to calculate size of final result
+         lea     ax,rex_cols        ; get offset of #cols
+         push    cs                 ;  .. push segment
+         push    ax                 ;  .. and offset
+         lea     ax,res_rows        ; get offset of # rows
+         push    cs                 ; .. push segment
+         push    ax                 ; .. and offset
+         push    ds                 ; push Argument Segment to C
+         push    si                 ; push Argument data start to C
+         push    cx                 ; number of rows in argument
+         call    _result_size        
+         add     sp,14 -
+
+make_res: ; create final result object, assign to APL variable
+         mov     al,0              ; set for fn 0
+         mov     bx,cs:res_ptr     ; load result pointer to BX
+         push    cs
+         pop     es                ; set up ES:SI with variable
+         lea     si,res_type       ; info - type,rank,size(s)
+         int     0c8h              ; do the work ...
+
+fill_res: ; Call READ_SCREEND_BLOCKS to fill in final result
+         push    es                ;load ptr to result from above
+         push    di                ;ES:DI pts to data start ...
+         push    cs:res_cols       ;load up max nbr cols to C
+         push    ds                ;push argument Segment to C
+         push    cs:arg_data       ;push arg data start to C
+         push    cs:arg_rows       ;number of rows in argument
+         call    _read_screen blocks  ; read in data into result
+         add     sp,12
+
+         pop     si
+         pop     ds
+         pop     dx
+         pop     cx
+
+         retf
+main     endp
+_TEXT    ends
+         end     start
+</pre>
+</BODY>
+</HTML>

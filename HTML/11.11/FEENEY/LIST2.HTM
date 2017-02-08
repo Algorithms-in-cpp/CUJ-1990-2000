@@ -1,0 +1,347 @@
+<HTML><HEAD>
+<TITLE>November 1993/Real-Time Data Acquisition and Control Under Windows 3.1/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2<I> Program body</A></I></h4>
+<pre>#include &lt;windows.h&gt;
+#include &lt;math.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;float.h&gt;
+#include &lt;time.h&gt;
+#include "MyStatus.h"
+#include "MyHeader.h"
+
+/*****************************************************
+  Main message loop for processing input and window-
+  management messages received from WINDOWS.
+*****************************************************/
+long FAR PASCAL MainWndProc(HWND hWnd, unsigned msg,
+                WORD wParam, LONG 1Param)
+{
+  switch (msg) {
+    case WM_TIMER:        // Decipher Timer Function
+      switch( wParam ) {
+        case IDM_PERIOD: // Move onto next wavelength
+          SampleTimerExpired(hWnd,msg,wParam,1Param);
+          break;
+        case IDM_SAMPLE: // Read data at this wavelength
+          SampleTimerTicked(hWnd,msg,wParam,1Param);
+        case IDM_TDRIVE: // Read data at this time
+          SampleTimer(hWnd,msg, wParam, 1Param);
+          break;
+        case  IDM_START_TIMER:  // Start data acq cycle
+          StartScan(hWnd,msg,wParam,1Param);
+          break;
+        case IDM_STOP_TIMER:   // End data acq cycle
+          StopScan(hWnd,msg,wParam, 1Param);
+          break;
+      }
+      break;
+    case WM_SYSCOMMAND:
+      return(DefWindowProc(hWnd,msg,wParam, 1 Param) );
+    case WM_SIZE: // Window Resized, resize all child.
+      return(WndSizeChanged(hWnd,msg,wParam,1Param));
+    case WM_COMMAND:   // Decipher User Action
+      switch (wParam) {
+        case IDM_ACQ_ON: // Start data acq cycle
+          SendMsg(hWnd, WM_TIMER, IDM_START, OL);
+          break;
+        case IDM_ACQ_OFF: // Stop data acq cycle
+          SendMsg(hWnd, WM_TIMER, IDM_STOP, OL);
+          break;
+        default:  // Some other menu function requested.
+          return(MyCommands (hWnd,msg,wParam, 1 Param));
+      }
+      break;
+    case WM_CREATE:   // Create program objects
+      CreateMyObjects(hWnd,msg,wParam, 1Param);
+      break;
+    case WM_PAINT:    // Paint Main Window
+      Paint-Screen(hWnd,msg,WParam,1Param);
+      break;
+    case WM_DESTROY:  // Destroy main and all childern
+      DeleteMyObjects(hWnd,msg,WParam,1Param);
+      break;
+    default:       // Let WINDOWS handle the message.
+      return(DefWindowProc(hWnd,msg,wParam,1Param));
+  }
+  return (NULL);
+}
+/*
+  Sample time expired.
+  Measure the signals and display result.
+  Then move onto next wavelength!
+*/
+BOOL SampleTimerExpired (HWND hWnd, unsigned msg,
+     WORD wParam, LONG 1Param)
+{
+  KillTimer( hWnd, IDM_PERIOD );
+  KillTimer{ hWnd, IDM_SAMPLE );
+  Calculate_Point();                            // Calculate dB Ratio
+  Display_Point();                              // Draw data on screen
+  if ( ++Dat.iPnt &gt;= Dat. Points ) {                  // Scan Finished
+    SendMsg(hMainWnd, IDM_STOP_TIMER, O, OL);
+    return(FALSE);
+  }
+  Goto_Wavelength(X[Dat. iPnt]);                     // Next Wavelength
+  ResetPoint();
+  if ( !SetPeriodTimer ) {
+    MsgBox(hWnd, ErrMsg, TimMsg);
+    return(FALSE);
+  }
+  if ( !SetSampleTimer ) {
+    MsgBox(hWnd, ErrMsg, TimMsg);
+    return (FALSE);
+  }
+  return (TRUE);
+}
+/*
+  Timer ticked, time to measure signals.
+/*
+BOOL SampleTimerTicked ( HWND hWnd, unsigned msg,
+     WORD wParam, LONG 1Param)
+{
+  int t;
+
+  KillTimer( hWnd, IDM_SAMPLE );
+  Acquire_Point();
+  if ( IsRetry ) { // Lock-in error detected.
+    KillTimer( hWnd, IDM_PERIOD );
+    KillTimer( hWnd, IDM_SAMPLE );
+    ResetRetry;   // Clear Error/Retry Bit.
+                 // Only retry for so many times.
+    if (++Dat.iTRY &lt;= _nDATATRIES ) {
+       if ( !SetPeriodTimer ) {
+         MsgBox(hWnd, ErrMsg, TimMsg);
+         return (FALSE);
+       }
+       if ( !SetSampleTimer ) {
+         MsgBox(hWnd, ErrMsg, TimMsg);
+         return(FALSE);
+       }
+    }
+    i = MsgBox(hWnd, BadMsg, TryMsg);
+    switch ( i ) {    // Tries Expired, Display Dialog
+      case IDABORT:  // ask for users advice.
+        SendMsg(hWnd, IDM_STOP_TIMER, O, OL);
+        ResetPoint ();
+        break;
+      case IDIGNORE: // Kept 1 set of last values
+        SendMsg(hWnd, WM_TIMER, IDM_PERIOD, OL);
+        break;
+      case IDRETRY:  // Reset TRY and repeat reads
+      default:
+        ResetPoint();
+        if ( !SetPeriodTimer ) {
+          MsgBox(hWnd, ErrMsg, TimMsg);
+        }
+        if ( !SetSampleTimer ) {
+          MsgBox(hWnd, ErrMsg, TimMsg);
+        }
+        break;
+    }
+  } else if ( !SetSampleTimer ) {
+    MsgBox(hWnd, ErrMsg, TimMsg);
+  }
+  return(TRUE);
+}
+/*
+  Begin the scanning cycle.
+*/
+BOOL StartScan( HWND hWnd, unsigned msg,
+     WORD wParam, LONG lParam)
+{
+  HMENU hMenu;
+
+  hMenu = GetMenu(hWnd);
+  if ( !yes_no("START SCAN") ) return(FALSE);
+  if ( ++Dat.iScan &gt; nSETs ) Dat.iScan = 0;
+  Dat.iPnt = 0;
+  ResetPoint();
+  SetDataAcq;
+  SetData;
+  CheckMenuItem(hMenu, IDM_ACQ_OFF, MF_UNCHECKED);
+  CheckMenuItem(hMenu, IDM_ACQ_ON, MF_CHECKED);
+  if ( Dat.Mode == _Wavelength ) {
+    Goto_Wavelength(Dat.Start);
+    if  ( !SetSampleTimer ) {
+      MsgBox(hWnd, ErrMsg, TimMsg);
+      return(FALSE);
+    }
+    if ( !SetPeriodTimer ) {
+      MsgBox(hWnd, ErrMsg, TimMsg);
+      return(FALSE);
+    }
+  } else if ( Dat.Mode == TimeDrive ) {
+    if (!SetTimer(hWnd,IDM_TDRIVE,Dat.TDStep,OL)) {
+      MsgBox(hWnd, ErrMsg, TimMsg);
+      return(FALSE);
+    }
+  }
+  return(TRUE);
+}
+/*
+  Stop the scanning cycle.
+*/
+BOOL StopScan( HWND hWnd, unsigned msg,
+     WORD wParam, LONG lParam)
+{
+  int    flg;
+  HMENU hMenu;
+
+  hMenu = GetMenuGetMenu(hWnd);
+  KillTimer(hMainWnd, IDM_PERIOD); // Kill all timers.
+  KillTimer(hMainWnd, IDM_SAMPLE);
+  KillTimer(hMainWnd, IDM_TDRIVE);
+  ResetDataAcq; // Uncheck ACQ-in-Progress Menu
+  CheckMenuItem(hMenu, IDM_ACQ_ON, MF_UNCHECKED);
+  CheckMenuItem(hMenu, IDM_ACQ_OFF,MF_CHECKED);
+  if ( Dat.Mode == WAVELENGTH_ ) {
+    Goto_Wavelength(Dat.Start);
+  }
+  Dat.pts[Dat.iScan] = Dat.iPnt;
+  SendMsg( hMainWnd, WM_COMMAND, IDM_QUERY, OL );
+  do {
+    flg = yes_no("SAVE SCAN");
+    if ( flg ) {
+      SendMsg( hMainWnd,WM_COMMAND,IDM_PUT_DATA,OL);
+    }
+  } while ( flg &amp;&amp; IsWriteFailure );
+  if { yes_no("SCAN AGAIN")) {
+    SendMsg(hMainWnd, WM_TIMER, IDM_START, O, OL );
+  }
+  return(TRUE);
+}
+/*
+  Get a yes or no reply to a question.
+*/
+BOOL yes_no( char *question )
+{
+  return( (MessageBox( hMainWnd, (LPSTR) question,
+    (PSTR) "Input Required", MB_YESNO |
+    MB_ICONQUESTION == IDYES) ? TRUE : FALSE );
+}
+/*
+  Time ticked, measure signals.
+  This function is only for the time-drive scan.
+*/
+BOOL SampleTimer( HWND hWnd,unsigned msg,
+     WORD wParam,LONG lParam)
+{
+  KillTimer( hWnd, IDM_TDRIVE );
+  Acquire_Point();
+  Dat.X = X[Dat.iPnt];
+  Calculate_Point(); // Calculate dB Ratio
+  Display_Point();   // Draw data on screen
+  ResetPoint ();
+  if ( ++Dat.iPnt &gt;= Dat.Points ) // Scan Finished
+    SendMsg(hMainWnd, WM_TIMER, IDM_STOP, O, OL);
+  else if (!SetTimer(hWnd, IDM_TDRIVE, Dat.TDStep,OL))
+    MsgBox(hWnd, ErrMsg, TimMsg);
+  return(TRUE);
+}
+/*
+  Decipher the command the user choose from the menu.
+*/
+long MyCommands(HWND hWnd, unsigned msg,
+     WORD wParam,LONG lParam)
+{
+  HMENU hMenu;
+
+  hMenu = GetMenu(hWnd);
+  switch( wParam ) {
+    case IDM_DEBUG:
+      if ( IsDebug ) {
+        ResetDebug;
+        CheckMenuItem(hMenu,IDM_DEBUG,MF_UNCHECKED);
+      } else if (ShowBox(hWnd,Debugger,"DebugBox")) {
+        SetDebug;
+        CheckMenuItem(hMenu, IDM_DEBUG, MF_CHECKED);
+      }
+      break;
+    case IDM_ABOUT:     // Display About Box
+      ShowBox( hWnd, About, "AboutBox" );
+      break;
+    case IDM_C_CLR:     // Display Color Box
+      ShowBox( hWnd, DlgClrFunc, "ColorBox" );
+      break;
+    case  IDM_CONFIG :  // Get GPIB addresses
+      ShowBox( hWnd, User_CONFIG, "CONFIG" );
+      break;
+    case  IDM_GOTO:     // Get wavelength to goto.
+      DlgIntCmmd = wParam;
+      ShowBox( hWnd, GoToFunc, "GoTo" );
+      if  ( IsAbort ) ResetAbort;                   // Clear Flag Bit
+      else Goto_Wavelength( Dat.Position );
+      break;
+    case IDM_EXIT:      // Terminate program
+      if ( MsgBox(hWnd, 2, 6) != IDOK )  {
+        break;          // Should we really exit?
+      }
+      DestroyWindow (hWnd);
+      break;
+    default:             // Let WINDOWS handle others.
+      return(DefWindowProc(hWnd, msg, wParam, lParam));
+  }
+  return (OL);
+}
+/*
+  Display a dialog box.
+*/
+BOOL ShowBox(HWND hWnd,FARPROC pFunc,LPSTR lpTemplate)
+{
+  int      i;
+  FARPROC lpProc;
+
+  lpProc = MakeProcInstance(pFunc, hInst);
+  if ( lpProc == NULL ) return(FALSE);
+  i = DialogBox(hInst, lpTemplate, hWnd, lpProc);
+  FreeProcInstance (lpProc);
+  if ( i == -1 ) return(FALSE);
+  return(TRUE);
+}
+/*
+  Display an error message.
+  Op indicates the type of message,
+    e.g. Warning or Error
+    and dialog buttons displayed.
+  msg provides the specific text to display.
+*/
+int MsgBox( HWND hWnd, WORD Op, LPSTR msg )
+{
+  int    msg, wType = MB_OK | MB_ICONHAND;
+  char   szText[24];
+
+  switch ( Op ) {
+    case InfoMsg :
+      lstrcpy( szText, "INFO\O" );
+      wType = MB_OK | MB_ICONINFORMATION;
+      break;
+    case VerMsg:
+      lstrcpy( szText, "VERIFY\O" );
+      wType = MB_OKCANCEL | MB_ICONQUESTION;
+      break;
+    case ErrMsg:
+      lstrcpy( szText, "ERROR\O" );
+      wType = MB_ICONHAND | MB_OKCANCEL;
+      break;
+    case BadMsg:
+      lstrcpy( szText, "SERIOUS ERROR\O" );
+      wType = MB_ICONSTOP | MB_ABORTRETRYIGNORE;
+      break;
+    case WarnMsg:
+    default:
+      lstrcpy( szText, "WARNING\O" );
+      wType = MB_ ICONHAND | MB_OKCANCEL;
+      break;
+  }
+  msg=MessageBox(hWnd,(LPSTR) str,(LPSTR) msg,wType);
+  return( msg );
+}
+
+/* End of File */
+</pre>
+</BODY>
+</HTML>

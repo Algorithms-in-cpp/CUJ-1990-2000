@@ -1,0 +1,174 @@
+<HTML><HEAD>
+<TITLE>May 1992/Implementing Direct Memory Access (DMA) in C/Listing 4</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 4 (dma.c) Generic Routines for Programming the DMA Controller 8237 on the IBM PC or Compatible</A></h4>
+<pre>/*******************************************************
+
+       Generic Routines for programming the DMA controller
+       8237, on the IBM PC or compatible
+
+       Copyright Don Bradley, 1991.
+
+       Permission is granted for used of these routines
+       in any manner as long as this copyright notice is 
+       included.
+
+       Tested using Quick C 2.5 and MSC 6.0 on a
+       Toshiba T5200.
+
+*******************************************************/
+
+#include &lt;conio.h&gt;
+#include &lt;malloc.h&gt;
+#include &lt;stdio.h&gt;
+
+#include "dma.h"
+
+#define MASK_REG                      0xd4
+#define MODE_REG                      0xd6
+#define COUNT_REG                     0xc6
+#define MEM_PAGE5_REG          0x8b
+#define MEM_PAGE6_REG          0x89
+#define MEM_PAGE7_REG          0x8a
+#define MEM_OFFSET_REG         0xc4
+
+static int far *dma_buffer[10];
+
+int dma(int dma_chan, int mode, int far *buffer,
+              unsigned int buffer_len)
+       {
+       long physaddr;
+       int port, page_port;
+
+       // values passed OK?
+       if (dma_chan &lt; 5 || dma_chan &gt; 7)
+              return (FALSE);
+
+       if (buffer == 0)
+              return (FALSE);
+
+       // Initalize 8237 DMA Controller
+
+       // Disable DMA Channel first
+       disable_dma(dma_chan);
+
+       // Setup DMA mode register
+       outp(MODE_REG, mode | (dma_chan - 4));
+
+       /* Setup page and offset regs */
+       switch (dma_chan) {
+       case 5:
+              page_port = MEM_PAGE5_REG;
+              break;
+       case 6:
+              page_port = MEM_PAGE6_REG;
+              break;
+       case 7:
+              page_port = MEM_PAGE7_REG;
+              break;
+              }
+
+       physaddr = (((long)buffer&gt;&gt;12) &amp; 0xFFFF0L) + ((long) buffer &amp; 0xFFFFL);
+
+       // output DMA buffer page number.
+       outp(page_port, (int) (physaddr &gt;&gt; 16));
+
+       // Shift left 1 bit for working with words (ints)
+       physaddr /= 2;
+
+       // Output DMA buffer offset.
+       port = MEM_OFFSET_REG + (dma_chan - 5) * 4;
+       outp(port, (int)physaddr &amp; 0xFF);
+       outp(port, (int)(physaddr&gt;&gt;8) &amp; 0xFF);
+
+       // Transfer Count, low byte first then high byte.
+       port = COUNT_REG+(dma_chan-5)*4;
+       outp(port, (buffer_len &amp; 0xFF));
+       outp(port, ((buffer_len &gt;&gt; 8) &amp; 0xFF));
+
+       return (TRUE);
+       }
+
+void disable_dma(int chan)
+/*&amp; Disable DMA channel */
+       {
+       if (chan &lt; 5 || chan &gt; 7)
+              return;
+
+       outp(MASK_REG, DMA_DISABLE | (chan - 4));
+       }
+
+void enable_dma(int chan)
+/*&amp; Enable DMA channel */
+       {
+       if (chan &lt; 5 || chan &gt; 7)
+              return;
+
+       outp(MASK_REG, DMA_ENABLE | (chan - 4));
+       }
+
+int far *alloc_dma_buffer(int dma_chn,
+              unsigned int size)
+/*&amp; Allocates a DMA buffer containing no page
+        boundary */
+       {
+       long physaddr, page, offset, extra;
+       int far *buffer;
+
+       // Values passed OK?
+       if (dma_chn &lt; 5 || dma_chn &gt; 7)
+              return (NULL);
+
+       if(!size)
+              return(NULL);
+
+       // Create dma buffer
+       size *= sizeof(int);
+
+       if(!(buffer = (int far *)_fmalloc(size)))
+              return (NULL);
+
+       physaddr = (((long)buffer &amp; 0xFFFF0000L)&gt;&gt;12) +
+              ((long)buffer &amp; 0xFFFFL);
+
+       page = (physaddr &amp; 0xFFFF0000L) &gt;&gt; 16;
+       offset = physaddr &amp; 0xFFFFL;
+
+       if(offset + size &gt; 0xFFFFL) {
+              extra = offset + size -0xFFFFL + 10;
+              size += extra;
+
+              // can't have a buffer &gt; 64K
+              if(size &gt; 0xFFFFL)
+                    return(NULL);
+
+              if(!(buffer = (int far *)_expand(buffer,
+                                               size)))
+                    return(NULL);
+
+              page++;
+              offset = 0;
+              }
+
+       // save actual buffer address for deallocation
+       dma_buffer[dma_chn] = buffer;
+
+       // return proper buffer address for DMA usage
+       buffer = (int far *)((page&lt;&lt;28) + offset);
+       return(buffer);
+       }
+
+void free_dma_buffer(int dma_chn)
+       {
+       // values passed OK?
+       if (dma_chn &lt; 5 || dma_chn &gt; 7)
+              return;
+
+       _ffree(dma_buffer[dma_chn]);
+       }
+/* End of File */
+</pre>
+</BODY>
+</HTML>

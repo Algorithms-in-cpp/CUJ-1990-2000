@@ -1,0 +1,238 @@
+<HTML><HEAD>
+<TITLE>December 1992/Build Applications Faster with State Transition Automatons/Listing 4</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 4 <B><I></B>SEMDOS.C</I></A></h4>
+<pre>/****************************************************/
+/* Semantically parse a file of full DOS pathanames */
+/* Use the DFA state machine and the state table    */
+/*      defined in dostbl2.h                        */
+/* Print out each component after parsing           */
+/* Parsing rule:                                    */
+/*      [DRIVE] [\] [PATH]* FILENAME [EXT] e        */
+/*  where   DRIVE    :=  a:                         */
+/*          ROOT     :=  \                          */
+/*          PATH     :=  ax* \                      */
+/*          FILENAME :=  ax* [.]                    */
+/*          EXT      :=  x[x][x]                    */
+/*          e        :=  '\n' (terminator)          */
+/*                                                  */
+/* Copyright August 29, 1991 by Alan Cline          */
+/*      Carolla Development, Dublin, Ohio           */
+/****************************************************/
+
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;ctype.h&gt;
+#include "dfa.h"
+#include "dostbl2.h"
+
+#define TESTFILE    "testfile.dat"
+#define DELIMSTR    ":.\\"
+#define MAXFNAME    10
+#define MAXEXT       4
+
+// Global storage to test parsing
+char drive;
+char pathname [MAXBUFLEN];
+char fname[MAXFNAME];
+char ext[MAXEXT];
+
+void main(void)
+{
+   DFA CLASS semdos_dfa;
+   FILE *fp;               // ptr to test file
+   short retval = OK;
+
+   // Open the file of test names to parse
+   fp = fopen(TESTFILE, READ_TEXT);
+
+   while (!feof(fp) &amp;&amp; retval != ERR) {
+      retval = OK;
+
+   // Init each component variable
+   drive = EMPTY;
+   memset(pathname, 0, MAXBUFLEN);
+   memset(fname, 0, MAXFNAME);
+   memset(ext, 0, MAXEXT);
+
+   // Initialize the DFA and begin parsing
+   // Pass dfa, state table, override-tokenizer,
+   //      input file, delimeters
+   InitStateMachine(&amp;semdos_dfa, &amp;semdos_stt,
+      NULL, fp, DELIMSTR);
+
+   retval = StateMachine(&amp;semdos_dfa);
+   }
+
+   // End test run; close file and quit
+   fclose(fp);
+   return;
+}
+
+/************************************************/
+/* Application-specific routines for tokenizing */
+/************************************************/
+
+char *get_token(
+   DFA_CLASS *o)
+{
+   o-&gt;wp = &amp;(o-&gt;workbuf[0]);
+   memset(o-&gt;workbuf, 0, MAXBUFLEN);
+   while (!feof(INFILE)) {
+      o-&gt;cp = getc(INFILE);
+      *(o-&gt;wp) = (char) o-&gt;cp;
+      o-&gt;wp++;
+      if (strchr(o-&gt;delim, o-&gt;cp) != NULL) {
+         break;
+      }
+
+      // Force EOR and DOT to front of buffer
+      if (o-&gt;cp == (int) EOR) {
+         if (o-&gt;wp != o-&gt;workbuf+l) {
+            ungetc(o-&gt;cp, INFILE);
+            o-&gt;wp--;
+         }
+         break;
+      }
+   }  // end of while loop
+
+   *(o-&gt;wp) = '\0';
+   return(o-&gt;workbuf);
+}
+
+/*********************************/
+/* Application-specific routines */
+/*********************************/
+
+short isfbase(char *, short);
+
+// Test DRIVE:= a:
+short isdrive(
+   char *token)
+{
+   return((token[1] == GS) &amp;&amp;
+          isalpha((int) token[0]));
+}
+
+// Test EXT := x[x][x]
+short isext(
+   char *token)
+{
+   short len, k;
+   short retval = GOOD;
+
+   len = strlen(token);
+   for (k=0; k &lt; len; k++) {
+       if (!isalnum((int) token[k]))
+          retval = BAD;
+   }
+   return(retval);
+}
+
+// Test for filebase := ax*
+short isfbase(
+   char *token,
+   short len)
+{
+   short k;
+   short retval = BAD;
+
+   if ((len &lt;= 9) &amp;&amp; (isalpha((int) token[0]))) {
+       for (k=0; k &lt; len; k++) {
+           if (!isalnum((int) token[k]))
+              break;
+       }
+       if (k == len)
+           retval = GOOD;
+   }
+   return(retval);
+}
+
+// Test FNAME:= ax* [.]
+short isfname(
+   char *token)
+{
+   short len;
+
+   len = (LASTBYTE(token) == DOT) ?
+          strlen(token) - 1 : strlen(token);
+
+   return(isfbase(token, len));
+}
+
+// Test PATH:= ax* \
+short ispath(
+   char *token)
+{
+   short retval = BAD;
+
+   if (LASTBYTE(token) == FS) {
+      retval : isfbase(token, strlen(token) - 1);
+   }
+
+   return(retval);
+}
+
+// Test root character:= '\'
+short isroot(
+   char *token)
+{
+   return(*token == '\\');
+}
+
+/****************************************/
+/* Application-specific action routines */
+/****************************************/
+
+// Save the drive letter tokenized;
+short appendpath(
+   char *token)
+{
+   strncat(pathname, token, strlen(token));
+   return(1);
+}
+
+// Print out each component of the parsed pathname
+short cleanup(
+   char *token)
+{
+    IGNORE(token);
+    printf("File: %s\n\tDrive: %c\n",
+          fname, drive);
+    printf("\tPath: %s\n\tExtension: %s\n",
+          pathname, ext);
+    return(1);
+}
+
+// Save the drive letter
+short savedrive(
+   char *token)
+{
+   IGNORE(token);
+   drive = (toupper((int) token[0]));
+   return(1);
+}
+
+// Save the file extension
+short saveext(
+   char *token)
+{
+
+   strcpy(ext, token);
+   return(1);
+}
+
+// Save the filename
+short savefname(
+   char *token)
+{
+   strcpy(fname, token);
+   return(1);
+}
+/* End of File */
+</pre>
+</BODY>
+</HTML>

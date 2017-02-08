@@ -1,0 +1,62 @@
+
+
+
+<HTML>
+<HEAD>
+
+<TITLE>October 1990/Portable Transaction Tracking</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tococt.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Portable Transaction Tracking<A name="0225_012F"><A name="0225_012F"></font></h2><P>
+<h3 align="center"><font color="#800000"><A name="0225_0000"><A name="0225_0000">Russell Cook</font></h3><hr><blockquote><P>
+<P><i><A name="0225_0000"><A name="0225_0000">Russell is a microcomputer programmer/analyst with the A.C. Nielsen Advanced  Information Technology Center. He develops software for Microsoft Windows using C++ and does contract work on MS-DOS-based PCs and both UNIX- and AIX-based  computer systems. You can reach him at 400 Manda Lane #118, Wheeling, IL 60090 (708) 217-3277.</i></P><P>
+Nearly every program written must access data which is stored on disk. A few programs only read from disk, but the vast majority of programs both consume and produce disk-based information. Thus, it is surprising so little effort is spent ensuring the integrity of disk files. This article will describe a set of routines I use to protect against corruption of my data files.<P>
+<h4><FONT COLOR="#000080"><A name="0225_0130">Ensuring Database Integrity<A name="0225_0130"></FONT></h4></P>
+Theoretically one could ensure data file integrity by making a duplicate copy of all data files. By making changes to the duplicate files and then replacing the original files, the potential for corruption is nullified &#151; presuming:<P>
+<UL><li>There is file system space for a full copy of the database.</li>
+<li>The file copying mechanism is error-free.</li>
+<li>It is possible to detect a partial replacement, i.e., an interrupted copy operation.</li></UL>
+One can reduce file space overload by making copies of only those database files which are to be altered, but the other problems remain. (Note that in neither of these scenarios have I considered resolution of the multiple readers and writers problem associated with multi-user systems. See <a href="#note1">[1]</a> for more details.)<P>
+The space overhead can be reduced dramatically by making a copy of only that data which is to be altered. Since the quantity of data being copied has been  minimized this approach also reduces the potential for a failure during the copy  operation. Moreover, if the changed data is copied to a holding file and deleted after the original data file is altered, we can detect interrupted alterations just by checking to see if the holding file exists.<P>
+<h4><FONT COLOR="#000080"><A name="0225_0131">Some Terminology<A name="0225_0131"></FONT></h4></P>
+A <I>transaction</I> is any file I/O operation which modifies the contents of an existing file. Thus, a transaction includes appending new data to a file, changing the size of a file by truncation, and, of course, overwriting existing data. Note that the creation of a file does not constitute a transaction.<P>
+A <I>transaction log file</I> holds descriptions of the modification(s) made to a data file. This file is the holding file previously mentioned. Maintaining the log file is called <I>transaction tracking</I>. A <I>transaction rollback</I> is the process by which the alteration(s) listed in the log file are re-applied to the database. This process will return the database to a previous state which is assumed to be consistent.<P>
+<h4><FONT COLOR="#000080"><A name="0225_0132">Design Goals<A name="0225_0132"></FONT></h4></P>
+My design objects for the accompanying code were:<P>
+<UL><li>Minimize file system overhead. I wanted to minimize not only the space needed by the log files, but also the number of seeks, reads and writes.</li>
+<li>Recognize potential database inconsistencies automatically. If an inconsistency is detected, a transaction rollback must occur without user or program intervention. Until the rollback is successful, access to the potentially corrupted file(s) must be denied.</li>
+<li>Maximize portability. The minimal set of environments to be supported included SCO Xenix, SCO UNIX, MS-DOS and MS Windows.</li></UL>
+<h4><FONT COLOR="#000080"><A name="0225_0133">Implementation<A name="0225_0133"></FONT></h4></P>
+I could foresee two ways I might want to implement a database integrity system. The first method would view the database as an integrated whole with no meaning when divided into its constituent files. Thus, a single transaction log file would be used to track changes made to any of the database files. A single transaction log file would be created at program startup, making it easy to provide rollback and commit options.<P>
+The second method would view a database as a collection of sets of database files, where each set is a distinct, sharable resource. In this view, each file set would be associated with a distinct transaction log file. Most likely, a transaction log file would be created just prior to modifying a set of files and deleted when the modifications were complete. Rollback/commit options would be more difficult to accomplish in this case.<P>
+In order to permit either of these methods to be used, I decided on the following1 design. Two file open functions were required (see the sidebar <A HREF="sidebar2.htm">"Function Description"</A>). The first, <I>VFOpen()</I>, opens the database file(s). The second, <I>Open-Transact()</I>, creates the transaction log file(s). <I>OpentTransact</I> tests for inconsistency and initiates rollbacks as necessary. Both functions return a handle which permits access to the associated file. So that the user cannot "back-door" the transaction tracking system, these handles are different from system-provided file handles.</FONT></FONT></FONT></FONT></FONT></FONT><P>
+Once the database file(s) and transaction log file(s) have been opened, a call to <I>BeginTransaction(X,Y)</I> tells the tracking system to record alterations to database file <I>X</I> in transaction log file <I>Y</I>. This function records the relationship <I>X-&gt;Y</I> in the data structure associated with <I>X</I> and bumps the use count in <I>Y</I>'s structure. When tracking is no longer needed for <I>X</I>, a call to <I>EndTransaction</I>(<I>X,Y</I>) reverses this process.</FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT><P>
+The use count is necessary because a transaction log file can have multiple database files associated with it. Only when the use count is <I>0</I> may the log file be safely closed and deleted. Each database file can be associated with only one active log file. The handle of the associated log file is stored in the database file's structure. Once a log file is associated with a database file, a new association cannot be made until the current association is terminated by a call to <I>EndTransact ion (X,Y)</I>.</FONT></FONT></FONT></FONT><P>
+Since the file open functions do not return system-provided file handles, it is impossible for the caller to use the normal file I/O routines. Thus, the system includes a host of functions to replace the normal I/O routines (see the <A HREF="sidebar2.htm">"Function Descriptions"</A> sidebar).<P>
+<I>VFWrite()</I> and <I>VFChangeSize()</I> carry the burden of the transaction tracking responsibilities. These must determine whether a transaction is: extending the file, truncating the file, or modifying the existing contents of the file. (In fact, I treat truncations as a special case of modifications.) Once the type of transaction is determined, the necessary transaction record(s) are written to the log file by the <I>WriteTransRecord()</I> function.</FONT></FONT></FONT></FONT></FONT></FONT><P>
+<h4><FONT COLOR="#000080"><A name="0225_0134">Achieving Portability<A name="0225_0134"></FONT></h4></P>
+Differences in filenaming conventions, multi-user access capabilities, and run-time library functionality make file I/O one of the most platform-dependant aspects of C programming The code makes heavy use of preprocessor macros to hide as many platform variations as possible.<P>
+Many of these macros are in <I>ENVIRON.H</I> (<A href="list1.htm">Listing 1</a>)
+. This file  defines the compilation environment. You should define exactly one compiler specifier (<I>MSC51_ENV., TURBOC_ENV., SCOUNIX_ENV.</I>, etc.) to adjust the remaining code for the nuances of the environment. Another set of identifiers adapts for mixed model variations.</FONT></FONT></FONT></FONT><P>
+<I>TRANSACT.H </I>(<A href="list2.htm">Listing 2</a>)
+ provides the function prototypes for all of the functions exported for your use. (The line continuation characters which appear on each line of a prototype compensate for an anomaly in the SCO UNIX development system.)</FONT></FONT><P>
+Near the beginning of <I>TRANSACT.C </I>(<A href="list3.htm">Listing 3</a>)
+ are three major blocks of conditionally compiled code. Each of these blocks includes the necessary header files and defines a set of macros and manifest constants based upon the compiler specifier defined in <I>ENVIRON.H</I>.</FONT></FONT></FONT></FONT><P>
+Generally, the macros are used to create a consistent return code (<I>ERROR_CODE or SUCCESS_CODE</I>) from all of the runtime functions.</FONT></FONT><P>
+<h4><FONT COLOR="#000080"><A name="0225_0135">Cautions<A name="0225_0135"></FONT></h4></P>
+This code assumes that it has exclusive access to all resources associated with a transaction log file, once the log file is opened. Calls to <I>VFOpen()</I> or <I>OpenTransact()</I> must include a fully qualified filename because the names of the database files re stored in the log files. If a database file was opened using a path relative to the current working directory, a rollback might later undo changes to an identically named database in a different directory.</FONT></FONT></FONT></FONT><P>
+If transaction log files are specified with relative paths, an existing transaction log file might not be detected. Because of this filename, no rollback would be attempted and your program would be led to believe that the database was consistent when, in fact, it might be grievously corrupted.<P>
+<h4><FONT COLOR="#000080"><A name="0225_0136">Conclusions<A name="0225_0136"></FONT></h4></P>
+In this article, I have presented the essential facets of a transaction tracking system I use to protect the integrity of my databases. The code has been written to be as portable as possible. It has been successfully tested on SCO Xenix and UNIX systems, MS-DOS using both Turbo C and Microsoft C 5.1 and Microsoft Windows v2.11 (although not all such code is provided here).<P>
+<h4>References</FONT></h4></P>
+<a name="note1">[1]</a>     Lyle Frost, "Using Files As Semaphores." <I>The C Users Journal</I>, April 1990, Volume 8., Number 4.<P>
+
+<h4>Sidebar: <A HREF="sidebar1.htm">Transaction Record Format</A></h4>
+
+<h4><a href="../../../source/1990/oct90/cook.zip">Get Article Source Code</a></h4>
+
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

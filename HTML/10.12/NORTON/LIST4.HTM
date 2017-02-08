@@ -1,0 +1,393 @@
+<HTML><HEAD>
+<TITLE>December 1992/Windows Device Drivers/Listing 4</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 4 <B><I></B>bogus.c</I></A></h4>
+<pre>/*EM     BOGUS.C - Bogus Device Driver DLL
+ *
+ *  SUMMARY
+ *      Basic LibMain and WEP functions
+ *
+ *  COMMENTS
+ *
+ *  WARNINGS
+ *
+ */
+
+#include &lt;windows.h&gt;
+#include "bogusa.h"
+#include "pic.h"
+#include "dpmi.h"
+
+#define EXPORT _export _loadds
+#include "bogus.h"
+
+#define FAKE_PORT  0x141   /* Bogosity Level = 9.4 */
+#define FAKE_IRQ   11      /* Bogosity Level = 9.8 */
+
+#define FAKE_CTL START   0x01
+   /* bogus port start command (set to zero) */
+#define FAKE_CTL_EOI     0x02
+   /* bogus port EOI (set to zero) */
+
+#define FAKE_STAT_BUSY   0x01
+   /* bogus port busy indication (zero=&gt;busy) */
+#define FAKE_STAT_IRQ    0x02
+   /* bogus port IRQ (zero=&gt;IRQ) */
+#define FAKE_STAT_ERROR  0x04
+   /* I/O error (zero=&gt;error) (cleared on read) */
+
+/* Set variables for our interrupt number */
+
+#if (FAKE_IRQ &lt; 8)
+#define INT_DEV (INT_MASTER_0+(FAKE_IRQ &amp; 7))
+#define PIC00 INTA00
+#define PIC01 INTA01
+#else
+#define INT_DEV (INT_SLAVE_0+(FAKE_IRQ &amp; 7))
+#define PIC00 INTB00
+#define PIC01 INTB01
+#endif
+#define INT_MASK (1 &lt;&lt; (FAKE_IRQ &amp; 7))
+
+BOOL FAR PASCAL LibMain(HANDLE hInstance
+   /* Library instance handle  */
+             ,WORD wDataSeg
+   /* Default data segment */
+             ,WORD cbHeap
+   /* Default Heap size    */
+             ,LPSTR lpszCmdLine);
+   /* Command line     */
+int FAR PASCAL WEP(int fSystemExit) ;
+#pragma alloc_text(INIT_TEXT,LibMain)
+   /* Keep this with LIBENTRY.ASM */
+#pragma alloc_text(FIXED_TEXT,WEP)
+
+HANDLE hLibInstance ;
+FARPROC lpfnPrevISR ;       /* Saved Previous ISR */
+DWORD lpfnPrevRMISR ;       /* Saved Previous real-mode ISR */
+HANDLE hReflector ;
+
+DWORD DPMI AllocateRMCallback(FARPROC lpfnCallback,
+_RMCS FAR *lpRMCS)
+{
+   DWORD dwRet ;
+   _asm {
+   push    ds
+   lds si,lpfnCallback
+   les di,lpRMCS
+   mov ax,DPMI_ALLOCRMC
+   int IVEC_DPMI
+   pop ds
+   jc  lbl1
+   mov word ptr dwRet,dx    ; return callback address
+   mov word ptr dwRet+2,cx
+   jmp short lbl2
+lbl1:
+   mov word ptr dwRet,ax    ; error code in ax
+   mov word ptr dwRet+2,0   ; return seg=0 if error
+lbl2:
+   }
+
+   return dwRet ;
+}
+
+WORD DPMI_FreeRMCallback(DWORD lpfnCallback)
+{
+   WORD wRet ;
+
+   _asm {
+   mov dx,word ptr lpfnCallback
+   mov cx,word ptr lpfnCallback+2
+   mov ax,DPMI_FREERMC
+   int IVEC_DPMI
+   jc  lbl1
+   xor ax,ax
+lbl1:
+   mov wRet,ax
+   }
+   return wRet ;
+}
+
+DWORD DPMI_GetRMVector(int iVector)
+{
+   DWORD dwRet ;
+   _asm {
+   mov ax, DPMI_GETRMVEC
+   mov bl,byte ptr iVector
+   int 31h
+   mov word ptr dwRet,dx
+   mov word ptr dwRet+2,cx
+   }
+   return dwRet ;
+}
+
+void DPMI_SetRMVector(int iVector, DWORD lpfnRMISR)
+{
+   _asm {
+   mov ax,DPMI_SETRMVEC
+   mov bl,byte ptr iVector
+   mov dx,word ptr lpfnRMISR
+   mov cx,word ptr lpfnRMISR+2
+   int 31h
+   }
+}
+
+FARPROC GetPMVector(int iVector)
+{
+   FARPROC dwRet ;
+
+   _asm {
+   mov al,byte ptr iVector
+   mov ah,35h
+   int 21h
+   mov word ptr dwRet,bx
+   mov word ptr dwRet+2,es ; Save it
+   }
+   return dwRet ;
+}
+
+void SetPMVector(int iVector, FARPROC lpfnISR)
+{
+   _asm {
+   push  ds
+   lds dx,lpfnISR
+   mov al,byte ptr iVector
+   mov ah,25h
+   int 21h         ; Set our ISR
+   pop ds
+   }
+}
+
+HANDLE AllocIntReflector(int iVector, FARPROC lpfnCallback)
+{
+   DWORD dwDosMem ;
+   LPSTR lpLowRMISR ;
+   DWORD lpfnRMCallback ;
+   _RMCS FAR *lpSaveRegs ;
+
+   /* Allocate some DOS memory for the Real-mode
+    * Interrupt service routine */
+
+   dwDosMem = GlobalDosAlloc(16 + sizeof (int) + sizeof (_RMCS)) ;
+
+   if (dwDosMem == 0)
+   return 0 ;
+   lpLowRMISR = (LPSTR) MAKELONG(0,LOWORD(dwDosMem)) ;
+   lpSaveRegs = (_RMCS FAR *) (&amp;lpLowRMISR[16]) ;
+
+   /* Allocate a real-mode callback */
+
+   lpfnRMCallback =
+DPMI_AllocateRMCallback((FARPROC)lpfnCallback,
+lpSaveRegs)
+;
+   if (HIWORD((DWORD)lpfnRMCallback) == 0)
+   {
+   GlobalDosFree(LOWORD(dwDosMem)) ;
+   return 0;
+   }
+   
+   /* Generate the low-memory code (it's only 6 bytes) */
+
+   lpLowRMISR[0] = 0x9A ;      /* CALL FAR PTR */
+   *((DWORD FAR *)&amp;(lpLowRMISR[1])) = lpfnRMCallback ;
+   lpLowRMISR[5] = 0xCF ;      /* IRET */
+   *((int FAR *)&amp;(lpLowRMISR[6])) = iVector ;
+
+   /* hook the real mode interrupt vector */
+   DPMI_SetRMVector(iVector,MAKELONG(0,HIWORD(dwDosMem))) ;
+
+   return (HANDLE) LOWORD(dwDosMem) ;
+   /* return the reflector handle */
+}
+
+void FreeIntReflector(HANDLE hReflector)
+{
+   LPSTR lpLowRMISR ;
+   DWORD lpfnRMCallback ;
+
+   /* Get the protected mode address of the low ISR */
+
+   lpLowRMISR = (LPSTR)MAKELONG(0,(WORD)hReflector) ;
+
+   /* make sure that it's a reflector */
+   if ((lpLowRMISR[0] != 0x9A) || (lpLowRMISR[5] != 0xCF))
+   return ;    /* exit if not a reflector */
+
+   /* Extract the callback address and free the callback */
+
+   lpfnRMCallback = *((DWORD FAR *)&amp;(lpLowRMISR[1])) ;
+   DPMI_FreeRMCallback(lpfnRMCallback) ;
+
+   /* free the real-mode interrupt service routine */
+
+   GlobalDosFree((WORD) hReflector) ;
+}
+
+/*XP&lt; LibMain - Main library entry point.
+ *
+ *  ENTRY
+ *
+ *  EXIT
+ *
+ *  RETURNS
+ *      TRUE if initialization succeeds, FALSE otherwise.
+ *
+ *  WARNINGS
+ *
+ *  CALLS
+ *
+ *  NOTES
+ *      The true library entry point is in the assembly
+ *      language module LIBENTRY.ASM, but it simply
+ *      passes control to here.
+ */
+BOOL FAR PASCAL LibMain(HANDLE hInstance
+   /* Library instance handle */
+             ,WORD wDataSeg
+   /* Default data segment */
+             ,WORD cbHeap
+   /* Default Heap size    */
+             ,LPSTR lpszCmdLine)
+   /* Command line     */
+/*&gt;*/
+{
+    lpszCmdLine = lpszCmdLine ;
+   /* Avoid -W4 warnings      */
+     wDataSeg = wDataSeg ;
+     cbHeap = cbHeap ;
+     hLibInstance = hInstance ;
+   /* We may need this later to access
+                    resources from our executable  */
+
+    return TRUE ;
+}
+
+/*XP&lt; WEP - Windows Exit Procedure
+ *
+ *  ENTRY
+ *      fSystemExit indicates if we are terminating the
+ *      Windows session. Otherwise, we are only
+ *      unloading this DLL.
+ *  RETURNS
+ *      Always returns "1".
+ *
+ *  WARNINGS
+ *      Due to bugs in Windows 3.0 and earlier (and
+ *      perhaps later), this function must be placed in
+ *      a fixed segment. This same bug makes the value
+ *      of DS questionable, so we cannot use it (or any
+ *      static data).
+ *
+ *      To be sure, we don't do anything here, anyway.
+ *
+ *  CALLS
+ *      None
+ *
+ *  NOTES
+ *      This is the standard DLL exit procedure.
+ *
+ */
+int FAR PASCAL WEP(int fSystemExit)
+/*&gt;*/
+{
+   fSystemExit = fSystemExit ;     /* Avoid -W4 warning */
+   return 1 ;              /* Always indicate success */
+}
+
+int EXPORT FAR PASCAL BogusCheck(void)
+{
+   BYTE bPortVal ;
+
+   _asm {
+   mov dx,FAKE_PORT
+   in  al,dx           ; Is the bogus device present ?
+   mov bPortVal,al
+   }
+
+   return ((bPortVal &amp; 0x80) == 0) ;
+   /* Return TRUE if device is present */
+
+void EXPORT FAR PASCAL BogusStart(HWND hWnd, WPARAM wParam)
+{
+   wParamEvent = wParam ;
+   hWndEvent = hWnd ;
+
+   if (!lpfnPrevISR)
+   {
+   /* Save the previous ISR and set ours */
+   _asm cli
+   lpfnPrevISR = GetPMVector(INT_DEV) ;
+   SetPMVector(INT_DEV,(FARPROC)IntSvcRtn) ;
+   _asm sti
+
+   /* Save the previous real mode ISR and reflect to ours */
+   lpfnPrevRMISR = DPMI_GetRMVector(INT_DEV) ;
+   hReflector = AllocIntReflector(INT_DEV,
+                             (FARPROC)BogusCallback) ;
+
+   /* Unmask the interrupt and begin device I/O */
+   _asm {
+      cli
+      in      al,PIC01        ; unmask the interrupt
+      and     al,NOT INT_MASK
+      out     PIC01,al
+      sti
+      mov     al,NOT FAKE_CTL_START
+      mov     dx,FAKE_PORT
+      out     dx,al       ; start device I/O
+      }
+   }
+}
+
+int EXPORT FAR PASCAL BogusGetEvent(void)
+{
+   WORD wCountRet ;
+
+   _asm {
+   mov ax,SEG wCount
+   mov es,ax
+   xor ax,ax
+   xchg    ax,es:wCount            ; get count, set to zero
+   mov wCountRet,ax
+   }
+
+   return wCountRet ;
+}
+
+void EXPORT FAR PASCAL BogusStop(void)
+{
+   hWndEvent = 0x0000 ;    /* Tell the ISR to stop */
+
+   if (!lpfnPrevISR)
+   return ;        /* return if not started */
+
+   _asm {
+       mov dx,FAKE_PORT
+   l1:
+       in  al,dx
+       rcr al,1
+       jnc l1        ; loop while busy
+
+       cli
+       in  al,PIC01
+       or  al,INT_MASK
+       out PIC01,al        ; mask the interrupt level
+       sti
+       }
+
+    DPMI_SetRMVector(INT_DEV, lpfnPrevRMISR) ;
+   /* Restore real-mode vector */
+    FreeIntReflector(hReflector) ;
+   /* Free the reflector */
+    SetPMVector(INT_DEV, lpfnPrevISR) ;
+   /* Restore the prot-mode vector */
+   
+    lpfnPrevISR = NULL ;
+}
+/* End of File */
+</pre>
+</BODY>
+</HTML>

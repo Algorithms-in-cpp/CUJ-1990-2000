@@ -1,0 +1,463 @@
+<HTML><HEAD>
+<TITLE>March 1992/Illustrated C/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1</A></h4>
+<pre>  1: /*************************************************************
+  2:  * Program: CMENU Menu Compiler
+  3:  * Module: cmenu1.c
+  4:  *     Menu Compiler:
+  5:  *     Main and Utility Functions
+  6:  * Written by: Leor Zolman, 7/91
+  7:  *************************************************************/
+  8:
+  g: #define MASTER
+ 10: #include "cmenu.h"
+ 11: #include "ccmenu.h"
+ 12:
+ 13: #include &lt;string.h&gt;
+ 14:
+ 15: #if__STDC__
+ 16: #  include &lt;stdarg.h&gt;
+ 17: #else
+ 18: include &lt;varargs.h&gt;
+ 19: #endif
+ 20:
+ 21: int main(argc,argv)
+ 22: int argc;
+ 23: char **argv;
+ 24: {
+ 25:    register i;
+ 26:
+ 27:    printf('CMENU Menu Compiler v%s\n", VERSION);
+ 28:    if (argc &lt; 2)
+ 29:    {
+ 30:        puts("usage: cmenu &lt;menu-source-file(s)&gt;\n");
+ 31:        return 0;
+ 32:    }
+ 33:
+ 34:    for (i = 1; i &lt;argc; i++)
+ 35:        if (dofile(argv[i]) == ERROR)         /* process source files */
+ 36:            return 1;
+ 37:    return 0;
+ 38: }
+ 39:
+ 40: /************************************************************
+ 41:  * dofile():
+ 42:  * Process a single .mnu source file
+ 43:  ************************************************************/
+ 44:
+ 45: int dofile(name)
+ 46: char *name;
+ 47: {
+ 48:     register i;
+ 49:     char *cp;
+ 50:
+ 51:     if ((cp = strstr(name, ".mnu")) ||
+ 52:        (cp = strstr(name, ".MNU")))
+ 53:                 *cp = '\0';
+ 54:
+ 55:     strcpy(src_name, name);
+ 56:     strcat(src_name, ".mnu");
+ 57:     strcpy(obj_name, name);
+ 58:
+ 59:     if ((fp = fopen(src_name, "r")) == NULL)
+ 60:         return fprintf(stderr, "Can't open %s\n", src_name);
+ 61:
+ 62:     n_menus = 0;
+ 63      lineno = 1;
+ 64:     in_menu = FALSE;
+ 65:     fatal = FALSE;
+ 66:
+ 67:     /* Main processing loop. Read a token and process it,
+ 68:      * until end of file is reached:
+ 69:      */
+ 70:
+ 71:     while ((token = gettok(fp)) != T_EOF)
+ 72:     {
+ 73:         if (!in_menu &amp;&amp; token != T_MENU)
+ 74:         {
+ 75:             error("Each menu must begin with the Menu keyword");
+ 76:             break;
+ 77:         }
+ 78:         if ((*keywords[token].t_func)() == ERROR)
+ 79:             if (fatal)                /* If fatal error, exit loop   */
+ 80:                 break;
+ 81:     }
+ 82:
+ 83:     fclose(fp);
+ 84:
+ 85:     if (!n_menus)
+ 86:         return error("No menus defined");
+ 87:
+ 88:     if (in_menu)
+ 89:     {
+ 90:         if (n_items)
+ 91:             itemcheck();
+ 92:         error("Menu definition missing \"Endmenu\" statement");
+ 93:     }
+ 94:
+ 95:     for (i = 0; i &lt; n_menus; i++)              /* check for undefined */
+ 96:         if (!MInfo[i].Processed)               /* "lmenu" references */
+ 97:         {
+ 98:             printf("Local Menu \"%s\" is undefined.\n",
+ 99:                     MInfo[i] .Name);
+100:             err_flag = TRUE;
+101:         }
+102:
+103:     if (err_flag)
+104:         return ERROR;
+105:
+106:     if (write_file() == ERROR)
+107:         return ERROR;
+108:     return OK;
+109: }
+110:
+111:
+112: /***********************************************************
+113:  * create_menu():
+114:  *  Construct a new menu information structure and
+115:  *  return it (by value).
+116:  *  Set fatal to TRUE if can't create.
+117:  ***********************************************************/
+118:
+119: MINFO create_menu(name)
+120: char *name;
+121: {
+122:     MINFO mi;
+123:
+124:     if (n_menus == MAX_MENUS)
+125:         fatalerr("Maximum # of menus (%d) exceeded", MAX_MENUS);
+126:     else
+127:     {
+128:         strcpy(mi_Name, name);
+129:         mi.Processed = FALSE;
+130:     }
+131:     return mi;
+132: }
+133:
+134:
+135: /***********************************************************
+136:  * find_menu():
+137:  * Search the Menu Info table for a named local menu.
+138:  * If found:
+139:  * Return a pointer to the entry if found, and set
+140:  * global variable menu_num to the menu's index
+141:  * else:
+142:  * return NULL
+143:  ***********************************************************/
+144:
+145: MINFO *find_menu(name)
+146: char *name;
+147: {
+148:     int i;
+149:
+150:     for (i = 0; i &lt; n_menus; i++)
+151:         if (!strcmp(MInfo[i].Name, name))
+152:         {
+153:             menu_num = i;
+154:             return &amp;MInfo[i];
+155:         }
+156:     return NULL;
+157: }
+158:
+159:
+160: /***********************************************************
+161:  * create_item(): Allocate space for Item Info structure,
+162:  * Initialize it and return a pointer to the structure
+163:  * Return NULL if there was a creation error.
+164:  ***********************************************************/
+165:
+166: IINFO *create_item(name)
+167: char *name;
+168: {
+169:     IINFO *IIp;
+170:     ITEM *Ip;
+171:
+172:     if (n_items == MAX_ITEMS)
+173:     {
+174:         fatalerr("Max. # of items (%d) exceeded", MAX_ITEMS);
+175:         return NULL;
+176:     }
+177:
+178:     if ((IIp =(IINFO*) malloc(sizeof(IINFO))) == NULL)
+179:     {
+180:         fatalerr("Out of memory");
+181:         NULL;
+182:     }
+183:
+184:     strcpy(IIp-&gt;Name, name);
+185:     Ip = &amp;IIp-&gt;Item;
+186:     Ip-&gt;acttyp = ACT_NONE;
+187:     Ip-&gt;pre_clear = Ip-&gt;post_clear = Ip-&gt;prompt = DEFAULT;
+188:     Ip-&gt;nextcode = DEFAULT;
+189:     Ip-&gt;nextitem = Ip-&gt;lmenunum = 0;
+190:     *Ip-&gt;text = *Ip-&gt;path = *Ip-&gt;action = *Ip-&gt;help = '\0';
+191:     return IIp;
+192: }
+193:
+194:
+195: /***********************************************************
+196:  * find_item():
+197:  *  Search the Item Info table for a named item in the
+198:  *  currently active menu definition.
+199:  *  If item name found:
+200:  *      Set item_num to the index value of the Item,
+201:  *      Return a pointer to the entry
+202:  *  else:
+203:  *      return NULL
+204:  ***********************************************************/
+205:
+206: IINFO *find_item(name)
+207: char *name;
+208: {
+209:     int i;
+210:
+211:     for (i = 0; i &lt; n_items; i++)
+212:         if (!strcmp(MIp-&gt;Items[i]-&gt;Name, name))
+213:         {
+214:             item_num = i;
+215:             return MIp-&gt;Items[i];
+216:         }
+217:     return NULL;
+218: }
+219:
+220:
+221: /***********************************************************
+222:  * itemcheck():
+223:  * Check the currently active item to make sure
+224:  * both a Text and an Action clause have been
+225:  * explicitly given.
+226:  ***********************************************************/
+227:
+228: Void itemcheck()
+229: {
+230:     if (!*Ip-&gt;text)
+231:         error("No TEXT clause found for current item");
+232:     if (Ip-&gt;acttyp == ACT_NONE)
+233:         error("No ACTION clause found for current item");
+234: }
+235:
+236:
+237: /***********************************************************
+238:  * write_file():
+239:  *      Write menu object file to disk, ready for
+240:  *      execution via menu.
+241:  *          Menu object file format:
+242:  *      --------------------------------
+243:  *      &lt;count&gt;         (integer count of # of menus in file)
+244:  *      MENU 1          (MENU structure for 1st Menu)
+245:  *          ITEM 1
+246:  *          ITEM 2
+247:  *          ...
+248:  *          ITEM n_items
+249:  *      MENU 2          (MENU structure for 2nd Menu)
+250:  *          ...
+251:  *      .
+252:  *      .
+253:  *      .
+254:  *      MENU &lt;count&gt;    (MENU structure for final Menu)
+255:  *          ...
+256:  *      --------------------------------
+257:  *
+258:  ***********************************************************/
+259:
+260: int write_file()
+261: {
+262:     int i,j;
+263:
+264:     strcat(obj_name, ".mnc");
+265:
+266:     if ((fp = fopen(obj_name, "wb")) == NULL)
+267:     {
+268:         fprintf(stderr,
+269:             "Cannot open %s for writing.\n", obj_name);
+270:         return ERROR;
+271:     }
+272:
+273:     if (fwrite((Void *)&amp;n_menus, sizeof n_menus, 1, fp) != 1)
+274:     {
+275:         fprintf(stderr,
+276:             "Error writing menu count to %s\n", obj_name);
+277:         return ERROR;
+278:     }
+279:
+280:     for (i = 0; i &lt; n_menus; i++)
+281:     {
+282:         Mp = &amp;MInfo[i].Menu;
+283:         if (fwrite((Void *) Mp, sizeof (MENU), 1, fp) != 1)
+284:         {
+285:             fprintf(stderr,
+286:             "Error writing to %s\n", obj_name);
+287:             return ERROR;
+288:         }
+289:
+290:         for (j = 0; j &lt; Mp-&gt;nitems; j++)
+291:         {
+292:             if (fwrite((Void *) &amp;MInfo[i].Items[j]-&gt;Item,
+293:                     sizeof (ITEM), 1, fp) != 1)
+294:             {
+295:                 fprintf(stderr,
+296:                     "Error writing to %s\n", obj_name);
+297:                 return ERROR;
+298:             }
+299:             free(MInfo[i].Items[j]);
+300:         }
+301:     }
+302:     printf("Menu object file %s written.\n", obj_name);
+303:     return OK;
+304: }
+305:
+306:
+307: /***********************************************************
+308:  * warning():
+309:  *  Display a warning message, preceded by source
+310:  *  file name and line number, supporting format
+311:  *  conversions.
+312:  ***********************************************************/
+313:
+314: #if_STDC_                          /* ANSI variable-#-of-args method: */
+315: int warning(char *fmt, ...)
+316: {
+317:     va_list arglist;
+318:     va_start(arglist, fmt);
+319:
+320: #else                                         /* old "varargs" method: */
+321: int warning(fmt, va_alist)
+322: char *fmt;
+323: va_dcl
+324: {
+325:     va_list arglist;
+326:     va_start(arglist);
+327: #endif
+328:                             /* the rest is the same, ANSI or varargs: */
+329:
+330:     fprintf(stderr, "%s (%d): ", src_name, lineno);
+331:     vfprintf(stderr, fmt, arglist);
+332:     va_end(arglist);
+333:     fprintf(stderr, "\n");
+334:     return OK;
+335: }
+336:
+337:
+338: /***********************************************************
+339:  * error():
+340:  *  Display an error message, preceded by source
+341:  *  file name and line number, supporting format
+342:  *  conversions.
+343:  ***********************************************************/
+344:
+345: #if__STDC__                         /* ANSI variable-#-of-args method: */
+346: int error(char *fmt, ...)
+347: {
+348:     va_list arglist;
+349:     va_start(arglist, fmt);
+350:
+351: #else                                        /* old "varargs" method: */
+352: int error(fmt, va_alist)
+353: char *fmt;
+354: va_dcl
+355: {
+356:     va_list arglist;
+357:     va_start(arglist);
+358: #endif
+359:
+360:                             /* the rest is the same, ANSI or varargs: */
+361:
+362:     fprintf(stderr, "%s (%d): ", src_name, lineno);
+363:     vfprintf(stderr, fmt, arglist);
+364:     va_end(arglist);
+365:     fprintf(stderr, "\n");
+366:     err_flag = TRUE;
+367:     return ERROR;
+368: }
+369:
+370:
+371: /***********************************************************
+372:  * fatalerr():
+373:  *  Like error, except global flag "fatal" is set.
+374:  ***********************************************************/
+375:
+376: #if __STDC__                         /* start function the ANSI way... */
+377: int fatalerr(char *fmt, ...    /)
+378: {
+379:     va_list arglist;
+380:     va_start(arglist, fmt);
+381: #else                                   /* or the old "varargs" way... */
+382: int fatalerr(fmt, va_alist)
+383: char *fmt;
+384: va_dcl
+385: {
+386:     va_list arglist;
+387:     va_start(arglist);
+388: #endif
+389:
+390:     error(fmt, arglist);          /* the rest is same, ANSI or varargs */
+391:     va_end(arglist);
+392:     fatal = TRUE;
+393:     return ERROR;
+394: }
+395:
+396:
+397: /***********************************************************
+398:  * matchkey():
+399:  *  Test if given string is a reserved word. Return the token
+400:  *  value of the matching token if so; else return NULL.
+401:  ***********************************************************/
+402:
+403: int matchkey(str)
+404: char *str;
+405: {
+406:     char str2[MAX_CMD], *cp;
+407:     int i;
+408:
+409:     strcpy(str2, str);
+410:     for (cp = str2; *cp; cp++)
+411:         *cp = tolower(*cp);
+412:
+413:     for (i = 0; i &lt; (int) N_KEYWORDS; i++)
+414:         if (!strcmp(keywords[i].keyword, str2))
+415:             return i;
+416:
+417:     return NULL;
+418: }
+419:
+420:
+421: #ifdef NEEDSTR
+422: /*
+423:  * Search for first occurence of substring s2 in s1:
+424:  *  (provided for Xenix only; this function is in
+425:  *  most modern standard distribution libraries)
+426:  */
+427:
+428: char *strstr(s1, s2)
+429: char *s1, *s2;
+430: {
+431:     int i, j, nposs;
+432:     int len1 = strlen(s1);
+433:
+434:     int len2 = strlen(s2);
+435:     char *pl;
+436:
+437:
+438:     if (len1 &lt; len2)
+439:         return NULL;
+440:
+441:     nposs = len1 - len2;
+442:
+443:     for (i = 0; i &lt;= nposs; i++)
+444:     {
+445:         for (j = 0, p1 = &amp;s1[i]; j &lt; len2; j++)
+446:             if (*pl++ != s2[j])
+447:                 break;
+448:         if (j == len2)
+449:             return &amp;s1[i];
+450:     }
+451:     return NULL;
+452: }
+453: #endif
+/* End of File */
+</pre>
+</BODY>
+</HTML>

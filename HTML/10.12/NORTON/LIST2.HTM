@@ -1,0 +1,133 @@
+<HTML><HEAD>
+<TITLE>December 1992/Windows Device Drivers/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2 <B><I></B>bogusa.asm</I></A></h4>
+<pre>page ,132
+
+; masm tisr ; &gt;err
+   .286p
+.xlist
+include bogus.inc
+include pic.h
+.list
+
+WM_COMMAND      = 0111h
+
+EXTRN POSTMESSAGE:FAR
+
+Words struc
+LoWord dw ?
+HiWord dw ?
+Words ends
+
+;
+; Set variables for our interrupt number
+;
+ife (FAKE_IRQ GE 8)
+INT_DEV equ (INT_MASTER_0+(FAKE_IRQ AND 7))
+PIC00 equ INTA00
+PIC01 equ INTA01
+else
+INT_DEV equ (INT_SLAVE_0+(FAKE_IRQ AND 7))
+INT_MASK equ 1 SHL (FAKE_IRQ AND 7)
+PIC00 equ INTB00
+PIC01 equ INTB01
+endif
+
+page
+
+FIXED_DATA SEGMENT DWORD PUBLIC 'DATA'
+PUBLIC_hWndEvent,_wParamEvent,_wCount
+
+_hWndEvent label word
+hWndEvent dw 0         ; Window to post events to
+
+_wParamEvent label word
+wParamEvent dw 0       ; wParam value to post
+_wCount label word
+wCount dw 0            ; count of unprocessed interrupts
+
+FIXED_DATA ENDS
+
+page
+
+;IP IntSvcRtn - The Interrupt Service Routine
+;
+; WARNINGS
+;
+; NOTES
+; This ISR increments a count and re-arms the device.
+; If the count was previously zero, a message is posted.
+;
+; If the "fStopping" flag is set, the device is not re-armed.
+;
+
+FIXED_TEXT SEGMENT PARA PUBLIC 'CODE'
+selData1    dw FIXED_DATA
+    assume CS:FIXED_TEXT,DS:NOTHING
+PUBLIC _IntSvcRtn
+_IntSvcRtn label far
+IntSvcRtn proc far
+    push   ax
+    push   dx
+    push   ds
+    mov ds,selData1
+    assume ds:FIXED_DATA
+    inc wCount
+    mov al,NOT FAKE_CTL_EOI
+    mov dx,FAKE_PORT
+    out dx,al           ; send EOI to device
+    mov al,EOI
+    out PIC00,al        ; send EOI to PIC
+ife (PIC00 EQ INTA00)
+    out INTA00,al       ; send EOI to master PIC, too
+endif
+    cmp hWndEvent,0     ; exiting?
+    jz  isr9            ; if so, then don't restart or port
+    cmp wCount,1        ; Need to post?
+    jne isr8            ; skip if not
+
+    push    bx          ; save the remaining registers
+    push    cx
+    push    es
+
+    push    hWndEvent
+    push    WM_COMMAND
+    push    wParamEvent
+    push    0   ; lParam is zero
+    push    0
+    call    POSTMESSAGE     ; post the event
+
+    pop es
+    pop cx
+    pop bx
+
+isr8:
+    mov al,NOT FAKE_CTL_START
+    mov dx,FAKE_PORT
+    out dx,al           ; restart I/O
+isr9:
+    pop ds
+    assume  ds:NOTHING
+    pop dx
+    pop ax
+    iret
+IntSvcRtn endp
+
+; Needed by AllocIntReflector
+PUBLIC _BogusCallback
+_BogusCallback label far
+BogusCallback proc far
+    pushf
+    call   IntSvcRtn
+    ret
+BogusCallback endp
+
+FIXED_TEXT ENDS
+    end
+; End of File
+</pre>
+</BODY>
+</HTML>

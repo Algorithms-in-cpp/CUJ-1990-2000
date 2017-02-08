@@ -1,0 +1,356 @@
+<HTML><HEAD>
+<TITLE>September 1991/From PC To Mainframe With HLLAPI/Listing 3</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 3 (hostcom.c) Host Communication Program</A></h4>
+<pre>/*****************************************************
+ *
+ * written by Douglas Connolly
+ * 419 Hart Senate Office Building
+ * Washington, D.C. 20510
+ *
+ ****************************************************/
+
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+#include &lt;dos.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;conio.h&gt;
+#include &lt;ctype.h&gt;
+#include "hc.h"
+
+/* screen attributes */
+int norm_attr = ((BLACK&lt;&lt;4)+LIGHTGRAY); /* text */
+int star_attr = ((BLUE&lt;&lt;4)+WHITE);    /* status line */
+
+/* attributes for activity field */
+int wait_attr  = ((RED&lt;&lt;4) + WHITE);    /* waiting */
+int time_attr  = ((GREEN&lt;&lt;4)+ WHITE);   /* TIME */
+int send_attr  = ((CYAN&lt;&lt;4) + WHITE);   /* sending */
+int oia_attr   = ((GREEN&lt;&lt;4)+ WHITE);   /* OIA */
+
+static char far *vid_mem; /* video memory pointer */
+
+/* hllapi_level indicates the emulation software used:
+ *  0 = PC/3270 Ver. 1.0    PSID = A
+ *  1 = IBM Entry Level     PSID = E
+ *  2 = Attachmate Extra    PSID = B
+ *  3 = RabbitGATE          PSID = 1
+ *  4 = simulated connection
+ *  5 = simulated connection with test data
+ */
+
+int hllapi_level;
+/* clear_flag prevents 2 consecutive clear commands
+ * being sent to host (prevent Attachmate problems)
+ */
+int clear_flag = 0;
+
+void main (int argc, char **argv)
+{
+       int x, y, chr, err;
+       char api_ps[1921]; /* pres. space + 1 */
+       int k;             /* char read from kbd */
+       char c[2] =" ";    /* intput string */
+       int n = 0;         /* cursor position */
+
+       /* power on/off string for RabbitGATE */
+       char rabbit_power[4] = {'@', 'A', 0x80, '\0'};
+
+       /* select emulation software */
+       if (argc&lt; 2 ||
+          (hllapi_level = atoi(argv[1])) &gt; 5) {
+              fprintf(stderr, HOSTCOM_MSG);
+              return;
+       }
+
+       if (hllapi_level == 4)
+              memset(api_ps, ' ', 1920);
+
+       /* copy test data to pres space */
+       else if (hllapi_level == 5)
+              for (x=0; x&lt;24*80; x+=80) {
+                     chr = 0x28;
+                     for (y=0; y&lt;80; y++)
+                            api_ps[x+y] = chr++;
+              }
+
+       /* initialize video pointer */
+       if (set_vid() !- 0) {
+              fprintf(stderr, VID_ERROR);
+              return;
+       }
+
+       /* connect presentation space */
+       if ((err = connect_ps_space()) != 0) {
+              fprintf(stderr, CONNECT_ERROR);
+              return;
+       }
+
+       clrscr();
+       write_string(1, 25, STAT_LINE, stat_attr);
+
+       /* RabbitGATE: Power on session */
+       if (hllapi_level == 3) {
+          write_string(1, 1," Powering on session"
+              " One moment ...", stat_attr);
+
+              send_key(rabbit_power);
+              delay(500);
+              if (!check_power()){
+                puts("HOSTOCM: power on failed\n");
+                return;
+              }
+       }
+
+       status_msg("Ready", stat_attr);
+
+       while (1) {
+              /* Wait for a key. While no key is
+               * waiting, continuously update PS.
+               */
+
+              while (!kbhit()){
+                 if ((err=update_ps(api_ps))!=0) {
+                    if (process_error(err) != 0) {
+                       reset_connection();
+                       return;
+                    }
+                 }
+                 display_cursor();
+              }
+              k = get_key();
+              switch (k) {
+
+              case K_F3:      /* clear */
+                  /* Send clear key only if
+                   * clear_flag is set.
+                   */
+                     if (clear_flag) {
+                        clear_flag = 0;
+                        err = input_to_host("@C");
+                        n=0;
+                        delay (500);
+                     }
+                     break;
+              case K_F4:               /* reset */
+                     err = input_to_host("@R");
+                     n = 0;
+                     break;
+              case K_F7:               /* OIA */
+                     if ((err = dspy_oia()) == 0) {
+                            write_string(1,1,
+                             OIA_MSG, stat_attr);
+                            while (!receive_esc());
+                     }
+                     break;
+              case K_CF10:  /* unconditional exit */
+                            reset_connection();
+                            clrscr();
+                            return;
+              case K_F10:      /* exit program */
+
+                     if (check_signon()) {
+                        /* warn if in application */
+                        write_string(1, 1,
+                          SIGNOFF_MSG, stat_attr);
+                        while(!receive_esc());
+                     }
+                     else {
+                        if (hllapi_level == 3)
+                            /* power off */
+                            send_key(rabbit_power);
+                        if ((err =
+                               reset_connection())
+                               == 0) {
+                               clrscr();
+                               return;
+                        }
+                     }
+                     break;
+              case K_HOME:    /* home */
+                     err = keys_to_host("@0");
+                     n = 0;
+                     break;
+              case K_CTRLR:   /* return (newline) */
+                     err = keys_to_host("@N");
+                     n = 0;
+                     break;
+              case K_ENTER:   /* enter key */
+                     /* set clear key flag */
+                     clear_flag = 1;
+                     err = input_to_host("@E");
+                     n = 0;
+                     break;
+              case K_LEFT:    /* cursor left */
+                if (n&gt;0) {
+                  if ((err=keys_to_host("@L"))==0) {
+                     n--;
+                     err = display_cursor();
+                  }
+                }
+              break;
+              case K_RIGHT:   /* cursor right */
+                  if ((err=keys_to_host("@Z"))==0) {
+                      n++;
+                      err = display_cursor();
+                  }
+                  break;
+              case K_TAB:             /* tab */
+                     err = keys_to_host("@T");
+                     n = 0;
+                     break;
+              case K_INS:             /* insert */
+                     err = keys_to_host("@I");
+                     break;
+              case K_BACKTAB:         /* backtab */
+                     err = keys_to_host("@B");
+                     n = 0;
+                     break;
+              case K_DEL:     /* delete right */
+                     err = keys_to_host("@D");
+                     break;
+              case K_BACKSPACE: /* backspace */
+                     if (n&gt;0) {
+                         n--;
+                         err = keys_to_host("@L");
+                         if (err == 0)
+                            err=keys_to_host("@D");
+                         break;
+                     }
+                     else {  /* at start of line */
+                            putchar('\a');
+                            continue;
+                     }
+              default:
+                     if (isascii(k)) {
+                            putchar(k);
+                            *c = (char) k;
+                            err = keys_to_host(c);
+                            n++;
+                     }
+                     else {
+                            putchar('\a');
+                            continue;
+                     }
+              }                /* end of switch */
+
+              if (err &gt; 0)
+                     if (process_error(err) == 1) {
+                            reset_connection();
+                            return;
+                     }
+
+              /* Make sure comm. line is clear
+               * Since this check can result in an
+               * error, another call is
+               * necessary to process_error().
+               */
+
+              if ((err = host_wait()) &gt; 0)
+                     if (process_error(err) == 1) {
+                            reset_connection();
+                            return;
+                     }
+
+       }        /* end of while loop */
+}
+
+/*****************************************************
+ *
+ * set_vid() Initialize global pointer vid_mem to
+ *           color or monochrome video memory.
+ *
+ * return 0: successful, 25/80 video mode detected
+ *        1: incorrect video mode detected
+ *
+ *****************************************************/
+
+int set_vid(void)
+{
+       union REGS inregs, outregs;
+       int err_flag = 0;
+       inregs.h.ah = 15;    /* BIOS vid mode func */
+
+       /* BIOS int 0x10 */
+       int86(0x10, &amp;inregs, &amp;outregs);
+
+       switch (outregs.h.al) {
+       case 2:                 /* 25/80 color */
+       case 3:                 /* 25/80 color */
+              vid_mem   = (char far *) 0xB8000000L;
+              break;
+       case7:                  /* monochrome */
+              vid_mem = (char far *) 0xB0000000L;
+              stat_attr = wait_attr = time_attr =
+              send_attr = oia_attr =
+              ((LIGHTGRAY&lt;&lt;4) + BLACK);
+              break;
+       default:                /* wrong mode */
+              err_flag = 1;
+              break;
+       }
+       return (err_flag);
+}
+
+/*****************************************************
+ *
+ * write_string() Write string directly to vid memory.
+ *
+ * Coordinates accepted in 1-25/1-80 range for
+ * consistency with Turbo C library functions.
+ *
+ *  x = 1-80
+ *  y = 1-25
+ * *s = string to display
+ * attr = attribute to use for display -- use constants
+ *        in conio.h
+ ******************************************************/
+
+void write_string(int x, int y, char *s, int attr)
+{
+       char far *v;
+       x--; y--;
+       v = vid_mem + (y*160) + (x*2);
+       while(*s) {
+              *v++ = *s++;    /* write character */
+              *v++ = attr;    /* write attribute */
+       }
+}
+
+/******************************************************
+ *
+ * get_key() Read a single key and return normal ASCII
+ *           and extended ASCII characeters
+ *
+ *******************************************************/
+
+int get_key(void)
+{
+       int ch;
+       if ((ch = bdos(0x07, 0, 0) &amp; 0x0ff) != '\0')
+              return(ch);
+       return ((bdos(0x07, 0, 0) &amp; 0x0ff) |0x100);
+}
+
+/******************************************************
+ *
+ * receive_esc() Return 1 if escape depressed and 0
+ *               if no key depressed, or key not
+ *               escape.
+ *
+ ******************************************************/
+ 
+int receive_esc (void)
+{
+       if (kbhit())
+              if (get_key() == K_ESC)
+                     return (1);
+       return (0);
+}
+/* End of File */
+</pre>
+
+</BODY>
+</HTML>

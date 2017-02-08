@@ -1,0 +1,427 @@
+<HTML><HEAD>
+<TITLE>November 1992/A Versatile Plotting Routine/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2 SPLOT.C</A></h4>
+<pre>/***********************************************************************
+ *  SPLOT - Builds a screen plot of data points and curves.
+ *       Creates HP LaserJet .PCL and PostScript,.PS files for printing.
+ *
+ *  *pstfil &amp; *hpfil - output files (may be NULL if not needed)
+ *     xdivs &amp; ydivs - number of X and Y axis divisions
+ *     xgrid &amp; ygrid - grid line flags (1 for lines, 0 for no lines)
+ *            nplots - number of curves (each has 0 or more symbol points)
+ *       *x[] &amp; *y[] - Arrays of pointers to arrays of X and Y values
+ *       npts_pnts[] - array of number of symbol points for each curve
+ *        npts_tot[] - array of number of total points for each curve
+ *             title - character array for graph title
+ *       xaxis,yaxis - character arrays for X and Y axis labels
+ *            *msg[] - pointers to strings to appear in a message box
+ *            nmsg[] - number of strings in message box (0 for no box) and
+ *                     X and Y coordinates of beginning of first string
+ *                     (640 x 480 screen cordinates)
+ *
+ *  For "curve" i of the nplots "curves" the first npts_pnts[i] points are
+ *  plotted with symbols only. The remaining points up to npts_tot[i-1] are
+ *  plotted with connecting lines but no symbols. The number of either
+ *  symbols or connecting lines, but not both, may be 0.
+***********************************************************************/
+#include &lt;stdio.h&gt;
+#include &lt;math.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;conio.h&gt;
+#include &lt;dos.h&gt;
+#include &lt;stdarg.h&gt;
+#include &lt;graphics.h&gt;
+#include alloc.h&gt;
+#define  CORE 0      /* = 1 for coreleft() report after inigraph()    */
+#define   YTEXT YD+19.     /* Y cordinate for x axis labeling         */
+/*  XL=X axis start, XR=X axis end, YU=Y axis upper, YD=Y axis lower.    */
+double XL=72. ,XR=619. ,YU=29. ,YD=441. ,YDM=479.;
+FILE *postfile;            /* File scope PostScript output file      */
+int DIRECTION;             /* 0 for horizontal text, 1 for vertical  */
+int YAXOFF;                /* Offset for Y axis title                */
+int GraphDriver;           /* The Graphics device driver             */
+int GraphMode;             /* The Graphics mode value                */
+int ErrorCode;             /* Reports any graphics errors            */
+
+/*       Function prototypes */
+void linscale (double xmin, doublex max, int n, double *xminp,double *xmaxp, double *dist);
+void outlin(double x1, double y1, double x2, double y2);
+void box(double x1,double y1,double x2,double y2);
+void linaxis(int axis, double start, double dist, int divs, int grids,
+           double dotsperdiv, int ticksize);
+void changetextstyle(int direction, int charsize);
+void formx(char* str, double x, int *prec, int *typ, int kon);
+void outtxt(double x, double y, int horiz, int vert, char *txt);
+void symbol(double x,double y, int num);
+void msgbox(char *msg[], int *nmsg);
+void hpltit(FILE *hpfile);
+
+void splot(FILE *pstfil, FILE *hpfile, int xdivs, int ydivs, int xgrid,
+     int ygrid, int nplots, double *x[], double *y[], int *npts_pnts,
+     int *npts_tot, char *title, char *xaxis, char *yaxis, char *msg[],
+     int *nmsg)
+{ double xdotsprdiv, ydotsprdiv,xstart, xstop, ystart, ystop,xdata, ydata,
+         xdist, ydist, xlast, ylast, xscale, yscale, limits[4];
+  unsigned long core;
+  int i, j, ticksize;
+#if CORE==1
+  char nar[90];
+#endif
+
+  core=(unsigned long)coreleft();
+  if (core&lt;16000L)
+  { fprintf(stderr,
+          "Only %lu core left at entry to PLOTS; About 16000 needed.\n",core);
+    fprintf(stderr,
+          "^C to stop and use COMPACT or LARGE model, any other key to procede\n");
+    i=getch(); if (i==3) exit(1);
+  }
+  postfile=pstfil; ticksize= 5; YAXOFF=0;
+  fprintf(postfile,"%%!PS-Adobe-2.0 EPSF-1.2\n%%%%BoundingBox: 0 0 612 792\n");
+  fprintf(postfile, "/cntrj{dup stringwidth pop 2 div neg 0 rmoveto} bind def\n");
+  fprintf(postfile,"/rtj{dup stringwidth pop neg 0 rmoveto} bind def\n");
+  fprintf(postfile,"552 80 translate 90 rotate \n");
+  /* Calculate dotsperdiv and adjust YU and XR to an integral multiple */
+  xdotsprdiv = (int)((XR - XL) / xdivs); ydotsprdiv = (int)((YD - YU) / ydivs);
+  XR=XL+(int)(xdivs*xdotsprdiv); YU=YD-(int)(ydivs*ydotsprdiv);
+  /* Determine the upper and lower limits of the data. */
+  limits[0] = limits[2] = 9.99e+99; limits[1] = limits[3] = -9.99e+99;
+  for (i=0; i&lt;nplots; ++i) for (j=0; j&lt;npts_tot[i]; ++j)
+  { if (x[i][j]&lt;limits[0]) limits[0]=x[i][j];
+    if (x[i][j]&gt;limits[1]) limits[1]=x[i][j];
+    if (y[i][j]&lt;limits[2]) limits[2]=y[i][j];
+    if (y[i][j]&gt;limits[3]) limits[3]=y[i][j];
+  }
+  /* initialize graphics (hi-res), draw and label graph */
+  GraphDriver=(int)DETECT;              /* Request auto-detection */
+  initgraph (&amp;GraphDriver, &amp;GraphMode,"");
+  ErrorCode=graphresult();              /* Read result of initialization*/
+  if (ErrorCode!=(int)grOk)             /* Error occured during init */
+  { fprintf(stderr,"Graphics System Error: %s\n",grapherrormsg(ErrorCode));
+    exit(1);
+  }
+  if (GraphDriver!= (int)VGA)
+  { fprintf(stderr,"The screen plot program requires a VGA monitor\n");
+    closegraph(); exit(1);
+  }
+  changetextstyle(0,5);  /* Text size and style for axis numbers */
+#if CORE==1
+  sprintf(nar,"After graphics initialization there is %lu core left",
+        (unsigned long)coreleft());
+  outtxt(0.,15.,0,0,nar);
+  outtxt(0.,30.,0,0,"At least 1000 is needed. Hit enter to procede."); getch();
+#endif
+  /* box(0.,0.,639.,479.); */  /* Optional bounding box for checking layout. */
+  box(XL, YU, XR, YD);     /* Draw bounding box */
+  /* do linear plot scaling */
+  linscale (limits[2] ,limits[3] ,ydivs,&amp;ystart,&amp;ystop,&amp;ydist);
+  linscale (limits[0],limits[1],xdivs,&amp;xstart,&amp;xstop,&amp;xdist);
+  /* draw and label axes */
+  linaxis (0,ystart,ydist,ydivs,ygrid,ydotsprdiv,ticksize);
+  linaxis (1,xstart,xdist,xdivs,xgrid,xdotsprdiv,ticksize);
+  changetextstyle(0,6);  outtxt(325.,12.,1,0,title);
+  changetextstyle(0,5);  outtxt((XL+XR)/2.,YDM-2.,1,0,xaxis);
+  changetextstyle(1,5);
+  outtxt(XL-10.-(double)YAXOFF,(YU+YD)/2.,2,1,yaxis);
+  changetextstyle(0,5);
+  xscale=xdotsprdiv/xdist;  yscale=ydotsprdiv/ydist;
+  /* Plot the data points */
+  for (i=0; i&lt;nplots; ++i) for (j=0; j&lt;npts_pnts[i]; ++j)
+  { xdata=(int)(XL+(x[i][j]-xstart)*xscale);
+    ydata=(int)(YD-(y[i][j]-ystart)*yscale);
+    symbol(xdata,ydata,i);
+  }
+  /* Plot the curves */
+  for (i=0; i&lt;nplots; ++i) for (j=npts_pnts[i]; j&lt;npts_tot[i]; ++j)
+  { xdata=XL+(x[i][j]-xstart)*xscale; ydata=YD-(y[i][j]-ystart)*yscale;
+    if (j==npts_pnts[i]) { xlast=xdata; ylast=ydata; continue; }
+    outlin(xlast,ylast,xdata,ydata); xlast=xdata; ylast=ydata;
+  }
+  if (nmsg[0]) msgbox(msg,nmsg);
+  fprintf(postfile," showpage\n%c\n",4);
+  if (hpfile!=NULL) hpltit(hpfile);
+  (void)getch();    /* Hold the graph on screen till a key is pressed. */
+  closegraph();
+  (void)fclose(postfile);
+  (void)fclose(hpfile);
+}  /********************* end function plots(........) **************/
+/***********************************************************************
+ * LINSCALE - Define linear scale limits - fixed interval.
+ *  Given estimated maximum and minimum values and a requested number of
+ *  intervals, adjust the extrema to encompass the same number of equal
+ *  intervals of size dist, such that they are "nice" values for a plot.
+ *
+ * Input:   xmin - minimum value.
+ *          xmax - maximum value.
+ *             n - number of data intervals required.
+ * Output: xminp - adjusted minimum value.
+ *         xmaxp - adjusted maximum value.
+ *          dist - data interval size.
+ *
+ *  xmin, xmax, and n are not modified.
+ *
+ *  vint[] is an array of acceptable values for dist
+ *  (times an integer power of 10).
+ *
+ *  Adapted from C. R. Lewart, Comm. ACM, algorithm 463 (1972).
+ *********************************************************************/
+void linscale (double xmin, double xmax, int n, double *xminp,
+     double *xmaxp, double *dist)
+{ int     i, m1, m2, nal, np, nx, nvnt;
+  double  a, b, fm1, fm2;
+  double del=2.0e-9, vint[]:{1.,2.,4.,5.,6.,8.,10.,20.};
+
+/*  del accounts for computer round-off. del should be greater than the
+ *  round-off expected from division or (double) operations, and less than
+ *  the minimum increment of the plotting device used by the main program
+ *  divided by the plot size times the number of intervals n.
+*/
+  nvnt=sizeof(vint)/sizeof(double);
+  if (xmin&gt;=xmax) { fprintf(stderr,"In LINSCALE xmin &gt;= xmax"); exit(1); }
+  if( n &lt;= 0 ) { fprintf(stderr,"In LINSCALE n &lt;= 0"); exit(1); }
+/* Find approximate interval size, a. */
+  a=(xmax-xmin)/(double)(n+1); nal=(int)(log10(a)); if (a&lt;1.) --nal;
+/* a is scaled into variable named b between 1 and 20. */
+  b=a*pow10(-nal);
+/* The closest permissible value for b is found. */
+
+  for (i=1; i&lt;nvnt; ++i) if (b&lt;(vint[i]+del)) break ;
+  for(;i&lt;nvnt;)           /* The interval size is computed. */
+  { *dist=vint[i]*pow10(na1); fm1=xmin/(*dist);
+    m1= (int)(fm1); if (fm1&lt;0.0) --m1;
+     if (fabs((double)(m1)+1.0-fm1)&lt;del) ++m1;
+/* The new minimum and maximum limits are found. */
+    *xminp=*dist*(double)(m1); fm2=xmax/(*dist);
+    m2=(int)(fm2+1.0);    if (fm2&lt;(-1.0)) --m2;
+    if (fabs(fm2+1.0-(double)(m2))&lt;del) --m2;
+    *xmaxp=*dist*(double)(m2);
+/* Check whether a second pass is required. */
+    np=m2-m1;
+    if (np&gt;n) if ((xmax-xmin-(double)n*(*dist))/(*dist)&gt;del) { ++i; continue; }
+    else *xminp=xmin;
+    nx=(n-np)/2;
+    if (*xminp&gt;xmin+del) *xminp-=(double)(nx)*(*dist);
+    *xmaxp=*xminp+(double)(n)*(*dist);
+/* Adjust limits to account for round-off if necessary. */
+    if (*xminp&gt;xmin)  *xminp=xmin;
+    if (*xmaxp&lt;xmax)  *xmaxp=xmax;
+    break;
+  }  /* End for(;i&lt;nvnt;) */
+  return;
+}  /* End linscale */
+/***********************************************************************
+ *  OUTLIN - Output a line to the screen and the PostScript file
+ *********************************************************************/
+void outlin(double x1, double y1, double x2, double y2)
+{ fprintf(postfile,"%G %G moveto %G %G lineto stroke\n",x1,485.-y1,x2,485.-y2);
+  line((int)x1,(int)y1,(int)x2,(int)y2);
+}
+/******************************************************************
+ *  BOX - Draw a box on the screen
+ *****************************************************************/
+void box(double x1, double y1, double x2, double y2)
+{ outlin(x1,y1,x2,y1); outlin(x2,y1,x2,y2);
+  outlin(x2,y2,x1,y2); outlin(x1,y2,x1,y1);
+}
+/******************************************************************
+ * LINAXIS - Draws and labels a linear axis.
+ *****************************************************************/
+void linaxis(int axis,double start,double dist,int divs, int grids,
+       double dotsperdiv,int ticksize)
+{ double x, d1, d2;
+  int i, j, m, n, prec, typ;
+  char str[15];
+  { if (axis)         /* Do x-axis. */
+    { prec=typ=0;
+      for (i=0; i&lt;=divs; ++i)  /* Determine required format (x=0. at origin) */
+      { x=start+i*dist; if (fabs(x/dist)&lt;.1) x=0.; formx(str, x,&amp;m,&amp;n,0);
+        if (m&gt;prec) prec=m; if (n&gt;typ) typ=n;
+      }
+      for (i=0; i&lt;=divs; ++i)
+      { d1=XL+i*dotsperdiv;
+        if (!grids) outlin(d1,YD,d1,YD-ticksize); /* Draw lower tickmark. */
+                                      /* Print labels (x=0. at origin) */
+        x=start+i*dist; if (fabs(x/dist)&lt;.1) x=0.; formx(str,x,&amp;prec,&amp;typ,1);
+        outtxt(d1,YTEXT,1,0,str);
+        if (grids) outlin(d1,YU,d1,YD);        /* Draw grid line. */
+        else outlin(d1,YU,d1,YU+ticksize);       /* Draw upper tickmark. */
+      }
+    }
+    else              /* Do y-axis. */
+    { prec=typ=0;
+      for (i=0; i&lt;=divs; ++i)   /* Determine required format (x=0. at origin) */
+      { x=start+i*dist; if (fabs(x/dist)&lt;.1) x=0.; formx(str, x,&amp;m,&amp;n,0);
+        if (m&gt;prec) prec=m; if (n&gt;typ) typ=n;
+      }
+      for (i=0; i&lt;=divs; ++i)
+      { d2=(int)(YD-i*dotsperdiv);
+        if (!grids) outlin(XL,d2,XL+ticksize,d2); /* Draw left tickmark. */
+                                    /* Print labels (x=0. at origin) */
+        x=start+i*dist; if (fabs(x/dist)&lt;.1) x=0.; formx(str,x,&amp;prec,&amp;typ,1);
+        j=textwidth(str); if (j&gt;YAXOFF) YAXOFF=j;
+        outtxt(XL-4.,d2+4.,2,0,str);
+        if (grids) outlin(XR,d2,XL,d2);     /* Draw grid line.      */
+        else outlin(XR,d2,XR-ticksize,d2); /* Draw right tickmark. */
+      }
+    }
+  }
+}  /* End linaxis */
+/***********************************************************************
+ * CHANGETEXTSTYLE - Set font size and direction.
+ *      direction - 0 for horizontal, 1 for vertical, bottom to top
+ *       charsize - The value used by graphics function settextstyle
+ * The font LITT.CHR (number 2 for settextstyle is used for screen
+ * output and Helvetica for PostScript.
+ * The global variable DIRECTION is set for use in outtxt
+ *********************************************************************/
+void changetextstyle(int direction, int charsize)
+{ (void)graphresult();                 /* clear error code           */
+  settextstyle(2, direction, charsize);
+  ErrorCode=graphresult();             /* check result               */
+  if (ErrorCode!=(int)grOk)
+  ( closegraph();                      /* if error occured           */
+    fprintf(stderr,"Graphics System Error: %s\n", grapherrormsg(ErrorCode));
+    exit(1);
+  }
+/* For PostScript output file */
+  fprintf(postfile,"/Helvetica findfont %.5G scalefont setfont\n",charsize*2.6);
+  DIRECTION=direction;
+}
+/***********************************************************************
+ *  OUTTXT - Output text to the screen and the PostScript file
+ *         x, y - Screen coordinates for starting text output
+ *  horiz, vert - Horizontal and vertical justification
+ *          txt - Text string for output
+ *********************************************************************/
+void outtxt(double x, double y, int horiz, int vert, char *txt)
+{ char str[20];
+  settextjustify(horiz,vert); strcpy(str," ");
+  outtextxy((int)x,(int)y,txt);
+  fprintf(postfile,"gsave %G %G moveto",x,485.-y);
+  if (DIRECTION) fprintf(postfile," 90 rotate\n");
+  if (horiz==1 || (DIRECTION &amp;&amp; vert)) strcpy(str," cntrj ");
+  if (horiz==2 &amp;&amp; !DIRECTION) strcpy(str," rtj ");
+  fprintf(postfile,"(%s) %s show grestore\n",txt,str);
+}
+/***********************************************************************
+ * FORMX - Format X and Y axis numeric labels. Uses F format if possible.
+ *    kon = 0 Determine format
+ *        = 1 Return properly formatted string
+ *   prec = Required precision, F or E format
+ *    typ = 0 for F format, 1 for E format
+ *********************************************************************/
+void formx(char* str,double x, int *prec, int *typ, int kon)
+{ int i,nexp,first,last,len,pnt;
+  char c;
+  if (!kon)
+  { nexp=last=pnt=(*typ)=0; first=-1;
+    (void)sprintf(str,"%#-G",x); len=(int)strlen(str);
+    for(i=0; i&lt;len; ++i)
+    { c=str[i];
+      if (c=='.') { pnt=i; ++last; }
+      if (c=='E') nexp=i;
+      if (!nexp &amp;&amp; (c&gt;='1' &amp;&amp; c&lt;='9')) { last=i; if (first&lt;0) first=i; }
+    }
+    *prec=last-pnt; if (*prec&lt;0) *prec=0;
+    if (nexp || last&gt;6 || pnt&gt;7)
+    { *typ=1; *prec=last-first;
+      if (pnt &amp;&amp; pnt&gt;first) --(*prec); if (*prec&gt;3) *prec=3;
+    }
+    return;
+  }
+  if (*typ)
+  { (void)sprintf(str,"%-.*E",*prec,x); len=(int)strlen(str);
+    if (str[len-2]=='0') { str[len-2]=str[len-1]; str[len-1]='\0'; }
+  }
+  else (void)sprintf(str,"%-.*f",*prec,x);
+}
+/*************************************************
+ * SYMBOL - Draws the symbol for a data point.
+ ************************************************/
+void symbol(double x,double y, int num)
+{ static double hbox=-l., xbox;
+  if (hbox&lt;0.) { hbox=2.; xbox=hbox*1.4; }
+  switch (num%4)
+  { case 0: circle((int)x,(int)y,(int)hbox);
+           fprintf(postfile, "newpath %G %G %G 0 360 arc stroke\n",x,485.-y,hbox); break;
+    case 1: box(x-hbox, y+hbox, x+hbox, y-hbox); break;
+    case 2: outlin(x-hbox,y-hbox,x+hbox,y+hbox);
+           outlin(x-hbox,y+hbox,x+hbox,y-hbox); break;
+    case 3: outlin(x-xbox,y,x+xbox,y); outlin(x,y-xbox,x,y+xbox); break;
+    default: ;
+  }
+}
+/***********************************************************************
+ * MSGBOX - Routine to print the message strings in a ruled box.
+ * *msg[] - A series of character strings
+ * nmsg[0] - The number of message strings
+ * nmsg[1] - X coordinate of beginning of first string
+ * nmsg[2] - Y coordinate of beginning of first string
+ * (In the 640 x 480 VGA coordinate system)
+ *********************************************************************/
+void msgbox(char *msg[], int *nmsg)
+{ int i,j,nx1,ny1,nx2,ny2,len, pol[10];
+  /* Put box on screen */
+  setfillstyle(1,0); len=0;  settextjustify(0,0);
+  for (i=0; i&lt;nmsg[0]; ++i) { j=(int)textwidth(msg[i]); if (j&gt;len) len=j; }
+  nx1=nmsg[1]-5; nx2=nmsg[1]+5+len; ny1=nmsg[2]-12; ny2=nmsg[2]+nmsg[0]*12+5;
+  pol[0]=nx1; pol[1]=nyl; pol[2]=nx2; pol[3]=nyl; pol[4]=nx2;
+  pol[5]=ny2; pol[6]=nx1; pol[7]=ny2; pol[8]=nx1; pol[9]=ny1;
+  fillpoly(4,pol); drawpoly(5,pol); nx1+=7; ny1+=15;
+  fprintf(postfile,"/pstrz {currentpoint 3 2 roll dup stringwidth pop dup \
+       \n zxx gt { /zxx exch def } { pop } ifelse show moveto 0 -15 rmoveto \
+       } bind def\n");
+  fprintf(postfile,"%G /xbeg exch def %G /ybeg exch def 0 /zxx exch def xbeg \
+      ybeg moveto\n",(double)(nmsg[1]),(double)(485-nmsg[2]));
+  for (i=0; i&lt;nmsg[0]; ++i)
+  { outtextxy{nx1,ny1,msg[i]); ny1+=15;
+    fprintf(postfile,"(%s) pstrz\n",msg[i]);
+  }
+  fprintf(postfile," currentpoint ybeg exch sub 15 add /dyzsv exch def \
+      \n pop 1 setgray xbeg ybeg moveto zxx 20 add /zxx exch def xbeg 10\
+      \n sub ybeg 20 add moveto zxx 0 rlineto 0 dyzsv neg rlineto zxx neg 0\
+      \n rlineto closepath fill 0 setgray xbeg 10 sub ybeg 20 add moveto \
+      \n zxx 0 rlineto 0 dyzsv neg rlineto zxx neg 0 rlineto 0 dyzsv rlineto\
+      stroke xbeg ybeg moveto\n");
+  for (i=0; i&lt;nmsg[0]; ++i) fprintf(postfile,"(%s) pstrz\n",msg[i]);
+}
+/***********************************************************************
+ * HPLTIT - Routine to get plot hardcopy on the HP LaserJet.
+ *********************************************************************/
+void hpltit(FILE *hpfile)
+{ int j,k;
+  unsigned segment;
+  unsigned char ch, bcn[]={
+  /* Reset and position cursor at 600,400 dots x,y.  bcn[0] - bcn[12] */
+     0x1B,0x45,0x1B,0X2A,0x70,0x36,0x30,0x30,0x78,0x34,0x30,0x30,0x59,
+  /* Initiate raster graphics at 150 dots per inch.  bcn[13] - bcn[19] */
+        0x1B,0x2A,0x74,0x31,0x35,0x30,0x52,
+  /* Start a row of graphics at current left margin. bcn[20] - bcn[24] */
+        0x1B,0x2A,0x72,0x31,0x41,
+  /* Transfer 80 bytes of raster graphics data.      bcn[25] - bcn[30] */
+        0x1B,0x2A,0x62,0x38,0x30,0x57,
+  /* End graphics, reset and form feed (not needed)  bcn[31] - bcn[37] */
+     0x1B,0x2A,0x72,0x42,0x1B,0x45,0x0C};
+/* The graphics controller must be set to plane 0 to read the pixels in memory
+ * starting at the graphics location A000:0000. The Turbo C graphics output
+ * routines apparently leave it in that state, although it would obviously
+ * be preferable to assure that with the ASM operator out.
+ */
+  segment=0xa000;
+  for (k=0; k&lt;20; ++k) fputc(bcn[k],hpfile); /* HP graphics header */
+  for (j=0; j&lt;480; ++j)
+  {
+    for (k=20; k&lt;31; ++k) fputc(bcn[k],hpfile); /* HP graphics row */
+    for (k=0; k&lt;80; ++k)
+                { ch=(unsigned char)peek(segment,j*80+k); fputc(ch,hpfile); }
+  }
+  for (k=31; k&lt;37; ++k) fputc(bcn[k],hpfile); /* End HP graphics */
+}  /* End HPLTIT */
+/* End of File */</pre>
+
+</BODY>
+</HTML>

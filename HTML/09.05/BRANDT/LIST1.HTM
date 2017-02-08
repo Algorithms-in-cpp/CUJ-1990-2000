@@ -1,0 +1,490 @@
+<HTML><HEAD>
+<TITLE>May 1991/Comparing Signals In The Time Domain/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1</A></h4>
+<pre>/*************************************
+ *                                   *
+ *    LINEAR &amp; NONLINEAR VARIANCE    *
+ *            TEST PROGRAM           *
+ *                                   *
+ *  M.E. Brandt, Ph.D.               *
+ *  02/06/91 Revision                *
+ *                                   *
+ *************************************/
+
+#include &lt;stdio.h&gt;
+#include &lt;math.h&gt;
+#include &lt;malloc.h&gt;
+
+
+#define NMAX                   1024
+#define NBINS                    10
+#define MAX_DELAY                30
+#define MAXRAND             32767.0
+#define DBL_LEN      sizeof(double)
+#define PI        3.141592653589793
+#define TWOPI            (2.0 * PI)
+
+
+
+double linvar(double *y, double *x, int nn);
+double nonlinvar(double *x, double *y, int n, int nbins);
+int    number_bins(int x);
+void   estimate_delay(double *x, double *y, int n);
+
+
+
+main()
+{
+
+   int xx, i, j, nb, n, ch;
+
+   double *x, *y, scale, r2, h2, start,
+         noise, gain, a, inc, mean, num;
+   char u[3], c;
+
+
+   srand(1);
+
+  /* SELECT A FUNCTION TO TEST */
+
+  do {
+
+       printf("\n\nSelect a y vs. x function and ");
+       printf("compute variances:\n");
+       printf("\n1. y = ax + noise (linear)");
+       printf("\n2. y = sin(x) + noise");
+       printf("\n3. y = sgn(x)*(x*x) + noise");
+       printf("\n4. y = pow(3*x, 3) + noise");
+       printf("\n5. y = pow(5*x, 5) + noise");
+       printf("\n6. Exit");
+       printf("\n\nSelect 1-6: ");
+       scanf ("%d", &amp;ch);
+
+       if(ch == 6) exit(0);
+
+       do {
+
+          printf("\n\nHow many data points?: ");
+          scanf("%d", &amp;n);
+       }
+       while(n &gt; NMAX);
+
+       do {
+
+          printf("\n\nEnter noise gain: ");
+          scanf("%lf", &amp;gain);
+          }
+          while(gain &lt; 0.0 || gain &gt; 1.0);
+
+          /* allocate space for x and y vectors */
+
+          if((x = (double *)malloc(n * DBL_LEN)) == NULL) {
+             fprintf(stderr, "\nMalloc error; x\n");
+             exit(1);
+          }
+
+          if((y = (double *)malloc(n * DBL_LEN)) == NULL) {
+             fprintf(stderr, "\nMalloc error; y\n");
+             exit(1);
+          }
+
+        /* generate a random uniformly distributed x[n]
+           between + or - 0.5
+        */
+
+        for(i=0; i&lt;n; i++) x[i] =
+                         ((double)rand()/MAXRAND - 0.5);
+
+
+        /* choose y[n] */
+
+        switch(ch) {
+
+           case 1:  printf("\nEnter a: ");
+                   scanf("%lf", &amp;a);
+
+                   for(i=0; i&lt;n; i++) {
+                      noise = gain *
+                         ((double)rand()/MAXRAND - 0.5);
+                      y[i] = a * x[i] + noise;
+                   }
+                   break;
+
+           case 2:  for(i=0; i&lt;n; i++) {
+                      noise = gain *
+                         ((double)rand()/MAXRAND - 0.5);
+                      y[i] = sin(TWOPI * x[i]) + noise;
+                   }
+                   break;
+
+           case 3:  for(i=0; i&lt;n; i++) {
+                      noise = gain *
+                         ((double)rand()/MAXRAND - 0.5);
+                      y[i] = (x[i] * x[i]);
+                      if(x[i] &lt; 0.0) y[i]*= -1.0;
+                      y[i] += noise;
+                   }
+                   break;
+
+           case 4:  for(i=0; i&lt;n; i++) {
+                     noise = gain *
+                        ((double)rand()/MAXRAND - 0.5);
+                     y[i] = pow(3.0*x[i], 3.0) + noise;
+                   }
+                   break;
+
+           case 5:  for(i=0; i&lt;n; i++) {
+                     noise = gain *
+                        ((double)rand()/MAXRAND - 0.5);
+                     y[i] = pow(5.0*x[i], 5.0) + noise;
+                   }
+                   break;
+
+          default:  break;
+
+        }
+
+    printf("\nTest delay estimation &lt;y/n&gt;?: ");
+    scanf("%s", u);
+    c = toupper(*u);
+    if(c == 'Y') {
+      estimate_delay(x, y, n);
+      continue;
+    }
+
+
+
+    /* compute linear variance of x vs. y */
+
+    r2 = linvar(x, y, n);
+
+    printf("\nLinear r2(x,y) = %f\n", r2);
+
+
+    /* choose number of bins */
+
+    nb= number_bins(n);
+
+    /* compute nonlinear variance of x vs. y */
+
+    h2 = nonlinvar(x, y, n, nb);
+
+    printf("\nNonlinear h2(x,y) = %f\n", h2);
+
+
+    /* y vs. x */
+
+    r2 = linvar(y, x, n);
+
+    printf("\nLinear r2(y,x) = %f\n", r2);
+
+
+    h2 = nonlinvar(y, x, n, nb);
+
+    printf("\nNonlinear h2(y,x) = %f\n", h2);
+
+    free(x); free(y);
+
+  }
+  while(1);
+
+
+}
+
+
+/* routine to find variances &amp; delay between 2 lagged
+   signals */
+
+double buf[NMAX+MAX_DELAY], r2[MAX_DELAY+10],
+      h2[MAX_DELAY+10];
+
+void estimate_delay(double *x, double *y, int n)
+{
+   int i, j, d, delay, lag, max_lag, np, nb;
+
+   double max;
+
+
+   do {
+
+     printf("\nEnter delay between x and y in samples: ");
+     scanf("%d", &amp;delay);
+   }
+   while((d = abs(delay)) &gt; MAX_DELAY);
+
+
+   for(i=0; i&lt;d; i++)
+      buf[i] = ((double)rand()/MAXRAND - 0.5);
+   max_lag = d + 10;
+
+   if(delay &gt; 0) { /* y lags x */
+
+      /* move y to buf */
+
+      for(j=0, i=d; j&lt;n; i++, j++) buf[i] = y[j];
+
+      for(lag=0; lag&lt;max_lag; lag++) {
+
+          np = n - lag;    /* compute across less points */
+
+          /* get linear variance at lag */
+
+          r2[lag] = linvar(x, &amp;buf[lag], np);
+
+          nb= number_bins(np);
+
+          /* get nonlinear variance at lag */
+
+          h2[lag] = nonlinvar(x, &amp;buf[lag], np, nb);
+
+      }
+   }
+
+       else if(delay &lt; 0) { /* x lags y */
+
+              for(j=0, i=d; j&lt;n; i++, j++) buf[i] = x[j];
+
+              for(lag=0; lag&lt;max_tag; lag++) {
+
+                  np= n - lag;
+
+                  r2[lag] = linvar(&amp;buf[lag], y, np);
+
+                  nb= number_bins(np);
+
+                  h2[lag] = nonlinvar(&amp;buf[lag], y, np, nb);
+
+              }
+       }
+
+
+      /* find maximum r2 and corresponding delay */
+
+         max = r2[0];
+         for(i=1; i&lt;max_lag; i++)
+            if(r2[i] &gt; max) {max = r2[i]; j = i;}
+
+         if(delay &lt; 0) j = -j;
+
+         printf("\nTrue delay = %d; maximum r2 = %f \
+    found @ sample %d\n",
+                 delay, max, j);
+
+
+      /* find maximum h2 and corresponding delay */
+
+         max = h2[0];
+         for(i=1; i&lt;max_lag; i++)
+            if(h2[i] &gt; max) {max = h2[i]; j = i;}
+
+         if(delay &lt; 0) j = -j;
+
+         printf("\nTrue delay = %d; maximum h2 = %f \
+    found @ sample %d\n",
+                 delay, max, j);
+
+
+    }
+
+    /* compute number of bins for nonlinear variance calc. */
+
+    int number_bins(int x)
+    {
+        int y;
+
+        if(x &lt; 129) y = NBINS - 4;
+        else
+        if(x &lt; 257) y = NBINS - 3;
+        else
+        if(x &lt; 513) y = NBINS - 2;
+        else        y = NBINS;
+
+        return y;
+
+    }
+
+    /* routine to compute linear variance measure */
+
+    double linvar(double *y, double *x, int nn)
+    {
+
+       register int j;
+
+       double z, smx, smy, sqx, sqy, sxy, corr;
+       double sqrt(), varx, vary, cov, nnn;
+
+
+
+    /* initialize values */
+
+    nnn = (double)nn;
+
+    corr = sqy = 0.0;
+
+
+    smx = 0.0;
+    smy = 0.0;
+    sqx = 0.0;
+    sxy = 0.0;
+
+    for(j=0; j&lt;nn; j++) {
+
+       smx += x[j];
+       smy += y[j];
+       sqx += (x[j] * x[j]);
+       sxy += (x[j] * y[j]);
+
+
+       sqy += (y[j) * y[j]);
+
+
+    } /* end for */
+
+    /* Compute covariance and variances */
+
+    cov = (nnn * sxy) - (smx * smy);
+    varx = (nnn * sqx) - (smx * smx);
+
+
+
+    vary = (nnn * sqy) - (smy * smy);
+
+    z = sqrt(varx * vary);
+
+    if(z != 0.0) corr = cov / z;
+    else corr = 0.0;
+
+    return(corr*corr);
+
+    }
+
+    /* routine to compute nonlinear variance measure */
+
+    int bin[NBINS] [2*NMAX/NBINS];
+    double q[NBINS], p[NBINS];
+
+    double nonlinvar(double *x, double *y, int n, int nbins)
+    {
+        int i, J, k, l, index, index2, last;
+
+        double min, max, range, width, hwidth, start, end,
+              mean, mean2, totvar, unvar, s, f, h2, uu, offset;
+
+
+         /* find max and min of x array */
+
+         min = max = x[0]; last = 0;
+
+         for(i=1; i&lt;n; i++) {
+            if(x[i] &gt; max) {max = x[i]; last = i;}
+            else
+            if(x[i] &lt; min) min = x[i];
+         }
+
+         range = max - min;
+
+         width = range/(double)nbins;
+
+         hwidth = width/2.0;
+
+         for(i=0; i&lt;nbins; i++) bin[i][0] = 0;
+
+        /* get histogram of indexes */
+
+        for(i=0; i&lt;n; i++) {
+           for(j=0; j&lt;nbins; j++) {
+              start = (double)j*width + min;
+              end = start + width;
+
+              if((x[i] &gt;= start) &amp;&amp; (x[i] &lt; end)) {
+                 ++bin[j][0];
+                 bin[j][bin[j][0]] = i;
+                 break;
+              }
+           }
+         }
+
+     /* maximum x value (last one) */
+
+     j = nbins-1;
+     ++bin[j][0];
+     bin[j][bin[j][0]] = last;
+
+   /* compute x-midpoints and y average amplitudes */
+
+    mean2 = 0.0;
+    offset = hwidth + min;
+
+    for(i=0; i&lt;nbins; i++) {
+
+       /* x value midpoints for each bin */
+
+       p[i]= ((double)i * width) + offset;
+
+       /* corresponding y average amplitudes */
+
+       mean = 0.0;
+
+       for(k=1; k&lt;=bin[i][0]; k++) mean += y[bin[i][k]];
+
+       q[i] = mean/double)bin[i][0];
+       mean2 += mean;
+
+    }
+
+
+    mean = mean2/(double)n;     /* overall */
+
+
+    /* compute h*h coefficient */
+
+    /* first compute total variance of y */
+
+    totvar = 0.0;
+    for(i=0; i&lt;n; i++) {
+        s = y[i] - mean;
+        totvar += (s * s);
+    }
+
+    /* compute total unexplained variance of y */
+
+    unvar = 0.0;
+    for(i=0; i&lt;n; i++) {
+
+        /* find f(x[i]), the nonlinear value */
+
+        for(j=1; j&lt;nbins-1; j++){
+           if(x[i] &lt;= p[j]) {
+              index = j-1;
+              goto out1;
+           }
+        }
+
+        index = nbins-2;
+
+  out1:
+        index2 = index++;
+
+        f = ((q[index2] - q[index])/
+            (p[index2] - p[index])) *
+              (x[i] - p[index]) + q[index];
+
+        uu = y[i] - f;
+        unvar += (uu * uu);
+
+    }
+
+    /* now compute nonlinear regression coefficient */
+
+
+    h2 = 1.0 - (unvar/totvar);
+
+    return h2;
+
+}</pre>
+
+</BODY>
+</HTML>

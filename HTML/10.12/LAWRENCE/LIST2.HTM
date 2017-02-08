@@ -1,0 +1,736 @@
+<HTML><HEAD>
+<TITLE>December 1992/A MIDI Device Driver for XENIX/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2 <B></B>mpu.c</A></h4>
+<pre>/*
+ * device driver for mpu-401 midi card
+ */
+
+#include "../h/param.h"
+#include "../h/types.h"
+#include "../h/dir.h"
+#include "../h/signal.h"
+#include "../h/page.h"
+#include "../h/seg.h"
+#include "../h/user.h"
+#include "../h/file.h"
+#include "../h/tty.h"
+#include "../h/systm.h"
+#include "../h/conf.h"
+#include "../h/errno.h"
+#include "mpu.h"
+
+/* external support prototypes */
+
+int inb(int);
+void outb(int, int);
+caddr_t cvttoaddr(faddr_t);
+int fubyte(faddr_t);
+void subyte(char *, int);
+int copyin(faddr_t, char *, int);
+
+void printcfg(char *, int, int, int, int, char *, ...);
+void printf(char *, ...);
+int getchar(void);
+void putchar(int);
+
+int sleep(caddr_t, int);
+void wakeup(caddr_t);
+int timeout(int (*)(), caddr_t, int);
+void untimeout(int);
+
+int spl6(void);
+void splx(int);
+
+int cpass(void);
+int passc(int);
+int getc(struct clist *);
+int putc(int, struct clist *);
+
+#define DRIVERID 0x00 /* driver version */
+
+/* I/O addresses and vector */
+/* if using IRQ 2, set VECTOR to 25 (030+VECTOR-1) */
+#define VECTOR  25
+#define BASE    0x220     /* I/O address of mpu card */
+#define CMD     (BASE+1)  /* command output port */
+#define STATUS  (BASE+1)  /* mpu status port */
+#define DATA    BASE      /* data input port */
+
+/* Status flags (neg logic) */
+#define RR_F    0x40      /* mpu ready to receive */
+#define DA_F    0x80      /* data available flag */
+
+/* Test RR and  DA flags */
+#define RR()     (!(INB(STATUS)&amp;RR_F))
+#define rr()     (!(inb(STATUS)&amp;RR_F))
+#define DA()     (!(INB(STATUS)&amp;DA_F))
+#define da()     (!(inb(STATUS)&amp;DA_F))
+
+/* Device interrupt level */
+#define SPLINT  spl6
+
+/* Busy-wait looping count */
+#define SPIN    100000
+
+#define ACK     OxFE    /* mpu command acknowledge */
+
+#define YES     1
+
+#define NO      0
+
+#define E_OK      0        /* ok return code */
+#define E_TIMEOUT 1        /* timeout return code */
+#define E_INTR    2        /* interrupt return code */
+
+#define PRI (PZERO+1)      /* sleep/wakeup priority */
+
+static struct clist in_q;  /* input queue */
+static int busy = NO;      /* driver busy flag */
+static int exist = NO;     /* mpu card found flag */
+static int isopen = NO;    /* exclusive use flag */
+static int debug = 0;      /* debugging level */
+static int waitda = 0;     /* result DA timer */
+
+/* local prototypes */
+
+static int reset(void);
+static int waitRR(void);
+static int mpucmd(int);
+static int mpuinb(int);
+static void mpuoutb(int, int);
+
+#define OUTB(addr,byte)  mpuoutb((addr),(byte))
+#define INB(addr)        mpuinb(addr)
+
+/*-----------------------------------------------------
+ * mpuinit - determine if device exists at BASE address
+ */
+
+void mpuinit()
+{
+  int i, ver = 0, rev = 0;
+
+  in_q.c_cc = 0; /* input q is empty */
+
+ /*
+  * see if it's there by trying to reset
+  */
+ outb(CMD, MPU_RESET);
+ for (i = 0; i &lt; SPIN; ++i)
+   if (da())
+     break;
+ if (i == SPIN) {
+   outb(CMD, MPU_RESET);
+   for (i = 0; i &lt; SPIN; ++i)
+     if (da())
+       break;
+   if (i == SPIN)
+     goto NOTFOUND;
+ }
+ if (inb(DATA) != ACK)
+   goto NOTFOUND;
+ 
+ /*
+  * get firmware version
+  */
+ for (i = 0; i &lt; SPIN; ++i) /* wait for RR */
+   if (rr())
+     break;
+ if (i == SPIN)             /* timed out */
+   goto NOTFOUND;
+ outb(CMD, MPU_VERSION);    /* send request */
+ for (i = 0; i &lt; SPIN; ++i) /* wait for ack */
+   if (da() &amp;&amp; inb(DATA) == ACK)
+     break;
+
+ if (i == SPIN)             /* timed out */
+   goto NOTFOUND;
+ for (i = 0; i &lt; SPIN; ++i) /* wait for data */
+   if (da()) {
+     ver = inb(DATA);      /* read version */
+     break;
+   }
+ if (i == SPIN)             /* timed out */
+   goto NOTFOUND;
+
+ /*
+  * get firmware revision
+  */
+ for (i = 0; i &lt; SPIN; ++i) /* wait for RR*/
+   if (rr())
+     break;
+ if (i == SPIN)             /* timed out */
+   goto NOTFOUND;
+ outb(CMD, MPU_REVISION);   /* send request */
+ for (i = 0; i &lt; SPIN; ++i) /* wait for ACK */
+   if (da() &amp;&amp; inb(DATA) == ACK)
+     break;
+ if (i == SPIN)             /* timed out */
+   goto NOTFOUND;
+ for (i = 0; i &lt; SPIN; ++i) /* wait for data */
+   if (da()) {
+     rev = inb(DATA);      /* read revision */
+     break;
+   }
+
+ printcfg("mpu", BASE, 1, VECTOR, -1,
+  "ver=%d rev=%d did=%d", ver, rev, DRIVERID);
+ exist = YES;
+ return;
+
+NOTFOUND:
+ printf("MPU not found at %x\n", BASE);
+}
+
+/* -----------------------------------------------------
+ *  mpuopen - check device availability and
+ *            ensure exclusive access
+ */
+
+void mpuopen(dev, flag, id)
+int dev, flag, id;
+{
+  if (debug)
+    printf("open: dev=%x flag=%x id=%x\n", dev, flag,
+           id);
+
+  if (!exist) {
+    u.u_error = ENXIO;
+    if (debug)
+      printf("open: device doesn't exist\n");
+    return;
+  }
+  if (isopen) {
+    u.u error = EBUSY;
+    if (debug)
+      printf("open: failed EBUSY\n");
+    return;
+  }
+  isopen = YES;
+  if (reset() != E_OK) {
+    u.u_error = EIO;
+    if (debug)
+      printf("open: failed can't reset mpu\n");
+    isopen = NO;
+  }
+}
+
+/* -----------------------------------------------------
+ * mpuclose - reset mpu and give up exclusive access
+ */
+
+void mpuclose(dev, flag)
+int der, flag;
+{
+  if (debug)
+    printf("close: dev=%x flag=%x\n", dev, flag);
+  (void) reset();
+  while (getc(&amp;in_q) != -1)                /* eat in_q */
+    ;
+  busy = isopen = NO;
+}
+
+/* -----------------------------------------------------
+ * mpuread - read data from mpu
+ */
+
+void mpuread(dev)
+int dev;
+{
+  int byte, oldpri;
+  
+  if (debug)
+    printf("read: dev=%x u.u_count=%d\n", dev,
+          u.u_count);
+  
+  /* wait till it's ok to enter */
+
+  while (busy)
+    sleep((caddr_t) &amp;busy, PRI);
+  busy = YES;
+
+  /* first get bytes from input q */
+
+  while (u.u_count) {
+    byte = getc(&amp;in_q);
+    if (byte == -1)
+      break;  /* used up input q */
+    if (passc(byte) == -1) {
+      busy = NO;
+      wakeup((caddr_t) &amp;busy);
+      return;  /* satisfied request */
+    }
+  }
+
+  /* now get straight from device */
+  
+  while (u.u_count) {
+    oldpri = SPLINT();
+    while (!DA())
+      if (sleep((caddr_t) mpuread, PRI|PCATCH) != 0) {
+        splx(oldpri);
+        u.u_error = EINTR;
+        if (debug)
+          printf("read: caught software interrupt\n");
+        busy = NO;
+        wakeup((caddr_t) &amp;busy);
+        return;
+      }
+      splx(oldpri);
+      if (passc(INB(DATA)) == -1)
+        break;  /* satisfied request */
+  }
+
+  busy = NO;
+  wakeup((caddr_t) &amp;busy);
+}
+
+/*-----------------------------------------------------
+ * mpuwrite - write data to mpu
+ */
+
+void mpuwrite(dev)
+int dev;
+{
+  int ret;
+
+  if (debug)
+    printf("write: dev=%x u.u_count=%d\n", dev,
+          u.u_count);
+
+  /* wait till it's ok to enter */
+
+  while (busy)
+    sleep((caddr_t) &amp;busy, PRI);
+  busy = YES;
+
+  while (u.u_count) {
+    ret = waitRR();
+    if (ret == E_TIMEOUT) {
+      if (debug)
+        printf("write: waitRR timed out\n");
+      u.u_error = EIO;
+      break;
+    } else if (ret == E_INTR) {
+      if (debug)
+        printf("write: waitRR caught software int\n");
+    u.u_error = EINTR;
+    break;
+  } else
+    OUTB(DATA, cpass());
+ }
+
+ busy = NO;
+ wakeup((caddr_t) &amp;busy);
+}
+
+/*-----------------------------------------------------
+ * mpuioctl
+ */
+
+void mpuioctl(dev, cmd, arg, mode)
+int dev, cmd;
+faddr_t arg;
+int mode;
+{
+  struct mpustuff m;
+  int byte, ret, got_intr = NO, oldpri, timeouts;
+
+  if (debug)
+    printf("ioctl: dev=%x cmd=%x mode=%x ", dev, cmd,
+          mode);
+
+  /* convert ptr on 286 callers */
+
+  if (!IS386())
+    arg = (faddr_t) cvttoaddr(arg);
+
+  /* make local copy of mpustuff in m */
+
+  if (copyin(arg, (char *) &amp;m, sizeof(struct mpustuff))
+     == -1) {
+    u.u_error = EFAULT;
+    if (debug)
+      printf("\nioctl: copyin error EFAULT\n");
+    return;
+  }
+  if (!IS386()) {
+    m.opbuf = (char *) cvttoaddr(m.opbuf);
+    m.resbuf = (char *) cvttoaddr(m.resbuf);
+  }
+
+  if (debug)
+    printf("opsize=%d ressize=%d\n", m.opsize,
+         m.ressize);
+
+  /* handle driver commands */
+
+  if (cmd &gt; MPU_RESET) {
+    switch (cmd) {
+    case MPU_DRIVERID:
+      if (m.ressize != 1) {
+        u.u_error = EINVAL;
+        return;
+      }
+      subyte(m.resbuf, DRIVERID);
+      return;
+    case MPU_SETDEBUG:
+      if (m.opsize != 1) {
+        u.u_error = EINVAL;
+        return;
+      }
+      byte = fubyte(m.opbuf);
+      if (byte &lt; 0 || byte &gt; 3) {
+        u.u_error = EINVAL;
+        return;
+      }
+      debug = byte;
+      return;
+    case MPU_ GETDEBUG:
+      if (m.ressize != 1) {
+        u.u_error = EINVAL;
+        return;
+      }
+      subyte(m.resbuf, debug);
+      return;
+    default:
+      u.u_error = EINVAL;
+      return;
+    }
+  }
+
+  got_intr = NO;
+
+  /* wait till it's ok to enter */
+
+  while (busy)
+    sleep((caddr_t) &amp;busy, PRI);
+  busy = YES;
+
+  /* handle reset command specially */
+
+  if (cmd == MPU_RESET)
+    ret = reset();
+  else
+    ret = mpucmd(cmd);
+
+  if (ret == E_TIMEOUT) {
+    if (debug)
+      printf("ioctl: reset() or mpucmd() timed out\n");
+    u.u_error = EIO;
+    goto done;
+  } else if (ret == E_INTR) {
+    if (debug)
+      printf(
+
+    "ioctl: reset() or mpucmd() caught software int\n");
+    u.u_error = EINTR;
+    goto done;
+  }
+
+  /* output parameters */
+
+  timeouts = 0;
+  while (m.opsize &gt; 0) {
+    ret = waitRR();
+    if (ret == E_TIMEOUT) {
+      if (debug)
+        printf("ioctl: waitRR timed out\n");
+      if (++timeouts &gt; 2) {
+        u.u_error = EIO;
+        busy = NO;
+        wakeup((caddr_t) &amp;busy);
+        return;
+      }
+    } else if (ret == E_INTR) {
+      if (debug)
+        printf("ioctl: waitRR caught software int\n");
+      got_intr = YES;
+    } else {
+      OUTB(DATA, fubyte(m.opbuf++));
+      --m.opsize;
+    }
+  }
+
+  /* retrieve result bytes */
+
+  if (m.ressize &gt; 0) {
+    oldpri = SPLINT();
+    while (m.ressize &gt; 0) {
+      while (!DA()) {
+        /* wait no longer than */
+        /* 2 clock ticks */
+        waitda = 2;
+        if (sleep((caddr_t)mpuread, PRI|PCATCH) != O) {
+          if (debug)
+            printf(
+              "ioctl: DA sleep caught software int\n");
+          got_intr = YES;
+        }
+        if (waitda &lt;= O) {
+          /* woke up because */
+          /* of timeout */
+          if (debug)
+            printf(
+              "ioctl: timed out awaiting cmd result\n");
+          u.u_error = EINVAL;
+          break;
+        }
+        waitda = 0; /* cancel alarm */
+      }
+      subyte(m.resbuf++, INB(DATA));
+      --m.ressize;
+    }
+    splx(oldpri);
+  }
+
+done:
+  busy = NO;
+  wakeup((caddr_t) &amp;busy);
+  if (got_intr)
+    u.u_error = EINTR;
+  return;
+}
+
+/*-----------------------------------------------------
+ * mpuintr - interrupt routine; just wakes up reader
+ */
+
+void mpuintr(vector)
+
+int vector;
+{
+  if (debug)
+    printf("intr: vec=%d\n", vector);
+  wakeup((caddr_t) mpuread);
+}
+
+/*----------------------------------------------------
+ * mpuhalt - reset mpu before shutdown
+ */
+
+void mpuhalt()
+{
+  if (debug)
+    printf("mpuhalt\n");
+  if (exist)
+    (void) reset();
+}
+
+/*-----------------------------------------------------
+ * waitRR - wait for RR or software interrupt
+ *
+ * sets up conditions to check RR bit on every clock
+ * tick and returns on mpu ready to receive, timed out
+ * or software interrupt
+ *
+ * returns:
+ *   0 - ok, mpu is ready to receive
+ *   1 - timed out
+ *   2 - got software interrupt
+ */
+
+static int polling = 0;
+
+static int waitRR()
+{
+  int oldpri, retval;
+
+  if (debug)
+    printf("waitRR\n");
+
+  oldpri = SPLINT();
+  polling = HZ * 5;
+  while (1) {
+    if (RR()) {
+      retval = E_OK;     /* mpu RR */
+      break;
+    }
+    if (polling &lt;= 0) {
+      retval = E_TIMEOUT; /* timed out */
+      break;
+    }
+    if (sleep((caddr_t) &amp;polling, PRI | PCATCH) == 1) {
+      retval = E_INTR; /* software intr */
+      break;
+    }
+  }
+  polling = 0;
+  splx(oldpri);
+  return retval;
+}
+
+int mpupoll()
+{
+  if (waitda &gt; 0)
+    if (--itda &lt;= 0)
+      wakeup((caddr_t) mpuread);
+
+  if (polling &gt; 0) {
+    if (--polling &lt;= 0 | | RR()) {
+      if (debug)
+        if (polling == 0)
+          printf("mpupoll: expired\n");
+        else
+        printf("mpupo11: rr\n");
+      polling = 0;
+      wakeup((caddr_t) &amp;polling);
+    }
+  }
+  return 0;
+}
+
+/*-----------------------------------------------------
+ * mpucmd - generic command outputter
+ *
+ * outputs command and waits for acknowledge; up to
+ * caller to output parameters and retrieve results
+ *
+ * returns
+ *   0 - ok, command output
+ *   1 - timed out
+ *   2 - interrupt
+ *
+ * When mpucmd returns 2, it is ok to assume the mpu is
+ * still in sync because mpucmd waits the full 1 second
+ * for ACK even if it receives a software interrupt.
+ * If mpucmd received ACK and got an interrupt, the mpu
+ * is in sync. If mpucmd had to wait and never got
+ * ACK, assum the mpu wouldn't have sent one anyway
+ * (perhaps it was in uart mode and the command was
+ * reset).
+ *
+ * Another possibility is that the interrupt occurred
+ * while waiting for the mpu to become ready to receive
+ * a command. In this case, the mpu is still in sync,
+ * but the command wasn't sent.
+ *
+ * When mpucmd returns 1, that means mpucmd waited a
+ * full 1 second for ACK or ready to receive and didn't
+ * get it. OK to assume mpu still in sync, but command
+ * wasn't necessarily sent.
+ */
+
+static int timeup;
+
+static void mpualarm()
+{
+  if (debug)
+    printf("mpualarm\n");
+  timeup = YES;
+  wakeup((caddr_t) mpuread);
+}
+
+static int mpucmd(cmd)
+int cmd;
+{
+  int ret, id, byte, got_ack, got_intr;
+
+  if (debug)
+    printf("mpucmd: cmd=%x\n", cmd);
+
+  /* wait for mpu to be ready to receive cmd */
+
+  if ((ret = waitRR()) != E_OK)
+    return ret;
+
+  /* send command */
+
+  OUTB(CMD, cmd);
+
+  /* wait up to 1 sec for acknowledge */
+
+  got_ack = NO;
+  got_intr = NO;
+  timeup = NO;
+  id = timeout(mpualarm, (caddr_t) 0, HZ);
+  while (!timeup) {
+    while (!DA() &amp;&amp; !timeup)
+      if (sleep((caddr_t) mpuread, PRI | PCATCH))
+        got_intr = YES;
+    if (DA()) {
+      byte = INB(DATA);
+      if (byte == ACK) {
+        got_ack = YES;
+        break;
+      } else {
+        while (putc(byte, &amp;in_q) == -1) {
+        /* wait a while if */
+        /* clist shortage */
+        if (sleep((caddr_t)&amp;lbolt, PRI | PCATCH) == -1)
+          got_intr = YES;
+        }
+      }
+    }
+  }
+  if (!timeup)
+    untimeout(id);
+  if (got_intr)
+    ret = E_INTR;
+  else if (got_ack)
+    ret = E_OK;
+  else
+    ret = E_TIMEOUT;
+  return ret;
+}
+
+/*----------------------------------------------------
+ * reset - special protocol for reset
+ *
+ * returns
+ *   0 - ok
+ *   1 - timed out
+ *   2 - software interrupt
+ */
+
+static int reset()
+{
+  int ret;
+
+  if (debug)
+    printf("reset\n");
+
+  ret = mpucmd(MPU_RESET);
+  if (ret == E_OK | | ret == E_INTR)
+    return ret;
+  /* timed out for some reason; zap it */
+  OUTB(CMD, MPU_RESET);
+  while (DA()) /* and eat residue */
+    INB(DATA);
+
+  ret = mpucmd(MPU_RESET); /* now try proper reset*/
+  while (getc(&amp;in_q) != -1)
+    ;       /* eat input q */
+  return ret;
+}
+
+/*-----------------------------------------------------
+ * INB and OUTB - debug versions of inb() and outb()
+ */
+
+static void mpuoutb(addr, byte)
+int addr, byte;
+{
+  if (debug &gt; 1)
+    printf("OUTB(%x,%x)\n", addr, byte);
+  outb(addr, byte);
+}
+
+static int mpuinb(addr)
+int addr;
+{
+  int byte;
+
+  byte = inb(addr);
+  if (debug &gt; 1)
+    printf("INB(%x) = %x\n", addr, byte);
+  return byte;
+}
+WRAP_EOF
+/* End of File */
+</pre>
+</BODY>
+</HTML>

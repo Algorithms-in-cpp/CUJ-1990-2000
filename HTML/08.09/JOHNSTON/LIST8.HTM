@@ -1,0 +1,555 @@
+<HTML><HEAD><TITLE>September 1990/Using An RPC Protocol To Create A Basic File Server/Listing 8</TITLE></HEAD><BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4><A name="01F1_012C"><A name="01F1_012C">Listing 8<A name="01F1_012C"></h4><P>
+<pre>/*
+     +--------------------------------------------------------------+
+     | @(#) bfs_cmon.c   v1.0 90/04/02                              |
+     |                                                               |
+     |  Copyright (C) 1990, StonyBrook Technologies, Inc.,           |
+     |  All Rights Reserved.                                         |
+     +---------------------------------------------------------------+
+     
+      bfs_cmon.c - this is a client server daemon.
+  */
+  #include &lt;stdio.h&gt;
+  #include &lt;sys/fcntl.h&gt;
+  #include &lt;sys/types.h&gt;
+  #include &lt;sys/stat.h&gt;
+  #include &lt;errno.h&gt;
+  #include &lt;sys/signal.h&gt;
+  #include &lt;varargs.h&gt;
+  #include &lt;eicon/x25.h&gt;
+  #include "bfs.h"
+  static int running = 1;  /* running bit -  can be modified on SIGINT */
+  char   cname[16];      /* client name */
+  char   laddr[16];          /* client addr */
+  int     cfifo;              /* client fifo */
+  int    c_lcb_cnt = 0;      /* line cntl blk count */
+  C_LCB  c_lcb(MAX_C_LCB];   /* line cntl blk       */
+  C_FCB   c_fcb[MAX_C_FCB];   /* apl fifo cntl blk   */
+  C_SCB   c_scb[MAX_C_SCB];   /* session cntl blk    */
+  /* x.25 call parameter data */
+  struct x25parm x25_ parms = { 0, "", 0, "", "" };
+  /* debug stuff */
+  int cmon_io;
+  char cmon_buf [132];
+  int debug_flag = 0;
+  signal_trap(in_signal)
+  int in_signal;
+  {
+    if(in_signal == SIGTERM)
+      running = 0;   /* terminate when requested by outside */
+  }
+  cleanup_exit(exval)
+  int exval;
+  {
+    cmon_term();
+    exit(exval);
+  }
+  cmon_init()
+  {
+    FILE *ifd;
+    char buf[132];
+    int i, foundme;
+    
+    dopen();
+    
+    for(i=0; i&lt;MAX_C_LCB; i++) {
+      c_lcb[i].port = c_lcb[i].link = c_lcb[i].cid = 0;
+      c_lcb[i].sname[0] = '\0';
+      c_lcb[i].raddr[0] = '\0';
+      c_lcb[i].cbuf = c_lcb[i].rbuf = NULL;
+  }
+  
+  for(i=0; i&lt;MAX_C_FCB; i++)
+    c_fcb[i].afifo = c_fcb[i].pid = c_fcb[i].link = 0;
+  
+  for(i=0; i&lt;MAX_C_SCB; i++) {
+    c_scb[i].pid = c_scb[i].fid =
+      c_scb[i].lid = c_scb[i].ssid = 0;
+    c_scb[i].state = -1;
+  }
+  
+  c_lcb_cnt = 0;
+  foundme = 0;
+  
+  if((ifd=fopen("servers", "r")) != NULL) {
+    while(fgets(buf, 132, ifd)) {
+      if((buf[0] != '#') &amp;&amp; (sscanf(buf, "%s %d %s",
+         c_lcb[c_lcb_cnt].sname,
+         &amp;c_lcb[c_lcb_cnt].port,
+         c_lcb[c_lcb_cnt].raddr) &gt; 0)) {
+       if(!foundme) {
+         foundme = 1;
+         strcpy(cname, c_lcb[c_lcb_cnt].sname);
+         strcpy(laddr, c_lcb[c_lcb_cnt].raddr);
+       } else
+         c_lcb_cnt++;
+      }
+    }
+    fclose(ifd);
+  } else {
+    strcpy(cname, "NONAMECLIENT");
+    strcpy(laddr, "12345");
+  }
+  
+  cfifo_init();
+  cx25_init();
+}
+cmon_term()
+{
+  cfifo_term();
+  cx25_term();
+  dprintf("BFS-CMON Terminating\n");
+  dclose();
+}
+
+main()
+{
+  RPC_MSG rpc_msg;
+  int flags;
+  
+  cmon_init();
+  
+  dprintf("Basic File System - Client Monitor (BFS-CMON) Ver 1.0\n");
+  dprintf("Copyright (C) 1990, StonyBrook Technologies, Inc.\n");
+  dprintf("All Rights Reserved.\n");
+  
+  print_info(); /* print routing table to debug file */
+  
+  if(signal(SIGTERM, signal_trap) == -1) { /* setup signal handler */
+    perror("SIGTERM Failed");
+    exit(errno);
+  }
+  while( running ) {
+    if(cfifo_read(&amp;rpc_msg, sizeof(RPC_MSG))) {
+      switch(rpc_msg.hdr.code) {
+        case RPC_FOPEN_CMD:
+          cmon_fopen(&amp;rpc_msg);
+          break;
+        case RPC_FCLOSE_CMD:
+          cmon_fclose(&amp;rpc_msg);
+          break;
+        case RPC_FWRITE_CMD:
+        
+         cmon_fwrite(&amp;rpc_msg);
+         break;
+       case RPC_FREAD_CMD:
+         cmon_fread(&amp;rpc_msg);
+         break;
+       case RPC_FEOF_CMD:
+         cmon_feof(&amp;rpc_msg);
+         break;
+       default:
+         break;
+      }
+    }
+  }
+  
+  cmon_term();
+}
+
+/* cfifo_init, _term, _open, _close, _read, _write routines */
+
+cfifo_init()
+{
+  int flags;
+  
+  if(mknod("/tmp/CFIFO", S_IFIFO|0666, 0) == -1) return(0);
+  
+  if((cfifo=open("/tmp/CFIFO", O_RDONLY|O_NDELAY)) != -1) {
+    flags = fcntl(cfifo, F_GETFL, &amp;flags);
+    flags &amp;= <FONT FACE="Symbol" SIZE=2>~O_NDELAY;</FONT></FONT>
+    fcntl(cfifo, F_SETFL, &amp;flags);
+    return(1);
+  }
+  unlink("/tmp/CFIFO");
+  return(0);
+}
+
+cfifo_term()
+{
+  close(cfifo);
+  unlink("/tmp/CFIFO");
+}
+
+cfifo_open(pid)
+int pid;
+{
+  int i;
+  for(i=0; i&lt;MAX_C_FCB; i++)
+    if((c_fcb[i].link) &amp;&amp; (c_fcb[i].pid == pid)) {
+      c_fcb[i].link++;
+      return(1);
+    }
+  for(i=0; i&lt;MAX_C_FCB; i++)
+    if(!c_fcb[i].link) {
+      sprintf(c_fcb[i].afname, "/tmp/AFIFO.%d", pid);
+      if((c_fcb[i].afifo=open(c_fcb[i].afname, O_WRONLY)) != -1) {
+        c_fcb[i].link = 1;
+        c_fcb[i].pid = pid;
+        return(1);
+      }
+      break;
+    }
+  return(0);
+}
+cfifo_close(pid)
+int pid;
+{
+  int i;
+  
+  for(i=0; i&lt;MAX_C_FCB; i++)
+    if(c_fcb[i].pid == pid) {
+      c_fcb[i].link--;
+      if(!c_fcb[i].link) {
+        
+        close(c_fcb[i].afifo);
+        c_fcb[i].pid = c_fcb[i].afifo = -1;
+      }
+    return(1);
+    }
+  return(0);
+}
+
+cfifo_read(buf, cnt)
+char *buf;
+int cnt;
+{
+  return(read(cfifo, buf, cnt));
+}
+
+cfifo_write(pid, buf, cnt)
+int pid, cnt;
+char *buf;
+{
+  int i;
+  
+  for(i=0; i&lt;MAX_C_FCB; i++)
+    if(c_fcb[i].pid == pid)
+      return(write(c_fcb[i].afifo, buf, cnt));
+  return(0);
+}
+
+/* cx25_init, _term, _open, _close,
+      _send_cmd, _send_data, _recv_rsp, _recv_data */
+cx25_init()
+{
+  x25init(0);
+}
+
+cx25_term()
+{
+  x25exit();
+}
+
+cx25_open(lid)
+int lid;
+{
+  if(!c_lcb[lid].link) {
+    dprintf("open x25 line %d\n", lid);
+    if(x25call(c_lcb[lid].raddr, laddr, &amp;x25_parms,
+             c_lcb[lid].port, X25WAIT, &amp;c_lcb[lid].cid) == -1) {
+      dprintf("x25 open error %d on line %d\n", x25error(), lid);
+      return(0);
+    }
+    dprintf("x25 line %d opened ok\n", lid);
+    c_lcb[lid].link = 1;
+    c_lcb[lid].cbuf = x25alloc(sizeof(RPC_FOPEN_CMD_MSG));
+    c_lcb[lid].rbuf = x25alloc(sizeof(RPC_FOPEN_RSP_MSG));
+  } else {
+    dprintf("link x25 line %d\n", lid);
+    c_lcb[lid].link++;
+  }
+  return(1);
+}
+
+cx25_close(lid)
+int lid;
+{
+  dprintf("delink x25 line %d\n", lid);
+  c_lcb[lid].link--;
+  if(!c_lcb[lid].link) {
+    dprintf("close x25 line %d\n", lid);
+    x25free(c_lcb[lid].cbuf);
+    x25free(c_lcb[lid] .rbuf);
+  }
+  return(1);
+}
+
+cx25_send_cmd(lid, buf, cnt)
+int lid, cnt;
+char *buf;
+{
+
+  memcpy(c_lcb[lid].cbuf, buf, cnt);
+  cnt = x25send(c_lcb[lid].cid, c_lcb[lid].cbuf, cnt, 0);
+  return(cnt);
+}
+
+cx25_send_data(lid, pid, cnt)
+int lid, pid, cnt;
+{
+  c_lcb[lid].dbuf = x25alloc(cnt);
+  cfifo_read(c_lcb[lid].dbuf, cnt);
+  cnt = x25send(c_lcb[lid].cid, c_lcb[lid].dbuf, cnt, 0);
+  x25free(c_lcb[lid].dbuf);
+  return(cnt);
+}
+
+cx25_recv_rsp(lid, buf, cnt)
+int lid, cnt;
+char *buf;
+{
+  cnt = x25recv(c_lcb[lid].cid, c_lcb[lid].cbuf, cnt, 0);
+  memcpy(buf, c_lcb[lid].cbuf, cnt);
+  return(cnt);
+}
+
+cx25_recv_data(lid, pid, cnt)
+int lid, pid, cnt;
+{
+  c_lcb[lid].dbuf = x25alloc(cnt);
+  cnt = x25recv(c_lcb[lid].cid, c_lcb[[id].dbuf, cnt, 0);
+  cfifo_write(pid, c_lcb[lid].dbuf, cnt);
+  x25free(c_lcb[lid].dbuf);
+  return(cnt);
+}
+
+/* cmon_fopen, _fclose, _fread, _fwrite, _feof routines */
+
+cmon_f open(rpc_msg)
+RPC_MSG *rpc_msg;
+{
+  int pid, fid, lid, csid;
+  RPC_FOPEN_CMD_MSG .focmd;
+  RPC_FOPEN_RSP_MSG forsp;
+  
+  cfifo_read(focmd.sname, rpc_msg-&gt;hdr.dlen);
+  
+  pid = rpc_msg-&gt;hdr.csid;
+  fid = rpc_msg-&gt;hdr.ssid;
+  lid = get_server_id(focmd.sname);
+  
+  if(cfifo_open(pid)) {
+    if(lid != -1 ) {
+      dprintf("fopen req for %s - ok\n", focmd.sname);
+      if(cx25_open(lid)) {
+        if((csid=allocate_csid(pid, fid, lid)) != -1) {
+          focmd.hdr.code = RPC_FOPEN_CMD;
+          focmd.hdr.csid = csid;
+          focmd.hdr.ssid = 0;
+          focmd.hdr.dlen = rpc_msg-&gt;hdr.dlen;
+          cx25_send_cmd(lid, (char *)&amp;focmd, sizeof(RPC_FOPEN_CMD_MSG));
+          cx25_recv_rsp(lid, (char *)&amp;forsp, sizeof(RPC_FOPEN_RSP_MSG));
+          forsp.hdr.csid = pid;
+          forsp.hdr.ssid = fid;
+          cfifo_write(pid, (char *)&amp;forsp, sizeof(RPC_FOPEN_RSP_MSG));
+          if(forsp.status == -1) {
+            deallocate_csid(csid);
+            cx25_close(lid);
+            cfifo_close(pid);
+          }
+          
+          return;
+        } else
+          cx25_close(lid);
+      }
+    }
+    dprintf("fopen req for %s - failed\n", focmd.sname);
+    forsp.hdr.code = RPC_FOPEN_RSP;
+    forsp.hdr.csid = pid;
+    forsp.hdr.ssid = fid;
+    forsp.hdr.dlen = 0;
+    forsp.status = -1;
+    forsp.errno = ENONET;
+    cfifo_write(pid, (char *)&amp;forsp, sizeof(RPC_FOPEN_RSP_MSG));
+    cfifo_close(pid);
+  }
+}
+
+cmon_fclose(rpc_msg)
+RPC_MSG *rpc_msg;
+{
+  int pid, fid, lid, csid;
+  RPC_FCLOSE_CMD_MSG fccmd;
+  RPC_FCLOSE_RSP_MSG fcrsp;
+  
+  pid = rpc_msg-&gt;hdr.csid;
+  fid = rpc_msg-&gt;hdr.ssid;
+  if((csid = locate_csid(pid, fid)) == -1) return;
+  lid = c_scb[csid].lid;
+  
+  fccmd.hdr.code = RPC_FCLOSE_CMD;
+  fccmd.hdr.csid = csid;
+  fccmd.hdr.ssid = c_scb[csid].ssid;
+  fccmd.hdr.dlen = 0;
+  cx25_send_cmd(lid, (char *)&amp;fccmd, sizeof(RPC_FCLOSE_CMD_MSG));
+  cx25_recv_rsp(lid, (char *)&amp;fcrsp, sizeof(RPC_FCLOSE_RSP_MSG));
+  cfifo_write(pid, (char *)&amp;fcrsp, sizeof(RPC_FCLOSE_RSP_MSG));
+  deallocate_csid(csid);
+  cfifo_close(pid);
+  cx25_close(lid);
+}
+
+cmon_fread(rpc_msg)
+RPC_MSG *rpc_msg;
+{
+  int pid, fid, lid, csid;
+  RPC_FREAD_CMD_MSG frcmd;
+  RPC_FREAD_RSP_MSG frrsp;
+  
+  pid = rpc_msg-&gt;hdr.csid;
+  fid = rpc_msg-&gt;hdr.ssid;
+  if((csid = locate_csid(pid, fid)) == -1) return;
+  lid = c_scb[csid].lid;
+  
+  frcmd.hdr.code = RPC_FREAD_CMD;
+  frcmd.hdr.csid = csid;
+  frcmd.hdr.ssid = c_scb[csid].ssid;
+  frcmd.hdr.dlen = rpc_msg-&gt;hdr.dlen;
+  cx25_send_cmd(lid, (char *)&amp;frcmd, sizeof(RPC_FREAD_CMD_MSG));
+  cx25_recv_rsp(lid, (char *)&amp;frrsp, sizeof(RPC_FREAD_RSP_MSG));
+  cfifo_write(pid, (char *)&amp;frrsp, sizeof(RPC_FREAD_RSP_MSG));
+  if(frrsp.hdr.dlen &gt; 0)
+    cx25_recv_data(lid, pid, frrsp.hdr.dlen);
+}
+
+cmon_fwrite(rpc_msg)
+RPC_MSG *rpc_msg;
+{
+  int pid, fid, lid, csid;
+  RPC_FWRITE_CMD_MSG fwcmd;
+  RPC_FWRITE_RSP_MSG fwrsp;
+  
+  pid = rpc_msg-&gt;hdr.csid;
+  fid = rpc_msg-&gt;hdr.ssid;
+  if((csid = locate_csid(pid, fid)) == -1) return;
+  lid = c_scb[csid].lid;
+  
+  fwcmd.hdr.code = RPC_FWRITE_CMD;
+  fwcmd.hdr.csid = csid;
+  fwcmd.hdr.ssid = c_scb[csid].ssid;
+  fwcmd.hdr.dlen = rpc_msg-&gt;hdr.dlen;
+  cx25_send_cmd(lid, (char *)&amp;fwcmd, sizeof(RPC_FWRITE_CMD_MSG));
+  if(fwrsp.hdr.dlen &gt; 0)
+    cx25_send_data(lid, pid, fwrsp.hdr.dlen);
+  cx25_recv_rsp(lid, (char *)&amp;fwrsp, sizeof(RPC_FWRITE_RSP_MSG));
+  cfifo_write(pid, (char *)&amp;fwrsp, sizeof(RPC_FWRITE_RSP_MSG));
+}
+
+cmon_feof(rpc_msg)
+RPC_MSG *rpc_msg;
+{
+
+  int pid, fid, lid, csid;
+  RPC_FEOF_CMD_MSG fecmd;
+  RPC_FEOF_RSP_MSG fersp;
+  
+  pid = rpc_msg-&gt;hdr.csid;
+  fid = rpc_msg-&gt;hdr.ssid;
+  if((csid = locate_csid(pid, fid)) == -1) return;
+  lid = c_scb[csid].lid;
+  
+  fecmd.hdr.code = RPC_FEOF_CMD;
+  fecmd.hdr.csid = csid;
+  fecmd.hdr.ssid = c_scb[csid].ssid;
+  fecmd.hdr.dlen = 0;
+  cx25_send_cmd(lid, (char *)&amp;fecmd, sizeof(RPC_FEOF_CMD_MSG));
+  cx25_recv_rsp(lid, (char *)&amp;fersp, sizeof(RPC_FEOF_RSP_MSG));
+  cfifo_write(pid, (char *)&amp;fersp, sizeof(RPC_FEOF_RSP_MSG));
+}
+
+/* utility routines */
+
+get_server_id(sname)
+char *sname;
+{
+  int i;
+  
+  for(i=0; i&lt;c_lcb_cnt; i++)
+    if(!strcmp(sname, c_lcb[i].sname)) return(i);
+    
+  return(-1);
+}
+
+allocate_csid(pid, fid, lid)
+int pid, fid, lid;
+{
+  int csid;
+  
+  for(csid=0; csid&lt;MAX_C_SCB; csid++)
+    if(c_scb[csid].state == -1) {
+      c_scb[csid].state = csid;
+      c_scb[csid].pid = pid;
+      c_scb[csid].fid = fid;
+      c_scb[csid].lid = lid;
+      c_scb[csid].ssid = 0;
+      return(csid);
+    }
+  return(-1);
+}
+
+deallocate_csid(csid)
+int csid;
+{
+
+  c_scb[csid].state = -1;
+}
+
+locate_csid(pid, fid)
+int pid, fid;
+{
+
+  int csid;
+  
+  for(csid=0; csid&lt;MAX_C_SCB; csid++)
+    if((c_scb[csid].pid == pid) &amp;&amp;
+       (c_scb[csid].fid == fid))
+      return(csid);
+  return(-1);
+}
+
+
+/* debug utilities */
+
+dopen()
+{
+  if((cmon_io = open("/tmp/cmon_io", O_WRONLY|O_CREAT, 0666)) != -1)
+    debug_flag = 1;
+  else
+    debug_flag = 0;
+}
+
+dclose()
+{
+  if(debug_flag)
+    close(cmon_io);
+  debug_flag = 0;
+}
+
+dprintf(fmt, va_alist)
+char *fmt;
+va_dcl
+{
+  va_list ap;
+  
+  if(!debug_flag) return;
+  va_start(ap);
+  vsprintf(cmon_buf, fmt, ap);
+  write(cmon_io, cmon_buf, strlen(cmon_buf));
+  va_end(ap);
+}
+
+print_info()
+{
+   int i;
+   
+   dprintf("\nclient: %s laddr: %s - Total Servers: %d\n",
+       cname, laddr, c_lcb_cnt);
+   
+   for(i=0; i&lt;c_lcb_cnt; i++)
+      dprintf(" server: %s port: %d raddr: %s\n",
+          c_lcb[i].sname, c_lcb[i].port, c_lcb[i].raddr);
+}
+</pre>
+</BODY></HTML>

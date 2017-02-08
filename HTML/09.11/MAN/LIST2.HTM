@@ -1,0 +1,357 @@
+<HTML><HEAD>
+<TITLE>November 1991/A Multithreading Library In C For Subsumption Architecture/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2</A></h4>
+<pre>#define LEGDOWN_CYCLE_TIME                      50
+#define ALPHA_ADVANCE_CYCLE_TIME                10
+#define GAIT_CYCLE_TIME                         500
+
+typedef enum { ALPHA_DECR = -1, NEUTRAL, ALPHA_INCR } POSITION;
+#define BETA_UP         127
+#define BETA_DOWN       -128
+
+#define IS_BETA_UP(x)   !IS_BETA_DOWN(x)
+#define IS_BETA_DOWN(x) ((x) &lt; 0)
+
+typedef struct
+       {
+       char  *inName;
+       char  *outName;
+       int  servoName;
+       } IO_NAME;
+
+extern IO_NAME alphaData[], betaData[];
+void alphaPos(void), betaPos(void);
+
+/* - standup.c -
+ */
+#include &lt;stdio.h&gt;
+#include "exec.h"
+#include "simpwalk.h"
+
+#define alpha0Servo 0
+#define alpha1Servo 1
+#define alpha2Servo 2
+#define alpha3Servo 3
+#define alpha4Servo 4
+#define alpha5Servo 5
+#define beta0Servo  6
+#define beta1Servo  7
+#define beta2Servo  8
+#define beta3Servo  9
+#define beta4Servo  10
+#define beta5Servo  11
+
+IO_NAME alphaData[] = {
+       { "alpha0Pos.in", "alpha0Pos.out", alpha0Servo },
+       { "alpha1Pos.in", "alpha1Pos.out", alpha1Servo },
+       { "alpha2Pos.in", "alpha2Pos.out", alpha2Servo },
+       { "alpha3Pos.in", "alpha3Pos.out", alpha3Servo },
+       { "alpha4Pos.in", "alpha4Pos.out", alpha4Servo },
+       { "alpha5Pos.in", "alpha5Pos.out", alpha5Servo }
+       };
+
+IO_NAME betaData[] = {
+       { "beta0Pos.in", "beta0Pos.out", beta0Servo },
+       { "beta1Pos.in", "beta1Pos.out", beta1Servo },
+       { "beta2Pos.in", "beta2Pos.out", beta2Servo },
+       { "beta3Pos.in", "beta3Pos.out", beta3Servo },
+       { "beta4Pos.in", "beta4Pos.out", beta4Servo },
+       { "beta5Pos.in", "beta5Pos.out", beta5Servo }
+       };
+       
+/*      alpha position. One per leg.
+ */
+void alphaPos(void)
+       {
+       IO_NAME *pData = &amp;alphaData[ExecArg0];
+       PORT portValue, position;
+       STRING_ATOM output = StringToAtom(pData-&gt;outName);
+
+       MsgOpenPort(output, &amp;portValue);
+       MsgWriteToPort(output,
+                    servoWrite(pData-&gt;servoName, NEUTRAL));
+       MsgWatchPort(StringToAtom(pData-&gt;inName), &amp;position);
+       while (MsgGetMsg())
+              {
+              MsgWriteToPort(output,
+                           servoWrite(pData-&gt;servoName, position));
+              }
+       }
+/*      beta position. One per leg.
+ */
+void betaPos(void)
+       {
+       IO_NAME *pData = &amp;betaData[ExecArg0];
+       EXEC_ID id, timerID;
+       PORT currentPos, portValue, position;
+       STRING_ATOM output = StringToAtom(pData-&gt;outName);
+       
+       MsgOpenPort(output, &amp;portValue);
+       MsgWriteToPort(output, BETA_DOWN);
+       
+       servoWrite(pData-&gt;servoName, position = BETA_DOWN);
+       while (servoReadWrite(pData-&gt;servoName, position) !_ BETA_DOWN)
+              ;
+       MsgWatchPort(StringToAtom(pData-&gt;inName), &amp;position);
+       timerID = MsgWatchTimer(1);
+       
+       while (id = MsgGetMsg())
+              {
+              if (id == timerID)
+                    MsgWriteToPort(output,
+            servoReadWrite(pData-&gt;servoName, position));
+              else
+                    servoWrite(pData-&gt;servoName, position);
+              }
+       }
+
+/* - simpwalk.c -
+ */
+#include &lt;stdlib.h&gt;
+#include "exec.h"
+#include "simpwalk.h"
+
+/*      interface names
+ */
+IO_NAME legDownData[] = {
+       { "leg0Down.in", "leg0Down.out" },
+       { "leg1Down.in", "leg1Down.out" },
+       { "leg2Down.in", "leg2Down.out" },
+       { "leg3Down.in", "leg3Down.out" },
+       { "leg4Down.in", "leg4Down.out" },
+       { "leg5Down.in", "leg5Down.out" }
+       };
+
+IO_NAME advanceData[] = {
+       { "alpha0Advance.in", "alpha0Advance.out" },
+       { "alpha1Advance.in", "alpha1Advance.out" },
+       { "alpha2Advance.in", "alpha2Advance.out" },
+       { "alpha3Advance.in", "alpha3Advance.out" },
+       { "alpha4Advance.in", "alpha4Advance.out" },
+       { "alpha5Advance.in", "alpha5Advance.out" }
+       };
+
+IO_NAME uplegData[] = {
+       { "upleg0Trigger.in", "upleg0Trigger.out" },
+       { "upleg1Trigger.in", "upleg1Trigger.out" },
+       { "upleg2Trigger.in", "upleg2Trigger.out" },
+       { "upleg3Trigger.in", "upleg3Trigger.out" },
+       { "upleg4Trigger.in", "upleg4Trigger.out" },
+       { "upleg5Trigger.in", "upleg5Trigger.out" }
+       };
+
+/*      put the leg down if it's up. One per leg.
+ */
+void legDown(void)
+       {
+       IO_NAME *pData = &amp;legDownData[ExecArg0];
+       PORT legPosition;
+       STRING_ATOM betaOut, output;
+
+       betaOut = StringToAtom(betaData[ExecArg0].outName);
+       output = StringToAtom(pData-&gt;outName);
+       /*      connect our output to the beta position's input
+        */
+       MsgConnectPorts(output, StringToAtom(betaData[ExecArg0].inName));
+       MsgWatchTimer(LEGDOWN_CYCLE_TIME);
+
+       while (MsgGetMsg())
+              {
+              MsgPeekPort(betaOut, &amp;legPosition);
+              if (IS_BETA_UP(legPosition))
+                     MsgWriteToPort(output, BETA_DOWN);
+              }
+       }
+/*      if the total alpha positions are positive, then move them back.
+ *      If it is negative, move them forward. One for all legs.
+ */
+void alphaBalance(void)
+       {
+       STRING_ATOM alpha0, alpha1, alpha2, alpha3, alpha4, alpha5;
+       STRING_ATOM alphaOut;
+       PORT totalAlphaPosition;
+
+       alpha0 = StringToAtom(alphaData[0].outName);
+       alpha1 = StringToAtom(alphaData[1].outName);
+       alpha2 = StringToAtom(alphaData[2].outName);
+       alpha3 = StringToAtom(alphaData[3].outName);
+       alpha4 = StringToAtom(alphaData[4].outName);
+       alpha5 = StringToAtom(alphaData[5].outName);
+       alphaOut = StringToAtom("alphaBalance.out");
+       /*      connect our output to the alpha motors' input
+        */
+       MsgConnectPorts(alphaOut, StringToAtom(alphaData[0].inName));
+       MsgConnectPorts(alphaOut, StringToAtom(alphaData[1].inName));
+       MsgConnectPorts(alphaOut, StringToAtom(alphaData[2].inName));
+       MsgConnectPorts(alphaOut, StringToAtom(alphaData[3].inName));
+       MsgConnectPorts(alphaOut, StringToAtom(alphaData[4].inName));
+       MsgConnectPorts(alphaOut, StringToAtom(alphaData[5].inName));
+
+       MsgWatchTimer(ALPHA_ADVANCE_CYCLE_TIME);
+       while (MsgGetMsg())
+              {
+              totalAlphaPosition =
+                     MsgPeekPort(alpha0, NULL) +
+                     MsgPeekPort(alpha1, NULL) +
+                     MsgPeekPort(alpha2, NULL) +
+                     MsgPeekPort(alpha3, NULL) +
+                     MsgPeekPort(alpha4, NULL) +
+                     MsgPeekPort(alpha5, NULL);
+              if (totalAlphaPosition &lt; 0)
+                     MsgWriteToPort(alphaOut, ALPHA_INCR);
+              else if (0 &lt; totalAlphaPosition)
+                     MsgWriteToPort(alphaOut, ALPHA_DECR);
+              }
+       }
+/*      if the leg is up, then move leg forward. One per leg.
+ */
+void alphaAdvance(void)
+       {
+       PORT betaPosition;
+       STRING_ATOM input, output, alphaPosInput;
+
+       /*      wakes up whenever the beta position changes
+        */
+       input = StringToAtom(advanceData[ExecArg0].inName);
+       MsgWatchPort(input, &amp;betaPosition);
+
+       alphaPosInput = StringToAtom(alphaData[ExecArg0].inName);
+       output = StringToAtom(advanceData[ExecArg0].outName);
+
+       /*      change alpha position input to connect to our output
+        */
+       MsgInhibitPorts(output, alphaPosInput);
+       MsgConnectPorts(StringToAtom(betaData[ExecArg0].outName), input);
+
+       while (MsgGetMsg())
+              {
+              if (IS_BETA_UP(betaPosition))
+                     MsgWriteToPort(output, ALPHA_INCR);
+              }
+       }
+/*      if the leg is down, move it up
+ */
+void uplegTrigger(void)
+       {
+       PORT betaPosition;
+       STRING_ATOM betaInput, betaOutput, output;
+
+       betaInput = StringToAtom(betaData[ExecArg0].inName);
+       betaOutput = StringToAtom(betaData[ExecArg0].outName);
+
+       output = StringToAtom(uplegData[ExecArg0].outName);
+       MsgSuppressPorts(output, betaInput);
+       MsgWatchTrigger(StringToAtom(uplegData[ExecArg0].inName));
+
+       while (MsgGetMsg())
+              {
+              MsgPeekPort(betaOutput, &amp;betaPosition);
+              if (IS_BETA_DOWN(betaPosition))
+                     MsgWriteToPort(output, BETA_UP);
+              }
+       }
+
+void TripodGait(void)    
+       {
+       STRING_ATOM evenCycleID,oddCycleID;
+       int cycle;
+
+       evenCycleID = StringToAtom("walk.even");
+       oddCycleID = StringToAtom("walk.odd");
+
+       /*      alternately raise the legs in a tripod gait fashion
+        */
+       MsgConnectPorts(evenCycleID, StringToAtom(uplegData[0].inName));
+       MsgConnectPorts(evenCycleID, StringToAtom(uplegData[2].inName));
+       MsgConnectPorts(evenCycleID, StringToAtom(uplegData[4].inName));
+       MsgConnectPorts(oddCycleID, StringToAtom(uplegData[1].inName));
+       MsgConnectPorts(oddCycleID, StringToAtom(uplegData[3].inName));
+       MsgConnectPorts(oddCycleID, StringToAtom(uplegData[5].inName));
+
+       MsgWatchTimer(GAIT_CYCLE_TIME);
+       while (MsgGetMsg())
+              {
+              if (cycle)
+                     MsgWriteToPort(oddCycleID,0);
+              else
+                     MsgWriteToPort(evenCycleId,0);
+              cycle ^= 1;
+              }
+       }
+
+#ifndef HC11
+void nil(void)
+       {
+       MsgWatchTimer(4);
+       while (MsgGetMsg())
+              if (kbhit())
+                     {
+                     if (getchar() == 'q')
+                            exit(0);
+                     }
+       }
+#endif
+
+#define SSIZE  100
+#define XSIZE   100
+#define BSIZE  100
+
+int main()
+       {
+       void printServos();
+
+       ExecInit();
+       ExecCreateThread(NORMAL_PROC, alphaPos, XSIZE, 0, 0);
+       ExecCreateThread(NORMAL_PROC, alphaPos, XSIZE, 1, 0);
+       ExecCreateThread(NORMAL_PROC, alphaPos, XSIZE, 2, 0);
+       ExecCreateThread(NORMAL_PROC, alphaPos, XSIZE, 3, 0);
+       ExecCreateThread(NORMAL_PROC, alphaPos, XSIZE, 4, 0);
+       ExecCreateThread(NORMAL_PROC, alphaPos, XSIZE, 5, 0);
+
+       ExecCreateThread(NORMAL_PROC, betaPos, BSIZE, 0, 0);
+       ExecCreateThread(NORMAL_PROC, betaPos, BSIZE, 1, 0);
+       ExecCreateThread(NORMAL_PROC, betaPos, BSIZE, 2, 0);
+       ExecCreateThread(NORMAL_PROC, betaPos, BSIZE, 3, 0);
+       ExecCreateThread(NORMAL_PROC, betaPos, BSIZE, 4, 0);
+       ExecCreateThread(NORMAL_PROC, betaPos, BSIZE, 5, 0);
+
+       ExecCreateThread(NORMAL_PROC, legDown, SSIZE, 0, 0);
+       ExecCreateThread(NORMAL_PROC, legDown, SSIZE, 1, 0);
+       ExecCreateThread(NORMAL_PROC, legDown, SSIZE, 2, 0);
+       ExecCreateThread(NORMAL_PROC, legDown, SSIZE, 3, 0);
+       ExecCreateThread(NORMAL_PROC, legDown, SSIZE, 4, 0);
+       ExecCreateThread(NORMAL_PROC, legDown, SSIZE, 5, 0);
+
+       ExecCreateThread(NORMAL_PROC, alphaBalance, BSIZE, 0, 0);
+
+       ExecCreateThread(NORMAL_PROC, alphaAdvance, SSIZE, 0, 0);
+       ExecCreateThread(NORMAL_PROC, alphaAdvance, SSIZE, 1, 0);
+       ExecCreateThread(NORMAL_PROC, alphaAdvance, SSIZE, 2, 0);
+       ExecCreateThread(NORMAL_PROC, alphaAdvance, SSIZE, 3, 0);
+       ExecCreateThread(NORMAL_PROC, alphaAdvance, SSIZE, 4, 0);
+       ExecCreateThread(NORMAL_PROC, alphaAdvance, SSIZE, 5, 0);
+
+       ExecCreateThread(NORMAL_PROC, uplegTrigger, SSIZE, 0, 0);
+       ExecCreateThread(NORMAL_PROC, uplegTrigger, SSIZE, 1, 0);
+       ExecCreateThread(NORMAL_PROC, uplegTrigger, SSIZE, 2, 0);
+       ExecCreateThread(NORMAL_PROC, uplegTrigger, SSIZE, 3, 0);
+       ExecCreateThread(NORMAL_PROC, uplegTrigger, SSIZE, 4, 0);
+       ExecCreateThread(NORMAL_PROC, uplegTrigger, SSIZE, 5, 0);
+
+       ExecCreateThread(NORMAL_PROC, TripodGait, SSIZE, 0, 0);
+#ifndef HC11
+       ExecCreateThread(NORMAL_PROC, nil, 200, 0, 0);
+       ExecCreateThread(NORMAL_PROC, printServos, 600, 0, 0);
+#endif
+       ExecStart();
+       }
+
+- - --- end ---
+
+/* End of File */</pre>
+
+</BODY>
+</HTML>

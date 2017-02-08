@@ -1,0 +1,90 @@
+
+
+<HTML>
+<HEAD>
+
+<TITLE>March 1994/Symbolic Access To Embedded Controllers</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocmar.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Real-Time/Embedded Systems</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Symbolic Access To Embedded Controllers<A name="0084_0035"><A name="0084_0035"></font></h2><P>
+<h3 align="center"><font color="#800000"><A name="0084_0000"><A name="0084_0000">Odd A. S. Olsen and Petter H. Heyerdahl</font></h3><hr><blockquote><P>
+<P><i><A name="0084_0000"><A name="0084_0000">Odd A.S. Olsen and Petter H. Heyerdahl received their Master of Engineering degrees in Engineering Cybernetics at the Norwegian Institute of Technology, where Mr. Olsen later received a Ph.D. He is currently an independent consultant, developing electronics and programs for embedded controllers. Mr. Heyerdahl is associate professor at the Agricultural University of Norway, Department of Agricultural Engineering. Odd may be contacted at Jutulveien 11, N-0852 Oslo, Norway or by the Internet: odd. olsen@itf.nlh.no.</i></P><P>
+<h4><FONT COLOR="#000080"><A name="0084_0036">Introduction<A name="0084_0036"></FONT></h4></P>
+A PC often functions as the user interface, debugging tool, and general supervisor of an embedded controller. With this arrangement it is important for the programs that transfer parameters between the PC and the controller to maintain agreement on the names and meanings of all variables. If the PC sets parameter 63 to the value of 123, for instance, the PC and the controller must agree on what parameter 63 is and what the value 123 represents. This consistency is especially at risk during development because new parameters are sometimes introduced on-the-fly and often end up in different locations on the two computers. The processors may not even agree on a format for the values. (An Intel PC could be storing numbers in big-endian format while a Motorola controller might want them in small-endian format.)<P>
+A symbol table is an efficient solution to the consistency problem because it allows the data structures of the PC and controller to develop separately, yet links the two systems with a simple communication protocol. By this method, which resembles the message format found in the general-purpose interface bus (GPIB), values are referenced by their symbolic name, e.g. <I>measured_pH, heater_power</I> etc. We used this principle to control a group of bioreactors. Each reactor is controlled by an embedded controller which communicates with a supervising PC for operator instructions and data logging.<P>
+<h4><FONT COLOR="#000080"><A name="0084_0037">How Things are Connected<A name="0084_0037"></FONT></h4></P>
+<A href="fig1.htm">Figure 1</a>
+illustrates the information flow in the system. In our implementation the PC is always the initiator of communication and the embedded controller only responds to received messages. The most important entries in the symbol tables are the parameter names and their values. (In this context a parameter is more general than a constant. It can also represent measured data, debug information, etc.) Parameter values move from the PC symbol table to the controller symbol table through messages sent over the RS-232 line. The PC symbol table can be altered either by accessing the user interface or by causing the PC to read a refreshed version of the parameter file. The new data is then sent to the symbol table in the embedded controller. The controller symbol table can thus be changed from the PC, or through the measurement and control algorithms of the controller itself. Parameters for the control algorithms are stored in the EEPROM, enabling the controller to initialize its symbol table values at start-up and maintain its control process by itself should the PC fail.<P>
+<h4><FONT COLOR="#000080"><A name="0084_0038">The Symbol Tables<A name="0084_0038"></FONT></h4></P>
+Both the PC program and the embedded controller program are centered on their respective symbol tables. The structure of the PC symbol table is:<P>
+<pre>typedef struct {
+    char *name;
+    int ival;
+    double fval;
+    void *(*scalefunc)(void *);
+    char eeProm;
+    char file;} symTabEntry;</pre>
+Each of the process variables maintained by the controller (temperature, oxygen level, pH, etc.) is represented as a record in the symbol table. Every record in the table contains a unique name (e.g. <I>measured_pH</I>), an integer or double floating-point value, and a pointer to an optional scaling function. The table also contains two flags: <I>eeProm</I> and <I>file</I>. If <I>eeProm</I> is set to <I>TO_EE</I>, the record will be transferred to the controller upon start-up, and will be stored in the controller <I>EEPROM</I> if its value is different from the one already residing there. The <I>file</I> flag indicates whether the current record contains data associated with the system's parameter file. This parameter file contains parameter names (of process variables and other system variables) and their values. If the system finds a particular parameter name in the file during startup, the system copies the parameter's value into the record, and sets a bit in the <I>file</I> flag. Likewise, if the user later wants to save the current parameter values back to the file, the system will save only those parameters whose <I>file</I> flags are set. While the system is operating, a record holds a parameter's value in either <I>ival</I> (for integer parameters) or <I>fval</I> (for floating-point parameters).<P>
+The user interface is also oriented to the symbol table. The user can change parameters by choosing a parameter window. Each parameter entry field knows the pointer to its entry in the symbol table. It can thus read and write the value and call the scaling function. When the user changes a parameter, the new value is immediately scaled from floating-point to integer and transmitted to the controller. Because values are referred to by name rather than by pointer, the set-up of the parameter windows is simplified.<P>
+The symbol tables are alphabetically sorted, which allows the processor to use a binary search when looking for a name. (A binary search is faster than a linear search, but if the tables were large, I would consider using hash-tables.) The programmer will now and then insert new entries to the tables at a wrong position. On start-up both the PC and controller programs therefore go through their tables and check for alphabetic order. If unordered elements are found, the function issues an error message.<P>
+The structure of controller's symbol table is<P>
+<pre>typedef struct {
+    char *name;
+    int ival;
+    char *(*func)(char *);
+    int eeOffset;} symTabEntry;</pre>
+<I>name</I> is the name of the parameter, <I>ival</I> the value, and the function pointer either a function that can be invoked by a message or a hook for individual processing of received parameters. <I>eeOffset</I> is the <I>EEPROM</I> address where the parameter is stored. (Parameters that are not saved in <I>EEPROM</I> have an offset value of &#151;1.)<P>
+The controller's program runs periodically, e.g. every five seconds. The program first reads all measurements and stores the values in the symbol table. The control algorithms then take their values and parameters from the symbol table and calculate responses. The results are stored into the table and output to actuators. Both measured values and actuator states are thus available to the PC.<P>
+To understand the use of the symbol table, say the control algorithm is <I>pHerror=pHsetpoint-pHmeasured.</I> This can be programmed as:<P>
+<pre>FindSymbol ("pHerror")-&gt;ival = 
+    FindSymbol ("pHsetpoint")-&gt;ival - FindSymbol ("pHmeasured")-&gt;ival;</pre>
+<I>FindSymbol</I> returns a pointer to the symbol table entry with the given name. However, less typing and a faster program are achieved by initializing pointers to the symbol table entries at start-up:<P>
+<pre>int *ppHerror;
+ppHerror= &amp;FindSymbol ("pHerror")-&gt;ival;</pre>
+etc. and coding the algorithm as<P>
+<pre>*ppHerror= *ppHsetpoint - *ppHmeasured;</pre>
+At start-up the symbol tables are initialized according to the following sequence. First the tables are initialized with the values specified at compile time. The controller then reads values from the <I>EEPROM</I> into its table. The PC reads a parameter file, which may change some of the values in its table. The PC program will then transfer those values having flag <I>TO_EE</I> set to the controller <I>EEPROM</I> and symbol table.<P>
+<h4><FONT COLOR="#000080"><A name="0084_0039">Message Format<A name="0084_0039"></FONT></h4></P>
+The messages between the PC and controller are ASCII strings sent over an RS-232 connection. Before transmission the message assembler adds a checksum. The receiver checks and removes the checksum from the message before passing the message to the message interpreter.<P>
+Each message consists of one or more submessages. The submessages and their elements can be separated by spaces and have the following format:<P>
+<pre>&lt;name&gt;&lt;operator&gt;[&lt;value&gt;]</pre>
+The name field is the symbolic name of a parameter or a command. The operator is a single character as given in <A href="tab1.htm">Table 1</a>.
+ For messages with an associated value, the value field is the numerical value of the parameter. The name must begin with a letter (a-zAZ), followed by a number of letters, digits, or underscores (a-zAZ0-9_). In our implementation the value field is always an integer because all processing in the controller is integer based.<P>
+To add other value types the programmer need only define new operators and modify the structures and programs accordingly. A floating-point type is useful in some systems. A string type can also be of use, for example to transfer strings directly to an operator display on the controller. In a multi-processor embedded system, the string type can be used to transfer messages verbatim to subprocessors.<P>
+The following message transfers <I>temp_setp=20</I> to <I>EEPROM</I>, sends <I>delay=10</I> to the symbol table, requests the present value of <I>temp</I>, and executes the function <I>pwr_sav:</I><P>
+<pre>temp_setp&gt;20 delay:10 temp? pwr_sav!</pre>
+The response might be<P>
+<pre>temp:22 pwr_sav#16</pre>
+The error message indicates that <I>pwr_sav</I> was not found in the symbol table of the controller. (Such error messages are hopefully only encountered during program development.) In this case the message indicates a discrepancy between the PC and controller programs.<P>
+<h4><FONT COLOR="#000080"><A name="0084_003A">Message Interpretation<A name="0084_003A"></FONT></h4></P>
+The interpreter parses the received messages into a task list which is handed over to an execution function. The structure of the list records is:<P>
+<pre>typedef struct {
+    int command;
+    int type;
+    char *name;
+    int value; } toDoList;</pre>
+<I>command</I> is a value specifying the command, <I>type</I> the type of the value (in this case always <I>INTEGER</I>), <I>*name</I> a pointer to the name of the parameter, and <I>value</I> the numerical value of the parameter.<P>
+In the controller the interpreter and reply assembler are integrated. In the PC, however, parameters are sent through a message assembler and replies decoded in a separate interpreter. The receiver is interrupt driven and executes the interpreter after a full message has arrived. The interpreter places the received values into the symbol table and transfers error messages to the user interface. The PC interpreter resembles the controller interpreter, which I am about to describe.<P>
+<h4><FONT COLOR="#000080"><A name="0084_003B">A Sample Application<A name="0084_003B"></FONT></h4></P>
+This slightly modified version of the controller's interpreter and message assembler will illustrate message handling and symbol table operations. (This version runs on a PC.) <A href="list1.htm">Listing 1</a>
+presents the definitions and function prototypes; <A href="list2.htm">Listing 2</a>
+shows the main program and message interpreter.<P>
+The main program reads a message from the keyboard. It parses the message, then prints and executes the task list <I>toDo.</I> The task list is a list of structures with one entry for each subcommand. The <I>Parse</I> function assumes the message is formated as defined in <A href="tab1.htm">Table 1</a>.
+ Since the grammar is quite simple, there is no need for recursive descent or other strategies used in compilers. There are several tests that check adherence to the format, and issue error messages if discrepancies are found. (This is most valuable during program development.) Finding an error stops the message interpretation. Inserting an <I>EMPTY</I> command terminates the list.<P>
+<I>GetNextToken</I> reads the next token in the message string. If the first character encountered is a letter, the token is a name. If it is a digit, the token is a value. If the first character is neither a name nor a value, the token is an operator. The function then copies the token into the token string of the parser and sets the <I>type </I>parameter according to the type. The size of the token-string (<I>MAX_TOKNE_LEN</I>) must be larger than the longest token that can occur. The <I>type </I>parameter is set equal to the operator's defined constant.<P>
+<I>Parser</I> calls <I>StroreToken </I>to save the encountered names in a string pool. This pool is recycled for each message by setting <I>pPool=stringPool</I>. The pool size <I>(STRINGPOOL)</I> must be large enough to store all the names can occur in one message. The address of the names is stored in the <I>name </I>element of the structure.<P>
+The task list <I>ToDo</I> can now be processed by calling <I>DoCommands</I>. This functin is essentially a loop which executes the commands through a switch statement. However, it first initializes a pointer to the beginning of the <I>txBuffer</I>, where the response message is stored. This buffer might be local to the more hardware-dependent parts of the program and not globally accessible, so this requires a function call to obtain the pointer. All function called in the <I>DoCommands</I> maintain the buffer pointer by accepting it as an argument and returning the possibly changed value.<P>
+<I>SayError</I> writes an error message to the transmit buffer. It receives a pointer to the task list, where it finds the name relating to the error, and error number.<P>
+The functions <I>Assign, Request, ToEeprom</I>, and <I>RunCommand</I> each begin by getting a name from the task list and looking it up in the symbol table. If the name isn't found, they write an error message to the transmit buffer.<P>
+The <I>Assign</I> function inserts the value in the symbol table. The <I>Request</I> function reads the value from the symbol table and generates a response submessage. <I>ToEeprom</I> puts the value into the symbol table and checks if the parameter has a place in the EEPROM. If <I>eeOffset</I> is greater than or equal to zero, it writes the value. If not, it issues an error message. <I>RunCommand</I> executes the program pointed to in the symbol structure. If the pointer is NULL, <I>RunCommand</I> generates an error message.<P>
+<I>Assign, Request</I> and <I>ToEeprom</I> all check for a function hook before returning. If they find one they call it. <I>Assign, Request</I>, and <I>ToEeprom</I> also maintain the transmitter buffer pointer so they can write to the buffer.<P>
+The program was compiled with Borland TurboC++ version 3.0. The library functions are all UNIX and ANSI defined, so using other compilers should not present any problem.<P>
+<h4><FONT COLOR="#000080"><A name="0084_003C">Final Thoughts<A name="0084_003C"></FONT></h4></P>
+This symbolic data transfer scheme enabled us to implement a complete control system from scratch in about one programmer-month. When we started we had no clear picture of what the final result would be, so parameters were constantly added and removed as we tried different control strategies. By using the described method, we were able to respond quickly to these changes. This arrangement also made it easier to add auxiliary parameters for debugging. There are of course faster ways to transfer data, but the kinds of processes maintained by embedded controllers are often slow enough that a minor increase in response time isn't significant.<P>
+
+<h4><a href="../../../source/1994/mar94/olsen.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

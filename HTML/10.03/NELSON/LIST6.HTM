@@ -1,0 +1,176 @@
+<HTML><HEAD>
+<TITLE>March 1992/The Device Driver As State Machine/Listing 6</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 6 (ctl.c) Test IOCTL Program for TAPE Device Driver</A></h4>
+<pre>/* ----------------------------------------------------
+ *  Author:            T.W. Nelson
+ *  Compile options:
+ *  Version:           1.00
+ *  Date:              29-Sep-1991
+ *  Notes:
+ * ------------------------------------------------- */
+
+#include &lt;stdio.h&gt;
+#include &lt;io.h&gt;
+#include &lt;fcntl.h&gt;
+#include &lt;sys\stat.h&gt;
+#include &lt;dos.h&gt;
+#include &lt;bios.h&gt;
+#include "tape.h"
+
+#define IOCTL_OK Ox4000         //ioctl check bit
+#define IM_A_DEVICE 0x0080      //device check bit
+#define IO_BUF_SIZE_sizeof(CMDARG)
+
+union REGS regs;
+struct SREGS sregs;
+char Dname[] = "TAPEXXXX";
+int ioHandle;
+CMDARG ioArg;
+
+char *Menu[] = {
+   "",
+   "Power ON .............0",
+   "Power OFF ............1",
+   "Insert Cassette ......2',
+   "Eject Cassette .......3",
+   "Record ...............4",
+   "Play .................5",
+   "Fast Forward .........6",
+   "Rewind ...............7",
+   "Check Status .........8",
+   "Stop .................9",
+   "Quit .................&lt;Esc&gt;",
+   "",
+   0
+   );
+
+extern int_doserrno;
+
+int  _dos_dev_info( int handle,
+                 size_t *info )
+{
+  /* Get information about specified handle assoc
+   * with a file or device and return it in 'info'.
+   * Returns 0 if successful, !0 if not. Error code
+   * contained in global '_doserrno'.
+   */
+
+   regs.x.ax = 0x4400;     //DOS IOCTL get device info
+   regs.x.bx = handle;
+   intdos(&amp;regs, &amp;regs );
+   *info = regs.x.dx;      //assign device info word
+
+   return regs.x.cflag;    //CY signals error
+}
+
+int_dos ioctl_read( int handle,
+                 void *iobuf,
+                 size_t nbytes)
+{
+  /* Read ioctl data from a character device driver
+   * into 'iobuf'. Returns 0 if successful, !0 if not.
+   * Error code contained in global '_doserrno'. This
+   * call ends up as the device driver's cmd code 3,
+   * ioctl_read.
+   */
+
+   regs.x.ax = 0x4402;     //DOS read ioctl data
+   regs.x.bx - handle;
+   regs.x.cx = nbytes;
+   sregs.ds = FP_SEG( iobuf );
+   regs.x.dx = FP_OFF( iobuf );
+   intdosx( &amp;regs, &amp;regs, &amp;sregs );
+
+   return regs.x.cflag;    //CY signals error
+}
+
+int _dos_ioctl write( int handle,
+                  void *iobuf,
+                  size_t nbytes )
+{
+  /* Write ioctl data to a character device driver
+   * from 'iobuf'. Returns 0 if successful, !0 if not.
+   * Error code contained in global '_doserrno'. This
+   * call ends up as the device driver's cmd code 12,
+   * ioctl_write.
+   */
+
+   regs.x.ax = 0x4403;     //DOS write ioctl data
+   regs.x.bx = handle;
+   regs.x.cx = nbytes;
+   sregs.ds - FP_SEG( iobuf );
+   regs.x.dx = FP_OFF( iobuf );
+   intdosx( &amp;regs, &amp;regs, &amp;sregs );
+
+   return regs.x.cflag;    //CY signals error
+}
+
+void print_menu(void )
+{
+   char **p;
+
+   for( p = Menu; *p; p++ )
+      printf( "%s\n", *p );
+}
+
+main(int argc, char **argv )
+{
+   int cmd;
+   size_t d_info;
+
+   ioHandle = open(Dname, O_RDWR);
+
+   if(ioHandle == -1) {
+      printf("Unable to open TAPE device\n");
+      return 1;
+   }
+
+   //Verify that TAPE is a device and that
+   //it supports ioctl calls.....
+
+   _dos_dev_info(ioHandle, &amp;d_info);
+
+   if((d_info &amp; IM_A_DEVICE) == 0) {
+      printf("Sorry,'%s' is a file\n", Dname);
+      return 1;
+   }
+
+   if( (d_info &amp; IOCTL_OK) == 0)  {
+      printf("Sorry, TAPE doesn't support IOCTL\n");
+      return 1;
+   }
+
+   //Initialize the device at 'boot-up' ....
+   ioArg.c_state = OFF;
+   ioArg.cmd = CMD_POWER_ON;
+   _dos_ioctl_write( ioHandle, (void*) &amp;ioArg,
+                    IO_BUF_SIZE);
+
+   //Execute user control loop .....
+   while( 1 )  {
+          print_menu();
+          printf( "Enter selection: ");
+          cmd = bioskey(0);
+          cmd &amp;= 0x00ff;     //zap scan code
+
+          if( cmd == 27 )
+                 break;
+
+          printf("%c\n\n",cmd);      //echo cmd
+          ioArg.cmd = cmd - '0';     //to integer
+          _dos_ioctl_read( ioHandle,
+                    (void *) &amp;ioArg,
+                       IO_BUF_SIZE);
+
+   }
+
+   return 0;
+}
+
+/* ----- End of File -------------------------- */
+</pre>
+</BODY>
+</HTML>

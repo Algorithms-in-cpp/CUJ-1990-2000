@@ -1,0 +1,385 @@
+<HTML><HEAD>
+<TITLE>September 1991/From PC To Mainframe With HLLAPI/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2 (hc_utilc) HLLAPI Utility Functions for <I>HOSTCOM</I></A></h4>
+<pre>/******************************************************
+ *
+ * These functions use the the functions in hc_api.c,
+ * Listing 1, and return values that can be used to
+ * index into the error message array in hc_error.c,
+ * Listing 4.
+ *
+ ******************************************************/
+
+#include &lt;conio.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;dos.h&gt;
+#include "hc.h"
+
+/* Operator Information Area (OIA) string */
+static unsigned char oia_str[103] = "";
+
+/*******************************************************
+ *
+ * update_ps() Display Presentation Space
+ *
+ * return: 0 = successful
+ *         1 = not connected to host session
+ *         6 = system error encountered
+ *
+ *******************************************************/
+
+int update_ps (char *ps)
+{
+       int err, x;
+       if ((err = copy_ps(ps)) != 0) {
+              switch(err) {
+              case 1: return(1);
+              case 9: return(6);
+              }
+       }
+
+       /* replace NULLs */
+       for (x = 0; x &lt; 1920; x++) {
+          if (*(ps+x) == 0x00)
+              *(ps+x) = 0x20;
+       }
+       ps[1920] = '\0';    /* terminate PS string */
+
+       write_string(1, 1, ps, norm_attr);
+
+       return (0);
+}
+
+/******************************************************
+ *
+ * status_msg()  Display status message in the status
+ *               area: row 25, column 1. msg should
+ *               be 7 bytes long for consistency.
+ *
+ *******************************************************/
+
+void status_msg(char *msg, int attr)
+{
+       write_string(1, 25, msg, attr);
+}
+
+/******************************************************
+ *
+ * keys_to_host() Send string of keystrokes to host
+ *
+ * Not for sending AID keys -- use input to_host()
+ *
+ * return: 0 = successful, keys sent
+ *         4 = host busy, all keys could not be sent
+ *         5 = session inhibited
+ *         6 = system error
+ *         7 = timeout (from host_wait())
+ *         11= invalid parameter
+ *
+ *******************************************************/
+
+int keys_to_host(char *keys)
+{
+       int err;
+
+       if ((err = host_wait()) != 0)
+              return (err);
+
+       err = send_key(keys);
+
+       switch (err) {
+              case 0:  return(0);
+              case 1:  return(1);
+              case 2:  return(11);
+              case 4:  return(4);
+              case 5:  return(5);
+              case 9:  return(6);
+       }
+}
+
+
+/******************************************************
+ *
+ * input_to_host() Send AID key to the host.
+ *
+ * Resends the string if the host reports it is busy.
+ * User has option to break out with ESC.
+ *
+ * return: 0 =  successful
+ *         4 =  host busy
+ *         6 =  system error
+ *         7 =  timeout
+ *         8 =  invalid parameter
+ *         10 = keyboard locked
+ *
+ ******************************************************/
+
+int input_to_host(char *keys)
+{
+       int err;
+       int x = 0;
+       char status[] =" TIME ";
+       char no_time[11] = "";
+
+       status_msg("Sending", send_attr);
+       if ((err = keys_to_host(keys)) != 5)
+              return(err);
+
+       /* HLLAPI code 5: input inhibited; task
+        * requires additional time. Send reset, then
+        * resend string until successful or
+        * interrupted by user.
+        */
+
+       while (1) {
+       /* Send reset; exit on error. Only busy (4)
+        * and system error (9) are expected.
+        * keys_to_host() is not used to avoid call
+        * to host_wait().
+        */
+              if ((err = send_key("@R")) != 0) {
+                     switch (err) {
+                            case 4: return (4);
+                            case 9: return (6);
+                     }
+              }
+
+              itoa(++x, no_time, 10);
+              strcat(no_time, status);
+              status_msg(no_time, time_attr);
+              delay(2000);  /* wait two seconds */
+
+              if (receive esc())
+                 return (0); /* user interrupt */
+
+              /* resend key; if other than
+               * inhibited error, return */
+              if ((err = send_key(keys)) != 5) {
+                     switch (err) {
+                     case 0: return (0);
+                     case 1: return (1);
+                     case 2: return (8);
+                     case 4: return (4);
+                     case 9: return (6);
+                     }
+              }
+       }
+}
+
+/*****************************************************
+ *
+ * host_wait() Wait until host is ready and manage
+ *             the display of the status message.
+ *
+ * return: 0  = system ready
+ *         10 = keyboard locked
+ *         6  = system error
+ *         7  = timeout
+ *
+ *****************************************************/
+
+int host_wait(void)
+{
+       int err;
+       status_msg("Waiting", wait_attr);
+       err = wait();
+       status_msg("Ready ", stat_attr);
+       switch (err) {
+              case 0: return (0);
+              case 1: return (22);
+              case 4: return (7);
+              case 5: return (10);
+              case 9: return (6);
+       }
+}
+
+/*****************************************************
+ *
+ * find_msg() Determine if msg is displayed anywhere
+ *            in the presentation space.
+ *
+ * return: 0  = msg was not found
+ *        -1  = msg was found
+ *         1  = not connected to host session
+ *         6  = system error
+ *         9  = invalid parameter passed to HLLAPI
+ *
+ *****************************************************/
+
+int find_msg(char *msg)
+{
+       int str_pos = 0; /* starting search psn */
+       int err;
+
+       if ((err = search_ps(msg, &amp;str_pos)) != 0) {
+              switch (err) {
+                     case 1: return(1);
+                     case 2: return(9);
+                     case 9: return(6);
+              }
+       }
+
+       if (str_pos == 0)
+              return(0);       /* not found */
+       else
+              return (-1);    /* found */
+}
+
+/*****************************************************
+ *
+ * dspy_oia() Display the Operator Information Area.
+ *
+ * Return  0 = successful
+ *         1 = not connect to host session
+ *         6 = system error
+ *
+ *******************************************************/
+
+int dspy_oia(void)
+{
+       int err, y, x = 0;
+
+       if ((err = copy_oia(oia_str)) &lt; 9) {
+              gotoxy(1,5);
+              do {
+                     for (y=0; y&lt;10; y++) {
+                       printf("%5X", oia_str[x++]);
+                        if (x == 103)
+                            break;
+                     }
+                     printf("\n");
+              } while (x &lt; 103);
+
+              return(0);
+       }
+       else {
+              switch(err) {
+                     case 1: return(1);
+                     case 9: return(6);
+              }
+       }
+}
+
+/*****************************************************
+ *
+ * check_power() Determine if session powered on.
+ *
+ * Checks third byte in OIA which is OxCD if powered
+ * on and 0x00 if powered off.
+ *
+ * Note: required for RabbitGATE only
+ *
+ *****************************************************/
+
+int check_power(void)
+{
+       if (copy_oia(oia_str) &lt; 9) {
+              if (*(oia_str+2) == 0xCD)
+                    return (1);  /* powered on */
+              else
+                    return (0);  /* powered off */
+       }
+       else
+              return(6);
+}
+
+
+/****************************************************
+ *
+ * check_signon()
+ *
+ * Determine if the session is currently signed on to
+ * mainframe application.
+ *
+ * The fourth byte in the OIA is 0xCF when signed on,
+ * and 0xF0 when not signed on, and (for RabbitGATE
+ * only) 0x00 when session powered off
+ *
+ * Return: 1 = signed on,
+ *         0 = not signed on.
+ ********************************************************/
+
+int check_signon(void)
+{
+       if (copy_oia(oia_str) &lt; 9) {
+
+              if (*(oia_str+3) == 0xCF)
+                     return (1);  /* logged in */
+              else
+                     return (0);  /* logged out */
+       }
+       return (6);      /* error*/
+}
+
+
+/*******************************************************
+ *
+ * connect_ps_space() Connect Presentation Space
+ *
+ * Return: 0 = successful
+ *         2 = invalid PSID
+ *         6 = system error
+ *         12 = resource unavailable (occurs with
+ *              IBM Entry Level only)
+ *******************************************************/
+
+int connect_ps_space(void) {
+       int err;
+
+       err = connect_ps();
+       switch (err) {
+              case 1: return(2);
+              case 9: return(6);
+              case 11: return(12);
+              default: return(0);
+       }
+}
+
+/******************************************************
+ *
+ * display_cursor() Display Cursor
+ *
+ * return: 0  = successful
+ *         1  = not connected to session
+ *         6  = system error
+ *         13 = bad PSID
+ *
+ *******************************************************/
+
+int display_cursor(void) {
+       int err;
+
+       err = dspy_cursor();
+
+       switch (err) {
+              case 0: return(0);
+              case 1: return(1);
+              case 2: return (13);
+              case 9: return(6);
+       }
+}
+
+/*******************************************************
+ *
+ * reset_connection() Break connection between program
+ *   and host, and reset HLLAPI interface
+ * Return: 0 = successful
+ *         6 = System error
+ ******************************************************/
+
+int reset_connection(void) {
+
+       if (reset() &gt; 0)
+              return(6);
+       else
+              return(0);
+}
+/* End of File */
+</pre>
+</BODY>
+</HTML>

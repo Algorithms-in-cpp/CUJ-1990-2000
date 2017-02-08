@@ -1,0 +1,60 @@
+
+
+<HTML>
+<HEAD>
+
+<TITLE>February 1994/Coding with Printable Characters</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocfeb.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Algorithms</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Coding with Printable Characters<A name="0055_001E"><A name="0055_001E"></font></h2><P>
+<h3 align="center"><font color="#800000"><A name="0055_0000"><A name="0055_0000">Thad Smith III</font></h3><hr><blockquote><P>
+<P><i><A name="0055_0000"><A name="0055_0000">Thad Smith III is a consultant developing software for embedded measurement, control, and communication applications. He is current moderator of the Fidonet C Echo and chairman of the local chapter for ACM. He can be reached at (303)449-3322 or thadsmith@acm.org.</i></P><P>
+<h4><FONT COLOR="#000080"><A name="0055_001F">Introduction<A name="0055_001F"></FONT></h4></P>
+I recently started exploring efficient ways to represent a binary stream with printable ASCII characters. While high efficiency is not needed for most applications, I found it a good exercise in exploring coding techniques. There are 95 printable ASCII characters, including space, which can be used, but I chose to exclude spaces, since spaces at the beginning or end of a line might get lost (or added!). That left 94 characters.<P>
+Ninety-four characters could easily represent six bits (64 values), but seemed wasteful. What could I represent with two characters? That would give 94*94 = 8,836 combinations, which would nicely hold 13 bits (2<SUP>13</SUP> = 8,192) &#151; a good fit. Then I asked the opposite question: how large a character set was needed to represent 13 bits in two characters? That would be the square root of 8,192, which is just over 90.5. I chose the 91 consecutive ASCII characters from <I>!</I> through <I>{</I>. <A href="list1.htm">Listing 1</a>
+shows how the 13-bit values were coded into two characters. <A href="list2.htm">Listing 2</a>
+shows how the characters were translated back to the original 13 bits.<P>
+The harder part was grouping the input into 13-bit groups when encoding, then distributing the 13 bits into eight-bit bytes on output when decoding. The efficiency for this conversion is 13/16, since 13 bits are coded into 16 bits (assuming eight-bit characters), not counting the overhead of block start, block stop, and newlines. Later, someone suggested the challenge of writing an efficient encoder program. I knew that the 13/16 conversion program was fairly efficient, but wondered if I could do better. I could.<P>
+The most efficient implementation would use all of the combinations of the character set, which I restricted to the 94 graphic characters. The amount of information in one such character is log2(94) = ln(94)/ln(2) = 6.55458+ bits. I was using 8*13/16 = 6.5 bits per encoded character. Using the notation of input bits per output bits, the efficiency limit for 94 characters is log<SUB>2</SUB>(94)/8 = 0.8193236+.<P>
+I decided to use continued fractions to help find a higher encoding ratio. Continued fractions are a tool which mathematically suggests an efficient rational approximation of any real value. Real values are expressed by a series of compounded fractions, as shown by the example in <A href="fig1.htm">Figure 1</a>.
+ By truncating the series at any point, we get a rational approximation to the exact value, with more terms offering better approximations. In the case of p, we get the series 3/1, 22/7, 333/106, and 355/113 as the first four approximations, alternately above and below the true value.<P>
+The expansion of log<SUB>2</SUB>(94)/8, our ideal encoding ratio, is shown in <A href="fig2.htm">Figure 2</a>.
+ It expands to the series 0, 1, 4/5, 5/6, 9/11, 59/72, 68/83, ... We must chose a ratio from the "low" series 0, 4/5, 9/11, 68/83. I chose to use the ratio 9/11 = .81818..., since it was very close to the theoretical value, yet had a chance of reasonable implementation.<P>
+<h4><FONT COLOR="#000080"><A name="0055_0020">Converting the Data<A name="0055_0020"></FONT></h4></P>
+With a 9/11 encoder, nine eight-bit bytes are converted to an eleven-character representation. While that could be done in a straightforward manner, using multi-precision arithmetic to work with a 72-bit number, it would require a fair amount of code and processing time.<P>
+I chose a method for which most of the input is converted in 32-bit chunks. <A href="fig3.htm">Figure 3</a>
+shows a diagram of the way that the bits are redistributed on the way from nine bytes to eleven characters. A 32-bit value (from four consecutive input bytes) is broken into two parts: one part is converted into a four-character value  (maximum of 94<SUP>4</SUP>); the second part, which I call a prefix, is in the range 0 to 55 (2<SUP>32</SUP>/94<SUP>4</SUP> = 55.01+). Doing this twice converts eight bytes to eight characters plus two values in the range 0 to 55.<P>
+After the two four-byte blocks are converted into eight characters, there are three remaining values to encode: two prefixes, in the range 0 to 55, and the ninth byte, in the range 0 to 255. Combining them into a single number yields 56*56*256 = 802,816 values, which is less than 94<SUP>3</SUP> = 830,584, allowing them to be converted into three more characters, making eleven altogether. Whew!<P>
+<h4><FONT COLOR="#000080"><A name="0055_0021">Faster Math<A name="0055_0021"></FONT></h4></P>
+Initially, the 32-bit value was separated into the prefix value and four-character encoded value by dividing by 94<SUP>4</SUP> = 78,074,896, where the quotient was the prefix and the remainder was the value to be encoded into four characters.<P>
+I added a refinement by changing this divisor slightly. Keeping the maximum prefix at 55, I could lower the maximum value needed to be encoded into the four characters. Doing this, I chose a divisor of 1,171 * 2<SUP>16</SUP> (76,742,656), with the advantage that the encoder's 32-bit division by 94<SUP>4</SUP>, which is slow on a 16-bit computer, was replaced by a 16-bit division.<P>
+The code in <A href="list3.htm">Listing 3</a>
+shows the calculation to encode the nine input bytes into the eleven output characters. The calculations are done slightly out of order, producing the two blocks of four characters first, even though they are last in the output buffer (I wanted to keep the output in the same significance order as the input).<P>
+Inside the <I>for</I> loop, the 32-bit variable block is first assigned to a value from four input bytes. It is then divided into the prefix value <I>q</I> and a remainder. The remainder is then further broken into two-character groups, which are in turn broken into base-94 digits which are translated to characters in the ASCII range <I>!</I> through ~. The two values of <I>q</I> in the loop are combined into <I>qb</I> by a base-56 to binary conversion, resulting in a value 0 to 3,135.<P>
+After the loop, <I>qb</I> is combined with the ninth byte (from the first position) via shift and OR, then that result is divided into three output characters. Since the maximum value of a block on the last calculation is 802,815, it can be represented by two base-94 characters plus one base-91 character. The short range character is placed first in the 11-character block.<P>
+<h4><FONT COLOR="#000080"><A name="0055_0022">Encoding and Decoding<A name="0055_0022"></FONT></h4></P>
+<A href="list7.htm">Listing 7</a>
+contains the function <I>decode_11_to_9</I>, which shows the code to convert from the eleven-character format, dubbed BAZ911, to the nine original bytes. It reverses the process of the encoding procedure by converting the first three characters into the two prefix codes and the first byte, then converts the two blocks of 4 characters, plus associated prefix, into 4 bytes each.<P>
+Routines <I>ebaz_data</I> and <I>dbaz_data</I> use the low-level block encode and decode routines to encode and decode a data stream of arbitrary length. They are called with successive blocks of data, of any size, which are combined and converted, with the output being passed off to the output function specified in the initialization call. This technique allows the stream encoding and decoding to be embedded into various applications.<P>
+These functions also form the encoded output into fixed-length lines (if desired), provide/detect a flag for the end of data, and generate/check a CRC for data integrity.<P>
+Once a conversion has started, some way is needed to designate the end of conversion. EBAZ. C uses an invalid leading character, <I>}</I>, as a flag to designate end of conversion. It is followed by a character whose encoded value is the number of following bytes, from 0 to 14. The actual number of encoded bytes following is two greater, since the 16-bit CRC is included.<P>
+To make the decoding process easier, the minimum size of encoded data is eleven characters, allowing a full block of eleven characters of encoded data to be assembled before testing for end of data. The encoded output is made just long enough to carry the needed bytes  only data streams of four bytes or less need to be padded with unused information. By retaining at least five bytes for use of the next <I>ebaz_data</I> call, the final ensemble, starting with <I>}</I>, will be at least eleven characters long, thereby simplifying the decoding process.<P>
+<h4><FONT COLOR="#000080"><A name="0055_0023">The Code<A name="0055_0023"></FONT></h4></P>
+<A href="list4.htm">Listing 4</a>
+shows BAZ.H, the header for the encoding and decoding functions. <A href="list5.htm">Listing 5</a>
+contains BAZCOM.H, a private header for DBAZ.C and EBAZ.C. <A href="list6.htm">Listing 6</a>
+shows EBAZ.C, which contains the stream-level and low-level block encoding. <A href="list7.htm">Listing 7</a>
+shows DBAZ.C, which contain the stream-level and low-level block decoding. <A href="list8.htm">Listing 8</a>
+and <A href="list9.htm">Listing 9</a>
+show CRC16.H and CRC16G.C, respectively, which implement CRC calculations. Finally, <A href="list10.htm">Listing 10</a>
+and <A href="list11.htm">Listing 11</a>
+show BAZ.C and ZAB.C, respectively, which demonstrate the use of EBAZ and DBAZ to encode and decode files. The programs should work in any Standard C environment using the ASCII character set and eight-bit characters.<P>
+I donate the code to the public domain, so it can be incorporated into your software, including commercial software, without need for licensing.<P>
+<h4>Sidebar: <a href="sidebar1.htm">"Some Printable Encoding Background"</a></h4>
+
+<h4><a href="../../../source/1994/feb94/smith.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

@@ -1,0 +1,154 @@
+
+
+
+<HTML>
+<HEAD>
+
+<TITLE>May 1991/Standard C</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocmay.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Columns</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Standard C<A name="0113_0090"><A name="0113_0090"></font></h2><P>
+<h3 align="center"><A name="0113_0000"><A name="0113_0000">Build Your Own Locales</h3><P>
+<h3 align="center"><font color="#800000">P.J. Plauger</font></h3><hr><blockquote><P>
+<P><i><A name="0113_0000"><A name="0113_0000">P.J. Plauger is senior editor of The C Users Journal. He is secretary of the ANSI C standards committee, X3J11, and convenor<I></I> <I></I>of the ISO C standards committee, WG14. His latest book is Standard C, which he co-authored with Jim Brodie. You can reach<I></I> <I></I>him at pjp@plauger.uunet.</i></P><P>
+For the past two months, I have been discussing the header &lt;<I>locale.h</I>&gt;. Last month, I discussed many of the details of implementing the two functions declared in this header &#151; <I>localeconv</I> and <I>setlocale</I>. I showed the code needed to set up the <I>"C"</I> locale and save it when the locale changes. I also showed how <I>setlocale </I>picks and chooses categories from among the locales in memory.<P>
+None of that code lets you switch to new locales not already in memory. That takes considerably more effort. Few implementations of Standard C have so far gone to that effort. Most implementations simply let you switch between the <I>"C"</I> locale and the default locale <I>" "</I>. (The default locale is usually the same as the "<I>C</I>" locale.)<P>
+I have written the code needed to support an open-ended set of locales. I simply excised any hooks into that code last month to keep the column to a manageable length. My goal this month is to describe how this additional code lets you define your own locales. I won't go into details about the code here &#151; there's too much to present in this column. Instead, I focus on its external appearance and the services it provides.<P>
+<h4><FONT COLOR="#000080"><A name="0113_0091">The Approach<A name="0113_0091"></FONT></h4></P>
+A locale should be easy to define. All sorts of people might have occasion to define part or all of a locale. Different groups may want to:<P>
+<UL><li>print dates and times in the local language, using the local conventions</li>
+<li>change the decimal point character used for reading, converting, and </li>
+<li>specify the local currency format and symbols</li>
+<li>specify peculiar collating sequences</li>
+<li>add letters, punctuation, or control characters to the character classes defined by the functions in <br>&lt;<I>ctype. h</I>&gt;</li>
+<li>alter the encodings of multibyte characters and wide characters</li></UL>
+I list these changes roughly in order of increasing sophistication. Almost anybody might want to change month and weekday names to a different language. A few might undertake to define a special collating sequence. Only the bravest would consider changing to a new multibyte-character encoding. (It might not agree with the string and character literals produced by the translator, for one thing.) Nevertheless, none of these operations should require a change in the Standard C library to pull off.<P>
+My goal, therefore, was to contrive a way that ordinary citizens can define a new locale and introduce it to a C program at runtime. The program must, of course, be one that calls <I>setlocale</I> under some circumstances. And the program must make use of the information altered by such a call. Given those obvious prerequisites, the Standard C library should assist program and user in agreeing on locale specifications.<P>
+My approach was to introduce two environment variables and a file format. The environment variables are:<P>
+<UL><li><I>LOCALE</I>, which specifies the name of the default locale that is selected on a call such as <I>setlocale(LC_ALL</I>,<I>" "</I>)</li>
+<li><I>LOCFILE</I>, which specifies the name of the text file to read if <I>setlocale </I>encounters a locale name not already represented in memory</li></UL>
+The file format specifies how you prepare the text file so that it defines all of the additional locales you want to add.<P>
+A program called <I>xxx</I> might, for example, begin by executing the call <I>setlocale(LC_ALL</I>,<I> ""</I>) as just shown. Under MS-DOS, you can invoke it from a batch file that looks like:<P>
+<pre>set  LOCFILE c:\locales\mylocs.loc
+set  LOCALE USA
+xxx</pre>
+That causes <I>xxx</I> to read the file <I>c:\locales\mylocs.loc</I> in search of a locale named <I>USA</I>. Assuming the program can find that locale and successfully read in its specification, the program <I>xxx</I> then executes with its behavior adapted to the <I>USA</I> locale.<P>
+Change <I>USA</I> to <I>France</I> in the batch script and the program searches out a different locale in the same file. Or you can change the file name specified by <I>LOCFILE</I> and always ask for the generic <I>NATIVE</I> locale. Both are sensible ways to tailor the default locale.<P>
+A more sophisticated program might use more than just the default locale. It could determine categories and the names of locales in various ways, then oblige <I>setlocale</I> to chase them down in the locale file. Conceivably, it could even rewrite the contents of the locale file while it is running, to build new locales on the fly. In any of these cases, you certainly want to defer binding locales to programs as late as possible.<P>
+<h4><FONT COLOR="#000080"><A name="0113_0092">Specifying A Locale<A name="0113_0092"></FONT></h4></P>
+So what can you specify as part of a locale? The C Standard <I>spells out</I> the contents of the monetary and numeric categories in considerable detail. It <I>suggests</I> the information required to describe several other categories. And it <I>permits</I> an open-ended set of additional categories that do not affect the behavior of the Standard C library. I ignore the last category for the moment. Let's look at what is required to satisfy the C Standard.<P>
+A locale consists of an assortment of data types. Some are numeric values, some are strings, and some are tables of varying formats. We need to give each entity in a locale a distinct name. You use these names when you write the locale file to specify which entities you wish to redefine. For the members of <I>struct lconv</I>, I use the member name as the entity name within the locale file. In other cases, I had to invent entity names.<P>
+A locale file is organized into a sequence of text lines. You begin the definition of the <I>USA</I> locale, for example, with the line:<P>
+<pre>LOCALE USA</pre>
+Each line that follows begins with a keyword from a predefined list. Use <I>NOTE</I> to begin a comment and <I>SET</I> to assign a value to an uppercase letter, as in:<P>
+<pre>NOTE  The following sets D(elta)
+to 'a'-'A"
+SET   D  'a' - 'A'</pre>
+You can then use <I>D</I> as a term in an expression.<P>
+If the keyword is an entity name, you specify its value on the remainder of the line. Some examples are:<P>
+<pre>currency_symbol  $
+int_curr_symbol  "USD "
+frac_digits      2</pre>
+The quotes around a string value are optional. You need them only if you want to include a space as part of the string. You can write a fairly ornate expression wherever a numeric value is required. I will describe expressions in detail later.<P>
+The initial values in each new locale match those in the <I>"C"</I> locale. That typically saves a lot of typing. All you really have to specify is what you want changed from the <I>"C"</I> locale. Write more only if you want more thorough documentation of a locale.<P>
+<h4><FONT COLOR="#000080"><A name="0113_0093">Numeric Values And Strings<A name="0113_0093"></FONT></h4></P>
+You need to specify <I>numeric values</I><I> </I>for some members of <I>struct lconv. </I>These include the <I>LC_MONETARY </I>information:<P>
+<pre>frac_digits
+int_frac_digits
+n_cs_precedes
+n_sep_by_spaces
+n_sign_posn
+p_cs_precedes
+p_sep_by_spaces
+p_sign_posn</pre>
+Each of these occupies a <I>char</I> field. A value of <I>CHAR_MAX</I> (defined in &lt;<I>limits.h</I>&gt;) indicates that no meaningful value is provided.<P>
+The value of the macro <I>MB_CUR_MAX </I>can change with the <I>LC_CTYPE</I> category. I adopted the entity name:<P>
+<pre>mb_cur_max</pre>
+for the <I>char</I> data object that holds the value of this macro.<P>
+You need to specify <I>strings</I> for some members of <I>struct lconv</I>. These include the <I>LC_MONETARY</I> information:<P>
+<pre>currency_symbol
+int_curr_symbol
+mon_decimal_point
+mon_thousands_sep
+negative_sign
+positive_sign</pre>
+and the <I>LC_NUMERIC</I> information:<P>
+<pre>decimal_point
+thousands_sep</pre>
+You need to specify <I>numeric strings </I>for some members of <I>struct lconv. </I>These include:<P>
+<pre>grouping      (LC_NUMERIC)
+mon_grouping  (LC_MONETARY)</pre>
+The value of each character specifies how many characters to group as you move to the left away from the decimal point. A value of zero terminates the string and causes the last grouping value to be repeated indefinitely. A value of <I>CHAR_MAX</I> terminates the string and specifies no additional grouping. To group digits by twos, by fives, and then by threes, for example, you want to create the string <I>"\2\5\3"</I>. In the locale text file, however, you write:<P>
+<pre>mon_grouping 253</pre>
+Each digit is replaced by its numeric value.<P>
+<h4><FONT COLOR="#000080"><A name="0113_0094">Time Information<A name="0113_0094"></FONT></h4></P>
+I introduced a handful of additional strings to specify information for the <I>LC_TIME</I> category. Each of these is divided into fields. I couldn't imagine any character that would serve universally as a field delimiter. So I adopted the convention that the first character of the string delimits the start of the first field. The start of each subsequent field is delimited with that character. That way, you can choose a character that doesn't collide with any characters in the fields.<P>
+As an example, the <I>am_pm</I> entity specifies what the function <I>strftime</I> in &lt;<I>time.h</I>&gt; prints for the AM/PM indicator. A common definition for this string is <I>:AM:PM</I>. A colon delimits the start of each field.<P>
+Here are the <I>LC_TIME</I> entity names with some possible string values:<P>
+<pre>am_pm :AM:PM
+days  :Sunday:Monday:Tuesday\
+:Wednesday:Thursday:Friday\
+:Saturday
+dst_rules :032402:102702
+months:Jan:January:Feb:February\
+:Mar:March:Apr:April:May:May\
+:Jun:June:Jul:July:Aug:August\
+:Sep:September:Oct:October\
+:Nov:November:Dec:December
+time_zone :EST:EDT:+0300</pre>
+Note the use of the backslash to continue lines, just as in C source code.<P>
+The third field of <I>time_zone</I> counts <I>minutes</I> from UTC (Greenwich Meridian Time), not hours. That allows for the various time zones around the world that are not an integral number of hours away from UTC. If this string is empty, the time functions look for its contents in the environment variable <I>TIMEZONE</I>. If that variable is also absent, the functions then look for the widely-used environment variable <I>TZ</I>. That string takes the form <I>ESTO5EDT</I>, where the number in the middle counts hours West of UTC.<P>
+The string <I>dst_rules</I> is even more ornate. It takes one of two general forms:<P>
+<pre>(YY)MMDD+WHH
+(YY)MMDD-WHH</pre>
+Here, <I>YY</I> in parentheses is the number of years since 1900, <I>MM</I> is the month number, <I>DD</I> is the day of the month, <I>W</I> is the number of weekdays past Sunday, and <I>HH</I> is the hour number in a 24-hour day. +<I>W</I> advances to the next such day of the week on or after the date <I>MMDD</I> in the year in question. <I>-W</I> backs up to the next previous such day of the week before the specified date. You can omit the fields that specify year, day of the week, and hour.<P>
+The fairly simple example above calls for Daylight Savings Time to begin on 24 March (<I>MMDD</I> = 0324) at 02:00 (<I>HH</I> = 02) and to end on 27 October at the same time. To switch on the last Sundays in March and October each year since 1990, write <I>:(90)0401-002:1001-002</I>. (Years before 1990 don't correct for Daylight Savings Time, by this set of rules.)<P>
+If you live below the Equator, the year <I>begins</I> in Daylight Savings Time. You can capture that nicety by adding a third reversal field, as in <I>:0101:030202:100202</I>. You can, in fact, write an arbitrary number of reversal dates throughout the year, each qualified by a starting year (<I>HH</I>) for the rule to take effect. You could thus capture the entire history of law governing Daylight Savings Time in a given state or country, if you choose.<P>
+<h4><FONT COLOR="#000080"><A name="0113_0095">Tables<A name="0113_0095"></FONT></h4></P>
+The functions declared in &lt;<I>ctype.h</I>&gt; are all organized around <I>translation tables</I>. (See <I>Standard C, CUJ</I>, October and November 1990.) Each is an array of 257 <I>shorts</I> that accepts subscripts in the interval [--1, 255]. In the locale file, you cannot alter the contents of element --1, which translates the value <I>EOF</I> (defined in &lt;<I>stdio. h</I>&gt;).<P>
+The entity names for these tables are:<P>
+<pre>ctype
+tolower
+toupper</pre>
+You initialize these tables an element at a time or a subrange at a time. Here, for example, is a complete specification for the <I>tolower</I> table, using ASCII characters plus the Swedish <I>'A':</I><P>
+<pre>tolower[0 : 255]      $@
+tolower['A' : 'Z']    $$ + 'a' - 'A'
+tolower['' ]  ''</pre>
+The special term <I>$@</I> is the value of the index for each element in the subrange. (Read the term as "where it's <I>at</I>.") The special term <I>$$</I> is the value of the previous contents of the table element. (Read the term as "what its <I>value</I> is.") Note that you can write a simple (single-character) character literal to specify its code value, and that you can add and subtract a sequence of terms. The first two lines are, of course, optional. You inherit them from the <I>"C"</I> locale.<P>
+<h4><FONT COLOR="#000080"><A name="0113_0096">State Machines<A name="0113_0096"></FONT></h4></P>
+Several functions in this implementation of the Standard C library use state tables to define their behavior. That provides the maximum in flexibility with moderate performance. It also lets you specify the behavior of these functions in a locale using notation very similar to that for the &lt;<I>ctype.h</I>&gt; tables above. Here are the affected functions:<P>
+<UL><li><I>strcoll</I> and <I>strxfrm</I> map a character string to another character string, to define a collating sequence.</li>
+<li><I>mbtowc</I> and <I>mbstowcs</I> map a multibyte string to a wide-character string.</li>
+<li><I>wctomb</I> and <I>wcstombs</I> map a wide-character string to a multibyte string.</li></UL>
+You can specify up to 16 state tables for each of three entity names:<P>
+<pre>collate
+mbtowc
+wctomb</pre>
+I describe these tables in greater detail in conjunction with the functions that use them (in future columns). For now, I show only a simple example. Here is how you can write the specification for one of the simple state tables in the <I>"C"</I> locale. It makes any of the above functions perform a one-to-one mapping:<P>
+<pre>mbtowc[0, 0]    $0
+mbtowc[0, 1:255]   $@ $F $I $0 $0</pre>
+The first line defines element zero of state table zero for <I>mbtowc</I>. It tells the function to consume a null element when it sees one, ending the translation. That automatically causes a null output element to be generated. The second line defines the remaining elements of state table zero. It tells the function that each of the character codes 1 to 255 maps to itself (<I>$@</I>). The function should Fold this mapped value into the accumulated value (<I>$F</I>), consume the Input (<I>$I</I>), and write the accumulated value as the Output (<I>$0</I>). The successor state is state zero (<I>$0</I>).<P>
+You can, of course, perform much more ambitious translations than this one.<P>
+<h4><FONT COLOR="#000080"><A name="0113_0097">Expressions<A name="0113_0097"></FONT></h4></P>
+That's the list of entities you can specify in a locale. Now you can understand why certain funny terms can appear in expressions. An expression itself is simply a sequence of terms that get added together. The last example above shows that you can add terms simply by writing them one after the other. The plus signs are accepted in front of terms purely as a courtesy so that expressions read better.<P>
+You can write lots of different terms:<P>
+<UL><li>Decimal, octal, and hexadecimal numbers follow the usual rules of C literals. The sequences <I>10, 012</I>, and 0<I>xA</I> all represent the decimal value ten.</li>
+<li>A plus sign before a term is ignored. A minus sign negates the term that immediately follows.</li>
+<li>Single quotes around a character yield the value of the character, just as for a character literal in C source code.</li>
+<li>An uppercase letter has the value last set by a <I>SET </I>command. All such variables are set to zero at program startup.</li></UL>
+In addition to these terms, a dollar sign is the first character of a two-character name that has a special meaning, as outlined below. Here are the special terms signaled by a leading dollar sign:<P>
+<UL><li><I>$$</I> &#151; the current value stored in a table element.</li>
+<li><I>$@</I> &#151; the index of a table element. <I>$$</I> and <I>$@</I>, if present, must precede any other terms in an expression.</li>
+<li><I>$</I>^ &#151; the value of the macro <I>CHAR_MAX</I>.</li>
+<li>[<I>$a $b $f $n $r $t $v</I>] &#151; the values of the character escape sequences, in order, ['\a' '\b' '\f' '\n' '\r' '\t' '\v'].</li>
+<li>[<I>$A $C $D $H $L $M $P $S $U $W</I>] &#151; the character-classification bits used in the table <I>ctype</I>. These specify, in order: extra alphabetics, extra control characters, digits, hexadecimal digits, lowercase letters, motion-control characters, punctuation, space characters, uppercase letters, and extra white-space characters. (See the description of &lt;<I>ctype.h</I>&gt; in <I>Standard C, CUJ,</I> July 1990.)</li>
+<li>[<I>$0</I> <I>$1 $2 $3 $4 $5 $6 $7</I>] &#151; the successor states 0 through 7 in a state-table element. (No symbols are provided for successor states 8 through 15.)</li>
+<li>[<I>$F $I $0 $R</I>] &#151; the command bits used in a state-table element. These specify, in order: Fold translated value into the accumulated value, consume Input, produce Output, and Reverse bytes in the accumulated value.</li></UL>
+<h4><FONT COLOR="#000080"><A name="0113_0098">Conclusion<A name="0113_0098"></FONT></h4></P>
+I conclude with an example of a complete locale. <A href="fig1.htm">Figure 1</a>
+shows the <I>USA</I> locale with sensible values for all the fields in <I>struct lconv</I>. It makes no changes to the collating sequence or multibyte encoding specified in the <I>"C"</I> locale.<P>
+I can't say for certain that this scheme for specifying locale files is adequate. It seems to work well for a number of examples that I have contrived, but I have so far received little feedback from others. All I can say for now is that it's a start.<P>
+</BLOCKQUOTE>
+</BODY>
+</HTML>

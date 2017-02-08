@@ -1,0 +1,565 @@
+<HTML><HEAD>
+<TITLE>November 1993/DMA Controller Programming in C/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1<I> DMA control program</I></A></h4>
+<pre>/*
+record.c - Single channel recorder for DAQ-16
+Written by Robert Watson
+(C) Copyright Robert Watson 1993
+*/
+
+#include &lt;conio.h&gt;
+#include &lt;ctype.h&gt;
+#include &lt;dos.h&gt;
+#include &lt;fcntl.h&gt;
+#include &lt;io.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;sys\stat.h&gt;
+
+#include "vds.h"
+
+#define MAXFILENAME 128
+char FileName [MAXFILENAME];
+int File;
+int Channel;
+long SampleFrequency;
+
+void interrupt (far * OldVectors[16])();
+
+/* DMA controller mode values */
+#define DMAMODE_AUTOINIT  0x10
+#define DMAMODE_WRITE     0x04
+#define DMAMODE_SINGLE    0x40
+
+/* Size of DMA buffers in bytes */
+unsigned DMABufferSize = 0x4000;
+VDS_DDS DDS;
+
+/* DAQ-16 configuration parameters */
+#define INTCHANNEL  9
+#define DMACHANNEL1 5
+#define DMACHANNEL2 6
+#define DAQ16PORT    0x300
+
+/* SignOn - Writes initial signon message */
+void SignOn (void) {
+   clrscr();
+   puts ("RECORD");
+   puts ("Single channel recorder for DAQ-16 A/D/A "
+         "interface.");
+   puts ("Written by Robert Watson");
+   puts ("(C) Copyright Robert Watson 1993.\n");
+}
+
+/* PrintHelp - Prints help message if command line is
+   in error */
+void PrintHelp (void) {
+   puts ("Syntax: record [-cn] [-fnn] filename");
+   puts (" where -c indicates the channel number and "
+         "n is a single digit");
+   puts ("           in the range of 0 through 7.");
+   puts ("        -f is the recording sample frequency "
+         "(in hertz) and nn is");
+   puts ("           an unsigned integer in the range "
+         "of 1 to 100000");
+   puts ("        filename is the name of the output "
+         "file.\n");
+}
+
+/* ProcessArgs - Interpret command line arguments */
+int ProcessArgs (int argc, char * argv[]) {
+   int i,j;
+
+   FileName[0] = 0;
+   File = -1;
+   Channel = 0;
+   Sample Frequency = 48000;
+
+   if (argc == 1) return (1);
+
+   for (i=1; i&lt;argc; i++) {
+      if (argv[i][0] == '-') {
+         switch (argv[i][1]) {
+            case 'c' :
+            case 'C' :
+               Channel = argv[i][2] - '0';
+               if ((Channel &lt; 0) || (Channel &gt; 7) || (argv[i][3] != 0)) {
+                  printf ("Error - Illegal channel "
+                          "number: %s\n", argv[i]);
+                  return (1);
+               }
+               break;
+            case 'f' :
+            case 'F' :
+               for (j=2; isdigit(argv[i][j]); j++);
+                  if (argv[i][j] || (strlen(argv[i])&gt;8)) {
+                     printf ("Error - Illegal frequency "
+                             "value: %s\n", argv[i]);
+                     return (1);
+                  }
+               SampleFrequency = atol (argv[i]+2);
+               if (SampleFrequency &gt; 100000L) {
+                  printf ("Error - Frequency value too "
+                          "large: %s\n", argv[i]);
+                  return (1);
+               }
+               break;
+            default :
+               printf ("Error - Unknown switch "
+                       "argument: %s\n", argv[i]);
+               return (1);
+         }
+      } else strcpy (FileName, argv[i]);
+   }
+
+   if (strlen(FileName) == 0) {
+      printf ("Error - Output file name must be "
+              "specified.\n");
+      return (1);
+   }
+
+   return (0);
+}
+
+/* Queue functions used to communicate between
+   application and interrupt handler */
+
+typedef struct QTAG {
+   char * Buffer;
+   long Address;
+   struct QTAG * Next;
+} QueueNode;
+
+QueueNode QueueNodeList[8];
+
+QueueNode * EmptyQueue; /* Queue of empty buffers */
+QueueNode * Queue;       /* Queue of full buffers */
+
+/* EnqEmpty - Place an empty buffer in a queue of
+   empty buffers. Function is reentrant and can be
+   called from application time code, not from an
+   interrupt handler. */
+void EnqEmpty (QueueNode * Node) {
+   asm cli
+   Node-&gt;Next = EmptyQueue;
+   EmptyQueue = Node;
+   asm sti
+}
+
+/* DeqEmpty - Remove an empty buffer from a queue of
+   empty buffers. Function is NOT reentrant and must
+   be called free an interrupt handler or without
+   an active interrupt. */
+QueueNode * DeqEmpty (void) {
+   QueueNode * n;
+
+   if (!EmptyQueue) return (NULL);
+   n = EmptyQueue;
+   EmptyQueue = n-&gt;Next;
+   n-&gt;Next = NULL;
+   return (n);
+}
+
+/* Deque - Remove a full buffer from a queue of full
+   buffers. Function is reentrant and can be called
+   from application time code only, not an interrupt
+   handler. */
+QueueNode * Deque (void) {
+   QueueNode *n,*p;
+
+   asm cli
+   p = 0;
+   n = Queue;
+   if (Queue) {
+      while (n-&gt;Next) {
+         p = n;
+         n = p-&gt;Next;
+      }
+      if (p) p-&gt;Next = 0;
+      else Queue = 0;
+   }
+   asm sti
+   return (n);
+}
+
+/* Enque - Place a full buffer in a queue of full
+   buffers. Function is not reentrant and can be
+   called from an interrupt handler only. */
+void Enque (QueueNode * Node) {
+   if (Queue)
+      Node-&gt;Next = Queue;
+   else Node-&gt;Next = 0;
+
+   Queue = Node;
+}
+
+/* QueueEmpty - Returns non-zero if queue of full
+   buffers is empty. Function is reentrant and can
+   be called from application time or interrupt time
+   code. */
+int QueueEmpty (void) {
+   return (!Queue);
+}
+
+/* Port addresses for various DMA I/O ports */
+unsigned DMAPagePorts[8] = {0x00, 0x83 0x81, 0x82,
+                            0x88, 0x8B, 0x89, 0x8A};
+unsigned DMABP(trPorts[8] = {0x0C, 0x0C 0x0C, 0x0C,
+                            0xD8, 0xD8, 0xD8, 0xD8};
+unsigned DMAAddrPorts[8] = {0x00, 0x02 0x04, 0x06,
+                            0xC0, 0xC4, 0xC8, 0xCC};
+unsigned DMAMaskPorts[8] = {0x0A, 0x0A; 0x0A, 0x0A,
+                            0xD4, 0xD4, 0xD4, 0xD4};
+unsigned DMAM0dePorts[8] = {0x0B, 0x0B, 0x0B, 0x0B,
+                            0xD6, 0xD6, 0xD6, 0xD6};
+unsigned DMACountPorts[8] = {0x01, 0x03 0x05, 0x07,
+                             0xC2, 0xC6, 0xCA, 0xCE};
+
+/* SetDMAAddress - Set the address and page registers
+   of a DMA channel to a specified buffer address. */
+void SetDMAAddress (int Channel, long Address) {
+   /* Set page register value */
+   outportb (DMAPagePorts[Channel], Address&gt;&gt;16);
+   /* If 16 bit channel, create word address */
+   if (Channel &gt; 3) Address &gt;&gt;= 1;
+   /* Clear DMA controller byte pointer flip flop */
+   outportb (DMABPtrPorts[Channel], 0);
+   /* Write DMA controller address register */
+   outportb (DMAAddrPorts[Channel], Address);
+   outportb (DMAAddrPorts[Channel], Address&gt;&gt;8);
+}
+
+/* DisableDMA - Disables transfers on a DMA channel */
+void DisableDMA (int Channel) {
+   outportb (DMAMaskPorts[Channel], Channel | 4);
+}
+
+/* EnableDMA - Enable transfers on a DMA channel */
+void EnableDMA (int Channel) {
+   outportb (DMAMaskPorts[Channel], Channel &amp; 3);
+}
+
+/* SetDMAMode - Set the operating mode of a channel */
+void SetDMAMode (int Channel, unsigned Mode) {
+   outportb ( DMAModePorts[Channel],
+              Mode | (Channel &amp; 3));
+}
+
+/* SetDMABufferLength - Set the word count register
+   of a channel to the length of the DMA buffer */
+void SetDMABufferLength (int Channel, long Length) {
+   outportb (DMABPtrPorts[Channel], 0);
+   // Convert byte size to word size if 16 bit */
+   if (Channel &gt; 3) Length &gt;&gt;= 1;
+   Length--; /* Word count -1 */
+   outportb (DMACountPorts[Channel], Length);
+   outportb (DMACountPorts[Channel], Length&gt;&gt;8);
+}
+
+/* ConfigureDMAChannel - Initialize a DMA channel in
+   preparation for subsequent transfers. */
+void ConfigureDMAChannel (int Channel, unsigned Mode,
+                         long Address, long Length) {
+   DisableDMA (Channel);
+   SetDMAMode (Channel, Mode);
+   SetDMAAddress (Channel, Address);
+   SetDMABufferLength (Channel, Length);
+   EnableDMA (Channel);
+}
+
+/* InstallInterrupt - Install an interrupt handler */
+void InstallInterrupt (int IntNum,
+                     void interrupt (far *isr)()) {
+
+   int IntMask;
+
+   if (IntNum &lt; 8) {
+      OldVectors[IntNum] = getvect (IntNum+8);
+      setvect (IntNum+8, isr);
+      asm cli
+      IntMask = inportb (0x20);
+      IntMask &amp;= ~(1&lt;&lt;IntNum);
+      outportb (0x20, IntMask);
+      asm sti
+   } else {
+      OldVectors[IntNum] = getvect (IntNum+0x68);
+      setvect (IntNum+0x68, isr);
+      asm cli
+      IntMask = inportb (0xA0);
+      IntMask &amp;= ~(1&lt;&lt;(IntNum-8));
+      outportb (0xA0, IntMask;
+      asm sti
+   }
+}
+
+/* RemoveInterrupt - Reverse the action of
+   InstallInterrupt  */
+void RemoveInterrupt (int IntNum) {
+   int IntMask;
+
+   if (IntNum &lt; 8) {
+      setvect (IntNum+8, OldVectors[IntNum]);
+      asm cli
+      IntMask = inportb (0x20);
+      IntMask |= 1&lt;&lt;IntNum;
+      outportb (0x20, IntMask);
+      asm sti
+   } else {
+      setvect (IntNum+0x68, OldVectors[IntNum]);
+      asm cli
+      IntMask = inportb (0xA0);
+      IntMask |= 1&lt;&lt;(IntNum-8);
+      outportb (0xA0, IntMask);
+      asm sti
+   }
+}
+
+/* AcknowledgeInterrupt - Send an interrupt acknowledge
+   command to the interrupt controller(s)  */
+void AcknowledgeInterrupt (int IntNum) {
+   if (IntNum &gt;= 8) {
+      outportb (0xA0, 0x20);
+      outportb (0xA0, 0x0B);
+      if (!inportb (0xA0))
+         outportb (0x20, 0x20);
+   } else outportb (0x20, 0x20);
+}
+
+/* SetDAQ16Frequency - Set the sample rate of the
+   DAQ-16 clock generator  */
+void SetDAQ16Frequency (unsigned Port, long Freq) {
+   long TimeConst;
+   unsigned N1, N2;
+   if ((Freq &lt; 1) || (Freq &gt; 100000)) return;
+   TimeConst = 10000000/Freq;
+   N1 = 2;
+   while ((TimeConst/N1) &gt; 0xFFFFL) N1++;
+   N2 = TimeConst/N1;
+   outportb (Port+0x0F, 0x34);
+   outportb (Port+0x0C, N1);
+   outportb (Port+0x0C, N1&gt;&gt;8);
+   outportb (Port+0x0F, 0x74);
+   outportb (Port+0x0D, N2);
+   outportb (Port+0x0D, N2&gt;&gt;8);
+}
+
+/* DMAInterruptHandler - Interrupt handler for DMA
+   terminal count interrupts  */
+
+int BufferOverrun; /* True if DMA buffer overruns */
+/* The following variables store the values of the
+   two DMA buffers currently in use.  */
+QueueNode * DMAChannel1QNode;
+QueueNode * DMAChanne12QNode;
+
+void interrupt DMAInterruptHandler () {
+   int Status;
+
+   /* Check which DMA port has reached TC */
+   Status = inport (DAQ16PORT);
+
+   if (Status &amp; 0x0800) {
+      if (DMAChannel1QNode) {
+         Enque (DMAChannel1QNode);
+         DMAChannel1QNode = DeqEmpty ();
+         if (DMAChannel1QNode) {
+            SetDMAAddress (DMACHANNEL1,
+                           DMAChannel1QNode-&gt;Address);
+         } else {
+            BufferOverrun=1;/* Report buffer overrun */
+            outport(DAQ16PORT, 0); /* Disable DAQ-16 */
+         }
+      }
+   } else if (DMAChannel2QNode) {
+      Enque (DMAChannel2QNode);
+      DMAChannel2QNode = DeqEmpty ();
+      if (DMAChannel2QNode) {
+         SetDMAAddress (DMACHANNEL2,
+                        DMAChannel2QNode-&gt;Address);
+      } else {
+         BufferOverrun=1;/* Report buffer everrun */
+         outport(DAQ16PORT, 0); /* Disable DAQ-16 */
+      }
+   }
+
+   AcknowledgeInterrupt [INTCHANNEL);
+}
+
+/* AllocateDMABuffers - Allocates DMA Buffer from VDS,
+   splits the buffer into smaller buffers that are
+   enqueued into the the empty queue. A far winter
+   to each small buffer is created with DPMI functions.
+   Returns non-zero if an error occurs.  */
+int AllocateBuffers (void) {
+   int i;
+   int Error;
+
+   if (!IsVDSAvailable()) {
+      puts (*Error - VDS services are not available!");
+      return (1);
+   }
+
+   DDS.Size = DMABufferSize * 2;
+   if (RequestVDSBuffer (&amp;DDS)) {
+      puts ("Error - unable to allocate DMA buffer.");
+      return (1);
+   }
+
+   EmptyQueue = Queue = NULL;
+   for (i=0; i&lt;(DDS.Size/DMABufferSize); i++) {
+      if (i &gt;= 8) break;
+      QueueNodeList[i].Address = DDS.Address +
+                   (DMABufferSize * (long) i);
+      EnqEmpty (&amp;QueueNodeList[i]);
+   }
+   DMAChannel1QNode = DeqEmpty();
+   DMAChannel2QNode = DeqEmpty();
+
+   printf ("Recording with %u DMA buffers\n", i);
+   return (0);
+}
+
+/* Record - Main loop of application. Initializes DMA,
+   interrupt, and I/O device activity. Sits in loop
+   writing data buffers to a file until the user
+   presses a key or an error occurs. Before returning,
+   DMA, interrupt, and I/O device activity is
+   terminated.  */
+void Record (int File) {
+   long BuffersWritten;
+   char * DiskBuffer;
+   QueueNode * Buff;
+   int Error;
+   int i;
+
+   DiskBuffer = (char *) malloc (DMABufferSize);
+   if (!DiskBuffer) {
+      puts ("Error - unable to allocate real mode disk "
+            "buffer!");
+      return;
+   }
+
+   if (AllocateDMABuffers()) {
+      free (DiskBuffer);
+      return;
+   }
+
+   BufferOverrun = 0;
+
+   outport (DAQ16PORT, 0); /* Disable DAQ-16 */
+   SetDAQ16Frequency (DAQ16PORT, SampleFrequency);
+
+   DisableVDSTranslation (DMACHANNEL1);
+   DisableVDSTranslation (DMACHANNEL2);
+   ConfigureDMAChannel (DMACHANNEL1, DMAMODE_WRITE |
+                        DMAMODE_SINGLE | DMAMODE_AUTOINIT,
+                        DMAChannel1QNode-&gt;Address, DMABufferSize);
+   ConfigureDMAChannel (DMACHANNEL2, DMAMODE_WRITE |
+                        DMAMODE_SINGLE | DMAMODE_AUTOINIT,
+                        DMAChannel2QNode-&gt;Address, DMABufferSize);
+   InstallInterrupt (INTCHANNEL, DMAInterruptHandler);
+
+   /* Configure DAQ-16 operating mode */
+   outport (DAQ16PORT, 0xB880 | Channel);
+   /* Trigger DAQ-6 operation */
+   outport (DAQ16PORT+2, 0);
+
+   BuffersWritten = 0;
+   do {
+      printf ("\rRecording Time: %lu.",
+              (BuffersWritten * DMABufferSize / 2) /SampleFrequency);
+      if (!QueueEmpty()) {
+         BuffersWritten++;
+         Buff = Deque ();
+         if (!Buff) continue;
+         DDS.Segment = FP_SEG(DiskBuffer);
+         DDS.Offset = FP_OFF(DiskBuffer);
+         DDS.Size = DMABufferSize;
+         if (CopyFromDMABuffer(&amp;DDS,
+                 Buff-&gt;Address-DDS.Address)) {
+            puts ("Error - VDSCopyFromDMABuffer "
+                  "unsuccessful!");
+            break;
+         }
+         EnqEmpty (Buff);
+         Error = write (File, DiskBuffer,
+                       DMABufferSize);
+
+         if (Error != DMABufferSize) {
+            puts ("Error - Disk full!");
+            break;
+         }
+      }
+      if (BufferOverrun) break;
+   } while (!kbhit());
+
+   outport (DAQ16PORT, 0); /* Disable DAQ-16 */
+   DisableDMA (DMACHANNEL1);
+   DisableDMA (DMACHANNEL2);
+   RemoveInterrupt (INTCHANNEL);
+   EnableVDSTranslation (DMACHANNEL1);
+   EnableVDSTranslation (DMACHANNEL2);
+
+   while (!QueueEmpty()) {
+      BuffersWritten++;
+      Buff = Deque ();
+      if (!Buff) continue;
+      DDS.Segment = FP_SEG(DiskBuffer);
+      DDS.Offset = FP_OFF(DiskBuffer);
+      DDS.Size = DMABufferSize;
+      Error = CopyFromDMABuffer (&amp;DDS,
+              Buff-&gt;Address-DDS.Address);
+      EnqEmpty (Buff);
+      if (Error) {
+         puts ("Error - VDSCopyFromDMABuffer " "unsuccessful!");
+         break;
+      }
+      Error = write (File, DiskBuffer, DMABufferSize);
+      if (Error != DMABufferSize) {
+         puts ("Error - Disk full!");
+         break;
+      }
+   }
+
+   if (BufferOverrun)
+      puts ("Error - DMA buffers overrun while "
+            "recording.");
+
+   if (ReleaseVDSBuffer (&amp;DDS))
+      puts ("Error - DMA buffer release was not"
+            "successful.");
+
+   free (DiskBuffer);
+}
+
+/* main - Prints signon message, help message,
+   opens and closes output file, and calls
+   main loop function. */
+int main (int argc, char * argv[]) {
+   SignOn ();
+   if (ProcessArgs (argc, argv)) {
+      PrintHelp ();
+      return (0);
+   }
+
+   File = open (FileName, 0_BINARY | 0_CREAT | 0_RDWR | 0_TRUNC,
+                S_IREAD | S_IWRITE);
+   if (File == -1){
+      printf ("Error - Unable to open file: %s\n",
+              Filename);
+      return (1);
+   }
+
+   Record (File);
+
+   close (File);
+   return (0);
+}
+/* End of File */
+</pre>
+</BODY>
+</HTML>

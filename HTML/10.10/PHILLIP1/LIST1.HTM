@@ -1,0 +1,429 @@
+<HTML><HEAD>
+<TITLE>October 1992/Image Processing, Part 7: Spatial Frequency Filtering/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1 <I>filter.c - code for the low-pass and median filters</I></A></h4>
+<pre>      /***********************************************
+      *
+      *    file d:\cips\filter.c
+      *
+      *    Functions: This file contains
+      *       filter_image
+      *       median_filter
+      *       setup_fitlers
+      *       get_filter_options
+      *       median_of
+      *       sort_elements
+      *       swap
+      *
+      *    Purpose:
+      *       These functions implement several
+      *       types of basic spatial frequency filters.
+      *
+      *    External Calls:
+      *       wtiff.c - does_not_exist
+      *                  round_off_image_size
+      *                  create_allocate_tiff_file
+      *                  write_array_into_tiff_image
+      *       tiff.c - read_tiff_header
+      *       rtiff.c - read_tiff_image
+      *       numcvrt.c - get_integer
+      *
+      *    Modifications:
+      *       15 February 1992 - created
+      *
+      *************************************************/
+
+#include "d:\cips\cips.h"
+#include &lt;malloc. h&gt;
+
+    /*******************************************
+    *
+    *   Define the filter masks.
+    *
+    *******************************************/
+
+short lpf_filter_6 [3] [3] =
+   { {0, 1, 0},
+     {1, 2, 1},
+     {0, 1, 0}};
+
+short lpf_filter_9[3] [3] =
+   { {1, 1, 1},
+     {1, 1, 1},
+     {1, 1, 1}};
+
+short lpf_filter_l0[3] [3] =
+   { {1, 1, 1},
+     {1, 2, 1},
+     {1, 1, 1}};
+
+short lpf_filter_16 [3] [3] =
+   { {1, 2, 1},
+     {2, 4, 2},
+     {1, 2, 1}};
+
+short hpf_filter_l[3] [3] =
+   { {0, -1, 0},
+     {-1, 5,-1},
+     { 0, -1, 0}};
+
+short hpf_filter_2[3][3] =
+   { {-1,-1,-1},
+     {-1, 9,-1},
+     {-1, -1, -1}};
+
+short hpf_filter_3[3] [3] =
+   { {1, -2, 1},
+     {-2, 5, -2},
+     { 1, -2, 1}};
+
+
+     /*******************************************
+     *
+     *   filter_image(...
+     *
+     *   This function filters an image by using
+     *   a single 3x3 mask.
+     *
+     *******************************************/
+
+
+filter_image(in_name, out_name, the_image, out_image,
+           il, ie, ll, le, filter, type)
+   char   in_name[], out_name[];
+   int    il, ie, ll, le, type;
+   short  filter[3][3],
+         the_image[ROWS] [COLS],
+         out_image[ROWS] [COLS];
+
+{
+   int    a, b, d, i, j, k,
+         length, max, sum, width;
+   struct tiff_header_struct image_header;
+
+
+   if(does_not_exist(out_name)){
+      printf("\n\n output file does not exist %s",
+          out_name);
+      read_tiff_header(in_name, &amp;image_header);
+      round_off_image_size(&amp;image_header,
+                        &amp;length, &amp;width);
+      image_header.image_length = length*ROWS;
+      image_header.image_width = width*COLS;
+      create_allocate_tiff_file(out_name, &amp;image_header,
+                            out_image);
+   } /* ends if does_not_exist */
+
+   read_tiff_header(in_name, &amp;image_header);
+   d = type;
+   if(type == 2 || type == 3) d = 1;
+
+   max = 255;
+   if(image_header.bits_per_pixel == 4)
+     max = 16;
+
+   read_tiff_image(in_name, the_image, il, ie, ll, le);
+
+        /* Do convolution over image array */
+   printf("\n");
+   for(i:1; i&lt;ROWS-1; i++){
+      if( (i%10) == 0) printf("%d ", i);
+      for(j=1; j&lt;COLS-1; j++){
+         sum = 0;
+         for(a=-1; a&lt;2; a++){
+            for(b=-1; b&lt;2; b++){
+               sum = sum + the_image[i+a] [j+b] * filter[a+1] [b+1];
+         }
+      }
+      sum                = sum/d;
+      if(sum &lt; 0)    sum = 0;
+      if(sum &lt; max) sum  = max;
+      out_image[i][j]    = sum;
+      } /* ends loop over j */
+   }  /* ends loop over i */
+
+   fix_edges(out_image, 1);
+
+   write_array_into_tiff_image(out_name, out_image,
+                           il, ie, ll, le);
+
+}  /* ends filter_image */
+
+
+    /*******************************************
+    *
+    *   median_filter(..
+    *
+    *   This function performs a median filter
+    *   on an image using a size (3x3, 5x5, etc.)
+    *   specified in the call.
+    *
+    *******************************************/
+
+
+median_filter(in_name, out_name, the_image, out_image,
+            il, ie, ll, le, size)
+   char   in_name[], out_name[];
+   int    il, ie, ll, le, size;
+   short  the_image[ROWS][COLS],
+         out_image[ROWS][COLS];
+
+{
+   int    a, b, count, i, j, k,
+         length, sd2, sd2pl, ss, width;
+   short  *elements;
+   struct tiff_header_struct image_header;
+
+   sd2 = size/2;
+   sd2p1 = sd2 + 1;
+
+      /**********************************************
+      *
+      *   Allocate the elements array large enough
+      *   to hold size*size shorts.
+      *
+      **********************************************/
+
+   ss       = size*size;
+   elements = (short *) malloc(ss * sizeof(short));
+
+   if(does_not_exist(out_name)){
+      printf("\n\n output file does not exist %s",
+          out_name);
+      read_tiff_header(in_name, &amp;image_header);
+      round_off_image_size(&amp;image_header,
+                        &amp;length, &amp;width);
+      image_header.image_length = length*ROWS;
+      image_header.image_width = width*COLS;
+      create_allocate_tiff_file(out_name, &amp;image_header,
+                            out_image);
+   } /* ends if does_not_exist */
+
+   read_tiff_image(in_name, the_image, il, ie, ll, le);
+
+      /***************************
+      *
+      *   Loop over image array
+      *
+      ***************************/
+
+   printf("\n");
+   for(i=sd2; i&lt;ROWS-sd2; i++){
+      if( (i%10) == 0) printf("%d ", i);
+      for(j=sd2; j&lt;COLS-sd2; j++){
+         count = 0;
+         for(a=-sd2; a&lt;sd2p1; a++){
+            for(b=-sd2; b&lt;sd2p1; b++){
+               elements[count] = the_image[i+a][j+b];
+               count++;
+            }
+         }
+         out_image[i][j] = median_of(elements, &amp;ss);
+      }  /* ends loop over j */
+   }  /* ends loop over i */
+
+   fix_edges(out_image, sd2);
+
+   write_array_into_tiff_image(out_name, out_image,
+                          il, ie, ll, le);
+
+}  /* ends median_filter */
+
+   /***********************************************
+    *
+    *    median_of(...
+    *
+    *    This function finds and returns the
+    *    median value of the elements array.
+    *
+    *    As a side result, it also sorts the
+    *    elements array.
+    *
+    **************************************************/
+
+median_of(elements, count)
+   int *count;
+   short elements[];
+{
+   short median;
+
+   sort_elements(elements, count);
+   median = elements[*count/2];
+   return(median);
+}  /* ends median_of */
+
+   /*************************************************
+    *
+    *     sort_elements(...
+    *
+    *     This function performs a simple bubble
+    *     sort on the elements from the median
+    *     filter.
+    *
+    **************************************************/
+
+sort_elements(elements, count)
+   int   *count;
+   short elements[];
+{
+   int i, j;
+   j = *count;
+   while(j-- &gt; 1){
+      for(i=0; i&lt;j; i++){
+         if(elements[i] &gt; elements[i+1])
+            swap(&amp;elements[i], &amp;elements[i+1]);
+      }
+   }
+}  /* ends sort_elements */
+
+   /*************************************************
+    *
+    *     swap(...
+    *
+    *     This function swaps two shorts.
+    *
+    *************************************************/
+
+swap(a, b)
+   short *a, *b;
+{
+   short temp;
+   temp = *a;
+   *a     = *b;
+   *b    = temp;
+}  /* ends swap */
+
+   /*************************************************
+    *
+    *     setup_filters(...
+    *
+    *     This function copies the filter mask values defined
+    *     at the top of this file into the filter array.
+    *
+    ***************************************************/
+
+
+setup_filters (filter_type, low_high, filter)
+   char     low_high[];
+   int      filter_type;
+   short    filter[3][3];
+{
+   int i, j;
+   
+   if(low_high[[0] == '1' || low_high[0] =='L'){
+      if(filter_type == 6){
+         for(i=0; i&lt;3; i++){
+           for(j=0; j&lt;3= j++){
+             filter[i][j] = lpf_filter_6[i][j];
+           }
+         }
+      }  /* ends if filter_type == 6 */
+
+      if(filter_type == 9){
+         for(i=0; i&lt;3; i++){
+           for(j=0; j&lt;3; j++){
+             filter[i][j] = lpf_filter_9[i][j];
+           }
+         }
+      }  /* ends if filter_type == 9 */
+
+      if(filter_type == 10){
+         for(i=0; i&lt;3; i++){
+           for(j=0; j&lt;3; j++){
+             filter[i][j] = lpf_filter_10[i][j];
+           }
+         }
+      }  /* ends if filter_type == 10 */
+
+
+      if(filter_type == 16){
+         for(i=0; i&lt;3; i++){
+           for(j=0; j&lt;3; j++){
+             filter[i][j] = lpf_filter_16[i][j];
+           }
+         }
+      }  /* ends if filter_type == 16 */
+   }  /* ends low pass filter */
+
+   if(low_high[0] == 'h' || low_high[0] =='H'){
+      if(filter_type == 1){
+         for(i=0; i&lt;3; i++){
+           for(j=0; j&lt;3; j++){
+             filter[i][j] = hpf_filter_l[i][j];
+           }
+         }
+      } /* ends if filter_type == 1 */
+
+      if(filter_type == 2){
+         for(i=0; i&lt;3; i++){
+           for(j=0; j&lt;3; j++){
+             filter[i][j] = hpf_filter_2[i][j];
+           }
+         }
+      }  /* ends if filter_type == 2 */
+
+      if(filter_type == 3){
+         for(i=0; i&lt;3; i++){
+           for(j=0; j&lt;3; j++){
+             filter[i][j] = hpf_filter_3[i][j];
+           }
+         }
+      }  /* ends if filter_type == 3 */
+   }  /* ends high pass filter */
+
+}  /* ends setup_filters */
+
+   /***********************************************
+    *
+    *     get_filter_options(...
+    *
+    *     This function queries the user for the
+    *     parameters needed to perform filtering.
+    *
+    ***********************************************/
+
+get_filter_options(filter_type, low_high)
+    char low_high[];
+    int *filter_type;
+{
+    int not_finished, response;
+    not_finished = 1;
+    while(not_finished){
+
+      printf("\nThe filter options are:\n");
+      printf("\n\t1. Type of filter is %d",
+          *filter_type);
+      printf("\n\t     (recall 6, 9, 10, 16 for low pass)");
+      printf("\n\t     (recall 1, 2, 3 for high pass)");
+      printf("\n\t2.  Low or High Pass filter is %s",
+            low_high);
+      printf("\n\t     l=low pass h=high pass"
+            "m=median filter ");
+      printf("\n\nEnter choice (0 = no change) _\b");
+
+      get_integer(&amp;response);
+
+      if(response == 0){
+        not_finished = 0;
+      }
+
+      if(response == 1){
+        printf("\n\nEnter type of filter");
+        printf("\n _\b");
+        get_integer(filter_type);
+      }
+
+      if(response == 2){
+        printf("\n\nEnter l=low pass h=high pass"
+                "m=median filter");
+        printf("\n _\b");
+        read_string(low_high);
+      }
+   }  /* ends while not_finished */
+
+} /* ends get_filter_options */
+</pre>
+</BODY>
+</HTML>

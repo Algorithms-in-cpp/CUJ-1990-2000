@@ -1,0 +1,447 @@
+<HTML><HEAD>
+<TITLE>December 1991/PC UART Device Driver/Listing 3</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 3 (uartlow. c) Low-Level Device Driver Routines for UART</A></h4>
+<pre>#define UARTMAIN 1
+
+#include &lt;conio.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;stddef.h&gt;
+#include &lt;dos.h&gt;
+
+#include "uart.h"
+#include "uartmacs.c"
+
+/*
+ *  Compile Options  :  /AL /Ox /Zp /c
+ *           (Large library, optimization
+ *            for maxium speed, pack structures).
+ *           Note: /Ox does the following optimizations
+ *              Relaxed alias checking
+ *              Loop optimization
+ *              Intrinsic substitution
+ *              Optimization for speed
+ *              Removing stack probing
+*/
+#pragma check_stack(off)
+
+void interrupt far Asynch_driver(void)
+{
+   register int value_from_port;
+   register int cur_char;
+   static unsigned char near cur_port;
+   static struct t_port_info *p_cur_port_info;
+   static int near interrupts_processed;
+   static int near i;
+   static char *p_temp;
+   static char tx_char;
+
+   /* Note - interrupts are automatically disabled by
+            CPU before entering interrupt routine. */
+
+   do
+   {   /* Loop until we make one complete pass
+         without processing any interrupts */
+
+      /* Set flag indicating that we haven't
+         processed any interrupts on this pass
+         through the loop yet. */
+      interrupts_processed = 0;
+
+      /* Address the port entry of the first port in
+         the system. */
+      p_cur_port_info = gp_port_info;
+      for (cur_port=1;cur_port&lt;=g_num_ports;
+          cur_port++)
+      {   /* Loop through all the ports */
+
+         /* read port's interrupt identification
+register */
+         value_from_port = inp(p_cur_port_info-&gt;
+            base_address+INTERRUPT_IDENT_REGISTER);
+
+         if ( value_from_port &amp; 0x01 )
+         {   /* No interrupt pending */
+
+            /* If less than MAX_RCVFIFO characters
+               have been read without receiving a
+               receive data interrupt, check line
+               status register to see if there is
+               still data in the FIFO. This code
+               will function correctly even if there
+               isn't a FIFO. */
+            if (p_cur_port_info-&gt;non_int_chars &lt;
+                MAX_RCVFIFO)
+            {
+                /* read port's line status register */
+                value_from_port =
+                  inp(p_cur_port_info-&gt;
+                     base_address +
+                     LINE_STATUS_REGISTER);
+
+                /* Delay for port to catch up */
+                I0_DELAY(1);
+
+                if ( value_from_port &amp; 0x01 )
+                {   /* Data is ready */
+
+                  /* Increment number of chars
+                     processed from fifo without
+                     interrupt */
+                  p_cur_port_info-&gt;
+                     non_int_chars++;
+
+                  /* We have found at least one
+                     interrupt pending so we will
+                     have to make at least one
+                     more pass. */
+                  interrupts_processed = 1;
+
+                  /* Skip normal interrupt
+                     identification logic, and go
+                     right to reading the data. */
+                  goto force read data;
+               }  /* End data is ready */
+
+            }  /* End p_cur_port_info-&gt;
+                 non_int_chars &lt; MAX_RCVFIFO) */
+         }  /* end no interrupt pending */
+         else
+         {  /* There is an interrupt pending
+               from this port */
+            /* We have found at least one interrupt
+               pending so we will have to make at
+               least one more pass. */
+            interrupts_processed = 1;
+
+            /* Mask out unwanted bits from interrupt
+               identification. */
+            value_from_port &amp;= IIR_MASK;
+
+            switch (value_from_port)
+            {   /* Conditional execution depending
+                  on type of interrupt */
+
+                /* Interrupt for Receiver Line
+                  Status */
+                case 0x06 :
+
+                  /* Clear receive register */
+                  cur_char =
+                     inp(p_cur_port_info-&gt;
+                        base address +
+                        RECEIVE_REGISTER);
+
+                  /* Clear high word of character
+                     before breaking down error */
+                  cur_char &amp;= 0x00ff;
+
+                  /* read port's line status
+                     register */
+                  value_from_port =
+                     inp(p_cur_port_info-&gt;
+                        base_address +
+                        LINE_STATUS_REGISTER);
+
+                  if (value_from_port &amp; 0x10)
+                  {   /* Received 'break' */
+                     cur_char |= BREAK_SIGNAL;
+                  }
+
+                  if (value_from_port &amp; 0x08)
+                  {   /* framing error */
+                     cur_char |= FRAMING_ERROR;
+                  }
+
+                  if (value_from_port &amp; 0x04)
+                  {   /* parity error */
+                     cur_char |= PARITY_ERROR;
+                  }
+
+                  if (value_from_port &amp; 0x02)
+                  {   /* overrun error */
+                     cur_char |= OVERRUN_ERROR;
+                  }
+
+                  goto add_char_to_rx_buf;
+
+              /* Interrupt for data received  */
+              case 0x04 :
+
+                  /* Check line status register to
+                     see if data is ready */
+                  value_from_port =
+                     inp(p_cur_port_info-&gt;
+                        base_address +
+                        LINE_STATUS_REGISTER);
+                  if ( !(value_from_port &amp; Ox01) )
+                     break;
+                  /* Set number of characters
+                     received without data receive
+                     interrupt to 0. */
+                  p_cur_port_info-&gt;
+                     non_int_chars = 0;
+
+                  force_read_data:
+
+                  /* read received data
+                     register */
+                  cur_char =
+                     inp(p_cur_port_info-&gt;
+                        base_address+
+                        RECEIVE_REGISTER);
+
+                  /* Clear high word of character
+                     before breaking down error  */
+                  cur_char &amp;= 0x00ff;
+
+                  add_char_to_rx_buf:
+
+                  /* Calculate pointer to next
+                     position in circular
+                     receive buffer */
+                  p_temp = p_cur_port_info-&gt;
+                      a_receive_buffer +
+                      p_cur_port_info-&gt;rx_tail;
+
+                  /* Calculate next tail position
+                     in receive buffer */
+                  p_cur_port_info-&gt;rx_tail += 2;
+                  if (p_cur_port_info-&gt;rx_tail &gt;=
+                       (BUFFER_SIZE * 2) )
+                     p_cur_port_info-&gt;rx_tail = 0;
+
+                  /* Check for receive buffer
+                     overflow */
+                  if (p_cur_port_info-&gt;rx_tail ==
+                     p_cur_port_info-&gt;rx_head)
+                     {   /* Receive buffer has
+                           overflowed. Update
+                           flag to reflect this,
+                           and advance head
+                           (losing one char).  */
+                        cur_char |=
+                           BUFFER_OVERRUN;
+
+                        p_cur_port_info-&gt;rx_head
+                           += 2;
+                        if (p_cur_port_info-&gt;
+                           rx_head &gt;=
+                           (BUFFER_SIZE * 2) )
+                           p_cur_port_info-&gt;
+                              rx_head = 0;
+                     }
+
+                  /* Add character with coded
+                    error condition flag to
+                    circular buffer  */
+                  *( (int *) p_temp) = cur_char;
+
+                  break;
+
+              /* Interrupt for Transmit Holding
+                 Register Emtpy */
+              case 0x02 :
+                  if (p_cur_port_info-&gt;tx_head !=
+                     p_cur_port_info-&gt;tx_tail )
+                  {  /* Have data to transmit  */
+
+                     if (p_cur_port_info-&gt;
+                        obey_rts_cts &amp;&amp;
+                       !p_cur_port_info-&gt;
+                        cts_state)
+                     {   /* Require Clear To
+                           Send before
+                           transmitting  */
+
+                        /* Raise the Request To
+                           Send signal  */
+                        RAISE_RTS;
+
+                        break;
+                     }
+
+                     /* read port's line status
+                        register */
+                     value_from_port =
+                        inp(p_cur_port_info-&gt;
+                           base_address +
+                           LINE_STATUS_REGISTER);
+
+                     /* Delay for port to catch
+                        up  */
+                     I0_DELAY(2);
+
+                     /* Make sure transmit
+                        holding register is
+                        really empty.  */
+                     if ( !(value_from_port
+                           &amp; 0x20) )
+                        break;
+                     /* Transmit as many chars as
+                        port can handle (depends
+                        on presence/absence of
+                        fifo), until transmit
+                        circular buffer is
+                        empty */
+                     for (i=0;
+                         (i &lt;p_cur_port_info-&gt;
+                            max_tx_chars) &amp;&amp;
+                         (p_cur_port_info-&gt;
+                          tx_head !=
+                          p_cur_port_info-&gt;
+                          tx_tail ) ;
+                         i++)
+                     {
+                        /* Get next character
+                           to transmit and
+                           increment transmit
+                           data pointer. */
+                        tx_char =
+                           p_cur_port_info-&gt;
+                           a_transmit_buffer[
+                             p_cur_port_info-&gt;
+                               tx_head++];
+                        if (p_cur_port_info-&gt;
+                           tx_head &gt;=
+                           BUFFER_SIZE)
+                           p_cur_port_info-&gt;
+                           tx_head = 0;
+
+                        /* Transmit the
+                           character */
+                        outp(p_cur_port_info-&gt;
+                            base_address +
+                            TRANSMIT_REGISTER,
+                            tx_char);
+                     }  /* End for TX loop */
+
+                   }  /* end if data to
+                        transmit */
+                  else
+                  {   /* No data to send */
+
+                     if (p_cur_port_info-&gt;
+                        obey_rts_cts)
+                     {   /* No data to send, port
+                           is using flow
+                           control */
+
+                        /* Turn off the Request
+                           To Send signal */
+                        DROP_RTS;
+                     }
+
+                  }  /* End no data to send */
+
+                  break;
+
+               /* Interrupt for modem status
+                  change */
+               case 0x00 :
+                   /* read port's modem status
+                      register */
+                   value_from_port =
+                      inp(p_cur_port_info-&gt;
+                         base_address +
+                         MODEM_STATUS_REGISTER);
+
+                   if (value_from_port &amp; 0x02)
+                   {   /* Change in Data Set Ready */
+
+                      if (IS_DSR (value_from_port))
+                         /* DSR came on */
+                         p_cur_port_info-&gt;
+                             dsr_state = 1;
+                      else
+                         /* DSR went off */
+                         p_cur_port_info-&gt;
+                            dsr_state = 0;
+
+                   }  /* End if delta data set ready */
+
+                   if (value_from_port &amp; 0x08)
+                   {      /* Change In Data
+                            Carrier Detect */
+
+                      if (IS_DCD(value_from_port))
+                         /* DCD came on */
+                         p_cur_port_info-&gt;
+                            dcd_state = 1;
+                      else
+                         /* DCD went off */
+                         p_cur_port_info-&gt;
+                            dcd_state = 0;
+
+                   } /* End if delta carrier detect */
+
+                   if (value_from_port &amp; 0x01)
+                   {       /* Change in Clear To Send */
+
+                      if (IS_CTS(value_from_port))
+                         {
+                            /* CTS came on */
+                            p_cur_port_info-&gt;
+                               cts_state = 1;
+
+                            /* Generate a
+                               Transmit Holding
+                               Register Empty
+                               Interrupt to allow
+                               data to be sent */
+                            BOUNCE_THRE;
+                         }
+                      else
+                         /* CTS went off */
+                         p_cur_port_info-&gt;
+                            cts_state = 0;
+
+                   } /* End if delta clear to send */
+
+                   if (value_from_port &amp; 0x04)
+                   {       /* Change in Ring Indicator state */
+
+                    if (IS_RING(value_from_port))
+                    {    /* Ringing in */
+
+                        /* Put ring indication
+                           into circular buffer
+                           */
+                        cur_char =
+                           RING_INDICATION;
+                        goto add_char_to_rx_buf;
+                    }
+                  } /* End if delta ring indicator */
+                  break;
+
+                /* Unkown interrupt */
+                default : break;
+
+            }   /* End switch on type of
+                  interrupt */
+
+         }   /* end interrupt pending */
+
+         p_cur_port_info++;      /* Point at next port */
+
+      }   /* End loop through all ports */
+
+   } while (interrupts_processed == 0);
+
+   /* Output non-specific End Of Interrupt to 8259
+      interrupt controller for IRQs 0 - 7 */
+   outp(R8259A_CONTROL,0x20);
+
+   /* Note - Interrupts are not re-enabled to ensure
+            that the IRET will be executed before the
+            next interrupt */
+
+   return;
+}
+/* End of File */
+</pre>
+</BODY>
+</HTML>

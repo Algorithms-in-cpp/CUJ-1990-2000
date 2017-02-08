@@ -1,0 +1,442 @@
+<HTML><HEAD>
+<TITLE>March 1994/A Fuzzy-Logic Torque Servo/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1<I> C declaration code for rule table and membership functions</I></A></h4>
+<pre>/**************************************************************
+       File: fuzzy.h
+       Date: 4/3/93
+       Author: Jack J. McCauley
+       Header file for fuzzy.c
+**************************************************************/
+
+/* membership function size */
+#define TORQUE_MEMBERS 5
+#define DER_MEMBERS 5
+
+/* loop frequency */
+#define LOOP_HZ 1
+
+/* integrator constant z-1*/
+#define SKIP 1
+
+/* normalized value */
+#define NORMAL 255
+
+/* Current ma */
+#define MAX_TORQUE 1000
+#define MIN_TORQUE <B>-</B>1000
+
+/* derivative */
+#define MAX_DERI LOOP_HZ*MAX_TORQUE
+#define MIN_DERI LOOP_HZ*MIN_TORQUE
+
+/* pwm 1/10 % */
+#define MAX_PWM   255
+#define MIN_PWM   0
+
+/* Max and Min */
+#define MIN_ERROR   0
+#define MAX_ERROR   255
+
+/* size of all arrays */
+#define ARRAY_SIZE   256
+
+/* represent a normalized 0 -&gt; 1000 = 0.0 -&gt; 1.0 */
+#define FUZZY_RADIX NORMAL
+
+/* fuzzy max (ternary) operator */
+#define FUZ_MAX( x, y )    ((x&gt;y) ? x : y)
+
+/* fuzzy min (ternary) operator */
+#define FUZ_MIN( x, y )    ((x&lt;y) ? x : y)
+
+/* fuzzy AND operator */
+#define FUZ_AND( x, y )    FUZ_MIN( x, y )
+
+/* fuzzy OR operator */
+#define FUZ_OR( x, y )     FUZ_MAX( x, y )
+
+/* fuzzy compliment operator */
+#define FUZ_NOT( x )       ( FUZZY_RADIX - x )
+
+/* create the membership function space */
+/* first is the torque error  fuzzy set */
+struct s_torq_members {
+      int neg_large[ARRAY_SIZE];
+      int neg_med[ARRAY_SIZE];
+      int zero[ARRAY_SIZE];
+      int pos_med[ARRAY_SIZE];
+      int pos_large[ARRAY_SIZE];
+      float slope;
+      float intercept;
+}  torq_members;
+
+/* next is the rate of change fuzzy set torque error */
+struct s_deri_members {
+      int pos_large[ARRAY_SIZE];
+      int pos_med[ARRAY_SIZE];
+      int zero[ARRAY_SIZE];
+      int neg_med[ARRAY_SIZE];
+      int neg_large[ARRAY_SIZE];
+      float slope;
+      float intercept;
+} deri_members;
+
+/* last is the PWM fuzzy set ouput */
+struct s_pwm_members {
+      int neg_large[ARRAY_SIZE];
+      int neg_med[ARRAY_SIZE];
+      int zero[ARRAY_SIZE];
+      int pos_med[ARRAY_SIZE];
+      int pos_large[ARRAY_SIZE];
+      float slope;
+      float intercept;
+} pwm_members;
+
+/* define output rule table members */
+#define L            pwm_members.pos_large
+#define M            pwm_members.pos_med
+#define Z            pwm_members.zero
+#define NM           pwm_members.neg_med
+#define NL           pwm_members.neg_large
+
+/* finally the fuzzy sets */
+/* torque feedback error */
+int *dTerr_dt[] = {
+              deri_members.pos_large  ,
+              deri_members.pos_med    ,
+              deri_members.zero       ,
+              deri_members.neg_med    ,
+              deri_members.neg_large  ,
+              };
+/* torque (OZ-in) */
+int *Terror[] = {
+              torq_members.neg_large  ,
+              torq_members.neg_med    ,
+              torq_members.zero       ,
+              torq_members.pos_med    ,
+              torq_members.pos_large  ,
+              }
+
+/* create the rule table and allocate space */
+struct  s_rule {
+       int *table[TORQUE_MEMBERS];
+} rule[DER_MEMBERS] =
+       /* */
+       {{Z,   NM,  NM,  NM,  NL },
+       {M,    Z,   NM,  NM,  NL },
+       { L,   M,   Z,   NM,  NL },
+       { L,   M,   M,   Z,   NM  },
+       { L,    M,   M,   M,   Z }};
+       
+The Fuzzy membership functions are stored in a look up table for all input
+and output fuzzy sets. Fuzzy variables with three digits of precision are
+normalized between 0 and 255 integer corresponding to an 8-bit radix converter
+and a fuzzy set 0.0 - 1.0 normalized value. Look up tables increase bandwidth
+and allow the servo to run with few floating point calculations.
+
+/****************************************************
+       File: fuzzy.c
+       Date: 4/3/93
+       Author: Jack J. McCauley
+       fuzzy torque controller for motor
+****************************************************/
+
+#include "stdio.h"
+#include "stdlib.h"
+#include "conio.h"
+#include "proto.h"
+#include "fuzz.h"      /* the above file */
+
+/****************************************************
+       Routine: calc_slope
+       Date: 4/3/93
+       Author: Jack J. McCauley
+       calcs line slope of two points in a plane
+*****************************************************/
+float calc_slope( float x1, float x2, float y1, float y2 ) {
+
+       float slope;
+
+       if ( x1 == x2 )
+             slope = 10000000.0;
+       else if( y1 == y2 )
+             slope = 0.0;
+       else {
+             slope = (y1 - y2)/(x1 - x2);
+             if( slope &gt; 100000000.0 )
+                    slope = 100000000.0;
+       }
+       return( slope );
+}
+/*****************************************************
+       Routine: calc_intercept
+       Date: 4/3/93
+       Author: Jack J. McCauley
+       calcs line intercept of two points in a plane
+*****************************************************/
+float calc_intercept( float x1, float x2, float y1, float y2 ) {
+
+       float intercept;
+       
+       if ( x1 == x2 )
+             intercept = 100000000.0;
+       else {
+             intercept = (y2*x1 - y1*x2)/(x1 - x2);
+             if( intercept &gt; 100000000.0 )
+                    intercept = 100000000.0;
+       }
+       return( intercept );
+}
+/* end print_array */
+
+/**********************************************************
+   Routine: down_load()
+   Date: 4/3/93
+       Author: Jack J. McCauley
+initialize fuzzy membership function tables from serial port DRIVER not shown
+***********************************************************/
+void down_load( int *membership_function, int len )
+{
+       int k;
+       char buff[32];
+       
+       /*short, tight loop */
+       for( k=0; k&lt; len; k++ ) {
+             /* get ascci string from driver */
+             gets( buff, 12 );
+             *membership_function++: atoi( buff );
+       }
+}
+/* end down_load() */
+/********************************************************
+   Routine: fuzzy_init
+   Date: 4/3/93
+       Author: Jack J. McCauley
+       initialize fuzzy membership function tables
+*********************************************************/
+void fuzzy_init( void )
+{
+   int k;
+   long slope;
+       long intercept;
+       int val;
+       
+/*
+There are several ways to generate these tables:
+
+1) The easiest is to simply use ROM space and store them permanently in memory. FUZZ.H
+would need to be modified to reflect the static ROM delecerations for each fuzzy
+set and the values would be initialize directly attaching them to the data arrays.
+
+2) Down load the fuzzy sets through the serial port as I did in the
+tuning of this servo. In which case I've included that code here (of
+course in the ROM version of the system you'll need 1)).
+
+3) Store the slope-intercept form of each membership function and
+calculate the line slopes and intercepts
+*/
+
+/*
+Membership functions are downloaded through the serial port from a file in ASCII
+format one set member at a time. In this system I used a spreadsheet and
+graphical interface to actually draw the membership functions with a mouse.
+This aided in tuning the servo substantailly. In the ROH version of the system,
+I wrote a small programm to append the RDM statics memberships to fuzz.h.
+*/
+       down_load( deri_members.neg_large, ARRAY_SIZE);
+       down_load( torq_members.neg_large, ARRAY_SIZE);
+       down_load( pwm_members.neg_large, ARRAY_SIZE);
+       down_load( deri_members.neg_med, ARRAY_SIZE);
+       down_load( torq_members.neg_med, ARRAY_SIZE);
+       down_load( deri_members.zero, ARRAY_SIZE);
+       down_load( torq_members.zero, ARRAY_SIZE);
+       down_load( pwm_members.zero, ARRAY_SIZE);
+       down_load( deri_members.pos_med, ARRAY_SIZE);
+       down_load( orq_members.pos_med, ARRAY_SIZE);
+       down_load( pwm_members.pos_med, ARRAY_SIZE);
+       down_load( deri_members.pos_large, ARRAY_SIZE);
+       down_load( torq_members.pos_large, ARRAY_SIZE);
+       down_load( pwm_members.pos_large, ARRAY_SIZE);
+       
+       /* slope intercept line calculation */
+       
+       /* these line equations are used for scaling the
+         crisp values from the above arrays */
+       deri_members.slope = calc_slope(MIN_DERI, MAX_DERI, 0, ARRAY_SIZE-1 );
+       deri_members.intercept = calc_intercept(MIN_DERI, MAX_DERI, 0, ARRAY_SIZE-1
+       
+       torq_members.slope: calc_slope( MIN_TORQUE, MAX_TORQUE, 0, ARRAY SIZE-1 );
+       torq_members.intercept = calc_intercept(MIN_TORQUE, MAX_TORQUE, 0, ARRAY_SIZE-1);
+       
+       pwm_members.slope = calc_slope(0, ARRAY_SIZE-1, MIN_PWM, MAX_PWM);
+       pwm_members.intercept = calc_intercept(0, ARRAY_SIZE-1, MIN_PWM, MAX_PWM);
+/*
+       for( k=0; k&lt;ARRAY_SIZE; k++ )
+             printf("%d %4d %4d %4d %4d
+%4d\n["],k,deri_members.pos_large[k],deri_members.pos_med[k],
+deri_members.zero[k],deri_members.neg_med[k],deri_memb
+ers.neg_large[k]);
+*/
+}
+/* end FUZZINIT */
+
+/***********************************************
+       Routine: defuzzify_COA
+       Date: 4/3/93
+       Author: Jack J. McCauley
+       defuzzify using COA
+**********************************************/
+float defuzzify_COA( int *output ) {
+       
+       static long k;
+       static long numerator, denominator, val;
+       
+       numerator = 0;
+       denominator = 0;
+       
+       for ( k=0; k&lt;ARRAY_SIZE; k+=SKIP ) {
+       
+             val = (long)*output;
+             output+=SKIP;
+             /* look for non-zero values and include in our COA calc */
+             if( val ) {
+                    denominator += val;
+                    /* ROM based later */
+                    numerator += val *(long)k;
+             }
+       }
+       /* divide if non-zero x/D */
+       if( denominator ) {
+             /* return crisp value */
+             /* Could be converted from float if desired */
+             numerator = (long)((float)(numerator/denominator) * pwm_members.slope +
+       pwm_members.intercept);
+             return( numerator );
+       } else
+             return( 0 );
+
+}
+/* end COA calc */
+
+/******************************************************
+       Routine: fuzzify
+       Date: 4/3/93
+       Author: Jack J. McCauley
+       fuzzifier for our servo
+******************************************************/
+int fuzzify(    int derr_dt, int err,
+             int *p_Terror, int *p_dTerror,
+             int *p_out, int *resultant ) {
+
+       static int k, val, alpha_cut, temp, *moe;
+
+              /*         COA method         */
+       /*
+Get the alpha cut for error and derivative. Use the AND (min) operator and cut the
+output , a non-zero fuzzy MIN indicates a rule has fired , write the cut to the result
+array by "shadowing" the exisiting using the MAX operator
+       */
+
+       /* normalize the output derivative */
+       moe: resultant;
+
+       /* Find out if the rule fired. If the rule fired then get the alpha cut */
+       if( (alpha_cut = FUZ_AND( p_dTerror[derr_dt], p_Terror[err] )) != 0 ) {
+             for ( k=0; k&lt;ARRAY_SIZE; k+=SKIP ) {
+             /*
+             An interesting effect will be noticed if the skip is set greater than
+              1. In this system setting skip to lets say 2 or three will yield
+             in most circumstance yield the same defuzzified crisp output if the
+              slope of the membership functions are not too steep.
+             The other benifit is that the execution speed is increased greatly
+             */
+                    /* create shadow */
+                    val = *p_out;
+                    /* don't get bit by shortcuts *./
+                    val = FUZ=MIN( alpha_cut, val );
+                    temp = *resultant;
+                    * resultant = FUZ_MAX( temp, val );
+                    resultant+=SKIP;
+                    p_out+=SKIP;
+             }
+             /* rule fired */
+             return( 1 );
+       } else
+             /* rule didn't fire */
+             return( 0 );
+}
+/* end FUZZIFICATION calc */
+
+/********************************************************
+       Routine: servo_torque
+       Date: 4/3/93
+       Author: Jack J. McCauley
+       fuzzy servos to torque set point
+********************************************************/
+/*
+Routine would run as an ISR attched to a timer interrupt passed values are read
+from and A/D convertor and command torque (serial port etc..)
+*/
+long servo_torque( int error, int derr_dt )
+{
+       /* statics for speed */
+       static int row, column;
+       
+       /* pointers to tables */
+       static int *p_out, *p_dTerr_dt, *p_Terror;
+       
+       /* COA container class */
+       static int resultant[ARRAY_SIZE];
+       
+       /* zero fill the array */
+       for( row = 0; row&lt;ARRAY_SIZE; row++ )
+             resultant[row] = 0;
+       
+       /* normalizing the error derivative will allow the error to ff
+       /* normalize error derivative to look up table RADIX*/
+       error = (long)((float)error * torq_members.slope + torq_members.intercept);
+       
+       /* normalize error derivative*/
+       derr_dt = (long)((float)derr_dt*deri_members.slope + deri_members.intercept);
+       
+       /* MAX and MIN error */
+       if( error &gt; MAX_ERROR )
+             error = MAX_ERROR;
+       else if( error &lt; MIN_ERROR )
+             error = MIN_ERROR;
+       
+       /* MAX and MIN derivative */
+       if( derr_dt &gt; MAX_DERI )
+             derr_dt = MAX_DERI;
+       else if( derr_dt &lt; MIN_DERI )
+             derr_dt = MIN_DERI;
+       
+       /* traverse the rule table and evaluate the rules */
+       for( row = 0; row &lt; DER_MEMBERS; row++ ) {
+       
+             /* get pointers to tables from data structures */
+             p_dTerr_dt = dTerr_dt[row];
+             for( column = 0; column &lt; TORQUE_MEMBERS; column++ ) {
+             
+                    /* get pointers to tables from data structures */
+                    /* get the output membership function for that rule evaluation */
+                    p_out = rule[row].table[column];
+                    p_Terror = Terror[column];
+                    /* fuzzify the rule */
+                    fuzzify( derr_dt, error, p_Terror, p_dTerr_dt, p_out, resultant );
+             }
+       }
+       
+       /* defuzzify using COA */
+       return( defuzzify_COA( resultant ) );
+       
+       /* return the fired rules */
+}
+
+/*END */</pre>
+
+</BODY>
+</HTML>

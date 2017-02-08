@@ -1,0 +1,300 @@
+<HTML><HEAD><TITLE>November 1990/A Flexible Dynamic Array Allocator/Listing 2</TITLE></HEAD><BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4><A name="0251_0154"><A name="0251_0154">Listing 2<B><A name="0251_0154"></B></h4><P>
+<pre>/********************************************************
+ *
+ * Module Name:
+ *    daa -- dynamic array allocator
+ *
+ * Description:
+ *    this dynamic array allocator is designed to be
+ *    efficient, i.e., it uses only one valloc() for
+ *    the entire array, and flexible. It can allocate
+ *    arrays of up to 10 dimensions of any type that
+ *    will return a size with the sizeof "C" operator.
+ *    it is also very efficient from the point of
+ *    view of array access. the single valloc()
+ *    ensures locality of reference that eliminates
+ *    excess paging encountered with dynamic array
+ *    allocation schemes that use multiple malloc()'s.
+ *    Unless the array is larger than a full page
+ *    it will be contained entirely on one page.
+ *    It can allocate arrays of structure, enum or
+ *    union type. A corresponding free(free(ptr))
+ *    of the allocated area must normally be done
+ *    (unless you want to allocate to program
+ *    termination). The sixth parameter returns a
+ *    pointer to do a free on. do not free on the
+ *    function return pointer since arrays of
+ *    non-zero subscripted first dimensions will not
+ *    point to the allocated space, but some offset
+ *    based on the subscript offset of the first
+ *    dimension. The array is initialized to the
+ *    value pointed to by the last parameter, or
+ *    not initialized if NULL. the last parameter
+ *    pointer should point to something with a size
+ *    the same as the size of the type in the sizeof
+ *    first argument. arrays may be allocated to
+ *    have one or more dimensions with non-zero
+ *    integer(+ or -) start subscripts. thus,
+ *    arrays may be one based or zero based or
+ *    any based for that matter.
+ *
+ * parameters:
+ *    size        - size of the basic array data
+ *                  object, this will usually be
+ *                  passed from the sizeof() operator
+ *                  in the call
+ *
+ *    no_dim      - number of array dimensions
+ *
+ *    dimensions  - a single dimensional array of
+ *                  the dimensions of the array to
+ *                  be allocated
+ *
+ *    start       - a single dimensional array of
+ *                  integer start subscripts for each
+ *                  corresponding dimension of the
+ *                  dimensions array, may be negative
+ *
+ *    err_code    - pointer to returned error code
+ *                  value
+ *
+ *    free_ptr    - pointer to the base pointer of
+ *                  the vallocated array space
+ *                  for the caller to free
+ *
+ *    init_ptr    - initialization pointer parameter
+ *                  (NULL if no initialization is
+ *                  desired).
+ *
+ * returns:
+ *    a pointer to char that points to the start of
+ *    the dynamically allocated array area. this
+ *    will normally need to be cast to the type of
+ *    the subsequent array references. routine
+ *    failure will return NULL.
+ *
+ * examples:
+ *        char *fptr;
+ *
+ *    allocate 3 dimensional 3x3x3 zeroed int array
+ *    all zero based:
+ *        int ***array;
+ *        int init = 0;
+ *        unsigned d[3] = {3,3,3};
+ *        int st[3] = {0,0,0};
+ *        array = (int ***)
+ *         daa(sizeof(int), 3, d, st, &amp;err_code,
+ *              &amp;fptr, &amp;init);
+ *        array[0][2][1] = 1; assign int
+ *        free(fptr);
+ *
+ *    allocate 2 dimensional 2x3 double array
+ *      initialized to 1.0 and one based:
+ *        double **array;
+ *        double init = 1.0;
+ *        unsigned d[2] = {2,3};
+ *        int st[2] = {1,1};
+ *        array = (double ***)
+ *         daa(sizeof(double), 2, d, st, &amp;err_code,
+ *               &amp;fptr, &amp;init);
+ *        array[1][2] = 1.5; assign double
+ *        free(fptr);
+ *
+ *    allocate 3 dimensional 4x3x2 array of structures
+ *    initialized to the s_init structure and the
+ *    first index zero based with the second index five
+ *    based and the third index -2 based:
+ *        struct s {
+ *            int i;
+ *            double d;
+ *        };
+ *        struct s s_init = {5, 2.5};
+ *        struct s ***array;
+ *        unsigned d[3] = {4,3,2};
+ *        int st[3] = {0,5,-2};
+ *        array = (struct s ***)
+ *         daa(sizeof(struct s), 3, d, st, &amp;err_code,
+ *               &amp;fptr, &amp;s_init);
+ *        array[1][5][-2].i = 1; assign first element
+ *        array[3][6][-2].d = 1.5; assign 2nd element
+ *        free(fptr);
+ *
+ * errors:
+ *    error free operation returns 0 in *err_code.
+ *    any of the following errors will result in a
+ *    NULL pointer return and *err_code set to the
+ *    error number.
+ *    1. number of dimensions must be &gt; 0 and &lt;= 10
+ *    2. size must be greater than 1
+ *    3. no dimension may be zero
+ *    4. memory must be successfully allocated
+ *        (valloc() != NULL)
+ *
+ *    failure to index the subscripts in the manner
+ *    established by the starting index array will
+ *    of course result in run time errors. this is
+ *    not an array allocation error but an array
+ *    usage error, similar to any array access on a
+ *    static "C" zero based array outside the normal
+ *     0...n-1 bounds.
+ ********************************************************
+ */
+#include &lt;stdio.h&gt;
+
+#define MAX_DIM 10 /* max no. of array dimensions */
+
+/* these variables are used in the recursive
+   pointer setup routines */
+static unsigned long data_size; /* data unit size*/
+static unsigned long num_dim; /* # of dimensions */
+   /* dimensions of array */
+static unsigned long dim[MAX_DIM);
+   /* product of dimensions from 0 to
+      index, dim[0]*dim[1]...dim[index] */
+static unsigned long dp[MAX_DIM];
+   /* start index of array dimensions */
+static int st[MAX_DIM];
+   /* size of pointer */
+static unsigned long ptr_size = sizeof(char *);
+   /* points to base of allocated array */
+static char *base;
+
+char *daa(size, no_dim, dimensions,
+        start, err_code, free_ptr, init_ptr)
+   unsigned size;
+   unsigned no_dim;
+   unsigned dimensions[];
+   int start[];
+   unsigned *err_code;
+   char **free_ptr;
+   char *init_ptr;
+{
+   /* offset in pointer words of first data byte */
+   unsigned long    data_off;
+   /* array of current dimension indices */
+   unsigned long    dim_ind[MAX_DIM];
+   unsigned long    i,j;
+   char          *p_data, /* pointer to array data */
+                 *p; /* tmp pointer */
+
+   char             *al();
+   unsigned long    doff();
+   unsigned long    off();
+
+   *err_code = 0;
+   if (no_dim &lt; 1 || no_dim &gt; MAX_DIM){
+       *err_code = 1;
+       return NULL;
+   }
+
+   if (size &lt; 1){
+       *err_code = 2;
+       return NULL;
+   }
+
+   num_dim = no_dim;
+
+   /* set dim_ind to all zeros, the multiple invocations
+    * of the recursive array allocation routine al()
+    * will pass changed by 1 dim_ind arrays to each
+    * invocation of al().  set dim[] and dp[] from
+    * dimensions[] input array and st[] from start[]
+    * input array */
+   dp[0] = dimensions[0];
+   for (i = 0;i &lt; num_dim;i++){
+       dim_ind[i] = 0;
+       if (dimensions[i) == 0){
+          *err_code = 3;
+          return NULL;
+       }
+       dim[i] = dimensions[i];
+       if (i &gt; 0){
+          dp[i] = dp[i-1]*dimensions[i];
+       }
+       st[i] = start[i];
+   }
+   data_size = size;
+
+   /* allocate enough memory for the data plus
+      all the array pointers */
+   if ((base = (char *)
+       valloc((data_off = off(num_dim-1))*ptr_size +
+                  dp[num_dim-1]*data_size)) == NULL){
+          *err_code = 4;
+          return NULL;
+   }
+   /* return allocated space pointer that caller
+    * should use to free space */
+   *free_ptr = base;
+
+   /* if init_ptr is NULL skip initialization */
+   if (init_ptr != NULL){
+       /* set p_data to point to the start of
+      p_data = base + data_off*ptr_size;
+
+       /* initialize the array */
+      for (i = 0;i &lt; dp[num_dim-1];i++){
+          p = init_ptr;
+          for (j = 0;j &lt; data_size;j++){
+              *p_data++ = *p++;
+          }
+      }
+   }
+   /* do array setup i.e. all the pointer stuff */
+   return al(0, dim_ind);
+}
+   static char *
+al(level, dim_ind)
+   unsigned long level;
+   unsigned long dim_ind[];
+{
+   char **ptrs;
+   unsigned long i;
+   if (level &lt; num_dim - 1){
+      ptrs = (char**) (base + off(level)*ptr_size +
+         ((level == 0)?0:doff(level, dim_ind,
+           dp[level])*ptr_size));
+      for (i = 0;i &lt; dim[level];i++){
+         dim_ind[level] = i;
+         ptrs[i] = al(level+1, dim_ind) -
+             st[level+1]*((level+1 == num_dim-1) ?
+               data_size:ptr_size);<P>
+      }
+      if (level == 0){
+         ptrs -= st[0];
+      }
+   } else {
+      ptrs = (char **) (base + off(level)*ptr_size +
+             doff(level, dim_ind, dp[level])
+             *data_size - ((level == 0) ?
+             (st[0]*data_size):0));
+   }
+   return (char *) ptrs;
+}
+   static unsigned long
+doff(level, dim_ind, dim_prod)
+   unsigned long level;
+   unsigned long dim_ind[];
+   unsigned long dim_prod;
+{
+   if (level == 0){
+       return 0;
+   } else {
+       return doff(level-1, dim_ind, dim_prod) +
+            (dim_prod/dp[level-1])*dim_ind[level-1);
+   }
+}
+   static unsigned long
+off(level)
+   unsigned long level;
+{
+   if (level == 0){
+       return 0;
+   } else {
+       return dp[level-1] + off(level-1);
+   }
+}</pre>
+
+</BODY>
+</HTML>

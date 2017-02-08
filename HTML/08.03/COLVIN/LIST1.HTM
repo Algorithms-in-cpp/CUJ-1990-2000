@@ -1,0 +1,135 @@
+<HTML><HEAD><TITLE>March 1990/Multitasking With Lightweight Threads/Listing 1</TITLE></HEAD><BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4><A name="0090_0054"><A name="0090_0054">Listing 1<A name="0090_0054"></h4><P>
+<pre>/*********** THREAD.C COPYRIGHT 1989 GREGORY COLVIN ************
+This program may be distributed free with this copyright notice.
+***************************************************************/
+#include "thread.h"
+
+      thread *Threads;        /* table of threads           */
+      int    ThCurr=1;        /* current executing thread   */
+static int    N_Threads;       /* number of threads in table */
+static int    Free=2;          /* first free thread          */
+static int    Next=1;          /* next runnable thread       */
+static char   *Stack;          /* bottom of stack for init   */
+static void   (*Root)(void);   /* for temporary use in exec  */
+
+thread *ThInit(int n,int size) /* create n size byte threads */
+{ int i;
+  if (!N_Threads) {                    /* if just entered     */
+    if (n &lt; 2)
+      return 0;                       /* error, n too small  */
+    Threads=                           /* create table        */
+      (thread *)calloc(n,sizeof(thread));
+    if (!Threads)
+      return Threads;                 /* error, bad calloc    */
+    Threads--;                         /* will index from 1    */
+    N_Threads= n, n= 1;
+    if (setjmp(Threads[1].exit))       /* set exit point       */
+      exit(0);                        /* exit init thread      */
+  } else if (!Stack) {                 /* start new thread      */
+    Stack= (char *)&amp;size;              /* at top of stack       */
+    if (setjmp(Threads[n].exec)) {     /* set entry point       */
+      if (!setjmp(Threads[ThCurr].exit))/* set exit point     */
+        (*Root)();                    /* call root function     */
+      Threads[ThCurr].free= Free;      /* come here on exit      */
+
+      Free= ThCurr;                     /* put on free list       */
+      Next= Threads[Free].next;         /* take off run list      */
+      for (i=1; i &lt;= N_Threads; i++) {  /* clean up table      */
+        if (Threads[i].parent == Free)  /* if abandoned child  */
+         Threads[i].parent = 1;         /* adopt by init          */
+        if (Threads[i].next == Free)    /* patch run list         */
+          Threads[i].next= Threads[Free].next;
+      }
+      ThCurr= Threads[Free].parent;      /* will jump to parent  */
+      Threads[Free].parent= 0;           /* Free is parentless   */
+      longjmp(Threads[ThCurr].jump,Free);
+    }
+  }
+  if (Stack - (char *)&amp;size &lt; size)   /* if not enough stack      */
+    ThInit(n,size);                    /* push more stack          */
+  else {                               /* done with a thread       */
+    Threads[n].stack =(char *)&amp;size;   /* save top of stack       */
+    Stack= 0 ;                         /* start new thread         */
+    if (n &lt; N_Threads) {               /* if not done              */
+      Threads[n].free= n + 1;          /* link to free list        */
+      ThInit(++n,size);                /* push more stack          */
+    } else
+       Threads[n].free = 0;            /* at end of free list      */
+
+  }
+  return Threads;                       /* done: return table       */
+}
+void ThFree()                           /* free the thread table     */
+{  free (Threads+1);                         /* goodbye           */
+    Threads= 0, N_Threads= 0;               /* can init again    */
+}
+
+int ThNew(void (*root)(void))        /* fork and exec new thread  */
+{ int parent, fork;
+  ThProbe();                                /* stack probe        */
+  fork= Free;                               /* fork to free thread*/
+  if (fork == 0)
+    return -1;                              /* error, none free   */
+  Free= Threads[fork].free;                 /* take off free list */
+  parent= ThCurr;                           /* current is parent  */
+  Threads[fork].parent= parent;             /* set parent         */
+  ThCurr= fork;                             /* will run fork next */
+  if (!Threads[Next].next)                  /* link to run list   */
+    Threads[ThCurr].next= Next;             /* make circular list */
+  else
+    Threads[ThCurr].next= Threads[Next].next;
+  Threads[Next].next= ThCurr;
+  Next= ThCurr;                             /* next on run list    */
+  if (setjmp(Threads[parent].jump))         /* put parent to sleep */
+    return fork;                            /* parent is awake     */
+  Root= root;                              /* who to call         */
+  longjmp(Threads[ThCurr].exec,fork);       /* call root from init */
+}
+
+void ThExit(void)               /* exit to parent                   */
+{ ThProbe();                            /* stack probe              */
+  longjmp(Threads[ThCurr].exit,ThCurr);
+}
+
+int ThJump(int id)             /* jump to another thread            */
+{ int jumper, caller;
+  ThProbe();                           /* stack probe               */
+  if (id == 0 )                        /* if no destination         */
+    id= Threads[ThCurr].next;          /* next on run list          */
+
+  if (id &lt; 1 || id &gt; N_Threads || Threads[id].parent &lt; 0)
+    return -1;                         /* error, bad id             */
+  caller= ThCurr;                      /* where we came from        */
+  if (id == caller)
+    return ThCurr;                     /* nowhere to go             */
+  ThCurr= id;                          /* where we are going        */
+  if (jumper=setjmp(Threads[caller].jump))
+    return jumper;                     /* return who jumped         */
+  longjmp(Threads[id].jump,caller);    /* jump to ThCurr            */
+}
+
+static void test()
+{
+  ThProbe();
+
+  printf("test: called from thread %d\n",ThId());
+  ThJump(0);
+  printf("test: falling off thread %d\n",ThId());
+}
+
+main()
+{ int i;
+
+  ThInit(3,2048);
+  for (i=1; i &lt;= 9; i++) {
+    printf("main: loop %d\n",i);
+    printf("main: created new thread %d\n",ThNew(test));
+    printf("main: created new thread %d\n",ThNew(test));
+    printf("main: exited from thread %d\n",ThJump(0));
+    printf("main: exited from thread %d\n",ThJump(0));
+  }
+}
+</pre>
+</BODY>
+</HTML>

@@ -1,0 +1,213 @@
+<HTML><HEAD><TITLE>October 1990/Debugging With The 80386 Hardware Debug Registers/Listing 1</TITLE></HEAD><BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4><A name="0223_013B"><A name="0223_013B">Listing 1<A name="0223_013B"></h4><P>
+<pre>/*      debug.c - Demonstration of UNIX debugging interface,
+       including Hardware Breakpointing.
+       Copyright (C) 1990 Computer Innovations Inc.
+       Jon Chappell 8/90, In C++
+
+*/
+#include &lt;stdio.h&gt;
+#include &lt;osfcn.h&gt;
+#include &lt;string.h&gt;
+#include &lt;signal.h&gt;
+#include &lt;sys/types.h&gt;
+#include &lt;sys/mount.h&gt;
+#include &lt;sys/dirent.h&gt;
+#include &lt;sys/param.h&gt;
+#include &lt;sys/immu.h&gt;
+#include &lt;sys/region.h&gt;
+#include &lt;sys/proc.h&gt;
+#include &lt;sys/user.h&gt;
+#include &lt;sys/reg.h&gt;
+#include &lt;sys/debugreg.h&gt;
+
+// simplified debugger class
+class debug {
+private:
+   char *name;                /*  program name */
+   char **argv;               /*  command line args */
+   int pid;                             /*  process id */
+   int read_register(int r);  /*  read process register r */
+public:
+   debug(char *n, char **a);            /*  constructor */
+   void startup(void);                          /*  start debugging */
+   int wait_process(void);                      /*  wait for "debuggee" */
+   void set_hardware_bkpt(int address); /*  set hardware bkpt */
+   void sing[e_step(void);                      /*  single step (trace) */
+   void go(void);                                       /*  run "debuggee" */
+   void display_status(void);           /*  tell user where we stopped */
+};
+
+/*     There is a lot that could be done here, but let's just
+      set a data breakpoint on a variable in the program,
+      do a Go (run the program),
+      then come back and print out where we are (EIP value)
+*/
+main()
+{
+int address;
+   
+   prog.startup();         /*  start program */
+   if(prog.wait_process()){
+      /*  must single-step one instruction when you first come in */
+      prog.single_step();
+      prog.wait_process();
+      /*  Ask user where to place it: */
+      printf("Enter address (in hex): ");
+      scanf("%x",&amp;address);
+      prog.set_hardware_bkpt(address);  /*  set data breakpoint */
+      prog.go();                                 /*  run the program */
+      if(prog.wait_process()){   /*  wait for program */
+                prog.display_status();   /*  tell where we are */
+      }
+      printf("Done\n");
+   }
+}
+
+// sample program
+class debug prog("sample",NULL);
+
+// constructor for debug class.
+// Set up the name and argv of the program to debug
+debug::debug(char *n, char **a)
+{
+   memset((char *)this,0,sizeof(debug));
+   name=n;
+   argv=a;
+}
+/*  load the program being debugged
+*/
+void debug::startup(void)
+{
+   /*  Create a copy of this process. Basically, the program to be debugged
+      is loaded as follows: First, fork() creates a copy of the process.
+         fork() is a UNIX system call, which returns 0 to the child, and the
+      process id to the parent. Then (in case 0: below), the child turns
+      around and calls ptrace(0,...) to give the parent permission to debug
+      it, then proceeds to transform itself into the real process to
+      be debugged via execvp(), which is another UNIX system call, which
+         performs program chaining.
+   */
+   pid = fork();
+   switch(pid){
+     case -1: // error in forking
+              perror("error in forking");
+              exit(1);
+     case 0:           /*  child process */
+              ptrace(0,0,0,0);        // tell parent it's ok to debug me
+                                 /*  execute process to be debugged */
+              if(execvp(name,argv)!=0){
+                perror("execvp failed");
+                exit(1);
+              }
+              break;
+     default:   /*  parent process (continue) */
+              break;
+   }
+}
+
+/*     Wait for process to get back to you, then check to see
+      if the process has terminated, etc.
+*/
+int debug::wait_process(void)
+{
+int status;
+      
+      if(wait(&amp;status)== -1){
+        printf("wait() returned -1");
+        return 0;
+      }
+      // status is tested here, to see if a signal was
+      // received, if the program was terminated, etc.
+      // see ptrace(2) and signal(2) for details
+      if((status&amp;0xff)==0177){
+        if(((status&gt;&gt;8)&amp;0xff)!=SIGTRAP){
+           printf("program stopped on signal");
+           // process signal here
+           return 0;
+        }
+      }
+      // program terminated via exit ?
+      else if((status&amp;0xff)==0){
+         printf("Program terminated via exit().");
+         return 0;
+      }
+      // program terminated via signal() ?
+      else if(((status&gt;&gt;8)&amp;0xff)==0){
+         printf("Program terminated via signal().");
+         return 0;
+      }
+   return 1;
+}
+
+// structure member offset
+#ifndef offsetof
+#define offsetof(s,m) ((int) ((char *)&amp;((s *)0)-&gt;m - (char *)0))
+#endif
+
+/*  set a hardware data breakpoint, 4 bytes wide,
+   read/write on the word at this address in the user space.
+*/
+void debug::set_hardware_bkpt(int address)
+{
+int type=3;                             /*  read/write */
+int len=3;                              /*  4 bytes (one word) */
+int hardware_reg_off;  /*  hardware register offset */
+int control_reg_off;   /*  control register offset */
+int control_word;               /*  control word to write */
+   
+   /*  Let's use the first hardware register only */
+   control_word
+             = ((type + (len&lt;&lt;2)) &lt;&lt; DR_CONTROL_SHIFT) | 1
+                | DR_CONTROL_RESERVED | DR_LOCAL_SLOWD0WN;
+    
+   /*  write the address into the hardware debug register */
+   hardware_reg_off = offsetof(struct user, u_debugreg);
+   ptrace(6,pid,hardware_reg_off,address);
+   
+   /*  write the control word */
+   control_reg_off = offsetof(struct user, u_debugreg)
+             + (DR_CONTROL*sizeof(int));
+   ptrace(6,pid,control_reg_off,control_word);
+}
+
+/*      read register 'r' (where r is a #define from debugreg.h)
+*/
+int debug::read_register(int r)
+{
+unsigned off;
+   
+   /*  read the base of the register area */
+   off = ptrace(3,pid,offsetof(struct user, u_ar0),0);
+   
+   /*  read the individual register */
+   return ptrace(3,pid,off+(r * sizeof(int)),0);
+}
+
+/*  return control to the program being debugged and Go
+*/
+void debug::go(void)
+{
+   ptrace(7, pid, 1,0); /*  UNIX process trace service call */
+}
+
+/*  trace a single machine instruction
+*/
+void debug::single_step(void)
+{
+   ptrace(9,pid,1,0);
+}
+
+/*  tell where we are
+*/
+void debug::display_status(void)
+{
+int eip;
+   /*  read and print EIP */
+   eip = read_register(EIP);
+   printf("Stopped at %xh\n",eip);
+}
+/*  end debug.c */</pre>
+
+</BODY>
+</HTML>

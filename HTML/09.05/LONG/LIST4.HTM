@@ -1,0 +1,290 @@
+<HTML><HEAD>
+<TITLE>May 1991/Orbit Propagation/Listing 4</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 4</A></h4>
+<pre>struct input {
+  double s0[6];         // s0[6]: Pos/vel at time t0
+  double tau;           // Time interval from t0 to t
+  double mu;            // Mu from diff. eq. of motion
+  double psi;           // Initial approx for sol. of
+                    // Kepler's equation.
+} ;
+
+struct output {
+  double s[6];          // s[6]: Pos/vel at time t.
+};
+
+twobdy(struct input *in, struct output *out)
+
+// twobdy:  A function to compute the position and
+//          velocity of an orbiting body under
+//          two-body motion, given the position and
+//          velocity at time t0, the elapsed time tau
+//          at which to compute the solution, the value
+//          for mu for the two bodies, and an initial
+//          approximation psi of the solution to
+//          the generalized Kepler's equation.
+//
+// References:
+//   (1)  Goodyear, W.H., "A General Method for the
+//        Computation of Cartesian Coordinates and
+//        Partial Derivatives of the Two-Body Problem",
+//        NASA Contractor Report NASA CR 522.
+//   (2)  Bate, Mueller, White, Fundamentals of
+//        Astrodynamics.
+
+{
+
+#define SQ(x) (x*x)
+#define LARGENUMBER 1.e+300
+
+// Additional variables
+  int       its;                     // Iteration counter
+  double a, ap;                      // Argument in series
+                               // expansion.
+  double alpha, sig0, u;             // Temporary quantities
+  double c0, c1, c2, c3, c4, c5x 3,  // Series coefficents
+        s1, s2, s3;
+  double pain, psip;                 // Acceptance bounds for
+                               // sol. psi to Kep. eq.
+  double dtau, dtaun, dtaup;         // Residuals in Newton
+                               // method for solving
+                               // Kep. eq.
+  double fm1, g;                     // f, g &amp;
+  double fd, gdm1;                   // fdot, gdot express.
+
+  double mu     ,                    // Local copies of i/o
+        psi ,                       // variables
+        r             ,  r0 ,
+        s[6], s0[6] ,
+        tau;
+
+  int loopexit;                      // Flag to exit main
+                               // program loop.
+  int i,j,m;
+
+// Copy the input pos, vel, tau, psi into
+//  local variables.
+  for (i=0; i&lt;6 ; i++)
+    s0[i] = in-&gt;s0[i];
+      mu = in-&gt;mu;
+  tau = in-&gt;tau;
+  psi = in-&gt;psi;
+
+//       Compute initial orbit radius
+   r0    = sqrt(SQ(s0[0]) + SQ(s0[1]) + SQ(s0[2]));
+
+//       Compute other intermediate quantities;
+   sig0  = s0[0]*s0[3] + s0[1]*s0[4] + s0[2]*s0[5];
+   alpha = SQ(s0[3]) + SQ(s0[4]) + SQ(s0[5]) - 2*mu/r0;
+//       Initialize series mod count m to zero
+   m = 0;
+
+
+//------Establish initial psi and initial acceptance bounds
+//------for psi.
+   if (tau == 0) {               // If input tau = 0, set
+     psi = 0;                    //  output psi to 0; else
+   } else {                      //  initialize acceptance
+     if (tau &lt; 0) {              //  bounds for psi, and
+        psin = -LARGENUMBER;    //  initialize Newton
+                psip = 0;      //  method iteration
+        dtaun = psin;            //  residuals.
+        dtaup = -tau;
+      } else {                   //  tau &gt; 0
+        psin = 0;
+        psip = LARGENUMBER;
+        dtaun = -tau;
+        dtaup = psip;
+      }
+
+      // If the input psi lies between bounds
+      //  psin and psip, use it as a first approx.
+      //  to a solution of Kepler's equation.
+      // If not, we adjust the input psi before using
+      //  it to solve Kepler.
+
+      if (!( (psi &gt; pain) &amp;&amp; (psi &lt; psip)) ) {
+        // Try Newton's method for initial psi set equal to zero
+        psi = tau/r0;
+        // Set psi = tau if Newton's method fails
+        if (psi &lt;= psin || psi &gt;= psip)
+          psi = tau;
+      }
+    }
+//------
+   loopexit = 0;
+   its = 0;
+
+//----------  BEGINNING OF LOOP FOR SOLVING GENERALIZED KEP. EQ.
+   do {
+     its++;
+     a = alpha * psi * psi;
+     if (fabs(a) &gt; 1) {
+       ap = a;              // Save original value of a
+       // Iterate until abs(a) &lt;= 1.
+       while (fabs(a) &gt; 1) {
+         m++;               // Keep track of number of
+                         // times reduce a.
+         a *= 0.25;
+       }
+     }
+    // Now compute "C series" terms:
+    // Note that they are functions of psi.
+    c5x3 = (1+(1+(1+(1+(1+(1+(1+a/342)*a/272)*a/210)*a/156)
+          *a/110)*a/72)*a/42)/40;
+    c4   = (1+(1+(1+(1+(1+(1+(1+a/306)*a/240)*a/182)*a/132)
+          *a/90)*a/56)*a/30)/24;
+    c3 = (.5 + a*c5x3)/3;
+    c2 = (.5 + a*c4);
+    c1 = 1 + a*c3;
+    c0 = 1 + a*c2;
+
+    //   If we reduced "a" above, we have to adjust the
+    //     C terms just computed.
+    if (m&gt;0) {
+      while (m&gt;0) {
+        c1 = c1*c0;
+        c0 = 2*c0*c0 - 1;
+        m--;
+       }
+
+      c2 = (c0 - 1)/ap;
+
+      c3 = (c1 - 1)/ap;
+      c4 = (c2 - .5)/ap;
+      c5x3 = (3 * c3-.5)/ap;
+    }
+
+    // Now use the C terms to compute the "S series" terms.
+    s1 = c1 * psi;
+    s2 = c2 * psi * psi;
+    s3 = c3 * psi * psi * psi;
+
+    g    = r0*s1 + sig0*s2;   // Compute g; used later to
+                          // get position.
+
+    // Compute dtau, the function to be zeroed by the
+    // Newton method.
+    dtau = (g + mu*s3) - tau;
+    // r is the derivative of dtau with respect to psi.
+    r    = fabs(r0*c0 + (sig0*s1 + mu*s2));
+
+    // Check for convergence of iteration and
+    //  reset bounds for psi.
+     if (dtau == 0) {
+       loopexit = 1;
+       continue;            // Get out of loop if dtau==0.
+     }
+     else if (dtau &lt; 0) {
+       psin = psi;
+       dtaun = dtau;
+     }
+     else {                 // dtau &gt; 0
+       psip = psi;
+       dtaup = dtau;
+     }
+
+     // This is the Newton step:
+     //  x(n+1) = x(n) - y(n)/(dy/dx).
+     psi = psi - dtau/r;
+
+
+     // Accept psi for further iterations if it is
+     // between bounds psin and psip.
+     if ( (psi &gt; psin) &amp;&amp; (psi &lt; psip) ) continue;
+
+//----  ---- ----  Begin modifications to Newton method.
+     // Try incrementing bound with dtau nearest zero by
+     // the ratio 4*dtau/tau.
+     if (fabs(dtaun) &lt; fabs(dtaup) )
+       psi = psin * (1 - (4*dtaun)/tau);
+     if (fabs(dtaup) &lt; fabs(dtaun) )
+       psi = psip * (1 - (4*dtaup)/tau);
+     if ( (psi &gt; psin) &amp;&amp; (psi &lt; psip) ) continue;
+     // Try doubling bound closest to zero.
+     if (tau &gt; 0)
+       psi = psin + psin;
+              if (tau&lt; 0)
+       psi = psip + psip;
+     if ( (psi &gt; psin) &amp;&amp; (psi &lt; psip) ) continue;
+
+     // Try interpolation between bounds.
+     psi = psin + (psip - psin) * (-dtaun/(dtaup - dtaun));
+     if ( (psi &gt; psin) &amp;&amp; (psi &lt; psip) ) continue;
+
+     // Try halving between bounds.
+     psi = psin + (psip - psin) * .5;
+     if ( (psi &gt; psin) &amp;&amp; (psi &lt; psip) ) continue;
+//---- ---- ----
+     // If we still are not between bounds, we've improved
+     // the estimate of psi as much as possible.
+     loopexit = 1;
+
+   } while ( loopexit == 0 &amp;&amp; its &lt;= 10);
+//----------  END OF LOOP FOR SOLVING GENERALIZED KEPLER EQ.
+   // Compute remaining three of four functions fm1, g, fd,
+
+   // gdm1
+   fm1 = -mu * s2 / r0;
+   fd= -mu * s1 / ( r0 * r);
+   gdm1= -mu * s2 / r;
+
+   // Compute output solution for time t = t0 + tau
+   for (i=0;i&lt;3;i++) {
+     // Position solution    at time t
+     out-&gt;s[i] = s[i] = s0[i] + (fm1 * s0[i] + g * s0[i+3]);
+     // Velocity solution at time t
+     out-&gt;s[i+3] = s[i+3] = (fd * s0[i] + gdm1 * s0[i+3])
+                                       + s0[i+3];
+     // Generalized eccentric anomaly for time t
+     in-&gt;psi = psi;
+   }
+
+  return(0);
+}
+
+
+
+
+
+<B>Sample Input/Output</B>
+
+
+  The same pos/and vel was input for four
+  different values of tau.
+Input:
+X     6640.32 Y  0.00    Z  0.00
+XD       0.00 YD 7.03    ZD 4.06
+
+tau        = 1576.78 sec = 1/4 orbit period
+
+Output:
+X  -1470.76 Y  6326.18 Z  3652.42
+XD    -7.24 YD   -0.62 ZD   -0.35
+
+tau       = 3153.56 sec  = 1/2 orbit period
+
+Output:
+X  -8115.95 Y     0.00 Z     0.00
+XD      0.00 YD  -5.75 ZD   -3.32
+
+tau      = 4730.34 sec = 3/4 orbit period
+
+Output:
+X  -1470.77 Y -6326.17 Z -3652.42
+XD  7.24    YD -0.62 ZD   -0.35
+
+tau    = 6307.12 = orbit period
+
+Output:
+X   6640.32 Y     0.00 Z     0.00
+XD     0.00 YD    7.03 ZD    4.06
+
+At the end of one period, the original state repeats,
+as expected.</pre>
+
+</BODY>
+</HTML>

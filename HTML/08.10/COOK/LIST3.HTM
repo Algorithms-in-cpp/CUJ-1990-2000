@@ -1,0 +1,1707 @@
+<HTML><HEAD><TITLE>October 1990/Portable Transaction Tracking/Listing 3</TITLE></HEAD><BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4><A name="0225_013C"><A name="0225_013C">Listing 3 (transact.c)<A name="0225_013C"></h4><P>
+<pre>/************************
+File: TRANSACT.C
+Created
+By:       Russell Cook
+************************/
+
+#include &lt;stdio.h&gt;
+#include &lt;fcntl.h&gt;
+#include &lt;string.h&gt;
+#include &lt;sys/types.h&gt;
+#include &lt;sys/stat.h&gt;
+#include &lt;errno.h&gt;
+
+#include "environ.h"
+#include "transact.h"
+
+/*===== MODULE STATIC VARIABLE TYPES =====*/
+   /* offset: long file offset where user believes file is positioned      */
+   /* fd:      valid file descriptor for CLOSED_FILE (when free)           */
+   /* openMode: mode with which file was opened                            */
+   /* operPerms: access permissions used for open                          */
+   /* index:   handle of associated trans. file (bFileType == USER_FILE)   */
+   /* nUseCount: # of associated user files (file type is trans. file)     */
+   /* bFileType: USER_FILE or a valid transaction log file type specifier  */
+   /* npcFileName: near pointer to a null-terminated filename              */
+typedeE struct {
+   long offset;
+   int fd;
+   int oponMode;
+   int openPerms;
+   union {
+      FHANDLE index;
+      int nUseCount;
+   } unionData;
+   BOOL bFileType;
+   char NEAR *npcFileName;
+} TFile;
+
+#define FILEOFFSET( npFile )      (npFile)-&gt;offset
+#define FILEDESCRIPTOR( npFile )  (npFile)-&gt;fd
+#define FILEMODE( npFile )            (npFiLe)-&gt;openMode
+#define FILEPERMS( npFile )           (npFile)-&gt;openPerms
+#define FILEINDEX( npFile )       (npFile)-&gt;unionData.index
+#define FILEUSECOUNT( npFile )    (npFile)-&gt;unionData.nUseCount
+#define FILETYPE( npFile )        (npFile)-&gt;bFileType
+#define FILENAME( npFile )        (npFile)-&gt;npcFileName
+
+   /* lOffset: offset in USER data file where data should be written  */
+   /* DataBytes: number of bytes of data extracted from USER file     */
+   /* FileMode: read/write accessibility used to open file            */
+   /* FilePermissions: access permissions used when USER file opened  */
+   /*                  NOTE: NEW_FILE already stripped                */
+   /* sOperation: action which caused transaction logging             */
+   /* NameLen: # of bytes (including null) in filename field          */
+typedef struct {
+   long lOffset;
+   unsigned int DataBytes;
+   int FileMode;
+   int FilePermissions;
+   int NameLen;
+   short sOperation;
+} TRollBackStruct;
+
+#define ROLLOFFSET( npRoll )        (npRoll)-&gt;lOffset
+#define ROLLBYTES( npRoll )             (npRoll)-&gt;Databytes
+#define ROLLMODE( npRoll )          (npRoll)-&gt;FileMode
+#define ROLLPERMS( npRoll )             (npRoll)-&gt;FilePermissions
+#define ROLLOP( npRoll )            (npRoll)-&gt;sOperation
+#define ROLLNAMELEN( npRoll )       (npRoll)-&gt;NameLen
+
+/*===== MODULE STATIC MANIFEST CONSTANTS =====*/
+#ifdef MSC51_ENV
+
+#  include &lt;io.h&gt;
+#  include &lt;stdlib.h&gt;
+#  include &lt;mattoc.h&gt;
+#  include &lt;dos.h&gt;
+#  include &lt;sys/locking.h&gt;
+#  include &lt;limits.h&gt;
+
+#  define ERROR_CODE   1
+#  define SUCCESS_CODE 0
+#  define NEW_FILE     (0_CREAT | 0_EXCL)
+#  define READ_FILE    0_RDONLY
+#  define WRITE_FILE   0_WRONLY
+#  define BINARY_FILE  0_BINARY
+#  define SHARED_FILE  S_IWRITE | S_IREAD
+#  define SYNC_FILE    0
+#  define _LPN_MAX     _MAX_DIR
+#  define _LFN_MAX_    (_MAX_FNAME + _MAX_EXT )
+#  define MAXUINT      UINT_MAX
+
+#  define OPEN(name,mode,perats,pFd) \
+      ((*pFd = open(name,mode,perms)) == -1 ? ERROR_CODE : SUCCESS_CODE )
+#  define READ(fd,buf,count,pNum)      _dos_resd(fd,buf,count,pNum)
+#  define WRITE(fd,buf,count,pNum)     _dos_write(fd,buf,count,pNum)
+#  define LSEEK(fd,offset,whence, pPos) \
+      ((*pPos = lseek(fd,offset,whence)) == -1L ? ERROR_CODE : SUCCESS_CODE
+#  define CLOSE(fd)    (close(fd) == -1 ? ERROR_CODE : SUCCESS_CODE)
+
+#  define CHSIZE(fd, lbytes) \
+         (chsize(fd, lbytes) == -1 ? ERROR CODE : SUCCESS_CODE )
+
+#  define UNLlNK(npName) \
+         (unlink(npName) == -1 ? ERROR_CODE : SUCCESS_CODE )
+#  define FSTAT(fd,buf) \
+         (fstat(fd,buf) == -1 ? ERROR_CODE : SUCCESS_CODE )
+
+#  ifdef MIXED_MODEL
+#      define FSTRCPY(lpDest, lpSource)     farStrcpy(lpDest,lpSource)
+#      define FSTRLEN(lpString)             farStrlen(lpString)
+#  else
+#      define FSTRCPY(lpDest,lpSource)      strcpy(lpDest,lpSource)
+#      define FSTRLEN(lpString)             strlen(lpString)
+#  endif   /* MIXED_MODEL */
+
+#  define STRCMP(npStr1,npStr2)         stricmp(npStr1,npStr2)
+
+#  define STRDUP( npString )            strdup( npString )
+#  define MALLOC( bytes )               malloc( bytes )
+#  define REALLOC( ptr, bytes )         realloc( ptr, bytes )
+#  define FREE( ptr )                   free( ptr )
+
+#  define BYTE_BITS     8
+#  define BITS(x)       (BYTE BITS * sizeof(x))
+#endif /* MS-DOS environment */
+
+#ifdef TURBOC_ENV
+#  include &lt;io.h&gt;
+#  include &lt;stdlib.h&gt;
+#  include &lt;alloc.h&gt;
+#  include &lt;dos.h&gt;
+#  incLude &lt;limits.h&gt;
+
+#  define ERROR_CODE   1
+#  define SUCCESS_CODE 0
+#  define NEW_FILE     (0_CREAT | O_EXCL)
+#  define READ_FILE    0_RDONLY
+#  define WRITE_FILE   0_WRONLY
+#  define BINARY_FILE  0_BINARY
+#  define SHARED_FILE  S_IWRITE | S_IREAD
+#  define SYNC_FTLE    0
+#  define _LPN_MAX_    128
+#  define _LFN_MAX_    ( 13 )
+#  define MAXUINT      UINT_MAX
+
+#  define OPEN(name,mode,perms,pFd) 
+      ((*pFd = open(name,mode,perms)) == -1 ? ERROR_CODE : SUCCESS_CODE )
+#  define READ(fd,buf,count,pNum) \
+      ((*pNum = read(fd,buf,count)) == -1 ? ERROR_COOE : SUCCESS_CODE )
+#  define WRITE(fd,buf,count,pNum) \
+      ((*pNum = write(fd,buf,count)) == -1 ? ERROR_COOE : SUCCESS_CODE )
+#  define LSEEK(fd,offset,whence,pPos) \
+      ((*pPos = lseek(fd,offset,whence)) == -1L ? ERROR_CODE : SUCCESS_CODE)
+#  define CLOSE(fd)    (close(fd) == -1 ? ERROR_CODE : SUCCESS_CODE)
+
+#  define CHSlZE(fd,lbytes)\
+         (chsize(fd,lbytes) == -1 ? ERROR_CODE : SUCCESS_COOE )
+#  define UNLINK(npName) \
+         (unlink(npName) == -1 ? ERROR_CODE : SUCCESS_CODE )
+#  define FSTAT(fd,buf) \
+         (fstat(fd,buf) == -1 ? ERROR_CODE : SUCCESS_CODE )
+
+#  define FSTRCPY(lpDest,lpSource)      strcpy(lpDest,lpSource)
+#  define FSTRLEN(lpString)             strlen(lpString)
+#  define STRCMP(npStr1,npStr2)         stricmp(npStr1,npStr2)
+
+#  define STRDUP( npString )            strdup( npString )
+#  define MALLOC( bytes )               malloc( bytes )
+#  define REALLOC( ptr, bytes )         realloc( ptr, bytes )
+#  define FREE( ptr )                   free( ptr )
+
+#  define BYTE_BITS    8
+#  define BITS(x)      (BYTE_SITS * sizeof(x))
+#endif /* TurboC environment */
+
+#ifdef SCOUNIX_ENV
+#  include &lt;stdlib.h&gt;
+#  include &lt;values.h&gt;
+#  include &lt;mnttab.h&gt;
+#  include &lt;limits.h&gt;
+
+#  define ERROR_CODE    1
+#  define SUCCESS_CODE  0
+#  define NEW_FILE      (0_CREAT I 0_EXCL)
+#  define READ_FILE     0_RDONLY
+#  define WRITE_FILE    0_WRONLY
+#  define BINARY_FILE   0
+#  define SYNC_FILE     0_SYNC
+#  define SHARED_FILE   0666
+#  define _LPN_MAX_     LPNMAX
+#  define _LFN_MAX_     LFNMAX
+#  define MAXUINT       UINT_MAX
+   extern int open(char *,int,int);
+   extern int  close( int );
+   extern long lseek( int, long, int );
+   extern int  read( int, char *, unsigned );
+   extern int  write( int, char *, unsigned );
+   extern int fstat(int,struct stat *);
+   extern int  unlink( char * );
+
+#  define OPEN(name,mode,perm,pFd) 
+      ((*pFd = open(name,mode,perms)) == -1 ? ERROR_CODE : SUCCESS_CODE )
+#  define READ(fd,buf,count,pNum) \
+      ((*pNum = read(fd,buf,count)) == -1 ? ERROR_CODE : SUCCESS_CODE )
+#  define WRITE(fd,buf,count,pNum) \
+      ((*pNum = write(fd,buf,count)) == -1 ? ERROR_CODE : SUCCESS_CODE )
+#  define LSEEKC(fd,offset,whence,pPos) \
+      ((*pPos = lseek(fd,offset,whence)) == -1L ? ERROR_CODE : SUCCESS_CODE)
+#  define CLOSE(fd)    (close(fd) == -1 ? ERROR_CODE : SUCCESS_CODE)
+
+#  define CHSIZE(fd,lbytes)             ERROR_CODE
+#  define UNLlNK(npName) 
+         (unlink(npName) == -1 ? ERROR_CODE : SUCCESS_CODE )
+#  define FSTAT(fd,buf) \
+         (fstat(fd,buf) == -1 ? ERROR_CODE : SUCCESS_CODE )
+
+#  define FSTRCPY(lpDest,lpSource)      strcpy(lpDest,lpSource)
+#  define FSTRLEN(lpString)             strlen(lpString)
+#  define STRCMP(npStr1,npStr2)         strcmp(npStr1,npStr2)
+
+#  define STRDUP( npString )            strdup( npString )
+
+#  define MALLOC( bytes )               malloc( bytes )
+#  define REALLOC( ptr, bytes )         realloc( ptr, bytes )
+#  define FREE( ptr )                   free( ptr )
+#endif /* some variation of Unix environment */
+
+#ifndef READ
+1 = 0;     /*  didn't get an environment specifier */
+#endif
+
+#define HANDLE_MASK         ((FHANDLE)(1 &lt;&lt; (BITS(FHANDLE) - 2) ))
+
+#define USER_FILE       ((BOOL)0)
+#define CLOSED_FILE         ((int)-1)
+
+#define INCR_COUNT      ( 5 )
+#define BAD_FTYPE       ((B00L)(1 &lt;&lt; (BITS( BOOL) - 1)))
+
+#define APPEND_UP       ((short) 1)
+#define OVERWR_OP       ((short) 2)
+#define CHSIZE_OP       ((short) 4)
+
+#define DATA_AREA       256
+#define XFER_SIZE       (sizeof(TRollBackStruct) + sizeof(short) + \
+                       _LPN_MAX_ + _LFN_MAX_ + DATA_AREA )
+
+/*===== MODULE STATIC, GLOBAL VARIABLES =====*/
+static TFile NEAR *npFileArray = (TFile NEAR *)0;
+static int nArrayElements = 0;
+static int nElementsInUse = 0;
+static int nLastError = ENONE;
+
+/*===== MODULE STATIC FUNCTIONS =====*/
+static FHANDLE NEARFNCT AddFileToTable( char FAR *, int, int, BOOL);
+static BOOL NEARFNCT WriteTransRecord( short, unsigned int,\
+      long, TFile NEAR * );
+
+#ifdef MIXED_MODEL
+   static int NEARFNCT farStrlen(char FAR * );
+   static void NEARFNCT farStrcpy(char FAR *, char FAR * );
+#endif /*  MIXED_MODEL */
+
+#ifdef NEED_FLUSH
+   static BOOL NEARFNCT FlushFile( TFile NEAR * );
+#else
+#  define FlushFile( lpFile ) TRUE
+#endif /* NEED_FLUSH */
+/*FDB**************************************************
+Function:      VFOpen
+Inputs:            far pointer to null-terminated file name
+            int specifying operation to perform for open
+            int specifying permission settings for file
+Outputs:
+Return:            a valid handle for the file or BADFHANDLE
+Assumptions:  the file name MUST be a fully qualified, valid name
+            for the current environment
+See Also:
+******************************************************/
+
+FHANDLE FARFNCT VFOpen( char FAR *lpcName, /* name of data file */\
+                   int mode,       /* open flags (O_RDONLY...) */\
+                   int perms       /* permissions */\
+                   )
+{
+   FHANDLE index;
+
+   nLastError = ENONE;
+   errno = 0;
+
+   if ((index = AddFileToTable( lpcName, mode, perms,
+      USER_FILE )) == BADFHANDLE)
+         return BADFHANDLE;
+
+   return index | HANDLE_MASK;
+}
+/*FDB***************************************************
+Function:       VFClose
+Inputs:             file handle from VFOpen()
+Outputs:
+Return:             TRUE if file is closed else FALSE
+Assumptions:
+See Also:       VFOpen
+*******************************************************/
+
+BOOL FARFNCT VFClose( FHANDLE FileHandle )
+{
+   int index = FileHandle &amp; <SUP>~</SUP>HANDLE_MASK;
+   BOOL ret;
+   TFile NEAR *npFile;
+
+   nLastError = ENONE;
+   errno = 0;
+
+   if (FileHandle == BADFHANDLE)
+   {
+      nLastError = EHANDLE;
+      ret = FALSE;
+   }
+   else if (FILEDESCRIPTOR((npFile = npFileArray + index)) == CLOSED_FILE)
+   {
+      nLastError = ECLOSED;
+      ret = FALSE;    /* file not open */
+   }
+   else if (FILETYPE( npFile ) != USER_FILE)
+   {
+      nLastError = ENOTUSER;
+      ret = FALSE;    /* trying to close non-user file */
+   }
+   else if (FILEINDEX( npFile ) != BADFHANDLE)
+   {
+      nLastError = EACTIVE;
+      ret = FALSE;    /* there's an active transaction */
+   }
+   else if ((ret = (CLOSE( FILEDESCRIPTOR( npFile ) ) ==
+      ERROR_CODE ? FALSE : TRUE )) == TRUE)
+   {
+      FILEDESCRIPTOR( npFile ) = CLOSED_FILE;
+      FILEINDEX( npFile ) = BADFHANDLE;
+      FREE( FILENAME( npFile ) );
+      --nElementsInUse;
+   }
+   else nLastError = ECLOSE;
+   return ret;
+}
+/*FDB**************************************************
+Function:      OpenTransact
+Inputs             far pointer to null-terminated file name
+            int specifying type of transaction file to be created
+Outputs:
+Return:           BADFHANDLE if unable to (1)rollback end existing transaction
+            file or (2) if the file cannot be created
+Assumptions:  if specified file exists, a prior transaction failed before
+            completion. Therefore, a rollback of the files contents
+            is attempted. If this succeeds, the transaction file is
+            deleted and recreated. Otherwise, BADFHANDLE is returned.
+            Also, the transaction file name MUST be a fully qualified,
+            valid name for the current environment.
+See Also:     CloseTransact, DeleteTransact
+******************************************************/
+
+FHANDLE FARFNCT OpenTransact( char FAR *lpcTransName, \
+                       BOOL bTransType )
+{
+   FHANDLE index;
+
+   nLastError = ENONE;
+   errno = 0;
+
+   if (bTransType != NORMAL_TRANS &amp;&amp; bTransType != DEL_ON_CLOSE)
+   {
+      nLastError = ETTYPE;
+      return BADFHANDLE;
+   }
+   else if (RollBack( lpcTransName ) == FALSE)
+      return BADFHANDLE;  /*  nLastError set by RollBack() */
+   else if ((index = AddFileToTable( lpcTransName,
+          NEW_FILE | WRITE_FILE | BINARY_FILE | SYNC_FILE,
+          SHARED_FILE,
+          bTransType )) == BADFHANDLE)
+      return BADFHANDLE;   /*  nLastError set by AddFileToTable() */
+
+   FILEUSECOUNT( npFileArray + index ) = 0;
+
+   return index | HANDLE_MASK;
+}
+/*FDB*************************************************
+Function:      CloseTransact
+Inputs:           file handle of open transact file from TransactOpen()
+Outputs:
+Return:           TRUE if file is closed and/or deleted else FALSE
+Assumptions:  If the transaction file was opened as DEL_ON_CLOSE,
+            the file will be deleted after closure. Otherwise, the
+            caller is responsible for calling DeleteTransactFile().
+See Also:     OpenTransact, DeleteTransactionFile
+******************************************************/
+BOOL FARFNCT CloseTransact(    FHANDLE TransHandle )
+{
+   int index = TransHandle &amp; <SUP>~</SUP>HANDLE_MASK;
+   BOOL ret;
+   TFile NEAR *npFile;
+
+   nLastError = ENONE;
+   errno = 0;
+
+   if (TransHandle == BADFHANDLE)
+   {
+      nLastError = EHANDLE;
+      ret = FALSE;
+   }
+   else if (FILEDESCRIPTOR((npFile = npFileArray + index)) == CLOSED_FILE)
+   {
+      nLastError = ECLOSED;
+      ret = FALSE;    /* file not open */
+   }
+   else if (FILETYPE( npFile ) == USER_FILE)
+   {
+      nLastError = EUSER;
+      ret = FALSE;    /* trying to close a user file */
+   }
+   else if (FILEUSECOUNT( npFile ) != 0)
+   {
+      nLastError = EACTIVE;
+      ret = FALSE;    /* there's an active transaction */
+   }
+   else if ((ret = (CLOSE( FILEDESCRIPTOR( npFile ) ) ==
+      ERROR_CODE ? FALSE : TRUE )) == TRUE)
+   {
+      FILEDESCRIPTOR( npFile ) = CLOSED_FILE;
+      FILEUSECOUNT( npFile ) = BADFHANDLE;
+      if (FILETYPE( npFile ) == DEL_ON_CLOSE &amp;&amp;
+         UNLINK( FILENAME( npFile ) ) == ERROR_CODE)
+      {
+         nLastError = EUNLINK;
+         ret = FALSE;
+      }
+      FREE( FILENAME( npFile ) );
+      --nElementsInUse;
+   }
+   else nLastError = ECLOSE;
+   return ret;
+}
+/*FDB*************************************************
+Function:     DeleteTransactionFile
+Inputs:           far pointer to null-terminated transaction file name
+Outputs:
+Return:           TRUE if file is removed from the file system else FALSE
+Assumptions:  non-existence of the file is equivalent to deletion. Also,
+            the transaction file name MUST be a fully qualified, valid
+            name for the current environment.
+See Also:     OpenTransact, CloseTransact
+******************************************************/
+
+BOOL FARFNCT DeleteTransactionFile(    char FAR *lpcTransName )
+{
+   char NEAR *npFileName;
+   int index;
+   TFile NEAR *npFile;
+
+#ifdef MIXED_MODEL
+   char nearName[ _LPN_MAX_ + _LFN_MAX_ ];
+
+   FSTRCPY( nearName, LpcTransName );
+   npFileName = nearName;
+#else
+   npFileName = lpcTransName;
+#endif
+
+   nLastError = ENONE;
+   errno = 0;
+
+   for (index = 0,
+         npFile = npFileArray;
+      index &lt; nArrayElements;
+      ++index, ++npFile)
+   {
+      /* can use strcmp() since both string pointers are */
+      /* guaranteed to be no larger than the default     */
+      /* pointer size for the model in use.              */
+      if (FILENAME( npFile ) != (char NEAR *)0 &amp;&amp;
+         STRCMP( FILENAME( npFile ), npFileName ) == 0 &amp;&amp;
+         FILEDESCRIPTOR( npFile ) != CLOSED_FILE)
+      {
+         nLastError = ENOTCLOSED;
+         return FALSE;
+      }
+   }
+
+   if (UNLINK( npFileName ) == ERROR_CODE)
+   {
+      nLastError = EUNLINK;
+      return FALSE;
+   }
+
+   return TRUE;
+}
+/*FDB**************************************************
+Function:     BeginTransaction
+Inputs:           handle to file opened using VFOpen()
+            handle of transaction file opened unsing OpenTransact()
+Outputs:
+Return:           TRUE if a transaction is started else FALSE
+Assumptions:
+See Also:     VFOpen, OpenTransact
+******************************************************/
+
+BOOL FARFNCT BeginTransaction( FHANDLE fileHandle, \
+                          FHANDLE transHandle )
+{
+   int fileIndex = fileHandle &amp; <SUP>~</SUP>HANDLE_MASK,
+      transIndex = transHandle &amp; <SUP>~</SUP>HANDLE_MASK;
+   BOOL ret = TRUE;
+   TFile NEAR *npUserFile, NEAR *npTransFile;
+
+   nLastError = ENONE;
+   errno = 0;
+
+   if (fileHandle == BADFHANDLE)
+   {
+      nLastError = EHANDLE;
+      ret = FALSE;
+   }
+   else if (FILEDESCRIPTOR((npUserFile = npFileArray + fileIndex)) ==
+      CLOSED_FILE)
+   {
+      npLastError = ECLOSED;
+      ret = FALSE;     /* file not open */
+   }
+   else if (FILETYPE( npUserFile ) != USER_FILE)
+   {
+      nLastError = ENOTUSER;
+      ret = FALSE;    /* fileHandle does not ref a user file */
+   }
+   else if (FILEINDEX( npUserFile ) != BADFHANDLE)
+   {
+      nLastError = EACTIVE;
+      ret = FALSE;    /* there's an active transaction */
+   }
+   else if (transHandle == BADFHANDLE)
+   {
+      nLastError = EHANDLE;
+      ret = FALSE;
+   }
+   else if (FILEDESCRIPTOR((npTransFile = npFileArray + transIndex)) ==
+      CLOSED_FILE)
+   {
+      nLastError = ECLOSED;
+      ret = FALSE;    /* file not open */
+   }
+   else if (FILETYPE( npTransFile ) == USER_FILE)
+   {
+      nLastError = EUSER;
+      ret = FALSE;    /* transHandle does not ref a trans file */
+   }
+   else {
+      FILEINDEX( npUserFile ) = transIndex;
+      ++FILEUSECOUNT( npTransFile );
+   }
+   return ret;
+}
+/*FDB**************************************************
+Function:     EndTransaction
+Inputs:           handle for a file opened using VFOpen
+            handle of a transaction file opened using TransactOpen
+Outputs:
+Return:           TRUE if an active transaction between the handles is
+            terminated successfully else FALSE
+Assumptions:  a BeginTransaction() call using the same handles was
+            successful and no EndTransaction() has been executed
+            using these handles
+See Also:     VFOpen, OpenTransact, BeginTransaction
+*******************************************************/
+
+BOOL FARFNCT EndTransaction(  FHANDLE fileHandle, \
+                         FHANDLE transHandle )
+{
+   int fileIndex = fileHandle &amp; <SUP>~</SUP>HANDLE_MASK,
+      transIndex = transHandle &amp; <SUP>~</SUP>HANDLE_MASK;
+   BOOL ret = TRUE;
+   TFile NEAR *npUserFile, NEAR *npTransFile;
+
+   nLastError = ENONE;
+   errno = 0;
+
+   if (fileHandle == BADFHANDLE)
+   {
+      nLastError = EHANDLE;
+      ret = FALSE;
+   }
+   else if (FILEDESCRIPTOR((npUserFile = npFileArray + fileIndex)) ==
+      CLOSED_FILE)
+   {
+      nLastError = ECLOSED;
+      ret = FALSE;    /* file not open */
+   }
+   else if (FILETYPE( npUserFile ) != USER_FILE)
+   {
+      nLastError = ENOTUSER;
+      ret = FALSE;    /* fileHandle does not ref a user file */
+   }
+   else if (FILEINDEX( npUserFile ) != transIndex)
+   {
+      nLastError = ENOTTRACK;
+      ret = FALSE;    /* file's transactions going someplace else */
+   }
+   else if (transHandle == BADFHANDLE)
+   {
+      nLastError = EHANDLE;
+      ret = FALSE;
+   }
+   else if (FILEDESCRIPTOR((npTransFile = npFileArray + transIndex)) ==
+      CLOSED_FILE)
+   {
+      nLastError = ECLOSED;
+      ret = FALSE;    /* file not open */
+   }
+   else if (FILETYPE( npTransFile ) == USER_FILE)
+   {
+      nLastError = EUSER;
+      ret = FALSE;    /* transHandle does not ref a trans file */
+   }
+   else {
+      FILEINDEX( npUserFile ) = BADFHANDLE;
+      --FILEUSECOUNT( npTransFile );
+   }
+   return ret;
+}
+/*FDB*************************************************
+Function:     VFRead
+Inputs:          handle of a file opened using VFOpen()
+            far pointer to a buffer
+            unsigned int # of bytes to be read into the buffer
+Outputs:      the first n bytes of the buffer are filled with data
+            from the file where n is the return value of the fnct
+Return:            -1 on failure else n where n is the # of bytes placed
+            into the buffer
+Assumptions:  the buffer to be filled is at least as large as the
+            number of bytes to be read
+See Also:     VFOpen
+******************************************************/
+
+int FARFNCT VFRead(    FHANDLE FileHandle,\
+                VOID FAR *lpvBuffer,\
+                unsigned int numBytes )
+{
+   int index = FileHandle &amp; <SUP>~</SUP>HANDLE_MASK;
+   int ret;
+   TFile NEAR *npFile;
+   long lOffset;
+
+   nLastError = ENONE;
+   errno = 0;
+
+   if (FileHandle == BADFHANDLE)
+   {
+      nLastError = EHANDLE;
+      ret = -1;
+   }
+   else if (FILEDESCRIPTOR((npFile = npFileArray + index)) == CLOSED_FILE)
+   {
+      nLastError = ECLOSED;
+      ret = -1;  /* file not open */
+   }
+   else if (FILETYPE( npFile ) != USER_FILE)
+   {
+      nLastError = ENOTUSER;
+      ret = -1;  /* trying to read non-user file */
+   }
+   else if (FILEOFFSET( npFile ) == -1L)
+   {
+      nLastError = EPOS;
+      ret = -1;
+   }
+   else if (LSEEK( FILEDESCRIPTOR( npFile ), FILEOFFSET( npFile ),
+      0, &amp;lOffset ) == ERROR_CODE ||
+      lOffset != FILEOFFSET( npFile ))
+   {
+      nLastError = ESEEK;
+      ret = -1;
+   }
+   else if (READ( FILEDESCRIPTOR( npFile ), lpvBuffer, numBytes,
+      &amp;ret ) == ERROR_CODE)
+         nLastError = EREAD;
+   return ret;
+}
+/*FDB************************************************
+Function:     VFWrite
+Inputs           handle of file to be read opened using VFOpen()
+            far pointer to buffer to be written
+            # of bytes in buffer to be written
+Outputs:
+Return:          # bytes written to file
+Assumptions:
+See Also:
+*****************************************************/
+
+int FARFNCT VFWrite( FHANDLE fileHandle,\
+                 VOID FAR *lpvBuffer,\
+                 unsigned int numBytes )
+{
+   int index = fileHandle &amp; <SUP>~</SUP>HANDLE_MASK;
+   int ret;
+   TFile HEAR *npFile;
+   long lFileOffset, lFileLength;
+
+   nLastError = ENONE;
+   errno = 0;
+
+   if (fileHandle == BADFHANDLE)
+   {
+      nLastError = EHANDLE;
+      ret = -1L;
+   }
+   else if (FILEDESCRIPTOR((npFile = npFileArray + index)) == CLOSED_FILE)
+   {
+      nLastError = ECLOSED;
+      ret = -1L  /* file not open */
+   }
+   else if (FILETYPE( npFile ) != USER_FILE)
+   {
+      nLastError = ENOTUSER;
+      ret = -1L; /* trying to seek a non-user file */
+   }
+   else if (FILEOFFSET( npFile ) == -1L)
+   {
+      nLastError = EPOS;
+      ret = -1;
+   }
+   else if (LSEEK( FILEDESCRIPTOR( npFile ), 0L, 2,
+          &amp;lFileLength ) == ERROR_CODE ||
+      LSEEK( FILEDESCRIPTOR( npFile ),
+          FILEOFFSET( npFile ), 0, &amp;lFileOffset) == ERROR_CODE ||
+      lFileOffset != FILEOFFSET( npFile ))
+   {
+      nLastError = ESEEK;
+      ret = -1;
+   }
+   else if (LFileOffset &gt; lFileLength)
+   {
+      nLastError = EPOS;
+      ret = -1;
+   }
+   else if (FILEINDEX( npFile ) == BADFHANDLE)
+   {
+      /* user file is NOT being tracked */
+      if (WRITE( FILEDESCRIPTOR( npFile ), lpvBuffer, numBytes,
+         &amp;ret) == ERROR_CODE)
+      {
+         FILEOFFSET( npFile ) = -1L;
+         nLastError = EWRITE;
+         ret = -1;
+      }
+      else FILEOFFSET( npFile ) += numBytes;
+   }
+   else ( /* user file IS being tracked */
+      if (WriteTransRecord(
+            (lFileOffset &lt; lFileLength ? OVERWR_OP : APPEND_OP),
+            numBytes,
+            (lFileOffset &lt; lFileLength ? lFileOffset : lFileLength),
+            npFile ) == FALSE)
+         ret = -1;   /* nLastError already set */
+      else if (WRITE( FILEDESCRIPTOR( npFile ), lpvBuffer,
+         numBytes, &amp;ret ) == ERROR_CODE)
+      {
+         FILEOFFSET( npFile ) = -1L;
+         nLastError = EWRITE;
+         ret = -1;
+      }
+      else FILEOFFSET( npFile ) *= numBytes;,
+   }
+
+   return ret;
+}
+/*FDB**************************************************
+Function:     VFLseek
+Inputs:           file handle returned by VFOpen()
+            signed long # of bytes to be moved
+            int location specifying origin of movement
+Outputs:
+Return:          -1L on error else new file location in bytes from
+            start of file
+Assumptions:
+See Also:     VFOpen
+******************************************************/
+
+long FARFNCT VFLSeek( FHANDLE fileHandle, \
+                 long lOffset, \
+                 int whence)
+{
+   int index = fileHandle &amp; <SUP>~</SUP>HANDLE_MASK;
+   long ret;
+   TFile NEAR *npFile;
+
+   nLastError = ENONE;
+   errno = 0;
+
+   if (fileHandle == BADFHANDLE)
+   {
+      nLastError = EHANDLE;
+      ret = -1L;
+   }
+   else if (FILEDESCRIPTOR((npFile = npFileArray + index)) == CLOSED_FILE)
+   {
+      nLastError = ECLOSED;
+      ret = -1L; /* file not open */
+   }
+   else if (FILETYPE( npFile ) != USER_FILE)
+   {
+      nLastError = ENOTUSER;
+      ret = -1L; /* trying to seek a non-user file*/
+   }
+   else {
+      switch( whence )
+      {
+         case 0: /* start of file */
+            if (lOffset&lt; 0L)
+            {
+                nLastError = EOFFSET;
+                ret = FILEOFFSET( npFile ) = -1L;
+            }
+            else ret = FILEOFFSET( npFile ) = lOffset;
+            break;
+
+         case 1: /* current location */
+            if ((ret = (FILEOFFSET( npFile ) += lOffset)) &lt; 0L)
+            {
+                ret = FILEOFFSET( npFile ) = -1L;
+                nLastError = EPOS;
+            }
+            break;
+
+         case 2: /* from EOF */
+            if (lOffset &gt; 0L)
+            {
+                nLastError = EOFFSET;
+                ret = FILEOFFSET(npFile) = -1L; /* can't seek past EOF */
+            }
+            else if (LSEEK( FILEDESCRIPTOR( npFile ),
+                0L, 2, &amp;ret) == ERROR_CODE)
+            {
+                nLastError = ESEEK;
+                ret = FILEOFFSET( npFile ) = -1L;
+            }
+            else if ((FILEOFFSET( npFile ) = ret + lOffset) &lt; 0L)
+            {
+                nLastError = ESEEK;
+                ret = FILEOFFSET( npFile ) = -1L;
+            }
+            break;
+         default:
+            ret = FILEOFFSET( npFile ) = -1L;
+      }
+   }
+
+   return ret;
+}
+/*FDB**************************************************
+Function:     VFTell
+Inputs:           handle of a file opened using VFOpen()
+Outputs:
+Return:           long file position from start of file in bytes
+Assumptions:
+See Also      VFOpen, VFLSeek
+******************************************************/
+
+long FARFNCT VFTell( FHANDLE fileHandle )
+{
+   int index = fileHandle &amp; <SUP>~</SUP>HANDLE_MASK;
+   long ret;
+   TFile NEAR *npFile;
+
+   nLastError = ENONE;
+   errno = 0;
+
+   if (fileHandle == BADFHANDLE)
+   {
+      nLastError = EHANDLE;
+      ret = -1L;
+   }
+   else if (FILEDESCRIPTOR((npFile = npFileArray + index)) == CLOSED_FILE)
+   {
+      nLastError = ECLOSED;
+      ret = -1L; /* file not open*/
+   }
+   else if (FILETYPE( npFile ) != USER_FILE)
+   {
+      nLastError = ENOTUSER;
+      ret = -1L; /* trying to close non-user file */
+   }
+   else if ((ret = FILEOFFSET( npFile )) == -1L)
+      nLastError = EPOS;
+
+   return ret;
+}
+/*FDB*************************************************
+Function:     VFLocking
+Inputs:           file handle returned by VFOpen
+            int specifying type of lock desired
+            long # of bytes in file to be locked; 0 means to CURRENT
+                end of file
+Outputs:
+Return:           TRUE if lock is granted else FALSE
+Assumptions:  the lock begins st the current position in the
+            file as specified by VFTell()
+See Also:     VFOpen, VFTell
+*****************************************************/
+BOOL FARFNCT VFLocking(    FHANDLE fileHandle,\
+                   int LockType, \
+                   long numBytes )
+{
+   int index = fileHandle &amp; ~HANDLE_MASK;
+   BOOL ret = TRUE;
+   TFile NEAR *npFile;
+
+   nLastError = ENONE;
+   errno = 0;
+
+   if (fileHandle == BADFHANDLE)
+   {
+      nLastError = EHANDLE;
+      ret = FALSE;
+   }
+   else if (FILEDESCRIPTOR((npFile = npFileArray + index)) == CLOSED_FILE)
+   {
+      nLastError = ECLOSED;
+      ret = FALSE;    /* file not open */
+   }
+   else if (FILETYPE( npFile ) != USER_FILE)
+   {
+      nLastError = ENOTUSER;
+      ret = FALSE;    /* trying to close non-user file */
+   }
+   else if (FILEOFFSET(npFile) == -1L)
+   {
+      nLastError = EPOS;
+      ret = -1L;
+   }
+   else if (LockType != UNLOCK_BYTES &amp;&amp;
+      LockType != SHARED_LOCK &amp;&amp;
+      LockType != EXCLUSIVE_LOCK)
+   {
+      nLastError = ELTYPE;
+      ret = FALSE;
+   }
+   else {
+#ifdef MSC51_ENV
+      long lPos;
+
+      if (LSEEK( FILEDESCRIPTOR( npFile ),
+            FILEOFFSET( npFile ), 0, &amp;lPos ) == ERROR_CODE ||
+         lPos != FILEOFFSET( npFile ))
+      {
+         nLastError = ESEEK;
+         ret = FALSE;
+      }
+      else if (locking( FILEDESCRIPTOR( npFile ),
+            (LockType == UNLOCK_BYTES ? LK_UNLCK : LK_LOCK),
+            numBytes ) != 0)
+      {
+         nLastError = ELOCK;
+         ret = FALSE;
+      }
+#endif /* MSC51_ENV */
+
+#ifdef TURBOC_ENV
+      if ((LockType == SHARED_LOCK || LockType == EXCLUSIVE_LOCK))
+      {
+         if (lock( FILEDESCRIPTOR( npFile ),
+            FILEOFFSET( npFile ), numBytes ) != 0)
+         {
+            nLastError = ELOCK;
+            ret = FALSE;
+         }
+      }
+      else if (unlock( FILEDESCRIPTOR( npFile ),
+            FILEOFFSET( npFile ), numBytes ) != 0)
+      {
+         nLastError = ELOCK;
+         ret = FALSE;
+      }
+#endif /*  TURBOC_ENV */
+
+#ifdef UNIX_ENV
+      struct flock FLock;
+      FLock. l_type = (LockType == SHARED_LOCK ? F_RDLCK :
+                 (LockType == EXCL_LOCK ? F_WRLCK : F_UNLCK ));
+      FLock.l_whence = 0;
+      FLock.l_start = FILEOFFSET( npFiLe );
+      FLock.l_len = numBytes;
+
+      if (fcntl( FILEDESCRIPTOR( npFile ), F_SETLKW , &amp;FLock ) == -1)
+      {
+         nLastError = ELOCK;
+         ret = FALSE;
+      }
+#endif /* UNIX_ENV */
+   }
+
+   return ret;
+}
+/*FDB*************************************************
+Function:     VFChangeSize
+Inputs:           file handle returned from VFOpen()
+            Long new size of file in bytes
+Outputs:
+Return:           TRUE if file's size is changed to desired value
+            FALSE if file's size could not be changed
+Assumptions:  If file's size is INCREASED, 0s are written to the
+            new bytes. If the size is DECREASED, the bytes at
+            the END of the file are moved to the associated transaction
+            file (if one exists).
+See Also:     VFOpen
+******************************************************/
+
+BOOL FARFNCT VFChangeSize( FHANDLE fileHandle, \
+                      long lNewSize )
+{
+   int index = fileHandle &amp; <SUP>~</SUP>HANDLE_MASK;
+   BOOL ret = TRUE;
+   TFile NEAR *npFile;
+   long lFileLength;
+
+   nLastError = ENONE;
+   errno = 0;
+
+   if (fileHandle == BADFHANDLE)
+   {
+      nLastError = EHANDLE;
+      ret = FALSE;
+   }
+   else if (FILEDESCRIPTOR((npFile = npFileArray + index)) == CLOSED_FILE)
+   {
+      nLastError = ECLOSED;
+      ret = FALSE;    /* file not open */
+   }
+   else if (FILETYPE( npFile ) != USER_FILE)
+   {
+      nLastError = ENOTUSER;
+      ret = FALSE;    /* trying to change size of a non-user file */
+   }
+   else if (FILEINDEX( npFile ) == BADFHANDLE)
+   {
+      /* no related transaction file; issue system change size */
+      if ((ret = (CHSIZE( FILEDESCRIPTOR( npFile ) , lNewSize ) ==
+            ERROR_CODE? FALSE : TRUE )) == FALSE)
+         nLastError = ECHSIZ;
+   }
+   else {
+      /* must track the size change */
+      if (LSEEK( FILEDESCRIPTOR( npFile ), 0L, 2, &amp;lFileLength ) ==
+         ERROR_CODE)
+      {
+         nLastError = ESEEK;
+         ret = FALSE;
+      }
+      else if (lFileLength != lNewSize)
+      {
+         if (labs(lFileLength - lNewSize) &gt; MAXUINT)
+         {
+            /* too much to be tracked */
+            nLastError = EDELTA;
+            ret = FALSE;
+         }
+         else if ((ret= WriteTransRecord(
+            (lFileLength &lt; lNewSize ? APPEND_OP : OVERWR_OP),
+            (unsigned int)(lFileLength &lt; lNewSize ?
+                (lNewSize - lFileLength) : (lFileLength - lNewSize)),
+            (lFileLength &lt; lNewSize ? lFileLength : lNewSize ),
+            npFile)) == TRUE)
+         {
+            if ((ret = (CHSIZE( FILEDESCRIPTOR( npFile ) , lNewSize) ==
+                    ERROR_CODE ? FALSE : TRUE )) == FALSE)
+                nLastError = ECHSIZ;
+         }
+         /* else nLastError set by WriteTransRecord() */
+      }
+      /* else lNewSize == lFileLength and nothing need be done */
+   }
+
+   return ret;
+}
+/*FDB*************************************************
+Function:     VFStat
+Inputs:           file handle from VFOpen()
+            near pointer to stat structure
+Outputs:      stat structure is filled with data on the file
+            when TRUE is returned
+Return:       TRUE if able to fill structure else FALSE
+Assumptions:
+See Also:     VFOpen
+******************************************************/
+
+BOOL FARFNCT VFStat( FHANDLE fileHandle, \
+                 struct star NEAR * npStatStruct )
+{
+   int index = fileHandle &amp; <SUP>~</SUP>HANDLE_MASK;
+   BOOL ret = TRUE;
+   TFile NEAR *npFile;
+
+   nLastError = ENONE;
+   errno = 0;
+
+   if (fileHandle == BADFHANDLE)
+   {
+      nLastError = EHANDLE;
+      ret= FALSE;
+   }
+   else if (FILEDESCRIPTOR((npFile = npFileArray + index)) == CLOSED_FILE)
+   {
+      nLastError = ECLOSED;
+      ret = FALSE;    /* file not open */
+   }
+   else if (FILETYPE( npFile ) != USER_FILE)
+   {
+      nLastError = ENOTUSER;
+      ret = FALSE;
+   }
+   else if (FSTAT( FILEDESCRIPTOR( npFile ),
+         npStatStruct) == ERROR_CODE)
+   {
+      nLastError = EFSTAT;
+      ret = FALSE;
+   }
+   return ret;
+}
+/*FDB*************************************************
+Function:     VFLastError
+Inputs:
+Outputs:
+Return:           identification value of last error encountered
+Assumptions:  return value is from set of values defined in transact.h
+See Also:     transact.h
+*****************************************************/
+
+int FARFNCT VFLastError()
+{
+   return nLastError;
+}
+/*FDB*************************************************
+Function:     AddFileToTable
+Inputs:           far pointer to null-terminated string
+            int file open mode
+            int file permissions
+            type of file being opened
+Outputs:
+Return:           unmasked file handle on success else BADFHANDLE
+Assumptions:
+See Also:
+*****************************************************/
+
+static FHANDLE NEARFNCT AddFileToTable(   char FAR *lpcName, int mode,
+                                int perms, BOOL bFileType )
+{
+   int fd;
+   FHANDLE index;
+   TFile NEAR *npFile;
+   char NEAR *npFileName;
+
+#ifdef MIXED_MODEL
+   char nearName[ _LPN_MAX_+ _LFN_MAX_ ];
+
+   FSTRCPY( nearName, lpcName );
+   npFileName = nearName;
+#else
+   npFileName = lpcName;   /* both are default sized pointers */
+#endif /* !MIXED_MODEL */
+
+   if (npFileArray == (TFile NEAR *)0)
+   {
+      /* array has never been allocated */
+      if ((npFileArray =
+         (TFile NEAR *)MALLOC( INCR_COUNT * sizeof(TFile) )) ==
+         (TFile NEAR *)0)
+      {
+         nLastError = EMALLOC;
+         return BADFHANDLE;
+      }
+
+      /* initialize the new array elements */
+      for (index = (FHANDLE)0,
+            npFile = npFileArray,
+            nArrayElements += INCR_COUNT;
+         index &lt; nArrayElements;
+         ++index, ++npFile)
+{
+   FILEOFFSET( npFile ) = 0L;
+   FILEDESCRIPTOR( npFlle ) = CLOSED_FILE;
+   FILEMODE( npFiLe ) = FILEPERMS( npFile ) = 0;
+   FILEINDEX( npFile ) = BADFHANDLE;
+   FILETYPE( npFile ) = BAD_FTYPE;
+   FILENAME( npFile ) = (char NEAR *)0;
+}
+   /* 1st free element is the first element */
+   index = 0;
+   npFile = npFileArray;
+}
+else if (nElementsInUse == nArrayElements)
+{
+   /* the array must be made bigger */
+   if ((npFileArray =
+      (TFile NEAR *)REALLOC( (char NEAR *)npFileArray,
+         (nArrayElements + INCR_COUNT) * sizeof(TFile) )) ==
+      (TFile NEAR *)0)
+   {
+      nLastError = EREALLOC;
+      return BADFHANDLE;
+   }
+
+   /* initialize the new array elements */
+   for (index = (FHANDLE)nArrayElements,
+         npFile = npFileArray + nArrayElements;
+      index &lt; nArrayElements + INCR_COUNT;
+      ++index, ++npFile)
+   {
+      FILEOFFSET( npFile ) = 0L;
+      FILEDESCRIPTOR( npFile ) = CLOSED_FILE;
+      FILEMODE( npFile ) = FILEPERMS( npFile ) = 0;
+      FILEINDEX( npFile ) = BADFHANDLE;
+      FILETYPE( npFile ) = BAD_FTYPE;
+      FILENAME( npFile ) = (char NEAR *)0;
+   }
+
+   /* indicate the 1st free array element */
+   npFile = npFileArray + nArrayElements;
+   index = nArrayElements;
+   nArrayElements += INCR_COUNT;
+}
+   else {
+      /* locate an unused entry in the file table. */
+      /* It's guaranteed at least 1 is available. */
+      for (index = (FHANDLE)0,
+            npFile = npFileArray;
+
+         index &lt; nArrayElements;
+         ++index, ++npFile)
+      {
+         if (FILEDESCRIPTOR( npFile ) == CLOSED_FILE)
+            break;
+      }
+   }
+
+   if (OPEN( npFileName, mode, perms, &amp;fd ) == ERROR_CODE)
+   {
+      nLastError = EOPEN;
+      return BADFHANDLE;
+   }
+
+   if ((FILENAME( npFile ) =
+      (char NEAR *)STRDUP( npFileName )) == (char NEAR *)0)
+   {
+      (void)CLOSE( fd );
+      nLastError = ESTRDUP;
+      return BADFHANDLE;
+   }
+
+   FILEOFFSET( npFile ) = 0L;
+   FILEMODE( npFile ) = mode &amp; NEW_FILE;
+   FILEPERMS( npFile ) = perms;
+   FILEINDEX( npFile ) = BADFHANDLE;
+   FILEDESCRIPTOR( npFile ) = fd;
+   FILETYPE( npFile ) = bFileType;
+
+   ++nElementsInUse;
+   return index;
+}
+/*FDB*************************************************
+Function:     WriteTransRecord
+Inputs:           short operation ID
+            unsigned int number of bytes to be tracked
+            long offset of first byte to track (or currant file length)
+            near pointer to user file structure
+Outputs:
+Return:           FALSE if unable to successfully track the change described
+            TRUE if necessary transaction records are written to the
+            log file
+Assumptions:  the file structure contains the FHANDLE of the trans. file
+            to be used. Will ouput multiple transaction records
+            to the trans file if this is required by the operation
+            being undertaken.
+See Also:     RollBack
+******************************************************/
+
+
+static BOOL NEARFNCT WriteTransRecord( short sOp, unsigned int numBytes,
+         long lUserOffset, TFile NEAR *npFile )
+{
+   char NEAR *npDataArea;
+   char XFerBuffer[ XFER_SIZE ];
+   char NEAR *npNameBuff = (char NEAR *)(XFerBuffer +
+      sizeof(unsigned int));
+   int bytesXFerred = 0;
+   int nameLen = strlen( FILENAME( npFile ) ) + 1; /*  count the NULL */
+         /* safe to use strelen() since name is in data segment. */
+   int dataAreaSize = sizeof(XFerBuffer) - sizeof( unsigned int ) -
+      nameLen - sizeof( TRollBackStruct );
+   unsigned int bytesToXFer;
+   unsigned int bytesReadWrite;
+   long lPos;
+   long lOffset;
+   BOOL ret = TRUE;
+   TRollBackStruct NEAR *npRBackStruct;
+   TFile NEAR *npTrans = npFileArray + FILEINDEX( npFile );
+
+   (void)strcpy( npNameBuff, FILENAME( npFile ) );
+   npDataArea = npNameBuff + nameLen;
+
+   if (sOp == APPEND_OP)
+   {
+      *(unsigned int NEAR *)XFerBuffer = (unsigned int)(
+         sizeof( TRollBackStruct ) + nameLen + sizeof(unsigned int));
+
+      npRBackStruct = (TRollBackStruct NEAR *)npDataArea;
+      ROLLOFFSET( npRBackStruct ) = LUserOffset;  /*  length of user file */
+      ROLLBYTES( npRBackStruct ) = 0;  /*  no data written from user file */
+      ROLLMODE( npRBackStruct ) = FILEMODE( npFile );
+      ROLLPERMS( npRBackStruct ) = FILEPERMS( npFile );
+      ROLLOP( npRBackStruct ) = APPEND_OP;
+      ROLLNAMELEN( npRBackStruct ) = nameLen;
+
+      /* OK to write record to the END of the trans. file */
+      /* after seeking to the end of the trans. file. */
+      if (LSEEK( FILEDESCRIPTOR( npTrans ), OL, 2, &amp;lPos ) == ERROR_CODE ||
+         WRITE( FILEDESCRIPTOR( npTrans ),
+            XFerBuffer, *(unsigned int NEAR *)XFerBuffer,
+            &amp;bytesXFerred ) == ERROR CODE ||
+         (unsigned int)bytesXFerred ! = *(unsigned int NEAR *)XFerBuffer)
+      {
+         FILEOFFSET( npTrans ) = -1L;
+         nLastError = ETRACK;
+         ret = FALSE;
+      }
+      else FILEOFFSET( npTrans )+= *(unsigned int NEAR *)XFerBuffer;
+   }
+   else {
+      /* OVERWR_OP */
+      if (LSEEK( FILEDESCRIPTOR( npFile ) lUserOffset, 0,
+            &amp;lOffset ) == ERROR_CODE ||
+         lOffset ) != lUserOffset)
+      {
+         FILEOFFSET( npFile ) = -1L;
+         nLastError = ETRACK;
+         ret = FALSE;
+      }
+      else {
+         if (LSEEK( FILEDESCRIPTOR( npTrans ), OL, 2,
+                   &amp;lPos ) == ERROR_CODE)
+         {
+            FILEOFFSET( npTrans ) = -1L;
+            nLastError = ETRACK;
+            ret = FALSE;
+         }
+
+         for ( ;
+            ret == TRUE &amp;&amp; (unsigned int)bytesXFerred != numBytes;
+            bytesXFerred += bytesToXFer,
+                lOffset += bytesToXFer)
+         {
+            bytesToXFer = (numBytes - bytesXFerred &gt; dataAreaSize ?
+                dataAreaSize : numBytes - bytesXFerred );
+
+            if (READ( FILEDESCRIPTOR( npFile ), npDataArea,
+                   bytesToXFer, &amp;bytesReadWrite ) == ERROR_CODE ||
+                bytesReadWrite != bytesToXFer)
+            {
+                nLastError = ETRACK;
+                ret = FALSE;
+                continue;
+            }
+
+            npRBackStruct =(TRollBackStruct NEAR *)(npDataArea +
+                bytesReadWrite);
+            ROLLOFFSET( npRBackStruct ) = lOffset;
+            ROLLBYTES( npRBackStruct ) = bytesReadWrite;
+            ROLLMODE( npRBackStruct ) = FILEMODE( npFile );
+            ROLLPERMS( npRBackStruct ) = FILEPERMS( npFile );
+            ROLLOP( npRBackStruct ) = OVERWR_OP;
+            ROLLNAMELEN( npBackStruct ) = nameLen;
+
+            *(unsigned int NEAR *)XFerBuffer =
+                (unsigned int)(sizeof(unsigned int) +
+                   sizeof(TRollBackStruct) +
+                   nameLen + bytesReadWrite);
+
+            /* OK to write record to the END of the trans. file */
+            /* after seeking to the end of the trans. file. */
+            if (WRITE( FILEDESCRIPTOR( npTrans ),
+                  XFerBuffer, *(unsigned int NEAR *)XFerBuffer,
+                  &amp;bytesReadWrite ) == ERROR_CODE ||
+                bytesReadWrite != *(unsigned int NEAR *)XFerBuffer)
+            {
+                FILEOFFSET( npTrans ) = -1L;
+                nLastError = ETRACK;
+                ret = FALSE;
+                continue;
+            }
+
+            FILEOFFSET( npTrans ) +=
+                *(unsigned int NEAR *)XFerBuffer;
+
+         }  /* end-for */
+
+         if (ret == TRUE &amp;&amp;
+            LSEEK( FILEDESCRIPTOR( npFile ), lUserOffset, 0,
+                &amp;lOffset ) == ERROR_CODE ||
+                lUserOffset != lOffset)
+         {
+            FILEOFFSET( npFile ) = -1L;
+            nLastError = ETRACK;
+            ret = FALSE;
+         }
+      }  /* end-else */
+   }
+   
+   if (ret == TRUE &amp;&amp;
+         (ret = FlushFile( npTrans )) == FALSE)
+      nLastError = ETRACK;
+
+   return ret;
+}
+/*FDB************************************************
+Function:     RollBack
+Inputs:           far pointer to null-terminated transaction logfile name
+Outputs:
+Return:           FALSE if unable to rollback an existing transaction log file
+            TRUE if file does not exist or is successfully rolled back
+            and deleted
+Assumptions:  Data in transaction file is a collection of records of the
+            following format:
+                Entry Length (unsigned int)
+                User filename (char [])
+                Data from user file (char [])
+                TRollBackStruct
+See Also:     VFWrite, WriteTransRecord
+******************************************************/
+
+BOOL FARFNCT RollBack( char FAR *lpTransName )
+{
+   int TransFD, UserFD;
+   char NEAR *npTransName;
+   char NEAR *npDataArea;
+   char XFerBuffer[ XFER_SIZE ];
+   char NEAR *npNameBuff = (char NEAR *)(XFerBuffer +
+      sizeof(unsigned int));
+   unsigned int bytesToXFer;
+   unsigned int bytesReadWrite;
+   long lPos;
+   long lOffset;
+   BOOL ret = TRUE;
+   TRollBackStruct RBackStruct;
+
+#ifdef MIXED_MODEL
+   char nearName[_LPN_MAX_ +_LFN_MAX_ ];
+
+   FSTRCPY( nearName, lpTransName );
+   npTransName = nearName;
+#else
+   npTransName = lpTransName; /*  both are default sized pointers */
+#endif  /*  !MIXED_MODEL */
+nLastError = ENONE;
+errno = 0;
+
+/* open the transaction log file */
+if (OPEN( npTransName, READ_FILE | BINARY_FILE,
+   SHARED_FILE, &amp;TransFD ) == ERROR_CODE)
+{
+   if (errno == ENOENT)
+      return TRUE; /*  trans. file doesn't exist */
+   nLastError = EOPEN;
+   return FALSE;
+}
+
+/* trans. file is open; roll it back */
+if (LSEEK( TransFD, 0L, 0, &amp;lOffset ) == ERROR_CODE)
+{
+   (void) CLOSE( TransFD );
+   nLastError = ESEEK;
+   return FALSE;
+}
+
+/* read each record in the trans. file to find the */
+/* last complete record (lPos == end of last one). */
+do {
+   /* get the record's total length field */
+   if (READ( TransFD, XFerBuffer, sizeof(unsigned int),
+          &amp;bytesReadWrite ) == ERROR_CODE)
+   {
+      (void)CLOSE( TransFD );
+      nLastError = EROLL;
+      return FALSE;
+   }
+
+   if (bytesReadWrite != (unsigned int)sizeof(unsigned int))
+      break;  /*  incomplete record */
+
+/* get the name, data and structure of record */
+if (READ( TransFD, npNameBuff,
+   (bytesToXFer = *(unsigned int NEAR *)XFerBuffer) -
+      (unsigned int)sizeof(unsigned int),
+   &amp;bytesReadWrite ) == ERROR_CODE)
+   {
+      (void)CLOSE( TransFD );
+      nLastError = EROLL;
+      return FALSE;
+   }
+
+   if (bytesReadWrite != bytesToXFer -
+          (unsigned int)sizeof(unsigned int))
+      break;
+
+   /* read a complete transaction record */
+   lOffset += (long)bytesToXFer;
+ }
+ while (bytesReadWrite == bytesToXFer -
+   (unsigned int)sizeof(unsigned int));
+
+ /* if lOffset &gt; OL, at least one valid transaction record exists */
+ while (lOffset &gt; OL)
+ {
+   /* back up and read the rollback control structure */
+   if (LSEEK( TransFD, (lOffset -= (long)sizeof(TRollBackStruct)), 0,
+          &amp;lPos ) == ERROR_CODE ||
+      lPos != lOffset)
+   {
+      (void)CLOSE( TransFD );
+      nLastError = EROLL;
+      return FALSE;
+   }
+
+   if (READ( TransFD, (VOID NEAR *)&amp;RBackStruct,
+          sizeof(TRollBackStruct), &amp;bytesReadWrite ) == ERROR_CODE ||
+      bytesReadWrite != sizeof(TRollBackStruct))
+   {
+      (void)CLOSE( TransFD );
+      nLastError = EROLL;
+      return FALSE;
+   }
+
+   /* back up to the beginning of the transaction record and read it */
+   if (LSEEK( TransFD,
+      (lOffset -= (long)((bytesToXFer = sizeof(unsigned int) +
+          ROLLBYTES( &amp;RBackStruct ) + ROLLNAMELEN( &amp;RBackStruct )))),
+          0, &amp;lPos ) == ERROR_CODE ||
+      lPos != lOffset)
+   {
+      (void)CLOSE( TransFD );
+      nLastError = EROLL;
+      return FALSE;
+   }
+
+   if (READ( TransFD, (VOID NEAR *)XFerBuffer, bytesToXFer,
+          &amp;bytesReadWrite ) == ERROR_CODE ||
+      bytesReadWrite != bytesToXFer)
+   {
+      (void)CLOSE( TransFD );
+      nLastError = EROLL;
+      return FALSE;
+   }
+
+   /* open the user data file with old permissions */
+   if (OPEN( npNameBuff, ROLLMODE( &amp;RBackStruct ),
+      ROLLPERMS( &amp;RBackStruct ), &amp;UserFD ) == ERROR_CODE)
+   {
+      (void)CLOSE( TransFD );
+      nLastError = EROLL;
+      return FALSE;
+   }
+
+   if (ROLLOP( &amp;RBackStruct ) == APPEND_OP)
+   {
+        /* change file size to ROLLOFFSET() */
+        /* NOTE: SCO Unix does not provide a chsize() fnct */
+        /* so simply ignore the append op rollback.*/
+#ifndef SCOUNIX_ENV
+        if (CHSIZE( UserFD, ROLLOFFSET( &amp;RBackStruct ) ) == ERROR_CODE)
+        {
+           (void)CLOSE( TransFD );
+           (void)CLOSE( UserFD );
+           nLastError = EROLL;
+           return FALSE;
+        }
+#endif /*  !SCOUNIX_ERV */
+      }
+      else {
+          /* write date from trans record back to user file */
+          if (LSEEK( UserFD, ROLLOFFSET( &amp;RBackStruct ),
+                 0, &amp;lPos ) == ERROR_CODE ||
+             lPos != ROLLOFFSET( &amp;RBackStruct ))
+          {
+             (void)CLOSE( TransFD );
+             (void)CLOSE( UserFD );
+             nLastError = EROLL;
+             return FALSE;
+          }
+
+          npDataArea = npNameBuff + ROLLNAMELEN( &amp;RBackStruct );
+
+          if (WRITE( UserFD, npDataArea,
+                 ROLLBYTES( &amp;RBackStruct ),
+                 &amp;bytesReadWrite ) == ERROR_CODE ||
+             bytesReadWrite != ROLLBYTES( &amp;RBackStruct ))
+        {
+            (void)CLOSE( TransFD );
+            (void)CLOSE( UserFD );
+            nLastError = EROLL;
+            return FALSE;
+        }
+        (void)CLOSE( UserFD );
+     }  /*  overwrite operation */
+  }  /*  end-while */
+
+  /* close and delete the transaction log file */
+  (void)CLOSE( TransFD );
+  if ((ret = (UNLINK( npTransName ) == ERROR_CODE ? FALSE : TRUE)) == FALSE)
+  nLastError = EUNLINK;
+
+  return ret;
+}
+
+#ifdef MIXED_MODEL
+  /*FDB************************************************
+  Function:     farStrcpy
+  Inputs:       far pointer to destination buffer
+              far pointer to null-terminated string
+  Outputs:      copy of string is placed into buffer w/null terminator
+  Return:
+  Assumptions:  the destination buffer is large enough to hold the
+              string
+  See Also:     farStrlen
+  ****************************************************/
+
+  void NEARFNCT farStrcpy(char FAR *lpcDest, char FAR *lpcSource)
+  {
+     int nLoop;
+
+     for (nLoop = 0;
+         nLoop &lt; _LPN_MAX_+_LFN_MAX - 1 &amp;&amp;
+            (*lpcDest++ = *lpcSource++) != '\0';
+         ++nLoop)
+            ;
+
+     *lpcDest = '\0';    /*  guarantee a null terminator */
+   }
+#endif /*  MIXED_MODEL */
+
+#ifdef MIXED_MODEL
+  /*FDB*************************************************
+  Function:     farStrlen
+  Inputs:       far pointer to null-terminated string
+  Outputs:
+  Return:       the length of the string
+  Assumptions:
+  See Also:     farStrcpy
+  ******************************************************/
+
+  int NEARFNCT farStrlen(char FAR *lpcString )
+  {
+     int nLoop;
+
+     for (nLoop = 0;
+         *lpcString++ != '\0';
+         ++nLoop)
+             ;
+
+     return nLoop;
+  }
+#endif  /*  MIXED_MODEL */
+
+#ifdef NEED_FLUSH
+  /*FDB************************************************
+  Function:     FlushFile
+  Inputs:       near pointer to a file structure in the file array
+  Outputs:
+  Return:       TRUE if able to successfully flush the contents of
+              the file to disk else FALSE
+  Assumptions:
+  See Also:
+  ******************************************************/
+
+  static BOOL NEARFNCT FlushFile( TFile NEAR *npFile )
+  {
+      int newFD;
+
+      if (CLOSE( FILEDESCRIPTOR( npFile )) == ERROR_CODE)
+      {
+         nLastError = ECLOSE;
+         return FALSE;
+      }
+
+      if (OPEN( FILENAME( npFile ),
+         FILEMODE( npFile ) &amp; <SUP>~</SUP>NEW_FILE ,
+         FILEPERMS( npFile ),
+         &amp;newFD ) == ERROR_CODE)
+      {
+         nLastError =EOPEN;
+         return FALSE;
+      }
+
+      FILEDESCRIPTOR( npFile ) = newFD;
+      return TRUE;
+
+}
+#endif /* NEED_FLUSH */</pre>
+
+</BODY></HTML>

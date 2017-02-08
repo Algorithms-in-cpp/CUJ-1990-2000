@@ -1,0 +1,417 @@
+<HTML><HEAD><TITLE>June 1990/Generating Source For <float.h>/Listing 2</TITLE></HEAD><BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4><A name="0155_00C2"><A name="0155_00C2"><B>Listing 2<A name="0155_00C2"></B></h4><P>
+<pre>/* Program to create "float.h" by running tests on target system
+** using techniques from Kahan a Karpinski Paranoia code
+** some of which are credited to W F Cody
+** written by T C Prince Sept 1989
+** tested on:
+** SunOS 3.5 -ffpa
+** SunOS 4.0 -fsoft, -f68881, -f68881 -fstore
+** Multiflow 7/200 cc 1.6.2 -checkout, -01, -03
+**
+** long double is simulated on non-ANSI compilers as register double
+*/
+#include &lt;math.h&gt;
+#include &lt;stdio.h&gt;
+/* functions which narrow precision to float and double */
+#ifdef __STDC__
+float storeff(double x); 
+{
+   return x;
+}
+
+
+double storef(long double x);
+{
+   return storeff(x);
+} /* narrow to float storage */
+
+
+double store(long double x);
+{
+   return x;
+} /* force narrowing to double storage */
+
+#else
+long  storeff(x)
+long  x;
+{
+   return x;
+}
+
+
+double storef(x)
+register double    x;
+{
+   union {
+       float  f;
+       long   l;  
+   } xx;
+   xx.f = x;
+   xx.l = storeff(xx.l);
+   return (double)xx.f;
+}
+
+
+double store(x)
+register double    x;
+{
+   return x;
+} /* force narrowing to double storage */
+
+
+#define SEEK_SET OL
+#endif
+#define wp854(radix,precis) ((int)(log(radix)/log(10.)*precis+2))
+/* calculate width in decimal digits according to IEEE P854 */
+#define max(x,y) ((x)&gt;(y)?(x):(y))
+#define min(x,y) ((x)&lt;(y)?(x):(y))
+#define ODD(i) ((i)&amp;1) /* like Pascal */
+#include &lt;ctype.h&gt; /* check what's there, it may not be too swift */
+
+double atof(dstr) char *dstr; /* any correctly working atof() may be used */
+{
+   int c,
+   /* difference from exponent of accumulated integer to final value */
+   exp = 0,
+
+   neg_val = 0,/* leading negative sign ? */
+   e_exp = 0, /* number after e/E +/- */
+   neg_exp = 0;/* - after E/e ? */
+#ifdef __STDC__
+   long double x,retval = 0;
+#else
+   register double x,retval = 0;
+#endif
+   while (isspace(c = *dstr)) /* skip leading space */
+       dstr++;
+   switch (c) { /* optional sign */
+   case '-':
+       neg_val=1;
+   case '+': /* fall-through */
+       dstr++;
+   }
+
+   while (isdigit(c = *dstr++)) {
+       /* add up converted values before dec point */
+       retval = 10 * retval + (double)(c - '0');
+   }
+   if ( c == '.')
+       while (isdigit(c = *dstr++)) {
+           --exp; /* and after dec pt */
+           retval = 10 * retval + (double)(c - '0');
+       };
+   if ((c | ' ')== 'e' ) { /* found an exponent lead-in */
+
+       switch (*dstr) { /* sign field */
+       case '-':
+           neg_exp = 1;
+       case '+': /* fall-through */
+       case ' ': /* many FORTRAN environments generate this! */
+           dstr++;
+       default:
+           ; /* fall-through */
+       }
+       if (isdigit(c = *dstr)) /* found exponent digit */
+           do
+             e_exp = 10 * e_exp + c - '0';
+           while (isdigit(c = *++dstr));
+   }
+   if (!neg_exp) {
+      /* we count on pow having a positive integer power case;
+** a production shared library would use exp as an index into a table
+** of powers of 10, but we don't know the size of the table yet;
+** to reduce error and keep down the table size, we would have only
+** positive powers, but partially underflowed numbers would require
+** 2 steps */
+       if ((exp += e_exp) &gt; O)
+           retval *= pow(10., (double)exp);
+       else if (exp &lt; 0 ) /* don't introduce extra error */
+           retval /= pow(10., (double)(-exp));
+   } else { /* this should avoid unnecessary underflow */
+       if(ODD(exp = e_exp-exp))retval /= 10;
+       for(x=10;exp&gt;1;retval /= x)
+           do
+              x *= x; /* generate 100,10000,... */
+           while(!ODD(exp &gt;&gt;= 1));
+   }
+   return (neg_val ? -retval : retval); /* apply sign */
+}
+#ifdef __STDC__
+long double    cvtest(x, wpi)
+int    wpi; /* ieee width */
+long double    x;
+{ /* find error in conversion to dec and back */
+   char dec[50];
+   sprintf(dec, "%.*Lg", wpi, x);
+   return atof(dec);
+}
+#else
+double cvtest(x, wpi)
+int    wpi; /* ieee width */
+double x;
+{
+   char dec[50];
+   sprintf(dec, "%.*g", wpi, x);
+   return atof(dec);
+}
+
+
+#endif
+/* begin main */
+main()
+{
+   FILE * stream; /* file handle for "float.h" output */
+   long    overfpos;/* position in file for DBL_MAX */
+   /* internal results: subtraction guarded? widths associated with precison */
+   int subgrd, count, precis, wpd, wpf, wpl;
+   /* internal results corresponding to _RADIX, _EPSILON, _EPSILON/RADIX, 1/_EPSILON */
+   double radix, ulpmd, ulppd, ulpmf, ulppf, ulppl, ulpml, w;
+   /* internal variables in largest accessible precision */
+#ifdef__STDC__
+   long double y, z, v, sat;
+#else
+   register double y, z, v, sat;
+#endif
+   /*
+**
+** RADIX */
+   double y1, y2, h, v1[16], v2[16]; /* internal test values */
+   stream = fopen("float.h", "w+");
+   /* find smallest power of 2 which is unaffected by adding 1 */
+   w = 1;
+   do
+       w += w;
+   while (store(w + 1) - w &gt;= 1);
+   /* radix: smallest amount by which w may be increased */
+   y = 1;
+   while (!(radix = store(w + (y += y)) - w))/* stop as soon as non-zero */
+       ;
+   /* assume radix is same regardless of precision */
+   fprintf(stream, "#define FLT_RADIX\t%d\n", (int)radix);
+   /*
+**
+**  PRECISION */
+   w = 1;
+   precis = 0;
+   do {
+       ++precis;
+       w *= radix;
+   } while (store(w + 1) - w == 1); /* stop when error seen */
+   ulppd = (ulpmd = 1 / w) * radix;
+   wpd = wp854(radix, precis); /* corresponding decimal digits with guard */
+   fprintf(stream,
+       "#define DBL_EPSILON\t%.*g\n#define DBL_DIGITS\t%d\n#define DBL_MANT_ DIG\t%d\n",
+       wpd, ulppd, (int)ceil(-log(ulppd) / log(10.)),precis);
+   w = 1;
+   precis = 0;
+do {
+   ++precis;
+   w *= radix;
+} while (storef(w + 1) - w == 1);
+ulppf = (ulpmf = 1 / w) * radix;
+wpf = wp854(radix, precis);
+fprintf(stream,
+   "#define FLT_EPSILON\t%.*g\n#define FLT_DIGITS\t%d\n#define FLT_MANT_DIG\t%d\n",
+   wpf, ulppf, (int)ceil(-log(ulppf) / log(10.)),precis);
+w = 1;
+precis = 0;
+do {
+   ++precis;
+   z = (w *= radix) + 1;
+} while (z - w == 1);/* try to force order of operations */
+ulppl = (ulpml = 1 / w) * radix;
+wpl = wp854(radix, precis);
+fprintf(stream,
+   "#define LDBL_EPSILON\t%.*g\n#define LDBL_DIGITS\t%d\n#define LDBL_MANT_DIG\t%d\n",
+   wpl, ulppl, (int)ceil(-log(ulppl) / log(10.)),precis);
+/* ** MULTIPLICATION ROUNDING */
+   /* multiplication rounding test not ANSI-defined
+**       all rounding tests based on highest available precision
+**       and thus will vary with compiler options which change precision
+** some known results:
+** 68881 (Sun 4.0)
+**   multiply and divide are rounded in register precision, but compiler
+**   may round to double instead under certain circumstances, including
+**   -fstore, they are rounded in double. add/subtract are rounded in
+**   register precision but suffer from    double rounding in double storage
+** 8087
+**   all double operations suffer from double rounding
+**   register precision not accessible with most compilers
+** Multiflow
+**   operations are rounded, but compiler converts v[]/y to v[]*1/y
+**   which suffers from double rounding
+**   -checkout (fc 1.6.2) fouls up addition rounding test
+** Convex
+**   compiler reorders operations, often losing 1 bit of precision
+** IBM 360 architecture
+**   all operations are chopped
+** Cray-like architectures (including Convex)
+**   vector/scalar division suffers from double rounding
+**   or the pre-inversion itself may suffer from multiple rounding
+*/
+   z = ulpml;
+   y =  ulppl;
+   /* check for adequate guards to permit round up */
+   if (!(y1 = (1 + y) * (1 - y) - 1) &amp; !(y2 = (1 + y + y) * (1 - y) - 1 - y))
+       fprintf(stream, "#define MUL_ROUNDS\t1\n");
+   else if (y1 &lt; 0 &amp; y2 == -y)
+       fprintf(stream, "#define MUL_ROUNDS\t0\n");
+   else
+       fprintf(stream, "#define MUL_ROUNDS\t-1\n");
+/*
+** DIVISION ROUNDING */
+   /* test rounding of division, not ANSI C required */
+   for (count = -1; ++count &lt; 16; ) { /* initialize vectors where loops cannot combine */
+       v1[count] = 1 - ulpmd - ulpmd;
+       v2[count] = 1 + ulppd + ulppd;
+   }/* now do register rounding tests */
+   if (!(y1 = (1 - z - z) / (1 - z) - 1 + z) &amp; !(y2 = (1 + y + y) / (1 + y) - 1 - y) )
+       fprintf(stream, "#define DIV_ROUNDS\t1\n");
+   else if (y1 &lt; 0 &amp; y2 &lt; 0)
+       fprintf(stream, "#define DIV_ROUNDS\t0\n");
+   else
+       fprintf(stream, "#define DIV_ROUNDS\t-1\n");
+/*
+** VECTOR BY SCALAR DIVISION */
+   /* results may depend on compiler options
+** same tests as above but memory to memory double arithmetic */
+   y1 = 1 - ulpmd;
+   y2 = 1 + ulppd;
+   for (count = -1; ++count &lt; 16; ) {
+       v1[count] /= y1;
+       v2[count] /= y2;
+   }
+   if (!(y1 = v1[0] - y1) &amp; !(y2 = v2[0] - y2) )
+       fprinf(stream, "#define VECTOR_BY_SCALAR_DIV_ROUNDS\t1\n");
+   else if (y1 &lt; 0 &amp; y2 &lt; 0)
+       fprintf(stream, "#define VECTOR_BY_SCALAR_DIV_ROUNDS\t0\n");
+   else
+       fprintf(stream, "#define VECTOR_BY_SCALAR_DIV_ROUNDS\t-1\n");
+   /*
+**
+** ADD/SUBTRACT ROUNDING -- ANSI REQUIRED */
+   /* find out if add/subtract are guarded; put in file ? */
+   /* K&amp;R C allows cheating here but it probably doesn't matter
+** unless the compiler fouls up like Convex which forms (1+z)-1
+** resulting in z*2 thus calculating subgrd == 0 */
+   subgrd = 1 - (1 - z) == z &amp; radix - (radix - y) == y;
+   /* test rounding of add/subtract with expressions close to threshold
+** If rounding test fails, it may mean that the rounding threshold
+** varies, as with fast software floating point, or it could be double
+** rounding as on 8087 and 68881 */
+   if (1 + y * (1 - y) == 1 &amp; 1 - z * z == 1 - z)
+/* much more detailed tests would be needed to distinguish FLT_ROUNDS == 3
+** for obsolete machines which switch from 0 to 3 at -1 or -.5*/
+              fprintf(stream, "#define FLT_ROUNDS\t0\n");
+   else if (1 + y == 1 + (y + .5) * y &amp; 1 == 1 + (.5 - y) * y &amp;
+       1 - z == 1 - (y + .5) * z &amp; 1 == 1 - (.5 - y) * z &amp; subgrd)
+       fprintf(stream, "#define FLT_ROUNDS\t1\n");
+   else
+       fprintf(stream, "#define FLT_ROUNDS\t-1\n");
+/*
+** MINIMUM NORMALIZED VALUES */
+   /* test for partial underflow, turn off trapping */
+   z = (h = 1 / radix) * (1 + ulppd);
+   /* loop, dividing by radix, until irreversible result obtained
+** there are ways to make this much faster */
+   do
+       y = z;
+   while (store(z *= h) * radix == y);
+   /* if conversion errors, adjust away from threshold
+** using precautions to avoid abrupt underflow on non-IEEE machine */
+   y *= fabs(cvtest(y * radix, wpd) / (y * radix) - 1) + 1;
+   fprintf(stream,
+       "#define DBL_MIN\t\t%.*g\n#define DBL_MIN_10_EXP\t%d\n#define DBL_MIN_EXP\t%d\n",
+       wpd, y, (int)(log(y) / log(10.)),(int)(log(y)/log(radix)+.5));
+   z = h * (1 + ulppf);
+   do
+       y = z;
+   while (storef(z *= h) * radix == y);
+   y *= fabs(cvtest(y * radix, wpf) / (y * radix) - 1) + 1;
+   fprintf(stream,
+       "#define FLT_MIN\t\t%.*g\n#define FLT_MIN_10_EXP\t%d\n#define FLT_MIN_EXP\t%d\n",
+       wpf, y, (int)(log(y) / log(10.)),(int)(log(y)/log(radix)+.5)); 
+   z = h * (1 + (y = ulppl));
+   /* count used to obtain log base radix in case log() would underflow */
+   count = 0;
+   do {
+       ++count;
+       y = z;
+   } while ((z *= h) * radix == y);
+   y *= fabs(cvtest(y * radix, wpl) / (y * radix) - 1) + 1;
+   /* K&amp;R libraries may fail to display meaningful values */
+#ifdef_STDC__
+   fprintf(stream,
+       "#define LDBL_MIN\t%.*Lg\n#define LDBL_MIN_10_EXP\t%d\n#define LDBL_MIN_EXP\t%d\n",
+#else
+       fprintf(stream,
+       "#define LDBL_MIN\t%.*g\n#define LDBL_MIN_10_EXP\t%d\n#define LDBL_MIN_EXP\t%d\n",
+#endif
+       wpl, y, (int)((1-count) / log(10.) * log(radix) ),1-count);
+/*
+** MAXIMUM NORMALIZED VALUES */
+   /* keep overwriting overflow threshold in case of abort, but turn off
+   trapping if possible */
+   overfpos = ftell(stream);
+       z = radix * (y = -radix); /* - numbers may work best for 2's complement */
+   /* loop until multiplying by radix doesn't make it more negative */
+   do {
+       v = y;
+           if (fseek(stream, overfpos, SEEK_SET))
+           printf("seek failure in overflow search\n");
+           fprintf(stream,
+           "#define DBL_MAX\t\t%.17g\n#define DBL_MAX_10_EXP\t%d\n#define DBL_MAX_EXP\t%d",
+           -z, (int)(log(-z) / log(10.)),(int)(log(-z)/log(radix)+.5));     -
+           if (fflush(stream))printf("flush failure in overflow search\n");
+           z = store((y = z) * radix);        } while (z &lt; y);
+       sat = (-y);
+       if ((z = (y = v * (radix * ulppd - radix)) + v * ((1 - radix) * ulppd)) &lt; sat)y=  z;
+       if (y &lt; sat)v = y;
+       if (sat - fabs(v) &lt; sat)v = sat;
+      /* if conversion errors, adjust away from threshold */
+      v -= fabs(cvtest(v * .75, wpd) - v * .75) * radix;
+      if (fseek(stream, overfpos, SEEK_SET))
+      printf("seek failure after overflow search\n");
+      fprintf(stream,
+      "#define DBL_MAX\t\t%.*g\n#define DBL_MAX_10_EXP\t%d\n#define DBL_MAX_EXP\t%d\n",
+      wpd, v, (int)(log(v) / log(10.) ),(int)(log(v)/log(radix)+.5)); 
+      fprintf(stream, "#ifndef HUGE_VAL\n#define HUGE_VAL\t%g\n#endif\n", sat);
+      z = radix * (y = -radix);
+      do {
+             v = y;
+          z = storef((y = z) * radix);       } while (z &lt; y);
+      sat = (-y);
+      if ((z = (y = v * (radix * ulppf - radix)) + v * ((1 - radix) * ulppf)) &lt; sat)y=  z;
+      if (y &lt; sat)v = y;
+      if (sat - fabs(v) &lt; sat)v = sat;
+      v -= fabs(cvtest(v * .75, wpf) - v * .75) * radix;
+      fprintf(stream,
+      "#define FLT_MAX\t\t%.*g\n#define FLT_MAX_10_EXP\t%d\n#define FLT_MAX_EXP\t%d\n",
+      wpf, v, (int)(log(v) / log(10.) ),(int)(log(v)/log(radix)+.5));
+      z = radix * (y = -radix);
+      count = -1;
+      do {
+                 ++count;
+          v = y;
+          z = (y = z) * radix;      } while (z &lt; y);
+      sat = (-y);
+      if ((z = (y = v * (radix * ulppl - radix)) + v * ((1 - radix) * ulppl)) &lt; sat)y = z;
+      if (y &lt; sat) v = y;
+      if (sat - fabs(v) &lt; sat) {
+      ++count;
+                 v = sat;       }
+          v -= fabs(cvtest(v * .75, wpl) - v * .75) * radix;
+      /* K&amp;R libraries may fail to display meaningful values */
+#ifdef __STDC__
+   fprintf(stream,
+      "#define LDBL_MAX\t%.*Lg\n#define LDBL_MAX_10_EXP\t%d\n#define LDBL_MAX_EXP\t%d\n",
+#else
+      fprintf(stream,
+"#define LDBL_MAX\t%.*g\n#define LDBL_MAX_10_EXP\t%d\n#define LDBL_MAX_EXP\t%d\n",
+#endif
+      wpl, v, (int)((count+2) * log(radix) / log(10.) ),count+2);
+      exit(0); }
+</pre>
+</BODY>
+</HTML>

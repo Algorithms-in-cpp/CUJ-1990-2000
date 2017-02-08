@@ -1,0 +1,296 @@
+<HTML><HEAD>
+<TITLE>July 1992/Extending C with Stored SQL Procedures/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1 (SQL_PROC.C)</A></h4>
+<pre>/*****************************************************
+       Description: Library of functions to support
+                  stored SQL procedures with
+                  db_Vista and db_Query
+Global Function List: sqlproc_del
+                  sqlproc_exec
+                  sqlproc_fetch_dev
+                  sqlproc_fetch_str
+                  sqlproc_find
+                  sqlproc_mod
+                  sqlproc_retrv
+                  sqlproc_store
+       Portability: Standard C or MS Windows with
+                  db_Vista and db_Query Librarys.
+*****************************************************/
+
+/* Standard C */
+#include &lt;stdarg.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+
+/* MS Windows */
+#if defined ( _WINDOWS )
+#include &lt;windows.h&gt;
+#endif
+
+/* db_Vista and db_Query */
+#define ANSI 1
+#define LINT_ARGS 1
+#include &lt;vista.h&gt;
+#include &lt;prto_fix.h&gt;
+#include &lt;query.h&gt;
+
+/* Own */
+#include &lt;sql_proc.h&gt;
+#include &lt;sqlpproc.h&gt;
+
+/*****************************************************
+      Name: sqlproc_fetch_dev
+ Parameters: Dev - pointer to output device
+    Return: Number of output lines
+Description: After an sql statement is executed, this
+           function will fetch data to the device
+           specified.
+*****************************************************/
+int sqlproc_fetch_dev( FILE *Dev )
+  {
+  char *Str;
+  int NumLines = 0;
+  while (( Str = sqlproc_fetch_str( )) != NULL )
+     {
+     fprintf( Dev, "%s\n", Str );
+     free( Str );
+     NumLines++;
+     }
+  return ( NumLines );
+  }   /* function sqlproc_fetch_dev */
+
+/*****************************************************
+     Name: sqlproc_fetch_str
+    Return: pointer to string on heap
+Description: After an sql statement is executed, this
+           function will fetch data to a dynamically
+           allocated string on the heap. Columns
+           are comma and tab delimited.
+*****************************************************/
+char *sqlproc_fetch_str( void )
+   {
+   VALUE Vals[SQL_MAX_COLUMNS];
+   int Count, i;
+   size_t Size = 0;
+   char StrBuf[BUFSIZ];
+   char *StrPntr, *TmpPntr;
+   if ( q_nextval( &amp;Count, Vals ) != Q_OKAY )
+      return ( NULL );
+   if (( StrPntr = malloc( 1 )) == NULL)
+      return ( NULL );
+   *StrPntr = '\0';
+   for ( i = 0; i &lt; Count; i++ )
+      {
+      switch ( Vals[i].type )
+         {
+         default:
+         case '\0':
+            break;
+         case 'l':
+            sprintf( StrBuf, "%ld",
+                 Vals[i].result.lv );
+            break;
+         case 'i':
+            sprintf( StrBuf, "%d",
+                 Vals[i].result.iv );
+            break;
+         case 'F':
+            sprintf( StrBuf, "%g",
+                 Vals[i].result.dv );
+            break;
+         case 'c':
+            #if defined( _WINDOWS )
+            sprintf( StrBuf, "%s",
+                 Vals[i].result.cv.ptr );
+            #else
+            sprintf( StrBuf, "%s",
+                 Vals[i].result.cv );
+            #endif
+            break;
+         }   /* switch Vals */
+      Size += strlen( StrBuf ) + 1;
+      if ( i &gt; 0 ) Size++;
+      TmpPntr = StrPntr;
+      if (( StrPntr = realloc( StrPntr, Size ))
+           == NULL )
+         {
+         free( TmpPntr );
+         return ( NULL );
+         }
+      if ( i &gt; 0 ) strcat( StrPntr, ",\t" );
+      strcat( StrPntr, StrBuf );
+      }   /* for i */
+   return ( StrPntr );
+   }   /* function sqlproc_fetch_str */
+
+/*****************************************************
+      Name: sqlproc_store
+ Parameters: Name - name of SQL stored procedure
+           Description - description of SQL command
+           Command - SQL command (text)
+    Return: result of d_fillnew( )
+Description: Stores the values passed as parameters in
+           a record of type SQL_PROC in the database
+*****************************************************/
+int sqlproc_store( char *Name, char *Description,
+     char *Command )
+  {
+  struct sql_proc SqlProc;
+  strcpy( SqlProc.sql_name, Name );
+  strcpy( SqlProc.sql_description, Description );
+  strcpy( SqlProc.sql_command, Command );
+  return ( d_fillnew( SQL_PROC, &amp;SqlProc, CURR_DB ));
+  }   /* function sqlproc_store */
+
+/*****************************************************
+      Name: sqlproc_mod
+ Parameters: Name - name of SQL stored procedure
+           Description - description of SQL command
+           Command - SQL command (text)
+    Return: result of sqlproc_find( ) or d_crwrite( )
+Description: Modifies the current record or record
+           associated with the key Name with the
+           new values passed as parameters.
+*****************************************************/
+int sqlproc_mod( char *Name, char *Description,
+     char *Command )
+  {
+  int Status;
+  Status = sqlproc_find( Name );
+  if ( Status == TRUE || Status == S_OKAY )
+     {
+     if ( Description != NULL )
+        Status = d_crwrite( SQL_DESCRIPTION,
+             Description );
+     if ( Command != NULL )
+        Status = d_crwrite( SQL_COMMAND,
+             Command );
+     }
+  return ( Status );
+  }   /* function sqlproc_mod */
+
+/*****************************************************
+      Name: sqlproc_retrv
+ Parameters: Name - name of SQL stored procedure
+           SqlProc - pointer to sql_proc struct to
+           load with data
+    Return: result of sqlproc_find( ) or d_recread( )
+Description: Retreives the data in a record of type
+           SQL_PROC. Either the current record
+           (if Name == NULL ) or the record
+           associated with the key Name is retrived.
+*****************************************************/
+int sqlproc_retrv( char *Name,
+     struct sql_proc *SqlProc )
+  {
+  int Status;
+  Status = sqlproc_find( Name );
+  if ( Status == TRUE || Status == S_OKAY )
+     Status = d_recread( SqlProc, CURR_DB );
+  return ( Status );
+  }   /* function sqlproc_retrv */
+
+/*****************************************************
+      Name: sqlproc_exec
+ Parameters: Name - name of SQL stored procedure
+    Return: result of sqlproc_retrv( ) or q_sqlinit( )
+           or S_NOMEMORY if out of heap space.
+Description: A SQL stored procedure is retrived from
+           the database, parsed and executed.
+*****************************************************/
+int sqlproc_exec( char *Name, ... )
+  {
+  va_list VarArgList;
+  int ErrPos, Status;
+  struct sql_proc SqlProc;
+  #if defined(_WINDOWS )
+  char ErrMsg[MAXERRMSGTXT + 1];
+  #else
+  char *ErrMsg = NULL;
+  #endif
+  Status = sqlproc_retrv( Name, &amp;SqlProc );
+  if ( Status != S_OKAY ) return ( Status );
+  SqlCommand = malloc( SQL_COMMAND_LEN + 1 );
+  if ( SqlCommand == NULL ) return ( S_NOMEMORY );
+  va_start( VarArgList, Name );
+  vsprintf( SqlCommand, SqlProc.sql_command,
+       VarArgList );
+  #if defined(_WINDOWS )
+  Status = q_sqlinit( SqlCommand, &amp;ErrPos, ErrMsg );
+  #else
+  Status = q_sqlinit( SqlCommand, &amp;ErrPos, &amp;ErrMsg );
+  #endif
+  va_end( VarArgList );
+  #if defined( _DEBUG )
+  if ( Status &gt; 0 )
+     {
+     /* Status != Q_OKAY, Q_END, Q_SET, Q_DEFINE,
+     ** Q_FIELD, Q_VIEW, Q_BATCH, Q_HELP, Q_SHOW */
+     char *ErrMsgOut;
+     if (( ErrMsgOut = malloc( SQL_COMMAND_LEN +
+          MAXERMESTXT )) != NULL )
+        {
+        sprintf( ErrMsgOut,
+             "%s\n%s at position %d.",
+             SqlCommand, ErrMsg, ErrPos );
+        #if defined( _WINDOWS )
+        MessageBox( NULL, ErrMsgOut,
+           "SQL Parse Error", MB_OK );
+        #else
+        fprintf( stderr, "%s\n", ErrMsgOut );
+        #endif
+        free( ErrMsgOut );
+        }
+     }
+  #endif
+  free( SqlCommand );
+  return ( Status );
+  }   /* function sqlproc_exec */
+
+/*****************************************************
+      Name: sqlproc_del
+ Parameters: Name - name of SQL stored procedure
+    Return: result of sqlproc_find( ) or d_delete( )
+Description: The record associated with the key Name
+           is deleted or the current record (if
+           Name == NULL and current record is right
+           type) is deleted.
+*****************************************************/
+int sqlproc_del( char *Name )
+  {
+  int Status;
+  Status = sqlproc_find( Name );
+  if ( Status == TRUE || Status == S_OKAY )
+     Status == d_delete( CURR_DB );
+  return ( Status );
+  }   /* function sqlproc_del */
+
+/*****************************************************
+      Name: sqlproc_find
+ Parameters: Name - name of SQL stored procedure
+    Return: result of d_keyfind( ), FAIL or TRUE
+Description: The SQL_PROC record associated with the
+           key Name is set as the current record.
+           If Name is NULL the current record is
+           checked to see if it is type SQL_PROC.
+*****************************************************/
+int sqlproc_find( char *Name )
+  {
+  if ( Name == NULL )
+     {
+     int RecType;
+     if ( d_crtype( &amp;RecType, CURR DB ) != S_OKAY
+          || RecType != SQL_PROC )
+       return ( FAIL );
+     else return ( TRUE );
+     }
+  return ( d_keyfind( SQL_NAME, Name, CURR_DB ));
+  }   /* function sqlproc_find */
+/* End of File */
+</pre>
+</BODY>
+</HTML>

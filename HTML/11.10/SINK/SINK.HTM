@@ -1,0 +1,88 @@
+
+
+<HTML>
+<HEAD>
+
+<TITLE>October 1993/User Report: Using the SENTINEL Debugging Environment</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tococt.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Debugging</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">User Report: Using the SENTINEL Debugging Environment<A name="02D7_00EE"><A name="02D7_00EE"></font></h2><P>
+<h3 align="center"><font color="#800000"><A name="02D7_0000"><A name="02D7_0000">Eric W. Sink</font></h3><hr><blockquote><P>
+<P><i><A name="02D7_0000"><A name="02D7_0000">Eric W. Sink received a BS in Computer Science from the University of Illinois. He is currently employed as a Software Engineer with<I></I> <I></I>Spyglass, Inc. in Savoy, Illinois. Eric may be reached by email at esink@spyglass.com.</i></P><P>
+SENTINEL, developed by Virtual Technologies, Inc., is a tool that helps detect and locate memory usage errors in C/C++ programs. SENTINEL consists of a library which, when linked into your application, intercepts many of the standard functions and replaces them with equivalent versions that perform various kinds of error checking. The intercepted functions include memory allocation and string functions, among others. At run time, SENTINEL produces an easily readable report of the errors found in the application.<P>
+This article will present an overview of SENTINEL's functionality and examples from my experience with this tool.<P>
+<h4><FONT COLOR="#000080"><A name="02D7_00EF">Motivation for Trying Sentinel<A name="02D7_00EF"></FONT></h4></P>
+For me, the motivating factor for ordering SENTINEL was to find a specific bug. I was just beginning alpha testing on a 140,000 line data analysis application that imported data from a number of different file formats. The application contained a module to read each file format and stuff the data into a <I>struct</I> called <I>GenericDataFile.</I> After importing a file, the application carried on its business with <I>GenericDataFile</I> and passed the <I>struct</I> pointer back to the import code so it could free the memory. Everything was working nicely except that importing one of the file formats consistently caused the application to crash. A few minutes with a source debugger convinced me that there was an error in memory management and that I was in a for a long and tedious needle-in-a-haystack search for the problem. I decided to ignore the problem for a couple of days, order SENTINEL, and give it a chance to prove itself.<P>
+<h4><FONT COLOR="#000080"><A name="02D7_00F0">Getting Started<A name="02D7_00F0"></FONT></h4></P>
+The installation of SENTINEL presented nothing out of the ordinary. SENTINEL consists primarily of a library (libsent.a), a header file (sentinel.h), and a configuration file (sentinel.cf). By default, the following files are installed:<P>
+<pre>   /usr/lib/libsent.a
+   /usr/include/sentinel.h
+   /etc/sentinel.cf</pre>
+To start using SENTINEL, link it into an application by adding <I>"-lsent"</I> to the link line.<P>
+After the SENTINEL library is linked into an application, the error checking facilities are ready for use.<P>
+<h4><FONT COLOR="#000080"><A name="02D7_00F1">Leak Reporting<A name="02D7_00F1"></FONT></h4></P>
+One of the primary features of SENTINEL is its ability to produce a report of "memory leaks." Since SENTINEL replaces <I>malloc</I> and <I>free,</I> it supervises all dynamic memory allocation. After execution of the application has completed, SENTINEL locates all unfreed blocks of memory and compiles a report similar to the one shown in <A href="fig1.htm">Figure 1</a>.
+<P>
+When I started examining these memory leak reports, I found it tedious and time consuming to weed through all the uninteresting leaks to find the leaks which were actually related to my application. Fortunately, SENTINEL has a number of configuration parameters to improve the signal-to-noise ratio in leak reports. The <I>SE_EXCLUDE</I> parameter may be used to exclude specific leaks. <I>SE_LEAK_ONCE</I> tells SENTINEL to group all occurrences of the same leak as a single leak. <I>SE_LEAK_MINSIZE</I> excludes leaks which are too small to be a problem. The manual explains these and other leak-related configuration parameters in the reference section.<P>
+<h4><FONT COLOR="#000080"><A name="02D7_00F2">Other Access Errors<A name="02D7_00F2"></FONT></h4></P>
+SENTINEL detects and reports many other kinds of memory access errors, including reading or writing outside of allocated boundaries, and accessing memory which has already been freed. SENTINEL helped me find a couple of bugs. First, it helped me find a place where we had incorrectly zero-terminated a string. Our code was writing one byte farther than it had allocated. SENTINEL catches this kind of error by allocating a little extra memory before and after each block. The extra space is pre-filled with a special byte value, so SENTINEL can determine later if the code has trampled outside of its bounds.<P>
+Second, SENTINEL detected a buggy function which was attempting to access freed memory. The function was trying to dispose of a linked list, and was equivalent to the following fragment:<P>
+<pre>node *n;
+
+n = head;
+while (n) {
+   free(n);
+   n = n-&gt;next;
+}</pre>
+SENTINEL fills newly freed blocks with a special byte pattern designed to cause a segmentation fault when dereferenced. It was easy to recognize that byte pattern in my debugger, and know that I'd accessed a pointer within freed memory.<P>
+<h4><FONT COLOR="#000080"><A name="02D7_00F3">Library Functions<A name="02D7_00F3"></FONT></h4></P>
+In addition to intercepting standard functions, the SENTINEL library provides a number of utility functions useful in debugging an application. Many of these utility functions are designed to be called from either the application itself, or from a source debugger such as <I>dbx.</I> Some of these functions are used to dynamically configure SENTINEL's other features. For example:<P>
+<pre>/* Send all debug message to a certain file */
+SeSetOption (SE_DEBUG_FILE, "/tmp/mydebug.out");
+
+/* I don't plan on freeing this pointer ever */
+SeNotALeak(ptr);</pre>
+Other library functions are functions used by SENTINEL itself, and made available to the programmer because they are handy. My favorite one is the ability to print a stack trace at any time, using the <I>SeFwriteStark</I> function as shown:<P>
+<pre>void *stk;
+
+stk = SeGetCurrStack(0);
+SeFwriteStack(stderr, "Stack:", stk);</pre>
+Another nice feature is discretionary debugging, provided by the <I>SEDBG</I> macro, defined in <I>sentinel.h.</I> This feature works in conjunction with a configuration parameter called <I>SE_DEBUG_LEVEL</I>. For example, the statement<P>
+<pre>SEDBG((30, "counter = %d", counter);</pre>
+has the following effect: if <I>SE_DEBUG_LEVEL</I> is set to at least 30, then the given message will be printed to the debugging file. By modifying the debug level from the configuration file, you can turn debugging output on and off without recompilation. SENTINEL reads the configuration file (usually <I>etc/sentinel.cf</I>)<I>,</I> at run time. The file is simple to use, but contains too many parameters to mention here.<P>
+<h4><FONT COLOR="#000080"><A name="02D7_00F4">Software WatchPoints<A name="02D7_00F4"></FONT></h4></P>
+A number of the functions provided by the SENTINEL library are associated with a feature called watchpoints. By setting a watchpoint over a certain range of memory, you can have SENTINEL alert you when that memory has been modified. This is useful when you know that a variable is being clobbered, but you're not sure where or when. The watchpoint functions are most convenient when called from a debugger:<P>
+<pre>(dbx) print SeAddWatchPoint
+            (&amp;nrows, 4, "write");</pre>
+The above example places a watchpoint 4 bytes long over a variable called <I>nrows.</I> SENTINEL checks all watchpoints each time one of its intercepted functions is called. For example, in the following code fragment, because the <I>strcpy</I> function is replaced by SENTINEL, the watchpoint write will be caught as it actually happens:<P>
+<pre>char buf[32];
+
+strcpy(buf, "No trespassing");
+SeAddWatchPoint(buf, 32, 2);
+strcpy(buf, "Boom");
+   /* SENTINEL warning occurs here */</pre>
+Of course, it's quite possible that your watchpoint may be modified without calling a SENTINEL intercepted function. In these cases, SENTINEL will warn you of the change the next time it checks your watchpoints (at the next call to a SENTINEL function). It is also possible to force a check at any time, by calling <I>SeCheckWatchPoints</I>.<P>
+<h4><FONT COLOR="#000080"><A name="02D7_00F5">Description of New 1.4 Features<A name="02D7_00F5"></FONT></h4></P>
+Most of what I have written thus far comes from my experience with SENTINEL 1.3.5. By the time you read this, the current shipping version will be 1.4, with a number of new features which I have had the opportunity to see in beta test.<P>
+SENTINEL now comes with an executable program called "sentinel" which supervises the link process to make sure all standard functions are replaced correctly. This feature allows you to simply prepend "sentinel" to your link line, and all intercepted functions will be properly replaced.<P>
+Memory leak reporting is better, now offering two basic kinds of leak reports plus a hybrid. The "match" report is the same report as was offered in 1.3, listing all unfreed memory blocks. The "garbage collection" report will locate all unfreed blocks of memory unlikely to be referenced. To produce this report, SENTINEL scans the program's entire address space, searching for pointer references. If a dynamically allocated block is targeted by a pointer, SENTINEL does not considered it a leak. The garbage collection report generally contains far fewer false positives than the match report.<P>
+The "combined" report (default) is a hybrid of "match" and "garbage collection" reports. This report lists all unfreed memory segments, and for each segment, identifies whether or not a pointer to that segment still exists. If a pointer does exist, SENTINEL reports where that pointer was found.<P>
+SENTINEL 1.4 now supports a "memory allocation" report, which lists all the places where memory is allocated, how many times, and how much.<P>
+It also includes a number of new configuration parameters, which instruct it to place timestamps in warning messages, and to send its warning messages by email.<P>
+Version 1.4 also enhances the debugging macro facility, introducing the concept of debugging classes, allowing groups of your messages to be turned on or off as a whole. The new <I>SEDBG_LOC</I> macro automatically includes its source line location in the message output. The <I>SEDBG_CODE</I> macro conditionally executes a block of C code based on the value of <I>SE_DEBUG_LEVEL</I>.<P>
+With the 1.4 release, VTI has introduced a license management scheme that allows them to make SENTINEL available for short term evaluations with a single license code. With each purchase of SENTINEL, an evaluation code is included in the package, allowing the user to get started immediately. Once a permanent license code has been obtained from VTI, SENTINEL is available for unlimited use on a single workstation.<P>
+Finally, version 1.4 is faster than the 1.3 releases. In general, a "sentinelized" application is slightly slower than normal, because of all the error checking. Although you would certainly not want to ship all this error checking code in your final product, the VTI license does allow you to leave SENTINEL linked in with your released binaries. This may be helpful in the beta testing period, since you can instruct beta testers to activate SENTINEL and send you any error output (or have it automatically emailed).<P>
+<h4><FONT COLOR="#000080"><A name="02D7_00F6">Origins of SENTINEL<A name="02D7_00F6"></FONT></h4></P>
+SENTINEL originated from a freely available software package called <I>dbmalloc,</I> which was developed and distributed by one of the developers of SENTINEL. In fact, <I>dbmalloc</I> is still available from <I>comp.sources.misc</I> in volume 32. SENTINEL contains more features than its freeware ancestor.<P>
+VTI offers a paper which discusses the differences between SENTINEL and its freeware ancestor. Copies of the paper may be requested by sending email to <I>info@vti.com.</I><P>
+<h4>Product Information</FONT></h4></P>
+SENTINEL is available on multiple platforms, including most UNIX systems. Pricing ranges from $595 to $1895. For more information, contact:<P>
+Virtual Technologies, Inc.<br>
+46030 Manekin Plaza, Ste. 160<br>
+Dulles, VA 20166<br>
+703-430-9247<br>
+FAX: 703-450-4560<P>
+</BLOCKQUOTE>
+</BODY>
+</HTML>

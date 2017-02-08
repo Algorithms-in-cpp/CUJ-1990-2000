@@ -1,0 +1,311 @@
+<HTML><HEAD>
+<TITLE>July 1993/Extending C for Object-Oriented Programming/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1<I> Macros which add object-oriented extensions to Standards C.</I></A></h4>
+<pre>/******* OBJECTS.H Copyright 1992 Gregory Colvin ********
+  This program may be distributed free with this notice.
+**********************************************************/
+#ifndef OBJECTS_H
+#define OBJECTS_H
+#include &lt;assert.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+
+#ifndef _cplusplus /* Not C++, assume C */
+
+/if !defined(_MSDOS_) || defined(_STDC_)
+  #define near /* near pointers are DOS extension */
+#endif
+
+/* Base class for all objects: */
+typedef struct{
+  char near *name;
+  int initialized;
+  void (*destroy)(void);
+  int (*isA)(const char *className);
+} ObjectMethods;
+extern ObjectMethods ObjectTable;
+void ObjectInitClass(void);
+typedef struct Object {
+  ObjectMethods near *methods;
+} Object;
+void Object_construct(void);
+void Object_destruct(void);
+
+/* Manage "this" pointer stack for methods: */
+extern Object * near *pThis;
+#define MAX_PUSH 512
+#if 1
+#define PREV_THIS()(*(pThis-1))
+#define PUSH_THIS(pObj) (*--pThis = (Object*)(pObj))
+#define GET_THIS(Class) ((Class*)*pThis)
+#define GET_THIS_SAFE(Class) \
+  (assert(IS_A(*pThis,Class)),GET_THIS(Class))
+#define POP_THIS()(*pThis++)
+#define POP_THIS_SAFE(Class) \
+  (assert(IS_A(*pThis,Class)),(Class*)POP_THIS())
+#else
+#define PREV_THIS() (*(Object**)_DI)
+#define PUSH_THIS (pObj) ((* (Object**)_DI) = pObj)
+#define GET_THIS(Class) (*(Class**)_DI)
+#define GET_THIS_SAFE(Class) \
+  (assert(IS_A(GET_THIS(Class),Class)),GET_THIS(Class))
+#define POP_THIS() (*(Object**)_DI)
+#define POP_THIS_SAFE(Class) GET_THIS_SAFE(Class)
+#endif
+
+/* Begin class methods declaration: */
+#define DCL_METHODS(Class,Base,ConstructorArguments) \
+ typedef struct Class##DataStruct Class;             \
+ void Class##_construct ConstructorArguments;        \
+ void Class##_destruct(void);                        \
+ struct Class##MethodStruct {                        \
+  Base##Methods base;
+/* Declare and redeclare methods: */
+/define DCL_METHOD(Name,Arguments,Return) \
+ Return (*Name)Arguments
+/define DCL_ABSTRACT(Name,Arguments,Return) \
+ Return (*Name)Arguments
+#define REDCL_METHOD(Name, Arguments, Return) \
+ void dummy_##Name
+
+/* End class methods or class type declaration: */
+#define END_METHODS };
+
+/* Begin class members declaration: */
+#define DCL_MEMBERS(Class,Base)                     \
+ typedef struct Class##MethodStruct Class##Methods; \
+ extern Class##Methods Class##Table;                \
+ extern void Class##InitClass(void);                \
+ struct Class##DataStruct {                         \
+  Base base;
+#define END_MEMBERS };
+
+/* Begin class type definition: */
+#define DEF_CLASS(Class,Base)                               \
+ Class##Methods Class##Table = { 0, 0 };                    \
+ int Class##_isA(const char *className) {                   \
+  int yes= !strcmp(#Class,className);                       \
+  if (!yes)                                                 \
+   yes = ((ObjectMethods*)(&amp;Base##Table))-&gt;isA(className); \
+  return yes;                                               \
+ }                                                          \
+ void Class##_destroy(void) {                               \
+  Class##_destruct();                                       \
+  ((ObjectMethods*) (&amp;Base##Table))-&gt;destroy();            \
+ }                                                          \
+ void Class##InitClass(void) {                              \
+  ObjectMethods *objTable= (ObjectMethods*)&amp;Class##Table;   \
+  Base##Methods *baseTable= (Base##Methods*)&amp;Class##Table;  \
+  Base##InitClass();                                        \
+  if (objTable-&gt;initialized)                               \
+   return;                                                  \
+  *baseTable = Base##Table;                                 \
+  objTable-&gt;name = #Class;                                 \
+  REDEF_METHOD(Class,Object,isA);                           \
+  REDEF_METHOD(Class,Object,destroy);
+
+/* Set and reset methods within a class definition: */
+#define DEF_ABSTRACT(Base,Method) \
+ (Base##Table.Method = 0)
+#define DEF_METHOD(Base,Method) \
+ (Base##Table.Method = Base##_##Method)
+#define REDEF_METHOD(Class,Base,Method)       \
+ (((Base##Methods *)(&amp;Class##Table))--&gt;Method  \
+  = Class##_##Method)
+
+/* End class type definition: */
+#define END_CLASS }
+
+/* Initialize a class before use: */
+#define USE(Class) Class##InitClass()
+
+/* Begin class method implementation: */
+#define METHOD(Class,Name,Arguments,Return) \
+ Return Class##_##Name Arguments {          \
+  Class *this = POP_THIS_SAFE(Class);
+
+/* End class method implementation: */
+#define END_METHOD }
+
+/* Begin class constructor implementation: */
+/define CONSTRUCTOR(Class,Arguments) \
+ void Class##_construct Arguments {  \
+  Class *this= GET_THIS(Class);      \
+  ObjectMethods *Methods=            \
+   (ObjectMethods *)&amp;Class##Table;
+
+/* Must construct Base first in class constructor: */
+#define CONSTRUCT(Base,Arguments)       \
+ Base##_construct Arguments;            \
+ ((Object *)this)-&gt;methods = Methods; {
+
+/* End class constructor implementation: */
+#define END_CONSTRUCTOR }}
+
+/* Begin class destructor implementation: */
+#define DESTRUCTOR(Class)             \
+ void Class##_destruct(void) {        \
+  Class *this = GET_THIS_SAFE(Class); \
+  ((Object *)this)-&gt;methods =        \
+   (ObjectMethods *)&amp;Class##Table; {
+
+/* End class destructor implementation: */
+#define END_DESTRUCTOR }}
+
+/* Monomorphic access to a method of a class: */
+#define CALL(pObj,Class,Base,Name,Arguments)         \
+ ((PUSH_THIS(pObj),                                  \
+  (Base##Methods *)(&amp;Class##Table))-&gt;Name Arguments \
+ )
+
+/* Polymorphic access to a method of a class: */
+#define SEND(pObj,Base,Name,Arguments)         \
+ (((Base##Methods*)                            \
+  (PUSH_THIS(pObj)-&gt;methods))-&gt;Name Arguments)
+
+/* Construct a new object on the heap: */
+#define NEW(Class,Arguments)          \
+ (PUSH_THIS(malloc(sizeof(Class)))),  \
+  Class##_construct Arguments,        \
+  POP_THIS_SAFE(Class)))
+
+/* Construct a new object on the stack: */
+#define PUSH(ObjName,Class,Arguments) \
+ Class auto_##ObjName;                \
+ Class *ObjName = (Class*)            \
+  (PUSH_THIS(&amp;auto_##ObjName),        \
+   Class##_construct Arguments,       \
+   POP_THIS_SAFE(Class))
+
+/* Destroy an object on the heap: */
+#define DELETE(pObj) \
+ (SEND(pObj,Object,destroy,()), free(POP_THIS())
+
+/* Destroy an object on the stack: */
+#define POP(pObj) SEND(pObj,Object,destroy, ())
+
+/* Test whether object is a member of named class: */
+#define IS_A(pObj,Class) \
+ ((((Object *)pObj)-&gt;methods)-&gt;isA(#Class))
+
+/* Access to the class name of an object: */
+#define CLASS_NAME(pObj) \
+ (((ObjectTable*)(((Object *)(pObj))-&gt;methods))-&gt;name)
+
+#else /* C++ */
+
+/* Base class for all objects: */
+struct Object {
+  virtual int isA(const char *className);
+  virtual const char *classname();
+};
+
+/* Begin class methods declaration: */
+#define DCL_METHODS(Class,Base,ConstructorArguments) \
+ struct Class : Base {                               \
+   Class ConstructorArguments;                       \
+   virtual ~Class();                                 \
+   virtual int isA(const char *className);           \
+   virtual const char *classname();
+
+/* Declare and redeclare methods: */
+#define DCL_METHOD(Name,Arguments,Return) \
+ virtual Return Name Arguments
+#define DCL_ABSTRACT(Name,Arguments,Return) \
+ virtual Return Name Arguments=0
+#define REDCL_METHOD(Name,Arguments,Return) \
+ virtual Return Name Arguments
+
+/*End class methods declaration: */
+#define END_METHODS
+
+/* Begin class members declaration: */
+#define DCL_MEMBERS(Class,Base)
+
+/* End class type declaration: */
+#define END_MEMBERS };
+
+/* Begin class type definition: */
+#define DEF_CLASS(Class,Base)                       \
+ const char *Class::classname() {                   \
+  return #Class;                                    \
+ }                                                  \
+ int Class::isA(const char *className) {            \
+  if (strcmp(#Class,className))                     \
+   return Base::isA(#Class);                        \
+  return 1;                                         \
+ }                                                  \
+
+/* Set and reset methods within a class definition: */
+#define DEF_ABSTRACT(Base,Method)
+/define DEF_METHOD(Base,Method)
+#define REDEF_METHOD(Class,Base,Method)
+
+/*End class type definition: */
+/define END_CLASS
+
+/*Initialize a class before use: */
+#define USE(Class)
+
+/* Begin class method implementation: */
+#define METHOD(Class,Name,Arguments,Return) \
+ Return Class::Name Arguments {
+
+/*End class method implementation: */
+#define END METHOD }
+
+/* Begin class constructor implementation: */
+#define CONSTRUCTOR(Class,Arguments) Class::Class Arguments:
+
+/*Must construct Base first in class constructor: */
+#define CONSTRUCT(Base,Arguments) Base Arguments {
+
+/* End class constructor implementation: */
+#define END_CONSTRUCTOR }
+
+/* Begin class desstructor implementation: */
+#define DESTRUCTOR(Class) Class::~Class(){
+
+/* End class destructor implementation: */
+#define END_DESTRUCTOR }
+
+/* Monomorphic access to a method of a class: */
+#define CALL(pObj,Class,Base,Name,Arguments) \
+ (pObj-&gt;Class::Name Arguments)
+
+/* Polymorphic access to a method of a class: */
+/define SEND(pObj,Base,Name,Arguments) \
+ (pObj-&gt;Name Arguments)
+
+/*Construct a new object on the heap: */
+#define CREATE(Class) new Class
+
+/* Construct a new object on the stack: */
+#define PUSH(ObjName,Class,Arguments) \
+ Class auto##ObjName Arguments;       \
+ Class *ObjName= &amp;auto##ObjName
+
+/* Destroy an object on the heap: */
+#define DELETE(pObj) \
+ delete(pObj)
+
+/* Destroy an object on the stack: */
+#define POP(pObj)
+
+/* Test whether object is a member of named class: */
+#define IS_A(pObj,className) \
+ SEND(pObj ,Object,isA,(className))
+
+/* Access to the class name of an object: */
+#define CLASS_NAME(pObj) (pObj-&gt;classname()
+
+#endif /* C vs. C++ */
+
+#endif
+/* End of File */
+</pre>
+</BODY>
+</HTML>

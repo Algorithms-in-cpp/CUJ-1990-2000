@@ -1,0 +1,417 @@
+<HTML><HEAD>
+<TITLE>August 1992/Interpreting Touchscreen Touches/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1 (GetTouch.c)</A></h4>
+<pre>/*----------------------------------------------------*
+ *                                                    *
+ * Module:     GetTouch.c                             *
+ * Purpose:    To provide an intelligent interface    *
+ *             to the Elographics ELODEV TSR from an  *
+ *             application that must distinguish      *
+ *             between button and curve type touches. *
+ * Author:     W. Harvey Gray                         *
+ * Compiler:   Microsoft 5.0                          *
+ *                                                    *
+ * External    GetTouch                               *
+ * Functions:  InitializeTouch                        *
+ *             ReplayTouch                            *
+ *             SetButtonRadius                        *
+ *             TouchInfo                              *
+ *                                                    *
+ * Variables:  There are no external variables used   *
+ *             or defined by this module.             *
+ *                                                    *
+ * Copyright 1992, W. Harvey Gray. May be used        *
+ *   freely, if authorship and publication are        *
+ *   acknowledged.                                    *
+ *                                                    *
+ *----------------------------------------------------*/
+
+#include &lt;math.h&gt;
+#include &lt;stdio.h&gt;
+
+#include "dvrfunc.h"
+#include "GetTouch.h"
+
+/*----------------------------------------------------*
+ *                module defines                      *
+ *----------------------------------------------------*/
+
+#define TOUCH_BUF_NUM 50   /* Internal buffer size.   */
+
+/*----------------------------------------------------*
+ *                static variables                    *
+ *----------------------------------------------------*/
+
+static boolean is_button;       /* Is a button flag   */
+static boolean from_tbuff;  /* Touch in buffer flag   */
+static boolean overflow,   /* Buff storage exceeded   */
+
+static int num_returned;      /* Total touch points   */
+static int num_touch;       /* Count of touch points  */
+static int ut;           /* Touch point untouch flag  */
+static int xt;           /* Touch point x coordinate  */
+static int yt;           /* Touch point y coordinate  */
+
+static long radius2;      /* Square of button radius  */
+static long dist2;              /* Distance variable  */
+static long xcen;             /* X centroid of touch  */
+static long xsum;           /* X sum of touch points  */
+static long ycen;             /* Y centroid of touch  */
+static long ysum;           /* Y sum of touch points  */
+
+/*----------------------------------------------------*
+ *                touch buffer and pointers           *
+ *----------------------------------------------------*/
+
+static struct touchit touch_information;
+
+static struct touchit *pti = &amp;touch_information;
+
+static struct touchxy touch[TOUCH_BUF_NUM];
+static struct touchxy tub;
+
+static struct touchxy *ptouch : &amp;touch[0];
+static struct touchxy *ptub = &amp;tub;
+
+/*----------------------------------------------------*
+ *                static prototypes                   *
+ *----------------------------------------------------*/
+
+static struct touchxy *buffered( boolean * );
+static struct touchxy *unbuffered( boolean * );
+
+static void buffer_touch( void );
+static void store_touch( struct touchxy * );
+
+/*----------------------------------------------------*
+ *     extern function GetTouch()                     *
+ *----------------------------------------------------*/
+
+struct touchxy *GetTouch( boolean *button ) {
+
+/*----------------------------------------------------*
+ * Purpose:                                           *
+ *                                                    *
+ *   Function GetTouch doesn't accept any inputs      *
+ * from the caller and returns two values. If         *
+ * there is a touch in progress, then GetTouch        *
+ * returns a pointer to a struct that contains the    *
+ * next touch point coordinate pair. If no touch      *
+ * is in progress, then GetTouch returns a NULL       *
+ * pointer to a touchxy struct. Also returned via     *
+ * a pointer to the boolean button variable is the    *
+ * logical value of the button flag. If TRUE, then    *   
+ * the touch should be interpreted like the user      *
+ * touched a button. If FALSE, then the touch         *
+ * should be interpreted like the user is drawing     *
+ * a curve.                                           *
+ *                                                    *
+ *----------------------------------------------------*/
+   if ( from_tbuff )
+      return buffered( button );
+   /*------------------------------------------------*
+    *  If there is no touch, then return immedi-     *
+    * ately pointing to a null touch point.          *
+    *------------------------------------------------*/
+   
+   if ( ! gettouch( &amp;xt, &amp;yt, &amp;ut ) )
+      return (struct touchxy *) NULL;
+      
+   /*------------------------------------------------*
+    * If the space in the touch buffer has been      *
+    * exceeded, then simply return the touch point.  *
+    *------------------------------------------------*/
+   
+   if ( overflow )
+      return unbuffered( button );
+   
+   /*------------------------------------------------*
+    * The last special case occurs when an           *
+    * untouch occurs on the first touch point. If    *
+    * this happens, simply return the untouch pt.    *
+    *------------------------------------------------*/
+   
+   else if ( ut ) {
+   
+      ptub-&gt;xt = xt;
+      ptub-&gt;yt = yt;
+      ptub-&gt;ut = ut;
+      *button = TRUE;
+      
+      return ptub;
+   }
+   
+   /*------------------------------------------------*
+    *   If here, then the touch point is the first   *
+    * touch point of a new touch. Begin by buffer-   *
+    * ing (at most) TOUCH_BUF_NUM touch points.       *
+    *------------------------------------------------*/
+   
+   is_button = TRUE;      /* Assume it's a button.   */
+   num_touch = 1;  /* Init. number of touch points   */
+   
+   ptouch = &amp;touch[0];  /* Init. touch buffer ptr.   */
+   ptouch-&gt;xt = xt;           /* Store touch point   */
+   ptouch-&gt;yt = yt;
+   ptouch-&gt;ut = ut;
+   
+   xcen = xsum = (long) xt; /* Init. touch pt cen.   */
+   ycen = ysum = (long) yt;
+   
+   buffer_touch();        /* Fill the touch buffer   */
+   
+   /*------------------------------------------------*
+    *   Setup so that the touch can be extracted     *
+    * from its internal buffer and return the        *
+    * first touch point.                             *
+    *------------------------------------------------*/
+   
+   from_tbuff = TRUE;
+   num_returned = 1;
+   
+   ptouch = &amp;touch[0];
+   *button = is_button;
+   
+   return ptouch;
+}
+
+/*---------------------------------------------------*
+ *     extern function InitializeTouch()             *
+ *---------------------------------------------------*/
+
+void InitializeTouch( void ) {
+
+/*---------------------------------------------------*
+ * Purpose:                                          *
+ *                                                   *
+ *   Initialize the internal variables of the        *
+ * GetTouch module.                                  *
+ *                                                   *
+ *---------------------------------------------------*/
+
+   is_button = FALSE;
+   from_tbuff = FALSE;
+   overflow = FALSE;
+   
+   num_returned = 0;
+   num_touch = 0;
+   ut = FALSE;
+   xt = 0;
+   yt = 0;
+   
+   radius2 = 0;
+   dist2 = 0;
+   xcen = 0;
+   xsum = 0;
+   ycen = 0;
+   ysum = 0;
+   
+   return;
+}
+
+/*---------------------------------------------------*
+ *    extern function   ReplayTouch()                *
+ *---------------------------------------------------*/
+
+void Replaytouch( boolean set_button ) {
+
+/*---------------------------------------------------*
+ * Purpose:                                          *
+ *                                                   *
+ *   Replays a touch, if there is one in the buffer. *
+ *                                                   *
+ *---------------------------------------------------*/
+   if ( from_tbuff ) {      /* Lose, if no buffer.  */
+   
+      num_returned = 0;
+      ptouch = &amp;touch[-1];   /* It will be ++'ed.  */
+      is_button = set_button;
+   }
+   return;
+}
+
+/*--------------------------------------------------*
+ *     extern function SetButtonRadius()            *
+ *--------------------------------------------------*
+
+void SetButtonRadius( int radius ) {
+
+/*--------------------------------------------------*
+ * Purpose:                                         *
+ *                                                  *
+ *   Sends the button radius to this module.        *
+ *                                                  *
+ *--------------------------------------------------*/
+
+   radius2 = (long) radius * radius;
+}
+
+/*--------------------------------------------------*
+ *     extern function  TouchInfo()                 *
+ *--------------------------------------------------*/
+
+struct touchit *TouchInfo( void ) {
+
+/*--------------------------------------------------*
+ * Purpose:                                         *
+ *                                                  *
+ *   Returns a pointer to a struct that contains    *
+ * touch information.                               *
+ *                                                  *
+*---------------------------------------------------*/
+
+   pti-&gt;xcen = (int) ( xsum / (long) num_touch );
+   pti-&gt;ycen = (int) ( ysum / (long) num_touch );
+   pti-&gt;n = num_touch;
+   pti-&gt;button = is_button;
+   
+   return pti;
+}
+
+/*--------------------------------------------------*
+ *     static function buffer_touch()               *
+  *--------------------------------------------------*/
+
+static void buffer_touch( void ) {
+
+/*--------------------------------------------------*
+ * Purpose:                                         *
+ *                                                  *
+ *   Fill up the touch buffer by reading and storing*
+ * touch points. Several conditions stop filling    *
+ * the touch buffer: if there are too many touch    *
+ * points for the buffer, stop buffering; if the    *
+ * touch is determined to not be a button, then     *
+ * there is no need to continue buffering; or if    *
+ * an untouch is encountered, then quit buffering.  *
+ *                                                  *
+ *--------------------------------------------------*/
+
+   while (num_touch &lt; TOUCH_BUF_NUM ) {
+      if ( gettouch( &amp;txt, &amp;yt, &amp;ut)){
+         
+         num_touch++;
+         store touch( ++ptouch );
+         
+         if ( dist2 &gt; radius2 ) {
+            
+            /* If here, then not a button push. */
+                          /* Stop buffering. */
+            is_button = FALSE;
+            break;
+         }
+         if ( ut ) {
+                          /* Stop buffering. */
+            overflow = FALSE;
+            break;
+         }
+      }
+   }
+   return;
+}
+
+/*--------------------------------------------------*
+ *     static function buffered()                   *
+ *--------------------------------------------------*/
+
+static struct touchxy *buffered( boolean *button ) {
+
+/*--------------------------------------------------*
+ * Purpose:                                         *
+ *                                                  *
+ *   Returns a buffered touch checking for the end  *
+ * of the internal touch buffer. If the end of the  *
+ * buffer is encountered, then several conditional  *
+ * flags are set.                                   *
+ *                                                  *
+ *--------------------------------------------------*/
+
+   num_returned++;
+   ptouch++;
+   *button = is_button;
+                          /* Exhausted buffer? */
+   
+   if ( num_returned == num touch ||
+       num_returned &gt; TOUCH_BUF_NUM ) {
+   
+      from_tbuff = FALSE;
+      overflow = TRUE;
+   }
+                          /* Untouch buffered? */
+   if ( ptouch-&gt;ut ) {
+   
+      from tbuff = FALSE;
+      overflow = FALSE;
+   }
+   return ptouch;
+}
+
+/*---------------------------------------------------*
+ *     static function store_touch()                 *
+ *---------------------------------------------------*/
+
+static void store_touch( struct touchxy *pt ) {
+
+/*---------------------------------------------------*
+ * Purpose:                                          *
+ *                                                   *
+ *   Stores touch point into a touch point struct    *
+ * and calculates the instantaneous average touch    *
+ * coordinates and the distance between this touch   *
+ * point's coordinate and the touches average        *
+ * coordinate.                                       *
+ *                                                   *
+ *---------------------------------------------------*/
+
+   pt-&gt;xt = xt;
+   pt-&gt;yt = yt;
+   pt-&gt;ut = ut;
+   
+   xsum += xt;
+   ysum += yt;
+   xcen = xsum / (long) num_touch;
+   ycen = ysum / (long) num_touch;
+   
+   dist 2 = (xt - xcen) * (xt - xcen) +
+           (yt - ycen) * (yt - ycen);
+   
+   return;
+}
+
+/*---------------------------------------------------*
+ *     static function   unbuffered()                *
+ *---------------------------------------------------*/
+
+static struct touchxy *unbuffered ( boolean *button ) {
+
+/*---------------------------------------------------*
+ * Purpose:                                          *
+ *                                                   *
+ *   Returns an unbuffered touch point.              *
+ * Additionally, it sets the button                  *
+ * flag if it is determined that the touch's         *
+ * distance exceeds the buttons's radius.            *
+ *                                                   *
+ *---------------------------------------------------*/
+
+   num_touch++;
+   store_touch( ptub );
+   
+   if ( dist2 &gt; radius2 ) {
+   
+      is_button = FALSE;    /* Touch is button. */
+   }
+   *button = is_button;
+   
+   if ( ut )       /* If untouch, reset function. */
+      overflow = FALSE;
+   
+   return ptub;
+}
+/* End of File */
+</pre>
+</BODY>
+</HTML>

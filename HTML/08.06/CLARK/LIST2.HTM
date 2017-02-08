@@ -1,0 +1,549 @@
+<HTML><HEAD><TITLE>June 1990/A Date Object In C++/Listing 2</TITLE></HEAD><BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4><A name="014A_00C3"><A name="014A_00C3">Listing 2<A name="014A_00C3"></h4><P>
+<pre>/*
+** dates.cpp -- date object methods
+*/
+
+#include  &lt;stdio.h&gt;
+#include  &lt;stdlib.h&gt;
+#include  &lt;math.h&gt;
+#include  &lt;dos.h&gt;
+#include  &lt;string.h&gt;
+#include  "dates.hpp"
+
+static char ShortMonths[MAXMONTH][4] = {
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+};
+
+static char LongMonths[MAXMONTH][10] = {
+  "January",   "February",   "March",
+  "April",   "May",   "June",
+  "July",   "August",   "September",
+  "October",   "November",   "December"
+};
+
+static unsigned MonthDays[MAXMONTH] = {
+  31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
+};
+
+static char ShortWeekDays[MAXWEEKDAY+1][4] = {
+  "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
+};
+
+static char LongWeekDays[MAXWEEKDAY+1] [10] = {
+  "Sunday", "Monday", "Tuesday", "Wednesday",
+  "Thursday", "Friday", "Saturday"
+};
+
+static const char *CurrentDateFormat = "m-dd-yyy";
+static int OnHeap = 0;     /* CurrentDateFormat doesn't point to heap */
+
+/*
+** ChangeDefaultDateFormat -- change the format string used to
+** initialize the DateFormatPtr. Return 1 on success or 0 if
+** memory could not be allocated for the new string.
+*/
+
+int ChangeDefaultDateFormat(const char *s)
+{
+char *t;
+
+   if ((t = strdup(s)) == NULL)
+      return (0);                 /* return failure */
+   if (OnHeap)
+      free(CurrentDateFormat); /* release old string */
+   else
+      OnHeap = 1;   /* now we're allocating on heap */
+   CurrentDateForamt = t;   /* point to new string */
+   return (1);
+}
+
+/*
+** IsLeap -- return non-zero if Year is a leap year, 0 otherwise.
+*/
+
+static int IsLeap(int Year)
+{
+return (Year % 4 == 0) &amp;&amp; (Year % 4000 != 0) &amp;&amp;
+         ((Year % 100 != 0) |<FONT FACE="CG Times (W1)" SIZE=2>| (Year % 400 == 0));</FONT></FONT>
+}
+/*
+** DaysInMonth -- return the number of days in Month. Year
+** is passed to test for a leap year if the month is February.
+*/
+
+static unsigned char DaysInMonth(unsigned char Month, int Year)
+{
+   if ((Month == 2) &amp;&amp; IsLeap(Year))
+      return (29);
+   else
+      return (MonthDays[Month - 1]);
+}
+
+/*
+** CheckForValidDate -- check that Day, Month and Year
+** represent a valid date. Return non-zero if so, 0 otherwise.
+*/
+
+static int CheckForValidDate(unsigned char Day, unsigned char Month, int Year)
+{
+   if ((Year &lt; MINYEAR) |<FONT FACE="CG Times (W1)" SIZE=2>| (Year &gt; MAXYEAR) <FONT FACE="CG Times (W1)" SIZE=2>|| (Year == 0) <FONT FACE="CG Times (W1)" SIZE=2>||</FONT></FONT></FONT></FONT></FONT>
+      (Month &lt; MINMONTH) <FONT FACE="CG Times (W1)" SIZE=2>|| (Month &gt; MAXMONTH))</FONT></FONT>
+      return (0);
+   return (Day &lt;= DaysInMonth(Month, Year));
+}
+
+/*
+** JulianToDayOfWeek -- given a Julian date, return the
+** day of the week for that date, 0 being Sunday, 6 being
+** Saturday.
+*/
+
+static unsigned char JulianToDayOfWeek(long Jul)
+{
+   return ((Jul + 1) % 7);
+}
+/*
+**  DMYtoJulian -- after validating the date passed as a Day,
+**  Month and Year, convert it to a Julian date.
+**
+**  The algorithm shown here is swiped directly from "Numerical
+**  Recipes in C" by Press, Flannery, Teukolsky and Vettering, p. 10.
+*/
+
+#define  IGREG      (15+31L*(10+12L*1582))
+
+static long DMYtoJulian(unsigned char Day, unsigned char Month, int Year)
+{
+unsigned long Ja, Jm, Jy, Jul;
+
+   if (!CheckForValidDate(Day, Month, Year))
+      return (BADDATE);
+   if (Year &lt; 0)
+      Year++;
+   if (Month &gt; 2)
+   {
+      Jy = Year;
+      Jm = Month + 1;
+   }
+   else
+   {
+      Jy = Year - 1;
+      Jm = Month + 13;
+   }
+   Jul = (long) (floor(365.25*Jy) + floor(30.6001*Jm) + Day + 1720995);
+   if (Day + 31L*(Month + 12L*Year) &gt;= IGREG)
+   {
+      Ja = 0.01*Jy;
+      Jul += 2 - Ja + (int) (0.25*Ja);
+   }
+   return (Jul);
+}
+
+/*  JulianToDMY -- convert a Julian date to the appropriate
+**  Day, Month and Year.
+**
+**  Also swiped from "Numerical Recipes".
+*/
+
+#define  GREGOR  2299161
+
+static void JulianToDMY(long Jul, unsigned char *Day, unsigned char *Month,
+   int *Year)
+{
+long Ja, JAlpha, Jb, Jc, Jd, Je;
+
+   if ((Jul != BADDATE) &amp;&amp; (Jul &gt;= MINDATE) &amp;&amp; (Jul &lt;= MAXDATE))
+   {
+      if (Jul &gt;= GREGOR)
+      {
+         JAlpha = ((double) (Jul - 1867216) - 0.25)/36524.25;
+         Ja = Jul + 1 + JAlpha - (long) (0.25*JAlpha);
+      }
+      else
+         Ja = Jul;
+   Jb = Ja + 1524;
+   Jc = 6680.0 + ((double) (Jb - 2439870) - 122.1)/365.25;
+   Jd = 365*Jc + (0.25*Jc);
+   Je = (Jb - Jd)/30.6001;
+   *Day = Jb - Jd - (int) (30.6001*Je);
+   *Month = Je - 1;
+   if (*Month &gt; 12)
+      *Month -= 12;
+   *Year = Jc - 4715;
+   if (*Month &gt; 2)
+      --(*Year);
+   if (Year &lt;= 0)
+      --(*Year);
+   }
+}
+/*
+** ChangeDate -- change a date to reflect the new date passed
+** in the arguments. If the requested date is not a legal date,
+** return a value of 0 without making any changes. If legal,
+** return 1. The date format string is not affected.
+*/
+
+int DateObJect::ChangeDate(unsigned char NDay, unsigned char NMonth, int NYear)
+{
+long t;
+
+   t - DMYtoJulian(NDay, NMonth, NYear);
+   if (t != BADDATE)
+   {
+      Julian = t;
+      Day = NDay;
+      Month = NMonth;
+      Year = NYear;
+      DayOfWeek = JulianToDayOfWeek(Julian);
+      return (1);
+   }
+   return (0);
+}
+/*
+** DateObject -- constructor if no args given. Just initialize
+** to todays date.
+*/
+
+DateObject::DateObject(void)
+{
+union REGS regs;
+
+   regs.x.ax = 0x2a00;      /* DOS get date service */
+   intdos(&amp;regs, &amp;regs);
+   Day = regs.h.dl;
+   Month = regs.h.dh;
+   Year = regs.x.cx;
+   DayOfWeek = regs.h.al;
+   Julian = DMYtoJulian(Day, Month, Year);
+   DateFormatPtr = strdup(CurrentDateFormat);
+   if dateFormatPtr == NULL)
+      Julian = BADDATE;
+}
+/*
+**DateObject -- copy initializer constructor
+*/
+
+DateObject::DateObject(DateObject &amp;OtherDate)
+{
+   Day = OtherDate.Day;
+   Month = OtherDate.Month;
+   Year = OtherDate.Year;
+   DayOfWeek = OtherDate.DayOfWeek;
+   Julian = OtherDate.Julian;
+   DateFormatPtr = strdup(OtherDate.DateFormatPtr);
+   if (DateFormatPtr == NULL)
+      Julian = BADDATE;
+}
+/*
+** DateObject -- constructor when day, month and year initializers
+** are provided. The default format string is used.
+*/
+
+DateObject::DateObject(unsigned char InitDay, unsigned char InitMonth,
+   int InitYear)
+{
+   ChangeDate(InitDay, InitMonth, InitYear);
+   If (Julian != BADDATE)
+   {
+      DateFormatPtr = strdup(CurrentDateFormat);
+      if (DateFormatPtr == NULL)
+         Julian = BADDATE;
+   }
+}
+}
+
+/*
+** DateObject -- constructor used when day, month, year and a
+** format string initializer are provided.
+*/
+
+DateObject::DateObject(unsigned char InitDay, unsigned char InitMonth,
+   int InitYear, const char *FormatStr)
+{
+   ChangeDate(InitDay, InitMonth, InitYear);
+   if (Julian != BADDATE)
+   {
+      DateFormatPtr = strdup(FormatStr);
+      if (DateFormatPtr == NULL)
+         Julian = BADDATE;
+   }
+}
+
+/*
+** = -- assignment operator.
+*/
+
+DateObject DateObject::operator = (DateObject &amp;d)
+{
+   Day = d. Day;
+   Month = d.Month;
+
+   Year = d.Year;
+   Julian = d. Julian;
+   DayOfWeek = d. DayOfWeek;
+   DateFormatPtr = strdup(d.DateFormatPtr);
+   if (DateFormatPtr == NULL)
+      Julian = BADDATE;
+   return (*this);
+}
+
+/*
+** + -- addition operator. This is the fundamental operator
+** function. All other arithmetic operators returning
+** DateObjects call this function. The resulting DateObject
+** copies that format string of the DateObject argument.
+*/
+
+DateObject operator + (DateObject &amp;d, long x)
+{
+DateObject sum;
+
+   sum.Julian = d.Julian + x;
+   if ((sum.Julian &lt; MINDATE) |<FONT FACE="CG Times (W1)" SIZE=2>| (sum.Julian &gt; MAXBATE))</FONT></FONT>
+      sum.Julian = BADDATE;
+   else
+   {
+      JulianToDMY(sum.Julian, &amp;(sum.Day), &amp;(sum.Month), &amp;(sum.Year));
+      sum.DayOfWeek = JulianToDayOfWeek(sum.Julian);
+      sum.DateFormatPtr = strdup(d.DateFormatPtr);
+      if (sum.DateFormatPtr == NULL)
+         sum.Julian = BADDATE;
+   }
+   return (sum);
+}
+
+DateObject operator + (long x, DateObject &amp;d)
+{
+   return (d + x);
+}
+DateObject DateObject::operator - (long x)
+{
+   return (*this + (-x));
+}
+
+DateObject DateObject::operator ++ (void)
+{
+   return ((*this) = (*this) + 1L);
+}
+
+DateObject DateObject::operator -- (void)
+{
+   return ((*this) = (*this) + (-1L));
+}
+
+DateObject DateObject::operator += (long x)
+{
+   return ((*this) = (*this) + x);
+}
+
+DateObject DateObject::operator -= (long x)
+{
+   return ((*this) =(*this) + (-x));
+}
+
+/*
+** GetFormat -- return a dynamically allocated
+** copy of a date's format string
+*/
+
+const char * DateObject::GetFormat()
+{
+   return (strdup(DateFormatPtr));
+}
+/*
+** ChangeFormat -- change the date's format string
+*/
+
+void DateObject::ChangeFormat (const char *s)
+{
+char *t;
+
+   if ((t = strdup(s)) != NULL)
+   {
+      free(DateFormatPtr);
+      DateFormatPtr = t;
+   }
+}
+
+/*
+** DateObject destructor -- simply release the string space occupied
+** by *DateFormatPtr. We do not have to check that the pointer is
+** non-NULL, since free accepts NULL pointers and does nothing.
+*/
+
+DateObject::<SUP>~</SUP>DateObject(void)
+{
+      free (DateFormatPtr);
+}
+
+/*
+** CountLetters -- count the run of letters in s matching
+** the first letter in s. Advance s to point to the next
+** letter that does not match the first character. Return
+** the count. This is a helper function for DateToString.
+*/
+
+static int CountLetters(char **s)
+{
+int n, c;
+
+   for (n = 0, c = **s; **s == c; n++, (*s)++)
+      ;
+   return (n);
+}
+
+/*
+** DateToString -- convert Self to a printable string
+** based on the contents of the format string, DateFormatPtr.
+**
+** The format string is interpreted somewhat like date
+** formats in Microsoft Excel. Most characters are passed
+** through unchanged into the result string. However,
+** certain special characters are replaced. The special
+** characters and their replacements are:
+**
+**  d     Replaced by a one or two digit day number, i.e. '2'.
+**  dd    Replaced by a two digit day number with a leading
+**        0 if the day is less than 10, i.e. '02'.
+**  ddd   Replaced by a 3 character name for the day of the
+**        week, i.e. 'Wed'.
+**  dddd  Replaced by the complete word for the day of the
+**        week, i.e. 'Wednesday'.
+**  m     Replaced by a one or two digit month number, i.e. '2'.
+**  mm    Replaced by a two digit month number with a leading
+**        0 if the month is less than October, i.e. '02'.
+**  mmm   Replaced by a 3 character name for the month, i.e. 'Jan'.
+**  mmmm  Replaced by the complete word for the month, i.e. 'January'.
+**  yy    Replaced by a 2 digit year Modulo 100, i.e. '89'.
+**  yyy   Replaced by a 4 digit year number, i.e. '1989'. BC
+**        dates are preceded by a '-'.
+**  yyyy  Replaced by a 4 digit string representing the absolute
+**        value of the year number followed by ' AD' or ' BC',
+**        as appropriate, i.e. '1989 AD'.
+**  \     Skipped and places the next character into the string
+
+**        without interpration. Allows you to put words in the
+**        output string, i.e. 'To\da\y is ...' will generate
+**        a string of the form 'Today is ...'.
+*/
+
+char *DateObject::DateToString(void)
+{
+int c, Len, Pos, Count;
+char *str,     /* a dynamically allocated work string */
+    *sptr,    /* a moving pointer to the next avail char in str */
+    *ret,     /* pointer to the trimmed string returned by the function */
+    *fptr;   /* a pointer into the format string */
+    
+    if (Julian == BADDATE)
+       return (strdup("Bad Date"));
+    
+    Len = strlen(DateFormatPtr);
+    Pos = 0;
+    sptr = str = calloc((MAXDATESTRLEN+1), sizeof(char));
+    fptr = DateFormatPtr;
+    while (*fptr)
+    {
+      switch (*fptr)
+      {
+         case 'd' :
+         case 'D' :
+         Count = CountLetters(&amp;fptr);
+         if (Count &gt;= 4)
+         {
+            strcat(sptr, LongWeekDays[DayOfWeek]);
+            while (*sptr)
+                sptr++;
+         }
+         else if (Count == 3)
+         {
+            strcat(sptr, ShortWeekDays[DayOfWeek]);
+            while (*sptr)
+                sptr++;
+         }
+         else
+         {
+            if ((Count == 2} &amp;&amp; (Day &lt; 10))
+                strcat(sptr++, "0");
+            itoa(Day, sptr, 10);
+            while (*sptr)
+                sptr++;
+         }
+         break;
+         case 'm' :
+         case 'M' :
+                Count = CountLetters(&amp;fptr);
+                if (Count &gt;= 4)
+                {
+                   strcat(sptr, LongMonths[Month-1]);
+                   while (*sptr)
+                      sptr++;
+                }
+                else if (Count == 3)
+                {
+                   strcat(sptr, ShortMonths[Month-1]);
+                   while (*sptr)
+                      sptr++;
+                   }
+                   else
+                   {
+                      if ((Count == 2) &amp;&amp; (Month &lt; 10))
+                          strcat(sptr++, "0");
+                      itoa(Month, sptr, 10);
+                      while (*sptr)
+                          sptr++;
+                   }
+                   break;
+         case 'y' :
+         case 'Y' :
+                 Count = CountLetters(&amp;fptr);
+                 if (Count &gt;= 4)
+                 {
+                     itoa(Year, sptr, 10);
+                   if (Year &lt; 0) /* overwrite minus sign */
+                      strcpy(sptr, sptr+ 1);
+                   while (*sptr)
+                      sptr++;
+                   if (Year &gt; 0)
+                      strcat(sptr, " AD");
+                   else
+                      strcat(sptr, " BC");
+                   while (*sptr)
+                      sptr++;
+                }
+                else
+                {
+                   if (Count == 2)
+                   {
+                      if ((Year % 100) &lt; 10)
+                          strcat(sptr++, "0");
+                      itoa((Year % 100), sptr, 10);
+                      while (*sptr)
+                          sptr++;
+                   }
+                   else
+                   {
+                      itoa(Year, sptr, 10);
+                      while (*sptr)
+                          sptr++;
+                   }
+                }
+                break;
+         case '\\' :
+                fptr++;     /* skip over the \, and ... */
+         default :
+                *sptr = *fptr; /* copy the character */
+                sptr++;   /* point to next empty char */
+                fptr++;
+                break;
+      }
+    }
+    ret = strdup(str);        /* make a "trimmed" copy */
+    free(str);            /* free our work string */
+    return (ret);         /* return the "duped" string */
+  }
+</pre>
+</BODY>
+</HTML>

@@ -1,0 +1,169 @@
+<HTML><HEAD><TITLE>December 1990/An Object-Based Real-Time Executive/Listing 11</TITLE></HEAD><BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4><A name="027C_0188"><A name="027C_0188">Listing 11 (kserver.c) Interrupt Driven Task Keyboard Server<A name="027C_0188"></h4><P>
+<pre>#include &lt;synrtx.h&gt;
+#include &lt;ascii.h&gt;
+
+#define BEEP    8
+#define NCHARS  80
+#define NOBODY  0
+#define EOI     0x20
+
+static word buffer[NCHARS], nCharsIn, charToSend, charToReceive;
+static task_t  ksid, owner;
+static msg_t  msg;
+
+/* handler numbers */
+#define ACQUIRE      0
+#define RELEASE      1
+#define HIT          2
+#define EXCEPTION    3
+#define GETCHAR      4
+
+#define PORT_A 0x60  /* 8255 */
+#define PORT_B 0x61
+
+static char kbdTab[] = {
+NUL,ESC,'1','2','3','4','5','6','7','8','9','0','-','=',   /* 00-13 */
+BS,HT,'q','w','e','r','t','y','u','i','o','p','[',']',CR,  /* 14-28 */
+0,'a','s','d','f','g','h','j','k','l',';','\"','`',        /* 29-41 */
+0,'\\','z','x','c','v','b','n','m',',','.','/',0,'*',      /* 34-55 */
+0,' ',0 };                                                 /* 56-58 */
+
+static byte code, status;
+static bool bufferFull;
+
+/* Hardware handler Keyboard for interrupt vector 9 */
+static handler Keyboard(void) {
+   /* disable keyboard interrupt to not overwrite interrupt stack */
+   dev_enable(DISABLE, 1, KEYBOARD);
+   cpu_enable();       /* allow further interrupts */
+
+   code = dev_byte(PORT_A);
+   status = dev_byte(PORT_B);
+   dev_setByte(status | 0x80, PORT_B); /* send ack _/^\_ to kbd */
+   dev_setByte(status &amp; 0x7F, PORT_B);
+
+   if (code &lt; 0x80 &amp;&amp; kbdTab[code] &amp;&amp; !bufferFull) {
+      msg.value.w = (word)kbdTab[code];
+      /* interrupt KeyboardServer.GetChar */
+      task_interrupt(&amp;msg);
+   }
+   /* keep all interrupts disable for the EOI and Exit */
+   cpu_Disable();
+   dev_setByte(EOI, 0x20);
+   dev_enable(ENABLE, 1, KEYBOARD);
+}
+
+static handler Acquire(msg_t *msg_p) {
+   register task_t caller = msg_p-&gt;srcTid;
+   register task_t self   = msg_p-&gt;dstTid;
+
+   owner      = caller;
+   charToSend = charToReceive = nCharsIn = 0;
+   bufferFull = FALSE;
+
+   /* interrupt caller.Grant */
+   msg_p-&gt;srcTid = self;
+   msg_p-&gt;dstTid = caller;
+   msg_p-&gt;dstHid = 0; /* GRANT = 0 */
+   msg_p-&gt;type   = msg_type_SYNC;
+   task_interrupt(msg_p);
+}
+
+static handler Release(msg_t *msg_p) {
+   register task_t caller = msg_p-&gt;srcTid;
+   register task_t self   = msg_p-&gt;dstTid;
+   if (owner == caller) {
+      owner = NOBODY;
+      /* BufferFull is set to TRUE to avoid any software interrupts */
+      bufferFull = TRUE;
+   } else {
+      /* interrupt self.Exception(caller) */
+      msg_p-&gt;srcTid  = msg_p-&gt;dstTid = self;
+      msg_p-&gt;dstHid  = EXCEPTION;
+      msg_p-&gt;type    = msg_type_WORD;
+      msg_p-&gt;value.w = (word)caller;
+      task_interrupt(msg_p);
+   }
+}
+
+static handler Hit(msg_t *msg_p) {
+   register task_t caller = msg_p-&gt;srcTid;
+   register task_t self   = msg_p-&gt;dstTid;
+   register word c;
+   if (owner == caller) {
+      if (nCharsIn == 0)      /* buffer empty ? */
+         c = 0;
+      else {
+         c = buffer[charToSend] | 0x0100;
+         charToSend = (charToSend + 1) % NCHARS;
+         nCharsIn--;
+         bufferFull = FALSE;
+      }
+
+      /* interrupt caller.GetChar(character) */
+      msg_p-&gt;srcTid  = msg_p-&gt;dstTid;
+      msg_p-&gt;dstTid  = caller;
+      msg_p-&gt;dstHid  = 1; /* GetChar = 1 */
+      msg_p-&gt;type    = msg_type_WORD;
+      msg_p-&gt;value.w = c;
+      task_interrupt(msg_p);
+   } else {
+      /* interrupt self.Exception(caller) */
+      msg_p-&gt;srcTid  = msg_p-&gt;dstTid = self;
+      msg_p-&gt;dstHid  = EXCEPTION;
+      msg_p-&gt;type    = msg_type_WORD;
+      msg_p-&gt;value.w = (word)caller;
+      task_interrupt(msg_p);
+   }
+}
+
+static handler Exception(msg_t *msg_p) {
+   io_putf("Illegal Access to KeyboardServer by Task #%w", msg_p-&gt;value.w);
+}
+
+static handler GetChar(msg_t *msg_p) {
+   if (nCharsIn == NCHARS) /* buffer full ? */ {
+      /* then, ignore the character (stops int from hard) */
+      io_puts("\nKeyboardServer: buffer full !\n");
+      bufferFull = TRUE;
+   } else {
+      buffer[charToReceive] = msg_p-&gt;value.w;
+      charToReceive = (charToReceive + 1) % NCHARS;
+      nCharsIn++;
+   }
+}
+
+task KeyboardServer(void) {
+   register word ps;
+
+   ps = cpu_saveAndDisable();
+   ksid = task_self();
+
+   /* Install Keyboard hardware handler as the ISR for interrupt vector 9 */
+   cpu_setHandler(INT9_KEYBOARD, Keyboard);
+
+   /* Install software handlers */
+   task_setHandler(5, Acquire, Release, Hit, Exception, GetChar);
+   charToSend = charToReceive = nCharsIn = 0;
+   /*
+    *  The KeyboardServer cannot receive characters while it is not yet
+    *  acquired, but should wait until a "client" gets it.
+    *  BufferFull is set to TRUE to avoid any software interrupts.
+    */
+   bufferFull = TRUE;
+   msg.srcTid = msg.dstTid = ksid;
+   msg.dstHid = GETCHAR;
+   msg.type   = msg_type_WORD;
+   cpu_restore(ps);
+   loop {
+      /* enable wait Acquire */
+      task_enableWait(NO_TIMEOUT, 1, ACQUIRE);
+
+      do /* enable wait GetChar, Hit, Release, Exception */
+         task_enableWait(NO_TIMEOUT,4,GETCHAR,HIT,RELEASE,EXCEPTION);
+      while (owner != NOBODY);
+   }
+}
+</pre>
+</BODY></HTML>

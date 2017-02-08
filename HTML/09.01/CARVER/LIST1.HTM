@@ -1,0 +1,1473 @@
+<HTML><head><TITLE>January 1991/The iRMX Family Of Operating Systems/Listing 1</TITLE></head><BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4><A name="0030_001D"><A name="0030_001D">Listing 1 (clockint.c)<A name="0030_001D"></h4><P>
+<pre>/*0*********************************************************
+*   Richard Carver                            July 1990
+*
+*   This program demonstrates interprocess communication
+*   between several tasks using the iRMX II Operating
+*   System.
+*
+*   Two tasks are used for resource control. The
+*   clock_task() controls use of the hardware clock and the
+*   crt_task() controls use of the display screen.
+*
+*   The count_task() competes with the clock_task() for
+*   use of the crt_task() services. The timer_task() uses
+*   the services of the clock_task() for a software timer.
+*
+*   The initial task, main(), starts every thing up and,
+*   when the timer_task() finishes, shuts everything down.
+***********************************************************/
+
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;rmxc.h&gt;       /* iRMX OS calls &amp; structures  */
+#include &lt;rmxerr.h&gt;     /* iRMX status codes (defines) */
+#include &lt;delay.h&gt;      /* Hardcoded delay loop macros */
+
+#define ERROR   (0xFFFF)   /* Error Condition */
+
+#define FALSE   (0)
+#define TRUE    (!FALSE)
+
+#define MAX_CLOCK_RETRIES  (4)
+
+/* The NULL token (similar to NULL pointer) */
+
+#define NUL_TKN   ((selector)0)
+
+/* Options for rqgettasktokens() */
+
+#define THIS_TASK (0x00)
+#define THIS_JOB  (0x01)
+#define PARAM_OBJ (0x02)
+#define ROOT_JOB  (0x03)
+
+/* Options for rqcreatemailbox() */
+
+#define FIFO_OBJ_MBX       (0x0000)
+#define PRIORITY_OBJ_HBX   (0x0001)
+#define FIFO_DATA_MBX      (0x0020)
+#define PRIORITY_DATA_MBX  (0x0021)
+
+/* Options for rqcreatesemaphore() */
+
+#define FIFO_SEM      (0x0000)
+#define PRIORITY_SEM  (0x0001)
+
+#define SEM_INIT_0    (0)
+#define SEM_MAX_1     (1)
+
+/* Common wait times for iRMX System Calls */
+
+#define NO_WAIT       (0x0000)
+#define WAIT_FOREVER  (0xFFFF)
+
+/* Options for rqcreatetask() */
+
+#define NO_FLOAT   (0x0000)
+#define DEFAULT_STACK_SIZE     ((unsigned int)2048)
+
+/* Task Priorities  */
+
+#define CLOCK_TASK_PRIORITY    ((unsigned char)48)
+#define TIMER_TASK_PRIORITY        ((unsigned char)150)
+#define CRT_TASK_PRIORITY      ((unsigned char)200)
+#define COUNT_TASK_PRIORITY    ((unsigned char)200)
+
+/* Defines For Hardware Clock */
+/* Clock Interrupt Level */
+
+#define CLOCK_INT_LEVEL (0x26)
+
+/* Clock Ports */
+
+#define ADR_PORT  ((unsigned short)0xA060)
+#define DAT_PORT  ((unsigned short)0xA062)
+#define CNT_PORT  ((unsigned short)0xA064)
+#define PIO_PORT  ((unsigned short)0xA066)
+
+/* Clock Port I/O Operations */
+
+#define PIO_READ  ((unsigned char)0x82)
+#define PIO_WRITE ((unsigned char)0x80)
+
+/* Clock Registers */
+
+#define SEC01_REG (0x00)
+#define SEC10_REG (0x01)
+#define MIN01_REG (0x02)
+#define MIN10_REG (0x03)
+#define HRS01_REG (0x04)
+#define HRS10_REG (0x05)
+#define DAT01_REG (0x07)
+#define DAT10_REG (0x08)
+#define MON01_REG (0x09)
+#define MON10_REG (0x0A)
+#define YRS01_REG (0x0B)
+#define YRS10_REG (0x0C)
+
+/* Clock Control Lines */
+
+#define CNT_RST     ((unsigned char)0x00)
+#define INT_ENB     ((unsigned char)0x20)
+#define HOLD_HIGH   ((unsigned char)0x10)
+#define HOLD_READ   ((unsigned char)0x30)
+#define HOLD_WRITE  ((unsigned char)0x50)
+
+/* Defines for months */
+
+#define JANUARY     (1)
+#define FEBRUARY    (2)
+#define MARCH       (3)
+#define DECEMBER    (12)
+
+/* Time/Date and Timers Data Structure  */
+
+#define MAX_TIMERS    (10)
+
+struct SYS_TIME_STR
+  {
+  unsigned char change_flg;
+  unsigned char second;
+  unsigned char minute;
+  unsigned char hour;
+  unsigned char date;
+  unsigned char month;
+  unsigned char year;
+  
+  struct TIMER_STR
+    {
+    unsigned char in_use;
+    unsigned int count;
+    unsigned int timeout;
+    selector    sem_tkn;
+    }timer[MAX_TIMERS];
+  };
+
+/* Request Message format for the Display Task */
+
+struct CRT_REQ_STR
+  {
+   unsigned char *msg_ptr;
+   unsigned int  row;
+   unsigned int  col;
+   };
+ 
+ /* Object Catalog Names */
+ 
+ const unsigned char
+   clock_sem_name[] = "\011CLOCK_SEM",
+   init_sem_name[] = "\010INIT_SEM";
+ 
+ const unsigned char
+   time_seg_name[] = "\010TIME_SEG";
+ 
+ const unsigned char
+   crt_req_mbx_name[] = "\007CRT_MBX";
+ 
+ const unsigned char
+   crt_shtdwn_sem_name[] = "\012CRT_SHTDWN",
+   clock_shtdwn_sem_name[] = "\014CLOCK_SHTDWN",
+   count_shtdwn_sem_name[] = "\014COUNT_SHTDWN";
+ 
+ /* Days Per Month */
+ 
+ const unsigned char
+   days_in_month[12] =
+   {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+
+/* Global System Time/Date Structure */
+
+selector  sys_time_seg;
+struct SYS_TIME_STR *sys_time;
+
+/* Task declarations  */
+
+void clock_task(void);
+void crt_task(void);
+void timer_task(void);
+void count_task(void);
+
+/* Task objects (global for debugging purposes) */
+
+selector  clock_tsk;
+selector  crt_tsk;
+selector  timer_tsk;
+selector  count_tsk;
+
+/*1*********************************************************
+* Task:     main()  (the initial task)
+*
+* Summary:  Starts it all up and shuts it all down.
+*
+* Caveats:  None
+***********************************************************/
+
+void main(void)
+  {
+  selector  current_job;       /* current job            */
+  selector  init_sem;          /* initilaization sem     */
+  selector  clock_sem;         /* time/date shared memory*/
+  selector  clock_shtdwn_sem;  /* clock_task() shutdown  */
+  selector  count_shtdwn_sem;  /* count_task() shutdown  */
+  selector  crt_shtdwn_sem;    /* crt_task() shutdown    */
+  selector  sys_time_seg;      /* time/date data segment */
+  
+  unsigned  int   status;      /* iRMX condition code    */
+  
+  struct EXCEPTIONSTRUCT exceptioninfo;
+
+/*  Disable current task's exception handler  */
+
+  rqgetexceptionhandler(&amp;exceptioninfo, &amp;status);
+  exceptioninfo.exceptionmode = 0;
+  rqsetexceptionhandler(&amp;exceptioninfo, &amp;status);
+/*  Get Token For Current Job */
+
+  current_job = rqgettasktokens(THIS_JOB, &amp;status);
+
+/*  Create and catalog the semaphore used for */
+/*  accessing the shared clock data.          */
+
+  clock_sem = rqcreatesemaphore(SEM_INIT_0,
+    SEM_MAX_1, PRIORITY_SEM, &amp;status);
+  rqcatalogobject(current_job,
+    clock_sem, &amp;clock_sem_name, &amp;status);
+
+/*  Create and catalog the semaphore used for */
+/*  synchronizing tasks during initialization */
+/*  and shutdown.                             */
+
+  init_sem = rqcreatesemaphore(SEM_INIT_0,
+    99, FIFO_SEM, &amp;status);
+  rqcatalogobject(current_job,
+    init_sem, &amp;init_sem_name, &amp;status);
+
+/*  Create and catalog the segment of memory  */
+/*  used to hold the shared time/date data.   */
+
+  sys_time_seg = rqcreatesegment(
+    sizeof(struct SYS_TIME_STR), &amp;status);
+  rqcatalogobject(current_job,
+    sys_time_seg, &amp;time_seg_name, &amp;status);
+
+/*  Create and catalog the semaphores used to */
+/*  signal task shutdown.                     */
+
+  clock_shtdwn_sem = rqcreatesemaphore(SEM_INIT_0,
+    SEM_MAX_1, FIFO_SEM, &amp;status);
+  rqcatalogobject(current_job,
+    clock_shtdwn_sem, &amp;clock_shtdwn_sem_name, &amp;status);
+
+  crt_shtdwn_sem = rqcreatesemaphore(SEM_INIT_0,
+    SEM_MAX_1, FIFO_SEM, &amp;status);
+  rqcatalogobject(current_job,
+    crt_shtdwn_sem, &amp;crt_shtdwn_sem_name, &amp;status);
+
+  count_shtdwn_sem = rqcreatesemaphore(SEM_INIT_0,
+    SEM_MAX_1, FIFO_SEM, &amp;status);
+  rqcatalogobject(current_job,
+    count_shtdwn_sem, &amp;count_shtdwn_sem_name, &amp;status);
+
+/*  Create the crt_task(). Wait for the task to  */
+/*  indicate it has completed initialization.    */
+
+  crt_tsk = rqcreatetask(CRT_TASK_PRIORITY, &amp;crt_task,
+    NUL_TKN, NULL, DEFAULT_STACK_SIZE, NO_FLOAT, &amp;status);
+  
+  rqreceiveunits(init_sem, 1, WAIT_FOREVER, &amp;status);
+
+/*  Create the clock_task(). Wait for the task    */
+/*  to indicate it has completed initialization.  */
+
+  clock_tsk = rqcreatetask(CLOCK_TASK_PRIORITY, &amp;clock_task,
+    NUL_TKN, NULL, DEFAULT_STACK_SIZE, NO_FLOAT, &amp;status);
+  
+  rqreceiveunits(init_sem, 1, WAIT_FOREVER, &amp;status);
+
+/*  Create the count_task(). Wait for the task    */
+/*  to indicate it has completed initialization.  */
+
+  count_tsk = rqcreatetask(COUNT_TASK_PRIORITY, &amp;count_task,
+    NUL_TKN, NULL, DEFAULT_STACK_SIZE, NO_FLOAT, &amp;status);
+  
+  rqreceiveunits(init_sem, 1, WAIT_FOREVER, &amp;status);
+
+/*  Create the timer_task(). Wait for the task    */
+/*  to indicate it has completed initialization.  */
+/*  This also signals the shutdown process.       */
+  timer_tsk = rqcreatetask(TIMER_TASK_PRIORITY, &amp;timer_task,
+    NUL_TKN, NULL, DEFAULT_STACK_SIZE, NO_FLOAT, &amp;status);
+  
+  rqreceiveunits(init_sem, 1, WAIT_FOREVER, &amp;status);
+
+/*  Begin shutdown by first disabling any further  */
+/*  interrupts from the hardware clock. This task  */
+/*  suspends itself for 2/100th of a second to     */
+/*  ensure interrupt is disabled.                  */
+
+  rqdisable(CLOCK_INT_LEVEL, &amp;status);
+  rqsleep(2, &amp;status);
+
+/*  Send shutdown signals to all tasks and wait    */
+/*  for all tasks to complete shutdown.            */
+
+  rqsendunits(count_shtdwn_sem, 1, &amp;status);
+  rqsendunits(crt_shtdwn_sem, 1, &amp;status);
+  rqsendunits(clock_shtdwn_sem, 1, &amp;status);
+  
+  rqreceiveunits(init_sem, 3, WAIT_FOREVER, &amp;status);
+
+/*  Cleanup before terminating. This includes      */
+/*  deleting tasks and uncataloging/deleteing      */
+/*  all objects created.                           */
+
+  rqdeletetask(crt_tsk, &amp;status);
+  rqdeletetask(clock_tsk, &amp;status);
+  rqdeletetask(count_tsk, &amp;status);
+  rqdeletetask(timer_tsk, &amp;status);
+  
+  rquncatalogobject(current_job,
+    &amp;clock_sem_name, &amp;status);
+  rquncatalogobject(current_job,
+    &amp;init_sem_name, &amp;status);
+  rquncatalogobject(current_job,
+    &amp;time_seg_name, &amp;status);
+  rquncatalogobject(current_job,
+    &amp;crt_req_mbx_name, &amp;status);
+  
+  rquncatalogobject(current_job,
+    &amp;clock_shtdwn_sem_name, &amp;status);
+  rquncatalogobject(current_job,
+    &amp;count_shtdwn_sem_name, &amp;status);
+  rquncatalogobject(current_job,
+    &amp;crt_shtdwn_sem_name, &amp;status);
+  
+  rqdeletesemaphore(clock_sem, &amp;status);
+  rqdeletesemaphore(init_sem, &amp;status);
+  
+  rqdeletesemaphore(clock_shtdwn_sem, &amp;status);
+  rqdeletesemaphore(count_shtdwn_sem, &amp;status);
+  rqdeletesemaphore(crt_shtdwn_sem, &amp;status);
+  
+  rqdeletesegment(sys_time_seg, &amp;status);
+  
+  cursor_on();
+  printf("\nAll Done!\n");
+  
+  exit(0);
+  }
+  
+/*1*********************************************************
+* Function: start_timer
+*
+* Summary:  Create and start a timer.
+*
+* Invocation: timer_sem = start_timer(timeout);
+*
+* Inputs:   timeout (unsigned int) - timer interval
+*              in seconds
+*
+* Outputs:  timer_sem (selector) - the semaphore that will
+*              receive a unit at each timer interval
+*
+* Caveats:  Accesses the time/date data segment that is
+*           shared with the clock_task().
+***********************************************************/
+
+selector start_timer(unsigned int timeout)
+  {
+  unsigned int    status;
+  unsigned int    indx;
+  unsigned int    done;
+  unsigned int    no_more_timers;
+  
+  selector    timer_sem;
+  selector    current_job;
+  selector    clock_sem;
+  selector    sys_time_seg;
+  
+  struct SYS_TIME_STR   *sys_time;
+  
+  indx = 0;
+  done = FALSE;
+  no_more_timers = TRUE;
+  timer_sem = NUL_TKN;
+
+/*  Get objects for access semaphore and */
+/*  time/date data segment               */
+
+  current_job = rqgettasktokens(THIS_JOB, &amp;status);
+  
+  clock_sem = rqlookupobject(current_job,
+    &amp;clock_sem_name, NO_WAIT, &amp;status);
+  sys_time_seg = rqlookupobject(current_job,
+    &amp;time_seg_name, NO_WAIT, &amp;status);
+  
+  sys_time = buildptr(sys_time_seg, 0);
+
+/* Access time/date memory  */
+
+  rqreceiveunits(clock_sem, 1, WAIT_FOREVER, &amp;status);
+
+/* Find an empty timer slot  */
+
+  while (!done)
+    {
+    if (!sys_time-&gt;timer[indx].in_use)
+      {
+      done = TRUE;
+      no_more_timers = FALSE;
+      }
+    else
+      {
+      indx++;
+      
+      if (indx == MAX_TIMERS)
+        {
+        done = TRUE;
+        }
+      }
+    }
+
+/* Establish a timer  */
+
+  if (no_more_timers == FALSE)
+    {
+    if (timeout ! = 0)
+      {
+      timer_sem = rqcreatesemaphore(SEM_INIT_0,
+        999, FIFO_SEM, &amp;status);
+      sys_time-&gt;timer[indx].in_use = TRUE;
+      sys_time-&gt;timer[indx].count = 0;
+      sys_time-&gt;timer[indx].timeout = timeout;
+      sys_time-&gt;timer[indx].sem_tkn = timer_sem;
+      }
+   }
+/*  Release time/date memory */
+
+  rqsendunits(clock_sem, 1, &amp;status);
+
+/*  Return timer semaphore to caller */
+
+  return(timer_sem);
+  }
+
+/*1*********************************************************
+* Function:  stop_timer
+*
+* Summary:   Delete a timer.
+*
+* Invocation:  timer_sem = start_timer(timeout);
+*
+* Inputs:    timeout (unsigned int) - timer interval
+*              in seconds
+*
+* Outputs:   timer_sem (selector) - the semaphore that will
+*              receive a unit at each timer interval
+*
+* Caveats:   Accesses the time/date data segment that is
+*            shared with the clock_task().
+***********************************************************/
+
+unsigned int stop_timer(selector timer_sem)
+  {
+  unsigned int    status;
+  unsigned int    indx;
+  unsigned int    done;
+  unsigned int    invalid_timer;
+  
+  selector    current_job;
+  selector    clock_sem;
+  selector    sys_time_seg;
+  
+  struct SYS_TIME_STR   *sys_time;
+  
+  indx = 0;
+  done = FALSE;
+  invalid_timer = TRUE;
+  
+/*  Get objects for access semaphore and */
+/*  time/date data segment               */
+
+  current_job = rqgettasktokens(THIS_JOB, &amp;status);
+  
+  clock_sem = rqlookupobject(current_job,
+    &amp;clock_sem_name, NO_WAIT, &amp;status);
+  sys_time_seg = rqlookupobject(current_job,
+    &amp;time_seg_name, NO_WAIT, &amp;status);
+  
+  sys_time = buildptr(sys_time_seg, 0);
+
+/*  Access time/date memory.  */
+
+  rqreceiveunits(clock_sem, 1, WAIT_FOREVER, &amp;status);
+
+/* Locate and remove this timer  */
+
+  while (!done)
+    {
+    if (sys_time-&gt;timer[indx].in_use &amp;&amp;
+      (sys_time-&gt;timer[indx].sem_tkn == timer_sem))
+      {
+      rqdeletesemaphore(timer_sem, &amp;status);
+      sys_time-&gt;timer[indx].in_use = FALSE;
+      sys_time-&gt;timer[indx].sem_tkn = NUL_TKN;
+      sys_time-&gt;timer[indx].count = 0;
+      sys_time-&gt;timer[indx].timeout = 0;
+      done = TRUE;
+      invalid_timer = FALSE;
+      }
+    else
+      {
+      indx++;
+      
+      if (indx == MAX_TIMERS)
+        {
+        done = TRUE;
+        }
+      }
+    }
+
+/*  Release time/date memory  */
+  
+  rqsendunits(clock_sem, 1, &amp;status);
+  
+/*  Return with result of call  */
+  
+  return (invalid_timer ? ERROR : EOK);
+  }
+
+/*1*********************************************************
+* Task:     count_task
+*
+* Summary:  Continuously counts and displays a value from
+*           0-65535.
+*
+* Caveats:  Communicates with the crt_task() for displaying
+*           counter values.
+***********************************************************/
+
+void count_task(void)
+  {
+  unsigned char counter_buf[6];
+  
+  selector  current_job;
+  selector  rsp_mbx;
+  selector  crt_req_mbx;
+  selector  init_sem;
+  selector  count_shtdwn_sem;
+  selector  req_seg;
+  
+  unsigned int  counter;
+  unsigned int    status;
+  
+  struct CRT_REQ_STR    *req_msg;
+  
+  struct EXCEPTIONSTRUCT    exceptioninfo;
+  
+/*  Disable this task's exception handler  */
+
+  rqgetexceptionhandler(&amp;exceptioninfo, &amp;status);
+  exceptioninfo.exceptionmode = 0;
+  rqsetexceptionhandler(&amp;exceptioninfo, &amp;status);
+
+/*  Lookup/Create needed objects  */
+
+  current_job = rqgettasktokens(THIS_JOB, &amp;status);
+  
+  init_sem = rqlookupobject(current_job,
+    &amp;init_sem_name, NO_WAIT, &amp;status);
+  
+  count_shtdwn_sem = rqlookupobject(current_job,
+    &amp;count_shtdwn_sem_name, NO_WAIT, &amp;status);
+  
+  rsp_mbx = rqcreatemailbox(FIFO_OBJ_MBX, &amp;status);
+  
+  crt_req_mbx = rqlookupobject(current_job,
+    &amp;crt_req_mbx_name, NO_WAIT, &amp;status);
+
+/*  Initialize request message  */
+
+  req_seg = rqcreatesegment(
+    sizeof(struct CRT_REQ_STR), &amp;status);
+  
+  req_msg = buildptr(req_seg, 0);
+  
+  req_msg-&gt;msg_ptr = counter_buf;
+  req_msg-&gt;row = 12;
+  req_msg-&gt;col = 38;
+
+/*  Singal that initialization is completed.  */
+
+  rqsendunits(init_sem, 1, &amp;status);
+
+/*  Continuously count 0-65535 and display the  */
+/*  value until signalled to stop.               */
+
+  counter = 0;
+  
+  rqreceiveunits(count_shtdwn_sem, 1, NO_WAIT, &amp;status);
+  
+  while (status == ETIME) /* while no signal received */
+    {
+    sprintf(counter_buf, "%d", counter);
+    rqsendmessage(crt_req_mbx,
+      req_seg, rsp_mbx, &amp;status);
+    req_seg = rqreceivemessage(rsp_mbx,
+      WAIT_FOREVER, NUL_TKN, &amp;status);
+    counter++;
+    rqreceiveunits(count_shtdwn_sem, 1, NO_WAIT, &amp;status);
+    }
+
+/*  Cleanup objects created by this task. */
+
+  rqdeletemailbox(rsp_mbx, &amp;status);
+  rqdeletesegment(req_seg, &amp;status);
+
+/*  Signal shutdown complete and suspend execution. */
+
+  rqsendunits(init_sem, 1, &amp;status);
+  
+  rqsuspendtask(NUL_TKN, &amp;status);  /* suspend this task  */
+  }
+
+/*1************************************************************
+* Task:     timer_task
+*
+* Summary:
+*
+* Caveats:
+**************************************************************/
+
+void timer_task(void)
+  {
+  selector    current_job;
+  selector    init_sem;
+  selector    clock_sem;
+  selector    timer_sem;
+  
+  unsigned  int   status;
+  
+  struct EXCEPTIONSTRUCT  exceptioninfo;
+
+/*  Disable this task's exception handler  */
+
+  rqgetexceptionhandler(&amp;exceptioninfo, &amp;status);
+  exceptioninfo.exceptionmode = 0;
+  rqsetexceptionhandler(&amp;exceptioninfo, &amp;status);
+
+/* Lookup needed objects  */
+
+  current_job = rqgettasktokens(THIS_JOB, &amp;status);
+  
+  init_sem = rqlookupobject(current_job,
+    &amp;init_sem_name, NO_WAIT, &amp;status);
+
+/*  Start a one-second timer. If the timer was      */
+/*  created, wait for 20 seconds (units) then stop  */
+/*  stop the timer.                                 */
+  timer_sem = start_timer(1);
+  
+  if (timer_sem != NUL_TKN)
+    {
+    rqreceiveunits(timer_sem, 20, WAIT_FOREVER, &amp;status);
+    stop_timer(timer_sem);
+    }
+
+/*  Signal task finished and suspend execution.  */
+
+  rqsendunits(init_sem, 1, &amp;status);
+  
+  rqsuspendtask(NUL_TKN, &amp;status); /* suspend this task */
+  }
+
+/*1**********************************************************
+* Functions:   clrscrn, cursor_on, cursor_off, print_at
+*
+* Summary:   Functions for basic display control.
+*
+* Invocation:    clrscrn( );
+*                curson_on( );
+*                cursoff_on( );
+*
+* Invocation:    print_at(row, col, msg_ptr)
+*
+* Inputs:  row (unsigned int) - row position
+*          col (unsigned int) - column position
+*          msg_ptr (unsigned char *) - message string pointer
+*
+* Caveats: Escape sequences are for a WYSE60 terminal.
+**************************************************************/
+
+void clrscrn(void)
+  {
+  fprintf(stdout, "\x1B+");
+  fflush(stdout);
+  return;
+  }
+
+void cursor_on(void)
+  {
+  fprintf(stdout, "\x1B`1");
+  fflush(stdout);
+  return;
+  }
+
+void cursor_off(void)
+  {
+  fprintf(stdout, "\x1B'0");
+  fflush(stdout);
+  return;
+  }
+
+void print_at(unsigned int row,
+  unsigned int col, unsigned char *msg_ptr)
+  {
+  fprintf(stdout, "\x1B=%c%c%s",
+    (row + 31), (col + 31), msg_ptr);
+  fflush(stdout);
+  return;
+  }
+
+/*1*********************************************************
+* Task:     crt_task
+*
+* Summary:
+*
+* Caveats:
+***********************************************************/
+
+void crt_task(void)
+  {
+  selector    current_job;
+  selector    req_mbx;
+  selector    rsp_mbx;
+  selector    rec_seg;
+  selector    init_sem;
+  selector    crt_shtdwn_sem;
+  
+  unsigned int    status;
+  
+  struct CRT_REQ_STR    *req_msg;
+  
+  struct EXCEPTIONSTRUCT    exceptioninfo;
+  
+/*  Disable this task's exception handler */
+
+  rqgetexceptionhandler(&amp;exceptioninfo, &amp;status);
+  exceptioninfo.exceptionmode = 0;
+  rqsetexceptionhandler(&amp;exceptioninfo, &amp;status);
+
+/*  Lookup/Create needed objects  */
+
+  current_job = rqgettasktokens(THIS_JOB, &amp;status);
+  
+  init_sem = rqlookupobject(current_job,
+    &amp;init_sem_name, WAIT_FOREVER, &amp;status);
+  
+  crt_shtdwn_sem = rqlookupobject(current_job,
+    &amp;crt_shtdwn_sem_name, WAIT_FOREVER, &amp;status);
+  
+  req_mbx = rqcreatemailbox(FIFO_OBJ_MBX, &amp;status);
+  rqcatalogobject(current_job,
+    req_mbx, &amp;crt_req_mbx_name, &amp;status);
+
+/*  Initialize display  */
+
+  cursor_off( );
+  clrscrn( );
+
+/*  Signal initialization complete  */
+
+  rqsendunits(init_sem, 1, &amp;status);
+  
+  
+  rqreceiveunits(crt_shtdwn_sem, 1, NO_WAIT, &amp;status);
+  
+  while (status == ETIME)
+    {
+    req_seg = rqreceivemessage(req_mbx,
+      WAIT_FOREVER, &amp;rsp_mbx, &amp;status);
+    
+    req_msg = buildptr(req_seg, 0);
+    
+    print_at(req_msg-&gt;row,
+      req_msg-&gt;col, req_msg-&gt;msg_ptr);
+    
+    if (rsp_mbx != NUL_TKN)
+      {
+      rqsendmessage(rsp_mbx, req_seg, NUL_TKN, &amp;status);
+      }
+    else
+      {
+      rqdeletesegment(req_seg, &amp;status);
+      }
+      
+    rqreceiveunits(crt_shtdwn_sem, 1, NO_WAIT, &amp;status);
+    }
+    
+  rqsendunits(init_sem, 1, &amp;status);
+  
+  for(;;)
+    {
+    req_seg = rqreceivemessage(req_mbx,
+      WAIT_FOREVER, &amp;rsp_mbx, &amp;status);
+      
+    if (rsp_mbx != NUL_TKN)
+      {
+      rqsendmessage(rsp_mbx, req_seg, NUL_TKN, &amp;status);
+      }
+    else
+      {
+      rqdeletesegment(req_seg, &amp;status);
+      }
+    }
+  }
+
+/*1*********************************************************
+* Function:  read_time
+*
+* Summary:   Read a specified time/date register of the
+*            hardware clock.
+*
+* Invocation:  in_byte = read_time(reg);
+*
+* Inputs:    reg (unsigned char) - the hardware time/date
+*              register to be read
+*
+* Outputs:   in_byte (unsigned char) - the value of the
+*              register read
+*
+* Caveats:   None
+***********************************************************/
+
+unsigned char read_time(unsigned char reg)
+  {
+  unsigned char in_byte;
+  
+  outbyte(CNT_PORT, HOLD_HIGH);
+  delay(3);
+  outbyte(CNT_PORT, HOLD_READ);
+  delay(1);
+  outbyte(ADR_PORT, reg);
+  delay(1);
+  in_byte = inbyte(DAT_PORT);
+  outbyte(CNT_PORT, CNT_RST);
+  delay(1);
+  
+  return (in_byte);
+  }
+
+/*1*********************************************************
+* Function:  write_time
+*
+* Summary:   Write a byte to the specified time/date register
+*            of the hardware clock.
+*
+* Invocation:  write_time(reg, out_byte);
+*
+* Inputs:    reg (unsigned char) - the hardware time/date
+*              register
+*
+*           out_byte (unsigned char) - the value to be
+*             written to the hardware clock register
+*
+* Caveats:  None
+***********************************************************/
+
+void write_time(unsigned char reg, unsigned char out_byte)
+  {
+  outbyte(CNT_PORT, HOLD_HIGH);
+  delay(3);
+  outbyte(ADR_PORT, reg);
+  delay(1);
+  outbyte(DAT_PORT, out_byte);
+  delay(1);
+  outbyte(CNT_PORT, HOLD_WRITE);
+  delay(1);
+  outbyte(CNT_PORT, CNT_RST);
+  delay(1);
+  
+  return;
+  }
+
+/*1*********************************************************
+* Function:  read_clock
+*
+* Summary:   Read the time/date from the hardware clock and
+*            stores it in the global time/date structure.
+*
+* Invocation:  read_clock();
+*
+* Caveats:   Requires the caller to obtain access the shared
+*            time/date data segment.
+***********************************************************/
+
+void read_clock(void)
+  {
+  unsigned char time_buf[13];
+  unsigned int i;
+
+/*  Set mode */
+
+  outbyte(PIO_PORT, PIO_READ);
+  delay(1);
+
+/*  Set control lines to disable interrupts */
+
+  outbyte(CNT_PORT, CNT_RST);
+  delay(1);
+
+/*  Read time/date */
+
+  for (i = 0 ; (i &lt;= 12); i++)
+    {
+    time_buf[i] = read_time(i);
+    }
+  
+  sys_time-&gt;second =
+    (10 * (time_buf[SEC10_REG] &amp; 0x07)) +
+    (time_buf[SEC01_REG] &amp; 0x0F);
+  sys_time-&gt;minute =
+    (10 * (time_buf[MIN10_REG] &amp; 0x07)) +
+    (time_buf[MIN01_REG] &amp; 0x0F);
+  sys_time-&gt;hour =
+    (10 * (time_buf[HRS10_REG] &amp; 0x03)) +
+    (time_buf[HRS01_REG] &amp; 0x0F);
+  sys_time-&gt;date =
+    (10 * (time_buf[DAT10_REG] &amp; 0x03)) +
+    (time_buf[DAT01_REG] &amp; 0x0F);
+  sys_time-&gt;month =
+    (10 * (time_buf[MON10_REG] &amp; 0x01)) +
+    (time_buf[MON01_REG] &amp; 0x0F);
+  sys_time-&gt;year =
+    (10 * (time_buf[YRS10_REG] &amp; 0x0F)) +
+    (time_buf[YRS01_REG] &amp; 0x0F);
+
+/*  Reset control lines to enable interrupts */
+
+  outbyte(CNT_PORT, INT_ENB);
+  delay(1);
+  
+  outbyte(ADR_PORT, 0x0F);
+  delay(1);
+  
+  return;
+  }
+
+/*1*********************************************************
+* Function:  write_clock
+*
+* Summary:   Uses the global time/date structure to write a
+*            new time/date to the hardware clock.
+*
+* Invocation:  write_clock();
+*
+* Caveats:   Requires the caller to obtain access the shared
+*            time/date data segment.
+************************************************************/
+
+void write_clock(void)
+  {
+  unsigned char temp_byte;
+
+/*  Set mode */
+
+  outbyte(PIO_PORT, PIO_WRITE);
+  delay(1);
+
+/*  Set control lines to disable interrupts */
+
+  outbyte(CNT_PORT, CNT_RST);
+  delay(1);
+
+/*  Write time/date. Seconds always set to 0 */
+
+  sys_time-&gt;second = 0;
+  write_time(SEC01_REG, 0);
+  write_time(SEC10_REG, 0);
+  
+  temp_byte =
+    sys_time-&gt;minute - (10 * (sys_time-&gt;minute / 10));
+  write_time(MIN01_REG, temp_byte);
+  temp_byte = sys_time-&gt;minute / 10;
+  write_time(MIN10_REG, temp_byte);
+  
+  temp_byte =
+    sys_time-&gt;hour - (10 * (sys_time-&gt;hour / 10));
+  write_time(HRS01_REG, temp_byte);
+  temp_byte =
+    (sys_time-&gt;hour / 10) | 0x08;     /* 24hr format */
+  write_time(HRS10_REG, temp_byte);
+  
+  temp_byte =
+    sys_time-&gt;date - (10 * (sys_time-&gt;date / 10));
+  write_time(DAT01_REG, temp_byte);
+  temp_byte = sys_time-&gt;date / 10;
+  write_time(DAT10_REG, temp_byte);
+  
+  temp_byte =
+    sys_time-&gt;month - (10 * (sys_time-&gt;month / 10));
+  write_time(MON01_REG, temp_byte);
+  temp_byte = sys_time-&gt;month / 10;
+  write_time(MON10_REG, temp_byte);
+  
+  temp_byte =
+    sys_time-&gt;year - (10 *(sys_time-&gt;year / 10));
+  write_time(YRS01_REG, temp_byte);
+  temp_byte = sys_time-&gt;year / 10;
+  write_time(YRS10_REG, temp_byte);
+
+/*  Reset mode*/
+
+  outbyte(PIO_PORT, PIO_READ);
+  delay(1);
+
+/*  Reset control lines to enable interrupts */
+
+  outbyte(CNT_PORT, INT_ENB);
+  delay(1);
+  
+  outbyte(ADR_PORT, 0x0F);
+  delay(1);
+  
+  return;
+  }
+
+/*1*********************************************************
+* Function:  reset_timers
+*
+* Summary:   Initializes (zero out) all timer slots of the
+*            shared time/date data segment.
+*
+* Invocation:  reset_timers();
+*
+* Caveats:   Requires the caller to obtain access the shared
+*            time/date data segment.
+************************************************************/
+
+void reset_timers(void)
+  {
+  unsigned int    i;
+  
+  for (i = 0 ; i &lt; MAX_TIMERS; i++)
+    {
+    sys_time-&gt;timer[i].in_use = FALSE;
+    sys_time-&gt;timer[i].sem_tkn = NUL_TKN;
+    sys_time-&gt;timer[i].count = 0;
+    sys_time-&gt;timer[i].timeout = 0;
+    }
+  
+  return;
+  }
+
+/*1*********************************************************
+* Function:  advance_timers
+*
+* Summary:   Increments all active timers in the shared
+*            time/date data segment by one second.
+*
+* Invocation:  advance_timers();
+*
+* Caveats:   Requires the caller to obtain access the shared
+*            time/date data segment.
+***********************************************************/
+
+void advance_timers(void)
+  {
+  unsigned int    i;
+  unsigned int    status;
+  
+  
+  for (i = 0 ; i &lt; MAX_TIMERS; i++)
+    {
+    if (sys_time-&gt;timer[i].in_use)
+      {
+      sys_time-&gt;timer[i].count++;
+      if (sys_time-&gt;timer[i].count &gt;=
+        sys_time-&gt;timer[i].timeout)
+        {
+        rqsendunits(
+          sys_time-&gt;timer[i].sem_tkn, 1, &amp;status);
+        sys_time-&gt;timer[i].count = 0;
+        }
+      }
+    }
+  
+  return;
+  }
+
+
+/*1**********************************************************
+* Function:  advance_time_date
+*
+* Summary:   Increments the time/date (hh:mm:ss mm/dd/yy) in
+*            the shared time/date data segment by one second.
+*
+* Invocation:  advance_time_date();
+*
+* Caveats:   Requires the caller to obtain access the shared
+*            time/date data segment.
+************************************************************/
+
+
+void advance_time_date(void)
+  {
+  if (sys_time-&gt;second &lt; 59)
+    {
+    sys_time-&gt;second++;
+    
+    }
+  else
+    {
+    sys_time-&gt;second = 0;
+    
+    if (sys_time-&gt;minute &lt; 59)
+      {
+      sys_time-&gt;minute++;
+      }
+    else
+      {
+      sys_time-&gt;minute = 0;
+      
+      if (sys_time-&gt;hour &lt; 23)
+        {
+        sys_time-&gt;hour++;
+        }
+      else
+        {
+        sys_time-&gt;hour = 0;
+        
+        if (sys_time-&gt;date &lt;
+          days_in_month[sys_time-&gt;month - 1])
+          {
+          sys_time-&gt;date++;
+          }
+        else
+          {
+          if (sys_time-&gt;month == FEBRUARY)
+            {
+/*  Check for leap year (only good through 2100)  */
+
+            if (((sys_time-&gt;year % 4) == 0) &amp;&amp;
+              (sys_time-&gt;date == 28))
+              {
+              sys_time-&gt;date = 29;
+              }
+            else
+              {
+              sys_time-&gt;month = MARCH;
+              sys_time-&gt;date = 1;
+              }
+            }
+          else
+            {
+            sys_time-&gt;date = 1;
+            
+            if (sys_time-&gt;month &lt; DECEMBER)
+              {
+              sys_time-&gt;month++;
+              }
+            else
+              {
+              sys_time-&gt;month = JANUARY;
+              
+              if (sys_time-&gt;year &lt; 99)
+                {
+                sys_time-&gt;year++;
+                }
+              else
+                {
+                sys_time-&gt;year = 0;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  
+  return;
+  }
+
+
+/*1*********************************************************
+* Function:  start_timer
+*
+* Summary:   Create and start a timer.
+*
+* Invocation:  timer_sem = start_timer(timeout);
+*
+* Inputs:    timeout (unsigned int) - timer interval
+*             in seconds
+*
+* Outputs:   timer_sem (selector) - the semaphore that will
+*             receive a unit at each timer interval
+*
+* Caveats:   The interrupt handler will signal the
+*            interrupt task to finish servicing the
+*            interrupt.
+************************************************************/
+
+/* Tell the compiler that this function is an interrupt    */
+/* routine so it can generate proper cede for entering     */
+/* and exiting the interrupt routine.                      */
+
+#pragma interrupt("clockint_handler")
+
+void clockint_handler(void)
+  {
+  unsigned int status;
+
+/*  Signal the interrupt task */
+
+  rqsignal interrupt(CLOCK_INT_LEVEL, &amp;status);
+  
+  return;
+  }
+
+/*1*********************************************************
+* Task:     clock_task
+*
+* Summary:  Services interrupts from the hardware clock.
+*           Also maintains/updates the global time/date
+*           data and services software timers.
+*
+* Caveats:  Communicates with the crt_task() to display the
+*           current time/date.
+***********************************************************/
+
+void clock_task(void)
+  {
+  char time_string[19];
+  
+  unsigned int status;
+  unsigned int retry;
+  
+  selector current_job;
+  selector init_sem;
+  selector clock_sem;
+  selector clock_shtdwn_sem;
+  
+  selector rsp_seg;
+  selector req_seg;
+  selector crt_req_mbx;
+  selector rsp_mbx;
+  
+  struct CRT_REQ_STR       *req_msg;
+  
+  struct EXCEPTIONSTRUCT      exceptioninfo;
+
+/*  Disable this task's exception handler */
+
+  rqgetexceptionhandler(&amp;exceptioninfo, &amp;status);
+  exceptioninfo.exceptionmode = 0;
+  rqsetexceptionhandler(&amp;exceptioninfo, &amp;status);
+
+/*  Disable any current interrupt task */
+
+  rqresetinterrupt(CLOCK_INT_LEVEL, &amp;status);
+
+/*  Lookup/Create needed objects */
+
+  current job = rqgettasktokens(THIS_JOB, &amp;status);
+  
+  init_sem = rqlookupobject(current_job,
+    &amp;init_sem_name, NO_WAIT, &amp;status);
+  
+  clock_sem = rqlookupobject(current_job,
+    &amp;clock_sem_name, NO_WAIT, &amp;status);
+  
+  sys_time_seg = rqlookupobject(current_job,
+    &amp;time_seg_name, NO_WAIT, &amp;status);
+  
+  clock_shtdwn_sem = rqlookupobject(current_job,
+    &amp;clock_shtdwn_sem_name, NO_WAIT, &amp;status);
+  
+  crt_req_mbx = rqlookupobject(current_job,
+    &amp;crt_req_mbx_name, NO_WAIT, &amp;status);
+  
+  sys_time = buildptr(sys_time_seg, 0);
+  
+  rsp_mbx = rqcreatemailbox(FIFO_OBJ_MBX, &amp;status);
+
+/*  Initialize time string buffer  */
+
+  memset(&amp;time_string, ' ' ,sizeof(time_string));
+
+/*  Initialize crt_task() request message and  */
+/*  send it to the response mailbox to setup   */
+/*  for the processing loop.                   */
+
+  req_seg = rqcreatesegment(
+    sizeof(struct CRT_REQ_STR), &amp;status);
+  req_msg = buildptr(req_seg, 0);
+  
+  req_msg-&gt;msg_ptr = &amp;time_string;
+  req_msg-&gt;row = 1;
+  req_msg-&gt;col = 60;
+  
+  rqsendmessage(rsp_mbx, req_seg, NUL_TKN, &amp;status);
+
+/*  Initialize retry counter and timers */
+
+  retry = 0;
+  sys_time-&gt;change_flg = FALSE;
+  reset_timers();
+
+/*  Initialize and read hardware clock */
+
+  outbyte(PIO_PORT, PIO_READ);
+  delay(1);
+  
+  outbyte(CNT_PORT, INT_ENB);
+  delay(1);
+  
+  outbyte(ADR_PORT, 0x0F);
+  delay(1);
+  
+  read_clock();
+
+/*  Allow access to time/date memory */
+
+  rqsendunits(clock_sem, 1, &amp;status);
+
+/*  Set interrupt vector  */
+
+  rqsetinterrupt(CLOCK_INT_LEVEL, 1,
+    &amp;clockint_handler, NUL_TKN, &amp;status);
+
+/*  Signal initialization complete */
+
+  rqsendunits(init_sem, 1, &amp;status);
+
+/*  Process interrupt signals until shutdown */
+
+  rqreceiveunits(clock_shtdwn_sem, 1, NO_WAIT, &amp;status);
+  
+  while (status == ETIME)  /* while no signal received */
+    {
+/*  Wait no longer than 2 seconds for interrupt signal */
+   
+   rqetimedinterrupt(CLOCK_INT_LEVEL, 200, &amp;status);
+
+/*  If an interrupt is NOT received, attempt to reset  */
+/*  the hardware clock.                                */
+
+   if (status == ETIME)      /* if no interrupt  */
+     {
+     retry++;
+
+/*  Once the maximum number of retries is reached,    */
+/*  give up. Retrieve outstanding display request     */
+/*  and wait for shutdown. When shutdown signal is    */
+/*  received, disable this interrupt task, signal     */
+/*  shutdown complete and suspend execution.          */
+
+     if (retry == MAX_CLOCK_RETRIES)
+       {
+       req_seg = rqreceivemessage(rsp_mbx,
+         WAIT_FOREVER, NUL_TKN, &amp;status);
+       rqreceiveunits(clock_shtdwn_sem, 1,
+         WAIT_FOREVER, &amp;status);
+       rqresetinterrupt(CLOCK_INT_LEVEL, &amp;status);
+       rqsendunits(init_sem, 1, &amp;status);
+       rqsuspendtask(NUL_TKN, &amp;status);
+       }
+
+/*  Reinitialize hardware clock */
+
+       outbyte(PIO_PORT, PIO_READ);
+       delay(1);
+       
+       outbyte(CNT_PORT, INT_ENB);
+       delay(1);
+       
+       outbyte(ADR_PORT, 0x0F);
+       delay(1);
+
+/*  Re-read hardware crock */
+
+       rqreceiveunits(clock_sem, 1,
+         WAIT_FOREVER, &amp;status);
+       
+       read_clock();
+       
+       rqsendunits(clock_sem, 1, &amp;status);
+       }
+     else
+       {
+/*  Interrupt signal received, reset retry count */
+
+       retry = 0;
+
+/*  Access time/date memory */
+
+       rqreceiveunits(clock_sem, 1,
+         WAIT_FOREVER, &amp;status);
+
+/*  If needed, update hardware clock with new  */
+/*  time/date data. Otherwise, advance the     */
+/*  time/data data by one second.              */
+
+       if (sys_time-&gt;change_flg)
+         {
+         write_clock();
+         sys_time-&gt;change_flg = 0;
+         }
+       else
+         {
+         advance_time_date();
+         }
+
+/*  Advance any timers by one second  */
+
+       advance_timers();
+
+/*  Prepare time/date data for display  */
+
+     sprintf(time_string, "%02d:%02d:%02d %02d/%02d/%O2d",
+       sys_time-&gt;hour, sys_time-&gt;minute, sys_time-&gt;second,
+       sys_time-&gt;month, sys_time-&gt;date, sys_time-&gt;year);
+
+/*  Release time/date memory */
+
+     rqsendunits(clock_sem, 1, &amp;status);
+
+/*  If previous display request has finished(segment    */
+/*  returned), then request new time/date be displayed  */
+
+     rsp_seg = rqreceivemessage(rsp_mbx,
+       NO_WAIT, NUL_TKN, &amp;status);
+     
+     if (status != ETIME)
+       {
+       rqsendmessage(crt_req_mbx,
+         req_seg, rsp_mbx, &amp;status);
+       }
+     }
+/*  Check for shutdown  */
+
+   rqreceiveunits(clock_shtdwn_sem, 1, NO_WAIT, &amp;status);
+   }
+
+/*  Retrieve outstanding display request, disable   */
+/*  this interrupt task, signal shutdown complete   */
+/*  and suspend execution.                          */
+
+  req_seg = rqreceivemessage(rsp_mbx,
+    WAIT_FOREVER, NUL_TKN, &amp;status);
+  
+  rqsendunits(init_sem, 1, &amp;status);
+  
+  rqresetinterrupt(CLOCK_INT_LEVEL, &amp;status);
+  
+  rqsuspendtask(NUL_TKN, &amp;status);  /* suspend this task  */
+  }</pre>
+
+
+</BODY>
+</HTML>

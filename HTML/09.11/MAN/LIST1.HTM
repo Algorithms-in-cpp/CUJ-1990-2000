@@ -1,0 +1,299 @@
+<HTML><HEAD>
+<TITLE>November 1991/A Multithreading Library In C For Subsumption Architecture/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1 (exec.h)</A></h4>
+<pre>#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;setjmp.h&gt;
+
+#ifndef STRATOM_H
+#include "stratom.h"
+#endif
+
+#ifndef YES
+#define YES 1
+#define NO 0
+typedef int BOOL;
+#endif
+
+#ifndef BIT
+#define BIT(i) (1 &lt;&lt; (i))
+#endif
+
+/*      different perfixes for EXEC_ID
+ */
+#define PORT_PREFIX         BIT(15)
+#define SEMAPHORE_PREFIX    BIT(14)
+#define TIMER_PREFIX        BIT(13)
+#define MONOSTABLE_PREFIX   BIT(12)
+#define TRIGGER_PREFIX      BIT(11)
+
+#define BAD_EXEC_ID 0
+
+typedef int            EXEC_ID;
+typedef unsigned char  THREAD_ID;
+
+typedef unsigned int   PORT;
+typedef unsigned int   SEMAPHORE;
+
+/*      process type.  Not used yet
+ */
+typedef enum
+    { NORMAL_PROC = 10, HALTABLE_PROC, INHIBITABLE_PROC }
+              PROCESS_TYPE;
+
+void *ExecAlloc(unsigned int size);
+THREAD_ID ExecCreateThread(PROCESS_TYPE procType,
+       void (*pFunction)(void), unsigned int stackSize,
+       unsigned long arg0, unsigned long arg1);
+THREAD_ID ExecGetThreadID(void);
+void ExecInit(void);
+void ExecStart(void);
+
+void MsgClearSemaphore(STRING_ATOM semaphoreAtom);
+BOOL MsgConnectPorts(STRING_ATOM sourceAtom,
+       STRING_ATOM destinationAtom);
+void MsgDeleteTimer(EXEC_ID watchID);
+EXEC_ID MsgGetMsg(void);
+BOOL MsgInhibitPorts(STRING_ATOM sourceAtom,
+       STRING_ATOM destinationAtom);
+void *MsgOpenPort(STRING_ATOM nameAtom, PORT *pPortValue);
+PORT MsgPeekPort(STRING_ATOM, PORT *);
+void MsgSetSemaphore(STRING_ATOM semaphoreAtom);
+BOOL MsgSuppressPorts(STRING_ATOM sourceAtom,
+       STRING_ATOM destinationAtom);
+EXEC_ID MsgWatchPort(STRING_ATOM portAtom, PORT *pPortValue);
+EXEC_ID MsgWatchSemaphore(STRING_ATOM semaphoreAtom, BOOL detectOn);
+EXEC_ID MsgWatchTimer(unsigned int interval);
+void MsgWriteToPort(STRING_ATOM portAtom, PORT portValue);
+
+#define MsgWatchTrigger(portAtom) MsgWatchPort(portAtom, NULL)
+
+void SysLEDs(int i);
+
+typedef unsigned
+#ifdef HC11
+int
+#else
+long
+#endif
+EXEC_ARG;
+
+extern EXEC_ARG ExecArg0, ExecArg1;
+/*- exec.c -
+ */
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include "exec.h"
+#include "execpriv.h"
+
+/*      arguments to threads
+ */
+EXEC_ARG                ExecArg0;
+EXEC_ARG                ExecArg1;
+
+/*      number of possible threads
+ */
+#ifndef NUMBER_OF_THREADS
+#define NUMBER_OF_THREADS  34
+#endif
+
+/*      process state
+ */
+typedef enum
+   { INIT_STATE = 20, RUNNING_STATE, WAIT_STATE }
+             PROCESS_STATE;
+
+/*      context for thread
+ */
+typedef struct
+    {
+    THREAD_ID       threadID;
+    void            (*pFunction)(void);
+    PROCESS_TYPE    procType;
+    PROCESS_STATE   procState;
+    jmp_buf         exitContext;
+    jmp_buf         switchContext;
+    char            *stackTop;
+    char            *stackBottom;
+    EXEC_ARG        arg0;
+    EXEC_ARG        arg1;
+    } THREAD_CONTEXT;
+
+/*       file static variables
+ */
+static BOOL                  hasCreatedThreads;
+static THREAD_CONTEXT        threadTable[NUMBER_OF_THREADS];
+static THREAD_ID             execCurrentThreadID;
+
+static void execRunNewThread(void);
+
+/*      allocate a block of memory, zeroed out
+ */
+void *ExecAlloc(unsigned int size)
+    {
+    void *p;
+
+    p = calloc(1, size);
+       if (!p)
+              {
+#ifndef HC11
+              printf("no memory\n");
+#endif
+              exit(1);
+              }
+    return (p);
+    }
+
+/*       thread function returns here, jump to exit context
+ */
+void ExecCallReturn(void)
+    {
+
+    longjmp(threadTable[execCurrentThreadID].exitContext,
+              execCurrentThreadID);
+    }
+
+/*       create a thread context
+ */
+THREAD_ID ExecCreateThread(PROCESS_TYPE procType, void (*pFunction)(void),
+    unsigned int stackSize, unsigned long arg0, unsigned long arg1)
+    {
+       char *stack;
+    THREAD_ID i;
+
+       /*       find the next free entry in table
+        */
+    for (i = 0; i &lt; NUMBER_OF_THREADS &amp;&amp; threadTable[i].procState; ++i)
+       ;
+    if (i == NUMBER_OF_THREADS)
+       return (BAD_EXEC_ID);
+       hasCreatedThreads = YES;
+       /*      clear entry and allocate stack
+        */
+       memset(&amp;threadTable[i], '\0', sizeof (THREAD_CONTEXT));
+       /*      stack space used by the executive, i.e. by the functions MsgGetMsg()
+        *      and ExecSwitch()
+        */
+       stackSize &amp;= ~Ox3;      /* quad byte aligned */
+#define EXEC_STACK_SIZE 40
+       stackSize += EXEC_STACK_SIZE;
+       stack = SysGetStack(stackSize);
+       threadTable[i].procType = procType;
+       threadTable[i].pFunction = pFunction;
+       threadTable[i].stackBottom = stack;
+       threadTable[i].stackTop = stack + stackSize;
+       threadTable[i].procState = INIT_STATE;
+       /*      memorize the initail arguments to function
+        */
+       threadTable[i].arg0 = arg0;
+       threadTable[i].arg1 = arg1;
+       /*      put this on the runnable queue
+        */
+       MsgEnQueue(i, i);
+       return (i);
+    }
+/*      return a new id
+ */
+EXEC_ID execExecID(unsigned int prefix)
+    {
+    static unsigned int i;
+
+    return (prefix | (++i));
+    }
+
+/*       return the current thread id
+ */
+THREAD_ID ExecGetThreadID(void)
+    {
+
+    return (execCurrentThreadID);
+    }
+
+/*       initialize the system
+ */
+void ExecInit(void)
+    {
+       SysInit();
+    }
+/*       take the first thread off the runnable queue and give execution to it
+ */
+static
+void execRunNewThread(void)  
+       {
+       EXEC_ID returnID;
+       PROCESS_STATE procState;
+       
+       /*      take the first thread off the queue
+        */
+       execCurrentThreadID = MsgDeQueue(&amp;returnID);
+       SysLEDs(execCurrentThreadID);
+       /*      set process state
+        */
+       procState = threadTable[execCurrentThreadID].procState;
+       threadTable[execCurrentThreadID].procState = RUNNING_STATE;
+       /*      procState == WAIT_STAT - use longjmp() to switch back to the old
+        *      execution context
+        */
+       if (procState != INIT_STATE)
+              longjmp(threadTable[execCurrentThreadID].switchContext, returnID);
+       else
+              {
+              /*      initial call to a thread. Put thread arguments in the external
+               *      variables and call an assembly routine to call the thread
+               */
+              if (setjmp(threadTable[execCurrentThreadID].exitContext) == 0)
+                     {
+                     ExecArg0 = threadTable[execCurrentThreadID].arg0;
+                     ExecArg1 = threadTable[execCurrentThreadID].arg1;
+                     ExecCall(threadTable[execCurrentThreadID].pFunction,
+                                   threadTable[execCurrentThreadID].stackTop);
+                     }
+              /*       thread dies, reclaim thread table entry (but not stack space)
+               *       and run the next available thread
+               */
+              threadTable[execCurrentThreadID].procState = 0;
+              /*       need to delete from all queues and ports
+               */
+              execRunNewThread();
+              }
+       }
+/*      start the system.
+ */
+void ExecStart(void)
+   {
+
+       if (hasCreatedThreads)
+              execRunNewThread();
+   }
+/*      switch to a new thread
+ */
+EXEC_ID ExecSwitch(void)
+   {
+   EXEC_ID watchID;
+   
+       /*       check for stack overflow
+        */
+       if ((char *)&amp;watchID &lt; threadTable[execCurrentThreadID].stackBottom)
+              {
+#ifndef HC11
+              printf("stack overflow\n");
+#endif
+              exit(1);
+              }
+    /*  set up our return context and switch
+   */
+    if ((watchID = setjmp(threadTable[execCurrentThreadID].switchContext)) == 0)
+       {
+              threadTable[execCurrentThreadID].procState = WAIT_STATE;
+              execRunNewThread();
+              }
+    return (watchID);
+    }
+
+/* End of File */
+</pre>
+</BODY>
+</HTML>

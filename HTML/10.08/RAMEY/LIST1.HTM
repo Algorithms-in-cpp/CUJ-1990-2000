@@ -1,0 +1,530 @@
+<HTML><HEAD>
+<TITLE>August 1992/The Postman's Sort/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1 (sort.c)</A></h4>
+<pre>/*
+Postman's Sort (R) Version 1.0
+Copyright (c) Robert Ramey 1991. All Rights Reserved
+*/
+
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;time.h&gt;
+#include &lt;assert.h&gt;
+#include &lt;links.h&gt;
+#include "psort.h"
+#include "sublist.h"
+#include "key.h"
+#include "io.h"
+#include "os.h"
+
+#define FILE_GUESS 50000
+#define RECORD_SIZE_GUESS 80
+#define NSIZE 31
+                /* default maximum number of digits left of radix point */
+                                   /* don't increase this beyond 127 */
+#define MAX_BYTES_PER_PASS 8
+
+/*********************************************************************
+The following structure contains one member for each byte on which a
+record may be distributed. That is, if a sublist is to be distributed
+on the first two letters of an alphabetic key, the first two members of
+the table will be used. In this example byte_count will equal 2.
+***********************************************************************/
+typedef struct {
+   unsigned int *value;                  /* points to sequence value array */
+   unsigned int order; /* number of possible sequence values for this byte */
+   unsigned int count;    /* number of sublists to skip to get to next one */
+   unsigned int key_index;        /* index of key where this byte is found */
+   unsigned int field_index;                              /* key_index + 1 */
+   unsigned int depth?      /* displacement within key where byte is found */
+} BYTE_TABLE;
+
+/***********************~*********************************************
+The following data stores the state of sublist arrays and sort keys.
+**********************************************************************/
+typedef struct {
+   SUBLIST *sublist;
+   unsigned int
+      sublist_count,                  /* number of sublists at this level */
+      byte_count;              /* number of bytes to test on current pass */
+   struct {
+      unsigned int
+         icount,                     /* number of frames in environment */
+         count;               /* number of data frames so far in memory */
+      FILE_SIZE
+         limit,              /* amount of memory to be cleared to disk */
+                                                    /* at a time */
+         size;                       /* amount filled in current frame */
+   } frame;
+   BYTE_TABLE byte_table[MAX_BYTES_PER_PASS];
+                         /* see above for explanation of BYTE TABLE */
+} ENVIRONMENT;
+
+/******************************************************************
+global data
+*******************************************************************/
+BOOLEAN uflag : FALSE;                                 /* unique flag value */
+RECORD *(*infunc)();          /* pointer to function which gets next record */
+MEM_SIZE seg_length = 16;                  /* default size of stack segment */
+unsigned int max_sublists = 0;
+                              /* maximum number of sublists / segment */
+ENVIRONMENT *env_ptr : (ENVIRONMENT *)NULL;
+                                   /* pointer to current environment */
+void
+sort();
+private void
+psort(unsigned int, unsigned int, SUBLIST *);
+private unsigned int
+plan(ENVIRONMENT *, unsigned int, unsigned int, unsigned long, FILE_SIZE);
+private int
+dist(SUBLIST *, SUBLIST*);
+private void
+dsort(SUBlIST *, unsigned int);
+private void
+nsort(SUBLIST *, unsigned int);
+private RECORD *
+list_input(SUBLIST *);
+private void
+fill_fields(RECORD *);
+private BOOLEAN
+fits(FILE_SIZE, unsigned int);
+void *
+need(STACK *, size_t);
+void *
+get_space(STACK *, size_t);
+private void
+display_out(clock_t);
+private clock_t
+display_in(unsigned int, unsigned int, long, ENVIRONMENT *);
+private void
+free_memory(FILE_SIZE);
+private void
+free_frames(unsigned int);
+/*********************************************************************
+sort - top level driver for sort engine
+**********************************************************************/
+void
+sort(){
+   ENVIRONMENT env;                           /* dummy initial environment */
+   unsigned int n;
+   unsigned long rc;
+   FILE_SIZE fsize;
+   clock_t time;
+
+                                      /* miniature version of sort */
+                                /* for a full explanation see below */
+
+                                        /* try to guess file size */
+   fsize = os_flength(stdin);
+   if(fsize &lt;= 0L)
+      fsize = FILE_GUESS;
+
+   rc = fsize / (record_size ? record_size : RECORD_SIZE_GUESS);
+   n = plan(&amp;env, 0, 0, rc, fsize);
+   env.sublist = sublist_allocate(n);
+   env.sublist_count = n;
+
+                                              /* initialize stacks */
+   assert(stk_push(d_stack));
+
+   env.frame.limit = (FILE_SIZE) rb_size * n * K;
+   env.frame.size = 0;
+   env.frame.icount =
+   env.frame.count = 1;
+   env_ptr = &amp;env;
+
+   sublist_fclose();
+
+   time = display_in(0, 0, 0L, &amp;env);
+
+   dist((SUBLIST *)NULL, env.sublist);
+
+   display_out(time);
+
+   infunc = sublist_input;
+
+   dsort(env.sublist, 0);
+
+   stk_pop(d_stack);
+   stk_free(d_stack);
+
+   return;
+}
+
+/*************************************************************
+psort - distribution sort
+**************************************************************/
+private
+void
+psort(key_index, depth, sublist)
+unsigned int
+   key_index,
+   depth;
+SUBLIST *sublist;
+{
+   ENVIRONMENT
+      *prev_env,                    /* pointer to previous environment */
+      env;                     /* current set of environment variables */
+   clock_t time;                /* used to record time function started */
+
+      /* use statics to save stack space for 2nd order recursive function */
+   static unsigned int n;
+                         /* number of sublists needed by on this pass */
+   static long record_count;
+                            /* number of records in the input sublist */
+
+   record_count = sublist-&gt;pcount + sublist-&gt;count;
+
+                                        /* take care of end points */
+   if(record_count == 0)
+      return;
+   if(record count == 1){
+      sublist_output(sublist, uflag);
+      return;
+   }
+
+                               /* there are no more keys, we're done */
+   if(key_index &gt;= key_count){
+      sublist_output(sublist, uflag);
+      return;
+   }
+
+                                     /* if current key is exhausted */
+   if(depth &gt;= key[key_index].size){
+                                        /* move on to the next one */
+      depth = 0;
+                              /* if that was the last key, we're done */
+      if(++key_index &gt;= key_count){
+         sublist_output(sublist, uflag);
+         return;
+      }
+   }
+
+   /* figure out how many key bytes to use in distribution */
+   /* and fill them into byte table of new environment */
+   n = plan(&amp;env, key_index, depth, record_count, sublist-&gt;size);
+
+           /* allocate the calculated number of sublists, creating a new */
+                                       /* memory area if necessary */
+   env.sublist = sublist_allocate(n);
+   env.sublist_count = n;
+
+                                         /* save state of storage */
+                    /* try to be sure that memory exists for next pass */
+   free_memory(sublist-&gt;size);
+
+   assert(stk_push(d_stack));
+   env.frame.limit = (FILE_SIZE) rb_size * n * K;
+   env.frame.size = 0;
+   env.frame.icount =
+   env.frame.count = env_ptr-&gt;frame.count+1;
+
+                                  /* close switch to other swap file */
+   sublist_fclose();
+
+             /* save pointer to previous environment for end of function */
+   prev_env = env_ptr;
+   env_ptr = &amp;env;
+
+   time = display_in(key_index, depth, record_count, &amp;env);
+
+   /* distribute the input sublist among the new sublists */
+   /* according to the key bytes specified in the byte table*/
+   n = dist(sublist, env.sublist);
+
+   if(n = 0){
+                                /* reuse space used by sublist array */
+      *sublist = (env.sublist)[n];
+      env.sublist = sublist;
+      env.sublist_count = 1;
+      sublist_shrink();
+      dsort(env.sublist, env.byte_count);
+   }
+   else{
+                             /* sort sublists in the proper sequence */
+       dsort(env.sublist, 0);
+   }
+
+                                /* and recover environment of caller */
+   sublist_free();
+   do{
+      assert(stk_pop(d_stack));
+   }while(env.frame.count-- &gt; env.frame.icount);
+   env_ptr = prev_env;
+   display_out(time);
+   return;
+}
+/*********************************************************************
+plan - Figure how many sublists should be created for distributing the
+current sublist. Figure how many bytes should be used to determine
+where a record will be distributed.
+**********************************************************************/
+private
+unsigned int
+plan(env_ptr, key_index, depth, record_count, fsize)
+ENVIRONMENT *env_ptr;      /* address of environment where new byte table is*/
+                                                   /* to be loaded */
+unsigned int
+   key_index,                                 /* where the next key starts */
+   depth;
+unsigned long record_count;
+                    /* number of records in sublists to be distributed */
+FILE_SIZE fsize;                 /* total size of sublist records in bytes */
+{
+   unsigned int i, j, sublist_count;
+   BYTE_TABLE *bptr;
+
+                                        /* initialize accumulators */
+   env_ptr-&gt;byte_count = 0;
+   bptr = env_ptr-&gt;byte_table;
+   sublist_count = 1;
+
+                      /* figure how many bytes we can handle at a time */
+   for(;;){
+
+                                          /* fill byte table entry */
+      bptr-&gt;value = key[key_index].seq-&gt;value;
+      bptr-&gt;order = key[key_index].seq-&gt;order;
+      bptr-&gt;key_index = key_index;
+      bptr-&gt;field_index = key_index + 1;
+      bptr-&gt;depth = depth;
+
+                        /* figure how many sublists will be created by */
+                                   /* continuing one more level deep */
+      i = sublist_count * bptr-&gt;order + 1;
+
+      if(sublist_count &gt; 1){
+
+      /* There is no point in spreading records among too many */
+      /* sublists most of which will be empty */
+         if(sublist_count &gt; record_count)
+            break;
+
+                              /* if sublist won't fit into a segment */
+         if(i &gt; max_sublists)
+            break;
+
+                     /* if more sublists won't fit in memory with data */
+         if( !fits(fsize, i)){
+
+                 /* if blocks written to disk are going to be too small */
+                 /* we can quit */
+                 if( !fits((FILE_SIZE)i * rb_size * K, i))
+                     break;
+            }
+         }
+         sublist_count = i;
+                                   /* increment pointer and counter */
+         ++bptr;
+         ++(env_ptr-&gt;byte_count);
+
+                              /* if this key has been totally checked */
+         if(++depth &gt;= key[key_index].size){
+                                         /* if this is the last key */
+           if(++key_index == key_count)
+                                                      /* we're done */
+              break;
+                         /* there are more keys, go on to the next one */
+           depth = 0;
+      }
+   }
+
+                    /* figure increments at each level of distribution */
+   i = 1;
+   for(j = env_ptr-&gt;byte_count; j-- &gt; 0 ;){
+      env_ptr-&gt;byte_table[j].count = i;
+      i = 1 + i * env_ptr-&gt;byte_table[j].order;
+   }
+   return sublist_count;
+}
+/*********************************************************************
+fits - determine whether or not memory exists for the specified areas
+**********************************************************************/
+private
+BOOLEAN
+fits(fsize, scount)
+FILE_SIZE fsize;
+unsigned int scount;
+{
+   unsigned int blk_count;
+
+   blk_count = stk_unused() + stk_blks(d_stack);
+
+   if(scount * sizeof(SUBLIST) &gt; stk_avl(s_stack))
+      if(blk_count &lt; 2)
+         return FALSE;
+      else
+         --blk_count;
+
+   if((FILE_SIZE)blk_count * seg_length * k + stk_av1(d_stack) &gt; fsize)
+      return TRUE;
+   else
+      return FALSE;
+}
+/*********************************************************************
+dist - Distribute input list among sublists created for this level
+of key. This is the heart of the sort.
+**********************************************************************/
+private
+int
+dist(input_sublist, sublist)
+SUBLIST *input_sublist, *sublist;
+{
+   register_BYTE_TABLE *bptr;
+   RECORD *record_address;
+   unsigned int i, j, disp, dcount;
+   BOOLEAN hflag;          /* flag to hold output for unique output record */
+   BOOLEAN oflag;            /* flag to output directly since no more keys */
+   int pdisp;
+
+   oflag =
+      env_ptr-&gt;byte_table[0].key_index == key_count - 1
+      ? TRUE : FALSE;
+
+   hflag = FALSE;
+   dcount =
+   disp = 0;
+   pdisp = -1;
+
+                                   /* for each record in input list */
+   while(record_address = (*infunc)(input_sublist)){
+
+      disp = 0;
+      bptr = env_ptr-&gt;byte_table;
+
+                                         /* check each byte in key */
+      i = env_ptr-&gt;byte_count;
+      do{
+         j =bptr-&gt;value[                                    /* key table */
+                (record_address-&gt;data)[              /* record address */
+                    record_address-&gt;field[          /* field pointers */
+                       bptr-&gt;field_index           /* key field index */
+                    ] + bptr-&gt;depth          /* displacement in field */
+                ]
+            ];
+                                 /* if key is terminated prematurely */
+         if(j == 0)
+                              /* add to sublist in appropriate array */
+            break;
+
+                    /* accumulate displacement within array of sublists */
+         disp += 1 + (j - 1) * (bptr++)-&gt;count;
+                                   /* and go on to next byte in key */
+
+                    /* continue as long as we can check more of the key */
+      }while(--i);
+
+                   /* if last key and key value is the minimum possible */
+      if(disp == 0 &amp;&amp; oflag){
+                                    /* write record out immediatly  */
+         if(!hflag)
+            rec_output(record_address);
+                     /* if unique flag is set, make sure that was the */
+                                                    /* record out */
+         hflag = uflag;
+                                   /* free up space used by record */
+         if(!rec_memflag(record_address))
+            stk_drop(d_stack);
+      }
+      else{
+         if(!rec_memflag(record_address))
+            rec_frame(record_address) = env_ptr-&gt;frame.count;
+                             /* link record into appropriate sublist */
+         assert(record_address);
+         link(record_address, sublist[disp].memory, 0);
+         assert(sublist);
+         sublist[disp].memory = record_address;
+         ++(sublist[disp].count);
+      }
+
+      if(disp != pdisp){
+         ++dcount;
+         pdisp = disp;
+      }
+   }
+   if(dcount &gt; 1)
+      return 0;
+   else
+      return disp;
+}
+/**********************************************************
+dsort - small function to sort sublists in proper sequence.
+************************************************************/
+private
+void
+dsort(sublist, level)
+SUBLIST *sublist;
+unsigned level;
+{
+   unsigned int j;
+   BYTE_TABLE *bptr;
+   if(level == env_ptr-&gt;byte_count){
+      bptr = &amp;env_ptr-&gt;byte_table[level-1];
+      psort(bptr-&gt;key_index, bptr-&gt;depth+l, sublist);
+      return;
+   }
+   bptr = &amp;env_ptr-&gt;byte_table[level];
+   if(key[bptr-&gt;key_index].key_type == SIGN){
+      nsort(sublist, level);
+      return;
+   }
+   if(!key[bptr-&gt;key_index].inverted){
+      psort(bptr-&gt;key_index+1, 0, sublist++);
+      for(j = 0; j &lt; bptr-&gt;order ; ++j){
+         dsort(sublist, level+1);
+         sublist += bptr-&gt;count;
+      }
+   }
+   else{
+      sublist += bptr-&gt;count * bptr-&gt;order + 1;
+      for(j = bptr-&gt;order; j &gt; 0; --j){
+         sublist -= bptr-&gt;count;
+         dsort(sublist, level+1);
+      }
+      psort(bptr-&gt;key_index+1, 0, --sublist);
+   }
+}
+/**********************************************************
+nsort - small function to sort sublists in proper sequence.
+special version of dsort for numeric fields.
+***********************************************************/
+private
+void
+nsort(sublist, level)
+SUBLIST *sublist;
+unsigned int level;
+{
+   unsigned int key_index;
+   int k, j;
+   BYTE_TABLE *bptr;
+
+   bptr = &amp;env_ptr-&gt;byte_table[level];
+   key_index = bptr-&gt;key_index;
+
+   k = bptr-&gt;count;
+   ++sublist;
+   if(key[key_index].inverted){
+      sublist += k * bptr-&gt;order;
+      k *= -1;
+   }
+   key[key_index+1].inverted = TRUE;
+   key[key_index+2].inverted = TRUE;
+   for(j = NSIZE; j &gt; 0; --j){
+      dsort(sublist, level + 1);
+      sublist += k;
+   }
+   key[key_index+1].inverted = FALSE;
+   key[key_index+2].inverted = FALSE;
+   for(; j &lt; NSIZE; ++j){
+      dsort(sublist, level + 1);
+      sublist += k;
+   }
+   return;
+}
+/* End of File */
+</pre>
+</BODY>
+</HTML>

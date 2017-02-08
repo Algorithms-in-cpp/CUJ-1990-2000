@@ -1,0 +1,203 @@
+<HTML><HEAD>
+<TITLE>September 1994/Using Windows Memory Management Services/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2 <I>Member functions of class</I> FarHeapBlock</A></h4>
+<pre>//  farheapb.cpp
+//
+//  Copyright Singleton Systems Ltd 1994
+
+#include    "stdafx.h"
+#include    &lt;new.h&gt;
+#include    "mobject.h"
+#include    "farheapb.h"
+
+//  static pointers to the FarheapBlock structures
+HGLOBAL FarHeapBlock::first_fhb = NULL;
+HGLOBAL FarHeapBlock::last_fhb = NULL;
+
+FP_FHB FarHeapBlock::GetHbFromHandle (HGLOBAL h)
+{
+FP_FHB p_fhb = (FP_FHB) GlobalLock (h);
+ASSERT (p_fhb != NULL);
+GlobalUnlock (h);
+return p_fhb;
+}
+
+void FAR * FarHeapBlock::operator new
+                    (size_t /* size */)
+//  We do not need to use the size parameter,
+//  as we always allocate a fixed size of
+//  FarHeapBlock::default_size bytes.
+{
+HGLOBAL h = GlobalAlloc
+          (GMEM_MOVEABLE | GMEM_ZEROINIT,
+          FarHeapBlock::default_size);
+//  The GMEM_ZEROINIT is not strictly necessary, but
+//  it seems a good idea to start off with the memory
+//  in a defined state.
+
+//  #define    FHB_MEM_TEST
+
+//  For test purposes only, force a failure
+//  if less than 5Mb memory free
+#if defined (FHB_MEM_TEST) &amp;&amp; defined (_DEBUG)
+if (GetFreeSpace (0) &lt; 5000000L)
+   {
+   //  Unable to get memory or not enough left to
+   //  handle recovery, so take some error action
+
+   //  Get current new handler
+   _PNH handler = _set_new_handler (0);
+   //  and restore it as the action of getting a
+   //  pointer to it unsets it
+   _set_new_handler (handler);
+   //  Signal the failure back up the chain.
+   //  This should raise an Exception
+   (* handler) (FarHeapBlock::default_size);
+   //  Fail regardless of value returned by the
+   //  handler
+   return NULL;
+   }
+#endif
+
+ASSERT (h != NULL);
+if (h == NULL || GetFreeSpace (0) &lt; 10000L)
+   {
+   //  Unable to get memory or not enough left to
+   //  handle recovery, so take some error action
+
+   //  Get current new handler
+   _PNH handler = _set_new_handler (0);
+   //  and restore it as the action of getting a
+   //  pointer to it unsets it
+   _set_new_handler (handler);
+   //  Signal the failure back up the chain.
+   //  This should raise an Exception
+   (* handler) (FarHeapBlock::default_size);
+   //  Fail regardless of value returned by the
+   //  handler
+   return NULL;
+   }
+else
+   {
+   FP_FHB p_fhb = (FP_FHB) GlobalLock (h);
+   p_fhb-&gt;my_hglobal = h;
+   p_fhb-&gt;fhb_block_size = GlobalSize (h);
+
+   //  Now chain the block into the list of blocks
+   if (IsEmpty ())
+      {
+      ASSERT (last_fhb == NULL);
+      first_fhb = last_fhb = h;
+      }
+   else
+      {
+      FP_FHB p_last_fhb =
+         FarHeapBlock::GetHbFromHandle(last_fhb);
+      p_last_fhb-&gt;next_hglobal = h;
+      p_fhb-&gt;previous_hglobal = last_fhb;
+      p_fhb-&gt;next_hglobal = NULL;
+      last_fhb = h:
+      }
+   return p_fhb;
+   }
+}
+
+void FarHeapBlock::operator delete (void FAR * p_fhb)
+{
+ASSERT (p_fhb != NULL);
+ASSERT (OFFSETOF (p_fhb) == 0);
+FP_FHB current_block_pointer = (FP_FHB) p_fhb;
+
+#if defined (_DEBUG)
+FP_FHB check = FarHeapBlock::GetHbFromHandle
+             (current_blocK_pointer-&gt;my_hglobal);
+
+ASSERT (check == current_block_pointer);
+#endif
+
+//  Reset the pointers in the previous block
+if (current_block_pointer-&gt;previous_hglobal != NULL)
+   {
+   FP_FHB prev_ptr = GetHbFromHandle
+          (current_block_pointer-&gt;previous_hglobal);
+   prev_ptr-&gt;next_hglobal =
+          current_block_pointer-&gt;next_hglobal;
+   }
+else    //  This should be the first block in the list
+   {
+   ASSERT (current_block_pointer-&gt;my_hglobal ==
+          FarHeapBlock::first_fhb);
+   FarHeapBlock::first_fhb =
+          current_block_pointer-&gt;next_hglobal;
+   }
+
+//  Reset the pointers in the next block
+if (current_block_pointer-&gt;next_hglobal)!= NULL)
+   {
+   FP_FHB next_ptr =
+          FarHeapBlock::GetHbFromHandle
+             (current_block_pointer-&gt;next_hglobal);
+   next_ptr-&gt;previous_hglobal =
+          current_block_pointer-&gt;previous_hglobal;
+   }
+else    //  This should be the last block in the list
+   {
+   ASSERT (current_block_pointer-&gt;my_hglobal ==
+          FarHeapBlock::last_fhb);
+   FarHeapBlock::last_fhb =
+          current_block_pointer-&gt;previous_hglobal;
+   }
+
+//  The block has been unlinked, so return it to
+//  Windows
+GlobalUnlock (current_block_pointer-&gt;my_hglobal);
+GlobalFree (current_block_pointer-&gt;my_hglobal);
+}
+
+FarHeapBlock::FarHeapBlock ()
+{
+//  fhb_block_size set by new!
+
+//  A FarHeapBlock is requested directly from
+//  Windows. Windows supplies
+//  a segment with offsets starting at 0.
+__segment cur_seg = (__segment) SELECTOROF (this);
+
+//  Mark all of the free space in the FarHeapBlock
+//  as a single, free MemoryObject
+free_list = end_free_list = (VP_MOBJECT) sizeof(FarHeapBlock);
+
+in_use_list = NULL;
+end_in_use_list = NULL;
+(cur_seg:&gt;free_list)-&gt;SetFirstMemoryObject
+          (my_hglobal,
+          (int) Size () - sizeof(FarHeapBlock));
+}
+
+int FarHeapBlock::GetCount ()
+{
+int usage_count = 0;;
+HGLOBAL current_block = FarHeapBlock::first_fhb;
+while (current_block != NULL)
+   {
+   FP_FHB p_fhb = GetHbFromHandle (current_block);
+   usage_count++;
+   current_block = p_fhb-&gt;next_hglobal;
+   }
+return usage_count;
+}
+
+FP_FHB FarHeapBlock::GetNext (FHB_POSITION &amp; p)
+{
+ASSERT (p != NULL);
+FP_FHB p_fhb = GetHbFromHandle (p);
+p = p_fhb-&gt;next_hglobal;
+return p_fhb;
+}
+// End of File
+</pre>
+</BODY>
+</HTML>

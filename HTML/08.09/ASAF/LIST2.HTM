@@ -1,0 +1,549 @@
+<HTML><HEAD><TITLE>September 1990/A Flexible dprintf Function/Listing 2</TITLE></HEAD><BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4><A name="01FB_011F"><A name="01FB_011F">Listing 2<A name="01FB_011F"></h4><P>
+<pre>/*  &gt; DPRINTF.C
+ *  dprintf -- Source Code
+ *  (C) August 30 1989 Arkin Asaf
+ *  All rights reserved
+ *  References:
+ *  C: A Reference Manual/Chapter 17, pp 328-340
+ *  The Waite Group's Guide to ANSI C/Chapter 7, pp 84-87 */
+
+/*  Include files: */
+
+#include &lt;ctype.h&gt;
+#include &lt;setjmp.h&gt;
+#include &lt;stdarg.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+
+/*  Macro constants:- TRUE/FALSE, Flags mask bits, and
+ *  argument size types.
+ *  Macros:- Maximum and Minimum expand to yield the maximum
+ *  or minimum of two expressions; ToValue gives the decimal
+ *  value of an ASCII digit and ToDigit returns a digit from
+ *  a value in any radix. N.B.: It goes without saying that
+ *  the macro parameters must contain no operations of con-
+ *  sequence, for they will be carried out more than once.  */
+
+#define TRUE 1
+#define FALSE 0
+
+#define  MaskJustify  0x01  /*  -   Left justify value within
+                        *       field                   */
+#define  MaskPlusSign 0x02  /*  +   Precede positive value
+                        *      with plus                */
+#define  MaskSpace    0x04  /*  sp  Precede positive value
+                        *      with space               */
+#define  MaskZeros    0x08  /*  0   Justify value with zeros */
+#define  MaskVarient  0x10  /*  #   Output value in varient
+                        *      format                   */
+
+#define  TypeNormal  1  /*  int/double           */
+#define  TypeShort   2  /*  short (meaningless)  */
+#define  TypeLong    3  /*  long int             */
+#define  TypeDouble  4  /*  long double          */
+
+#define  Maximum(a,b)  ((a)&gt;(b)?(a):(b))
+#define  Minimum(a,b)  ((a)&lt;(b)?(a):(b))
+#define  ToValue(a)    ((a)-'0')
+#define  ToDigit(a)    ((a)&lt;10?(a)+'0':(a)-10+'A')
+
+/*  OutFunc (of type dprintf_fp) points to a putchar-like
+ *  function, which performs all output. Called with a
+ *  character int as parameter, the function returns EOF
+ *  only if an output error occured.*/
+
+typedef int (*dprintf_fp)(int);
+static dprintf_fp OutFunc;
+
+/*  Function declarations: */
+
+int dprintf(dprintf_fp, const char *, ...);
+int vdprintf(dprintf_fp, const char *, va_list);
+static void PrintDecimal(long, int, int, char, int *);
+static void PrintRadix(unsigned long, int, int, char, char,
+                   int *);
+static void PrintFloat(long double, int, int, char, char,
+                   int *);
+static void Print(char *, char *, int, int, char, int *);
+static int ToInteger(char **, unsigned long, int, int);
+static void dputc(int);
+
+/*  dputc employs this longjmp buffer in the event of an
+ *  output error. */
+
+jmp_buf dputc_Buf;
+
+/*  int dprintf(dprintf_fp, const char *, ...)
+ *  dprintf accepts pointers to a putchar-like function and
+ *  a format string. It then passes them to vdprintf, along
+ *  with a pointer to the variable arguments list. */
+
+int dprintf(dprintf_fp Func, const char *Format, ...)
+{
+  int Return;
+  va_list Args;
+  
+  va_start(Args,Format);
+  Return=vdprintf(Func,Format,Args);
+  va_end(Args);
+  return Return;
+}
+
+/*  int vdprintf(dprintf_fp, const char *, va_list)
+ *  vdprintf is an implementation of vprintf, as defined in
+ *  the ANSI standard, with an additional
+ *  pointer-to-function as its first parameter. On exit,
+ *  vdprintf returns the number of characters successfully
+ *  printed, EOF if an error occured. */
+
+int vdprintf(dprintf_fp Func, const char *Format,
+           va_list Args)
+{
+  char Flags, Size, *Ptr;
+  int Width, Precis, OutCnt = 0;
+  long Int;
+  unsigned long UnsgInt;
+  long double Float;
+  char *FlagsList = "-+ 0#",  *TypesList = "hlL";
+ 
+  /*  The pointer-to-function assigns to static variable
+   *  OutFunc, rather than being passed through three layers
+   *  of functions. The longjmp buffer is then initialized,
+   *  so dputc can return in case of an output error. */
+  OutFunc=Func;
+  if (setjmp(dputc_Buf))
+    return EOF;
+  /*  The format string is scanned a character at a time:
+   *  %'s are processed, all other characters are merely
+   *  echoed to the output. */
+   for (; *Format; ++Format)
+   {
+    if (*Format!='%')
+    {
+      dputc(*Format);
+      ++OutCnt;
+      continue;
+    }
+    /*  An output format can start with a combination of
+     *  five flags: - + spc 0 #. Flags is set accordingly. */
+    if (!*++Format)
+      return EOF;
+    Flags=0;
+    while ((Ptr=strchr(FlagsList,*Format))!=NULL)
+    {
+      Flags|=1&lt;&lt;(Ptr-FlagsList);
+      ++Format;
+    }
+    /*  Read width (zero assumed, if absent) and precision
+     *  (-1 assumed, if absent): width must not start with
+     *  a zero; precision precedes with a period -- if no
+     *  precision follows the period, zero is assumed; an
+     *  int argument is consumed for the width or precision,
+     *  if an * replaces the value of either. */
+    Width=0;
+    if (*Format=='*')
+    {
+      Width=va_arg(Args,int);
+      ++Format;
+    }
+    else
+    while (isdigit(*Format))
+      Width=Width*10+ToValue(*Format++);
+    if (*Format=='.')
+    {
+      Precis=0;
+      if (*++Format=='*')
+      {
+        Precis=va_arg(Args,int);
+        ++Format;
+      }
+      else
+      while (isdigit(*Format))
+        Precis=Precis*10+ToValue(*Format++);
+    }
+    else
+      Precis=-1;
+    /*  An argument is either int (default), short int ('h'
+     *  -- meaningless), long int ('l'), double (default
+     *  float), or long double ('L'). */
+     if ((Ptr=strchr(TypesList,*Format))!=NULL)
+     {
+       Size=Ptr-TypesList+TypeShort;
+       ++Format;
+     }
+     else
+       Size=TypeNormal;
+    /*  Consume one output format letter.
+     *  Auxiliary functions process most formats, keeping
+     *  vdprintf short, or else it may fail to compile. */
+   switch (*Format)
+   {
+     case 'd':
+     case 'i':
+       if (Size==TypeLong)
+         Int=va_arg(Args,long);
+       else
+         Int=va_arg(Args,int);
+       PrintDecimal(Int,Width,Precis,Flags,&amp;OutCnt);
+       break;
+     case 'u':
+     case 'o':
+     case 'x': case 'X':
+       if (Size==TypeLong)
+         UnsgInt=va_arg(Args,unsigned long);
+       else
+         UnsgInt=va_arg(Args,unsigned);
+       PrintRadix(UnsgInt,Width,Precis,Flags,*Format,
+                &amp;OutCnt);
+       break;
+     case 'c':
+     {
+       static char Char[2]= {0,0};
+       
+       Char[0]=va_arg(Args,unsigned char);
+       Print(Char,NULL,Width,-1,Flags,&amp;OutCnt);
+       break;
+     }
+     case 's':
+       Ptr=va_arg(Args,char *);
+       Print(Ptr,NULL,Width,Precis,Flags,&amp;OutCnt);
+       break;
+     case 'f':
+     case 'e': case 'E':
+     case 'g': case 'G':
+       if (Size==TypeDouble)
+         Float=va_arg(Args,long double);
+       else
+         Float=va_arg(Args,double);
+       PrintFloat(Float,Width,Precis,Flags,*Format,&amp;OutCnt);
+       break;
+     case 'p':
+       /*  The pointer-to-void argument is cast to long
+        *  unsigned, assuming pointer representation to
+        *  remain intact. */
+       UnsgInt=(unsigned long) va_arg(Args,void *);
+       PrintRadix(UnsgInt,Width,Precis,Flags,*Format,
+                &amp;OutCnt);
+       break;
+     case 'n':
+       *(va_arg(Args, int *))=OutCnt;
+       break;
+     case '%':
+       Print("%",NULL,Width,-1,Flags,&amp;OutCnt);
+       break;
+     default:
+       return EOF;
+    }
+  }
+  return OutCnt;
+}
+
+/*  void PrintDecimal(long, int, int, char, int *)
+ *  Print a decimal value (%d or %i) with a sign prefix. */
+
+static void PrintDecimal(long Int, int Width, int Precis,
+                     char Flags, int *OutCnt)
+{
+  char *Prefix;
+  char *Buffer;
+  
+  if(Int&lt;0)
+  {
+    Int=-Int;
+    Prefix="-";
+  }
+  else
+  {
+    if (Flags&amp;MaskPlusSign)
+      Prefix="+";
+    else
+    if (Flags&amp;MaskSpace)
+      Prefix=" ";
+    else
+      Prefix=NULL;
+  }
+  ToInteger(&amp;Buffer,Int,10,Precis);
+  Print(Buffer,Prefix,Width,-1,Flags,OutCnt);
+  free(Buffer);
+}
+
+/*  void PrintRadix(unsigned long, int, int, char, char,
+ *  int *) Print an unsigned int in decimal (%u), octal
+ *  (%o), hexadecimal (%x or %X), or pointer (%p) form. In
+ *  the varient format octals prefix with a 0, hexadecimals
+ *  with a 0x, and pointers with an @. (Hexadecimal letters
+ *  are in the same case as is the format letter.) */
+
+static void PrintRadix(unsigned long Int, int Width, int
+                   Precis, char Flags, char Format,
+                   int *OutCnt)
+{
+  char *Prefix = NULL;
+  char *Buffer;
+  int Length;
+  
+  if (Format=='u')
+  {
+    ToInteger(&amp;Buffer, Int,10,Precis);
+    Print(Buffer,NULL,Width,-1,Flags,OutCnt);
+  }
+  else
+  if (Format=='o')
+  {
+    if (Flags&amp;MaskVarient)
+       Prefix="0";
+    ToInteger(&amp;Buffer,Int,8,Precis);
+    Print(Buffer,Prefix,Width,-1,Flags,OutCnt);
+  }
+  else
+  if (Format=='p')
+  {
+  
+  /*  Various architectures impose different pointer rep-
+   *  resentations, both in memory and in writing. As is,
+   *  an 8-digit hexadecimal number prints (upper case
+   *  letters), prefixed with an @ in the varient format. */
+    if (Flags&amp;MaskVarient)
+      Prefix="@";
+    ToInteger(&amp;Buffer,Int,16,8);
+    Print(Buffer,Prefix,Width,-1,Flags,OutCnt);
+  }
+  else
+  {
+    if (Flags&amp;MaskVarient)
+      Prefix=(Format=='x')?"0x":"0X";
+    Length=ToInteger(&amp;Buffer,Int,16,Precis);
+    if (Format=='x')
+    {
+      for (; Length&gt;0; --Length)
+        Buffer[Length-1]=tolower(Buffer[Length-1]);
+    }
+    Print(Buffer,Prefix,Width,-1,Flags,OutCnt);
+  }
+  free(Buffer);
+}
+
+/*  void PrintFloat(long double, int, int, char, char,
+ *  int *) Print a floating point number in standard (%f) or
+ *  engineering (%e) form; the %g format requires that the
+ *  shortest of the two be selected. The number divides into
+ *  integer, fraction and exponent parts; each is cast into
+ *  a long int, stringized with ToInteger, and Printed. */
+
+static void PrintFloat(long double Float, int Width, int
+                   Precis, char Flags, char Format,
+                   int *OutCnt)
+{
+  char *Prefix;
+  char *BufferI, *BufferF = NULL, *BufferE = NULL;
+  int LengthI, LengthF, LengthE = 0;
+  int Short = (Format=='g' || Format=='G');
+  int Exponent = 0;
+  unsigned long Int;
+  
+  /* Determine prefix according to sign and format flags.
+   * If no precision was given, six is assumed. */
+  if(Float&lt;0)
+  {
+    Float=-Float;
+    Prefix="-";
+  }
+    else
+  {
+    if (Flags&amp;MaskPlusSign)
+      Prefix="+";
+    else
+    if (Flags&amp;MaskSpace)
+      Prefix=" ";
+    else
+      Prefix=NULL;
+  }
+  if (Precis&lt;0)
+    Precis=6;
+  if (Format=='e' <FONT FACE="Symbol" SIZE=2>½</FONT><FONT FACE="Symbol" SIZE=2>½</FONT> Format=='E' <FONT FACE="Symbol" SIZE=2>½</FONT><FONT FACE="Symbol" SIZE=2>½</FONT> Short)</FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT>
+  {
+    long double TempFloat = Float;
+  
+    /*  For %e and %g formats, establish the exponent:
+     *  Float is divided and multiplied by ten, until it's
+     *  value rests between zero and one. Exponent totals
+     *  all divisions minus all multiplications. */
+    if  (Float!=0)
+    {
+      while (Float&gt;10)
+      {
+        Float/=10;
+        ++Exponent;
+    }
+    while (Float&lt;1)
+    {
+      Float*=10;
+      --Exponent;
+    }
+    }
+    LengthE=ToInteger(&amp;BufferE,Exponent,10,2)+2;
+    /*  If the %f format is shorter, %g requires that
+     *  the exponent be cancelled and that amount of
+     *  precision be lost; It states that one precision
+     *  digit be lost in any case. */
+    if (Short)
+    {
+      if (Precis&gt;0)
+        --Precis;
+      if (Exponent&gt;=-3 &amp;&amp; Exponent&lt;=Precis)
+      {
+        LengthE=0;
+        Precis-=Exponent;
+        Float=TempFloat;
+      }
+    }
+  }
+  /*  The mantissa divides into integer and fraction parts,
+   *  stringized by ToInteger: the last digit always rounds
+   *  up; a period is printed only before a fraction or in
+   *  the varient format; the %g format allows trailing zeros
+   *  in the fraction to be lost. N.B.: Too long floating
+   *  numbers may raise an exception on conversion to long
+   *  int, or otherwise fail to convert properly. */
+  Int=(unsigned long) Float;
+  Float-=(long double) Int;
+  if (Precis&lt;=0 &amp;&amp; Float&gt;=.5)
+    ++Int;
+  LengthI=ToInteger(&amp;BufferI,Int,10,-1);
+  if (Precis&gt;0)
+  {
+    for (LengthF=0; LengthF&lt;Precis; ++LengthF)
+      Float*=10;
+    Int=(unsigned long) Float;
+    Float-=(long double) Int;
+    if (Float&gt;=.5)
+      ++Int;
+    LengthF=ToInteger(&amp;BufferF,Int,10,Precis);
+  }
+  else
+    LengthF=0;
+  if (Short &amp;&amp; !(Flags&amp;MaskVarient))
+    while (LengthF&gt;0 &amp;&amp; BufferF[LengthF-1]=='0')
+      --LengthF;
+  
+  if (Flags&amp;MaskVarient || LengthF&gt;0)
+    --Width;
+  Width-=LengthF+LengthE;
+  Print(BufferI,Prefix,Width,-1,Flags,OutCnt);
+  if (Flags&amp;MaskVarient || LengthF&gt;0)
+  {
+    dputc('.');
+    ++*OutCnt;
+  }
+  if (LengthF&gt;0)
+    Print(BufferF,NULL,LengthF,LengthF,MaskZeros,OutCnt);
+  /*  Print exponent part of number, with an 'e' in the same
+   *  case as is the format letter. Exponents must have a
+   *  sign and at least two digits. */
+  if  (LengthE&gt;0)
+  {
+    if (Format=='g')
+      Format='e';
+    else
+    if (Format=='G')
+      Format='E';
+    dputc(Format);
+    if (Exponent&lt;0)
+    {
+      Exponent=-Exponent;
+      Prefix="-";
+    }
+    else
+      Prefix="+";
+    Print(BufferE,Prefix,3,-1,MaskZeros,OutCnt);
+  }
+  free(BufferI);
+  free(BufferF);
+  free(BufferE);
+}
+/*  int ToInteger(char **, unsigned long, int, int)
+ *
+ *  Convert an unsigned int to a NULL-terminated string of
+ *  digits in the given radix. If the string has less digits
+ *  than the precision, additional zeros are inserted at the
+ *  start of it. ToInteger allocates a memory block in which
+ *  it stores the string -- Buffer returns its address. */
+
+static int ToInteger(char **Buffer, unsigned long Int,
+                 int Radix, int Precis)
+{
+  int Cnt, Length;
+  unsigned long TempInt = Int;
+  
+  if (Precis&lt;0)
+    Precis=1;
+  for (Cnt=0; TempInt!=0; TempInt/=Radix, ++Cnt) ;
+  *Buffer=malloc(Maximum(Precis,Cnt)+1);
+  if (*Buffer==NULL)
+    return 0;
+  for (Length=0; Length+Cnt&lt;Precis; )
+    (*Buffer)[Length++]='0';
+  Cnt= Length=Maximum(Length+Cnt,Precis);
+  (*Buffer)[Length]='\0';
+  for (; Int&gt;0; Int/=Radix)
+    (*Buffer)[--Cnt]=ToDigit(Int%Radix);
+  return Length;
+}
+
+/*  void Print(char *, char *, int, int, char, int *)
+ *  Print prefix followed by value, incrementing OutCnt by
+ *  the total number of characters printed: by default, the
+ *  string is right justified within the field with spaces;
+ *  the 0 flag places zeros between prefix and value; and
+ *  the - flag left justifies by appending spaces at the
+ *  end. Note that if Maximum is not -1, no more than that
+ *  number of characters are printed. */
+ 
+static void Print(char *String, char *Prefix, int Width,
+                  int Maximum, char Flags, int *OutCnt)
+{
+  int Length = strlen(String);
+  
+  if (Prefix)
+    Length+=strlen(Prefix);
+  if (Maximum&gt;=0 &amp;&amp; Length&gt;Maximum)
+    Length=Maximum;
+  *OutCnt+=Maximum(Length,Width);
+  
+  if (!(Flags&amp;MaskJustify || Flags&amp;MaskZeros))
+    for (; Length&lt;Width; --Width)
+      dputc(' ');
+  while (Prefix &amp;&amp; *Prefix!='\0')
+  {
+    dputc(*Prefix++);
+    --Length;
+    --Width;
+  }
+  if (!(Flags&amp;MaskJustify))
+    for (; Length&lt;Width; --Width)
+      dputc('0');
+  
+  while (*String!='\0' &amp;&amp; Length&gt;0)
+  {
+    dputc(*String++);
+    --Length;
+    --Width;
+  }
+  for (; Width&gt;0; --Width)
+    dputc(' ');
+ }
+ 
+/*  void dputc(int)
+ *  Perform character output through the putchar-like
+ *  function provided. If it returns EOF, a longjmp to
+ *  vdprintf will make it return EOF to its caller. */
+
+static void dputc(int Char)
+{
+  if (OutFunc(Char)==EOF)
+    longjmp(dputc_Buf,EOF);
+}
+</pre>
+</BODY></HTML>

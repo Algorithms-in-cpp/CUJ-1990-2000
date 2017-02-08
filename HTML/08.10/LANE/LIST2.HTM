@@ -1,0 +1,826 @@
+<HTML><HEAD><TITLE>October 1990/Debugging Objects With Turbo Debugger/Listing 2</TITLE></HEAD><BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4><A name="0215_0134"><A name="0215_0134">Listing 2<A name="0215_0134"></h4><P>
+<pre>#include &lt;graphics.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;conio.h&gt;
+#include &lt;math.h&gt;
+#include &lt;dos.h&gt;
+#include &lt;ctype.h&gt;
+#include &lt;string.h&gt;
+#include "anthill.h"
+
+#define MIN(a,b)  (((a) &lt; (b)) ? (a) : (b))
+
+// Global Variables                        //
+
+float gfCellSizeX;              // Width (in pixels) of a cell
+float gfCellSizeY;              // Height (in pixels) of a cell
+unsigned guFoodUnits[100][100]; // How many units of food in each cell
+int gnTimeToHatch;              // Cycles required to become a worker ant
+int gnDropDistance;             // Distance at which to drop food for queen
+unsigned long gulTotalFood;     // Total units of food on board
+unsigned guWorkers;             // Total workers on board
+unsigned guEggs;                // Total number of eggs on board
+unsigned long gulCycle;         // Which life cycle are we in?
+unsigned guWorkersPortion;      // What a worker eats from each food packet
+unsigned guMaxLifeSpan;         // Longest life span
+unsigned guBirthRate;           // Percentage of cycles queen lays an egg
+unsigned guMaxSpeed;             // Maximum speed for worker ants
+unsigned guQueensEnergy;         // Queens extra starting energy level
+unsigned guInitEggs;             // Initial # of eggs
+unsigned guInitWorkers;          // Initial # of worker ants
+unsigned guInitFood;             // Initial # of cells with food
+unsigned guPause;                // Milliseconds to pause each cycle
+Queen *gQueen;                   // Queen ant
+Worker *headOfAntList;           // Head of linked list of worker ants
+
+// MOVER class functions                             //
+
+Mover::Mover(unsigned uMaxRng, unsigned uMaxSpd, int nStartX, int
+nStartY)
+{
+  uMaxRange = uMaxRng;
+  uMaxSpeed = uMaxSpd;
+  nX = nInitX = nStartX;
+  nY = nInitY = nStartY;
+  bVisible = FALSE;
+  nVelX = -uMaxSpeed + random(uMaxSpeed + 1);
+  nVelY = -uMaxSpeed + random(uMaxSpeed + 1);
+}
+
+int Mover::getX( void )
+{
+return nX;
+}
+
+int Mover::getY( void )
+{
+return nY;
+}
+
+BOOLEAN Mover::moveTo(int nNewX, int nNewY )
+{
+  if ((distance(nNewX, nNewY, nInitX, nInitY) &lt;= uMaxRange || !uMaxRange)){
+    erase();
+    if ((nX = nNewX) &lt; 0){
+       nX = 0;
+    }
+    else
+       if (nX &gt; 99) {
+          nX = 99;
+          }
+  
+    if ((nY = nNewY) &lt; 0){
+       nY = 0;
+    }
+    else
+       if (nY &gt; 99) {
+       nY = 99;
+       }
+   
+    draw();
+    return( TRUE );
+  }
+  else {
+    return( FALSE );
+  }
+}
+
+BOOLEAN Mover::move( void )
+{
+  int nNewX, nNewY;
+  
+  nNewX = nX + nVelX;
+  nNewY = nY + nVelY;
+  
+  if ((distance(nNewX, nNewY, nInitX, nInitY) &lt;= uMaxRange || !uMaxRange)){
+    erase();
+    if ((nX = nNewX)&lt;0){
+       nX = 0;
+       nVelX = -nVelX;
+    }
+    else
+       if (nX &gt; 99) {
+          nX = 99;
+          nVelX = -nVelX;
+          }
+    if ((nY = nNewY) &lt; 0) {
+       nY = 0;
+       nVelY = -nVelY;
+    }
+    else
+       if (nY &gt; 99) {
+       nY = 99;
+       nVelY = -nVelY;
+    }
+    draw();
+    
+    // Turn once in a while
+    if (random(100) &lt; 10){
+      nVelX += random(3) - 1;
+      nVelY += random(3) - 1;
+       if (nVelX &gt; uMaxSpeed) {
+         nVelX = uMaxSpeed;
+       }
+       else
+          if (nVelX &lt; -uMaxSpeed) {
+             nVelX = -uMaxSpeed;
+          }
+          
+       if (nVelY &gt; uMaxSpeed) {
+         nVelY = uMaxSpeed;
+       }
+       else
+          if (nVelY &lt; -uMaxSpeed) {
+             nVelY = -uMaxSpeed;
+          }
+       // Make sure I do not stop
+        if (nVelX == 0 &amp;&amp; nVelY == 0) {
+          nVelX = 1+random(uMaxSpeed-1);
+          nVelY = -1-random(uMaxSpeed-1);
+        }
+    }
+    
+    return( TRUE );
+  }
+  else {
+    draw();
+    return( FALSE );
+  }
+}
+
+void Mover::show( void )
+{
+  if (!bVisible){
+    draw();
+    bVisible = TRUE;
+  }
+}
+
+void Mover::erase( void )
+{
+  moverDrawFunc(nX, nY, FALSE, BACKGROUND );
+}
+void Mover::draw( void )
+{
+  moverDrawFunc(nX, nY, TRUE, color);
+}
+
+void Mover::moverDrawFunc(int nX, int nY, BOOLEAN bVisible, int nColor)
+{
+   setfillstyle(SOLID_FILL, bVisible ? nColor : BACKGROUND);
+   bar(nX * gfCellSizeX,        nY * gfCellSizeY,
+          (nX + 0.5) * gfCellSizeX, (nY + 1) * gfCellSizeY - 1);
+}
+//     ANT class functions                         //
+
+Ant::Ant( int Range, int Speed, int nX, int nY, int Energy) :
+          Consumer( Energy ), // constructor
+          Mover( Range, Speed, nX, nY ) // constructor
+{
+  bDead = FALSE;
+}
+
+// Dying ant updates counters and drops any food he is carying
+void Ant::die(void)
+{
+  bDead = TRUE;
+  nEnergy = 0;
+  erase();
+}
+
+void Ant::doTheAntThing(void)
+{
+// Age the ant
+nAge++;
+
+// Every ant uses one energy unit per cycle
+nEnergy -= 1;
+
+if (nEnergy&lt;1 || nAge &gt; nLifeSpan) {
+   die();
+   }
+else {
+   if (bEgg) {
+      // force redraw in case egg has been walked on
+      moveTo(nX, nY);
+      if (nAge &gt; gnTimeToHatch) {
+         bEgg = FALSE;
+         color = GREEN;
+         guEggs--;
+         guWorkers++;
+         }
+      }
+   }
+}
+
+// QUEEN class functions                            //
+
+Queen::Queen( unsigned InitEnergy, int QRange, int QSpeed,
+              int QIntitX, int QInitY, unsigned _birthRate) :
+   Ant(QRange, QSpeed, QIntitX, QInitY, random(100)+InitEnergy )
+{
+  birthRate = _birthRate;
+  color = YELLOW;
+}
+
+// Queen ant lays eggs once in a while
+void Oueen::layEgg(void)
+{
+  new Worker(TRUE, nX, nY);
+  guEggs++;
+  nEnergy -= MIN(150, nEnergy);
+}
+
+void Queen::doTheAntThing(void)
+{
+// Every ant uses one energy unit per cycle
+nEnergy -= 1;
+
+nVelX = random(uMaxSpeed+1)*(random(2) ? 1 : -1 );
+nVelY = random(uMaxSpeed+1)*(random(2) ? 1 : -1 );
+
+if (nEnergy&lt;1) {
+   die();
+   }
+else {
+// Turn around if at limits of areal
+if (distance(nInitX, nInitY, nX + nVelX, nY + nVelY) &gt; uMaxRange) {
+   nVelX = -nVelX ;
+   nVelY= -nVelY ;
+   }
+   
+   // Move somewhere
+   move();
+   
+   if (guFoodUnits[nX] [nY]) {
+      eatFood(guFoodUnits[nX] [nY]);
+      }
+   // need a minimum of 750 units to be able to lay an egg
+   // (the idea here is to conserve energy)
+   if ((nEnergy &gt; 750) &amp;&amp; (random(100) &lt; birthRate)) {
+      layEgg();
+      }
+   // if the energy level gets too high, improve the chances of
+   // laying an egg; and vice versa
+   // keep the birthrate between 50 end 5 percent'
+   if ((nEnergy &gt; 5000) &amp;&amp; (birthRate &lt; 49)) birthRate++;
+   if ((nEnergy &lt; 3000) &amp;&amp; (birthRate &gt; 6)) birthrate--;
+   }
+}
+
+// WORKER class functions                             //
+
+Worker::Worker( B00LEAN bEggYes, int nX, int nY ) :
+          Ant( 0, guMaxSpeed, nX, nY, random(100)+50 )
+{
+  bEgg = bEggYes;
+  addToList();
+  nFood = 0;    // Start out carrying no food
+  // ants live for lifespan plus/minus 20%
+  nLifeSpan = (0.8 * guMaxLifeSpan) + random(0.4 * guMaxLifeSpan);
+  
+  if (bEggYes){
+    color = CYAN;
+    nAge = 0;
+  }else{
+    color = GREEN;
+    nAge = gnTimeToHatch + 1;
+  }
+}
+
+Worker::~Worker(void)
+{
+  // Remove myself from the ant list
+  if (prevWorker == NULL) {
+    headOfAntList = nextWorker;
+  }
+  else {
+    prevWorker-&gt;nextWorker = nextWorker;
+  }
+  if (nextWorker != NULL) {
+    nextWorker-&gt;prevWorker = prevWorker;
+  }
+}
+
+// Lie down and be counted (out)!!
+void Worker::die(void)
+{
+  // Drop any food before going to ant heaven
+  if (nFood) {
+    guFoodUnits[nX] [nY] += nFood;
+  }
+  Ant::die();            // Call ant die function
+  
+  if (bEgg) {
+    guEggs--;
+  }else{
+    guWorkers--;
+  }
+}
+
+// Add new ant to head of doubly linked list
+void Worker::addToList()
+{
+  // Place myself at the head of doubly linked list of ants
+  nextWorker = headOfAntList;
+  headOfAntList = this;
+  prevWorker = NULL;
+  if (nextWorker != NULL) {
+  nextWorker-&gt;prevWorker = this;
+  }
+}
+
+// Drop food for the Queen to eat
+void Worker::dropFood(void)
+{
+  int xDist, yDist;
+  
+  guFoodUnits[nX] [nY] += nFood;
+  nFood = 0;
+  color = GREEN;
+  showFood(nX, nY, TRUE);
+ // Move AWAY from queen
+ if (nX &lt; gQueen&gt;getX()) {
+   xDist = -uMaxSpeed;
+ }
+ else
+  if (nX &gt; gQueen-&gt;getX()) {
+     xDist = uMaxSpeed;
+  }
+ if (nY &lt; gQueen-&gt;getY()) {
+   yDist = -uMaxSpeed;
+ }
+ else
+  if (nY &gt; gQueen-&gt;getY()) {
+    yDist = uMaxSpeed;
+  }
+ moveTo(nX + xDist, nY + yDist);
+}
+
+// Grab food to carry to queen, after eating a portion for self
+void Worker::grabFood(void)
+{
+// Eat some food to replenish energy
+eatFood(guWorkersPortion);
+
+// Pick up rest to carry to queen
+nFood = guFoodUnits[nX] [nY];
+guFoodUnits[nX] [nY] = 0;
+showFood(nX, nY, FALSE);
+color = LIGHTRED;
+}
+
+// Carry food toward queen ant
+void Worker::moveTowardQueen(void)
+{
+  int xDist, yDist;
+ 
+  if (nX &gt; gQueen-&gt;getX()) {
+    xDist = -1 * MIN(uMaxSpeed / 2, nX - gQueen-&gt;getX());
+  }
+  else
+   if (nX &lt; gQueen-&gt;getX()) {
+      xDist = MIN(uMaxSpeed / 2 , gQueen-&gt;getX() - nX);
+  }
+  else {
+      xDist = 0;
+  }
+ 
+  if (nY &gt; gQueen-&gt;getY()) {
+     yDist = -1 * MIN(uMaxSpeed / 2, nY - gQueen-&gt;getY());
+  }
+  else
+     if (nY &lt; gQueen-&gt;getY()) {
+        yDist = MIN(uMaxSpeed / 2, gQueen-&gt;getY() - nY);
+     }
+     else {
+         yDist = 0;
+     }
+  
+  moveTo(nX + xDist, nY + yDist);
+}
+
+// Roam around randomly, looking for food
+void Worker::lookForFood(void)
+{
+if (!bEgg) {
+  move();
+  if (guFoodUnits[nX] [nY]) {
+    grabFood();
+    }
+  }
+}
+
+void Worker::doTheAntThing(void)
+
+{
+Ant::doTheAntThing(); // age, reduce energy, die if necessary
+if (nFood) {
+   if (distance(nX, nY, gQueen-&gt;getX(), gQueen-&gt;getY()) &lt;= gnDropDistance) {
+      dropFood();
+      }
+   else {
+      moveTowardQueen();
+      }
+   }
+else {
+   lookForFood();
+   }
+}
+
+
+
+// CONSUMER class functions            //
+void consumer::eatFood(int nUnits)
+{
+ int nX = getX();
+ int nY = getY();
+ nEnergy += MIN(nUnits, guFoodUnits[nx] [nY]);
+ gulTotalfood -= MIN(nUnits, guFoodUnits[nX] [nY]);
+ if (!(guFoodUnits[nX] [nY] = MIN(nUnits, guFoodUnits[nX] [nY]))){
+   showFood(nX, nY, FALSE);
+ }
+}
+
+// Support Functions                   //
+
+int distance(int nX1, int nY1, int nX2, int nY2)
+{
+  double sumSq = (double)((nX2-nX1)*(nX2-nX1) + (nY2-nY1)*(nY2-nY1));
+  if (sumSq &gt; 0.0) {
+    return((int) sqrt(sumSq));
+  
+  }else{
+    return(0);
+  }
+}
+
+void showFood(int nX, int nY, BOOLEAN bVisible)
+{
+  setfillstyle(SOLID_FILL, bVisible ? WHITE : BACKGROUND);
+  bar((nX + 0.5) * gfCellSizeX + 1, nY * gfCellSizeY,
+     (nX + 1) * gfCellSizeX - 1, (nY + 1) * gfCellSizeY - 1);
+}
+
+void showStatus(BOOLEAN bShowAll)
+{
+  char szMsg[100];
+  
+  setfillstyle(SOLID_FILL, BLACK);
+  if (bShowAll){
+    bar(0,getmaxy()-19,getmaxx(),getmaxy());
+    sprintf(szMsg, "Workers:      Eggs:       Food:           Cycle:
+Queen:         &lt;X-eXit&gt;", guWorkers, guEggs, gulTotalFood, gulCycle++);
+    outtextxy(5,getmaxy()-16, szMsg);
+  }else{
+    sprintf(szMsg, "%4u", guWorkers);
+    bar(5+8*8, getmaxy()-19, 5+8*13, getmaxy());
+    outtextxy(5+8*8, getmaxy()-16, szMsg);
+  
+    sprintf(szMsg, "%4u", guEggs);
+  
+    bar(5+8*20, getmaxy()-19, 5+8*24, getmaxy());
+    outtextxy(5+8*20, getmaxy()-16, szMsg);
+  
+    sprintf(szMsg, "%7lu", gulTotalFood);
+    bar(5+8*32, getmaxy()-19, 5+8*39, getmaxy());
+    outtextxy(5+8*32, getmaxy()-16, szMsg);
+  
+    sprintf(szMsg, "%6lu", gulCycle++);
+    bar(5+8*47, getmxy()-19, 5+8*53, getmaxy());
+    outtextxy(5+8*47, getmaxy()-16, szMsg);
+  
+    sprint(szMsg, "%5d", gQueen-&gt;nEnergy);
+    bar(5+8*61, getmaxy()-19, 5+8*67, getmaxy());
+    outtextxy(5+8*61,getmaxy()-16, szMsg);
+  }
+}
+
+void runSimulation(void)
+{
+  int grMode, grDriver;    // Used to initialize graphics device
+  int nErrCode;            // Results of graphics operation
+  char ch;
+  
+  // Clear out accumulators
+  headOfAntList = NULL;
+  gulTotalFood = 0L;
+  guWorkers = 0;
+  guEggs = 0;
+  
+  grDriver = DETECT;
+  Initgraph(&amp;grDriver, &amp;grMode, "");
+  
+  nErrCode = graphresult();
+  
+  if (nErrCode != grok){
+    printf("\n\nGraphics error: %s\n", grapherrormsg(nErrcode));
+  }else{
+    // Determine size of cells for 100 x 100 grid
+    gfCellSizeX = getmaxx() / 100.0;
+    gfCellSizeY = (getmaxy() - 20) / 100.0; // Allow room for status line
+    
+    // Draw line to seperate status area
+    line(0,getmaxy() - 20, getmaxx(), getmaxy() - 20);
+    
+    // Reset timer
+    gulCycle       = 0;     // Start timer at 0
+    
+    // Create and show the queen ant
+    gQueen = new Queen( guQueensEnergy, 20, 2, 10, 10, guBirthRate );
+    gQueen-&gt;show();
+    
+    // Now the Worker ants and eggs will be created. The pointers to the
+    // newly created ants are not kept because they are automatically put
+    // in a doubly linked list by the constructor function. The head of the
+    // list is the global variable head.
+    
+    // Create worker ants
+    for (int i=0; i&lt;guInitWorkers; i++){
+       Worker *temp = new Worker(FALSE, random(100), random(100));
+       temp-&gt;show();
+       guWorkers++;
+    }
+    
+    // Create the eggs
+    for (i=0; i&lt;guInitEggs; i++){
+       Worker *temp = new Worker(TRUE, random(30), random(30));
+       temp-&gt;show();
+       guEggs++;
+    }
+    
+    // Create some food
+    for (i=0; i&lt;100; i++){
+      for (int j=0; j&lt;100; j++){
+    guFoodUnits[i][j] - 0;
+  }
+}
+for (i=0; i&lt;guInitFood; i++){
+  int nY = random(100);
+  int nX = (nY&gt;50) ? random(100) : (50 + random(50));
+  guFoodUnits[nX) [nY] = random(1000) + 1000;
+  gulTotalFood += guFoodUnits[nX] [nY];
+  showFood(nX, nY, TRUE);
+}
+
+BOOLEAN bDone = FALSE;
+showStatus(TRUE);
+
+while(!bDone){
+
+  // Update status line
+  showStatus(FALSE);
+  
+  // Pause
+  delay(guPause);
+  
+  // Process the queen ant
+  if (!gQueen-&gt;bDead){
+    gQueen-&gt;doTheAntThing();
+  }
+  
+  // Process all ants that are in list
+   Worker *thisAnt = headOfAntList;
+   while(thisAnt != NULL){
+     Worker *nextWorker = thisAnt-&gt;next();
+     if (! thisAnt -&gt;bDead){
+        thisAnt -&gt;doTheAntThing();
+     }
+     if (thisAnt-&gt;bDead){
+        delete thisAnt;
+     }
+     thisAnt = nextWorker;
+  }
+  
+  // Are all ants dead?
+   if (gQueen-&gt;bDead &amp;&amp; headOfAntList == NULL){
+     bDone = TRUE;
+     bar(5+8*67, getmaxy()-19, getmaxx(), getmaxy());
+     outtextxy(5+8*67,getmaxy()-16,"&lt;Hit A Keys&gt;");
+     showStatus(FALSE);
+     sound(6000);
+     delay(1000);
+     nosound();
+     getch();
+  }
+    
+    // Has user hit X key?
+    if (kbhit()){
+      ch = toupper(getch());
+      bDone = (ch == 'X');
+      if (!bDone){
+        sound(1000);
+        delay(500);
+        nosound();
+      }
+     }
+    }
+    
+    delete gQueen;
+    
+    // Go back to original screen mode
+    closegraph();
+  }
+}
+void resetDefaults(void)
+{
+
+  // These are the parameters to adjust to affect the simulation //
+  
+  gnDropDistance   = 4;    // Drop food when distance 8 away from queen
+  gnTimeToHatch    = 20;   // Cycles to become a worker ant
+  guInitWorkers    = 2;    // Initial # of workers
+  guInitEggs       = 2;    // Initial # of eggs
+  guInitFood       = 400;  // Initial # of food cells
+  guPause          = 0;    // Milliseconds to pause each cycle
+  guWorkersPortion = 250;  // What a worker eats from each food cell found
+  guBirthRate      = 10;   // How many of 100 rounds does egg get laid
+  guMaxLifeSpan    = 200;  // Maximum age ant will live to
+  guMaxSpeed       = 2;    // Maximum speed that worker ant will move
+  guQueensEnergy   = 2000; // Queens extra starting energy
+}
+
+void displayValues(void)
+{
+  clrscr();
+  gotoxy(26,1);
+  printf("ANTHILL by Mark Weaver &amp; ALex Lane");
+  gotoxy(35,24);
+  printf("SELECT ONE");
+  
+  gotoxy(2,5);
+  printf("[W]      initial number of Worker ants");
+  gotoxy(2,6);
+  printf("[E]      initial number of Eggs");
+  gotoxy(2,7);
+  printf("[F]      initial number of cells containing Food");
+  gotoxy(2,8);
+  printf("[B]      Birth rate (chance in 100 of a birth each cycle)");
+  gotoxy(2,9);
+  printf("[L]      worker ant's maximum Life span");
+  gotoxy(2,10);
+  printf("[V]      worker ant's maximum Velocity (cells per cycle)");
+  gotoxy(2,11);
+  printf("[P]      Portion of food worker eats each time food is /
+found");
+  gotoxy(2,12);
+  printf("[H]      number of cycles it takes an egg to Hatch");
+  gotoxy(2,13);
+  printf("[Q]      Queens initial energy level");
+  gotoxy(2,14);
+  printf("[D]      Delay between each cycle (in milliseconds)");
+  gotoxy(2,16);
+  printf("[R]      Run simulation");
+  gotoxy(2,17);
+  printf("[X]      eXit to DOS");
+  
+  gotoxy(7,5);
+  printf("%5u", guInitWorkers);
+  gotoxy(7,6);
+  printf("%5u", guInitEggs);
+  
+  gotoxy(7,7);
+  printf("%5u", guInitFood);
+  gotoxy(7,8);
+  printf("%5u", guBirthRate);
+  gotoxy(7,9);
+  printf("%5u", guMaxLifeSpan);
+  gotoxy(7,10);
+  printf("%5u", guMaxSpeed);
+  gotoxy(7,11);
+  printf("%5u", guWorkersPortion);
+  gotoxy(7,12);
+  printf("%5u", gnTimeToHatch);
+  gotoxy(7,13);
+  printf("%5u", guQueensEnergy);
+  gotoxy(7,14);
+  printf("%5u", guPause);
+}
+
+unsigned getNumber(char *szPrompt, unsigned nMin, unsigned nMax,
+                unsigned nDefault)
+{
+  char szBuff[500];
+  int nRetval;
+  
+  gotoxy(1,20);
+  clreol();
+  gotoxy(1,21);
+  clreol();
+  gotoxy(1,20);
+  printf("%s", szPrompt);
+  gotoxy(1,21);
+  printf("Range (%u to %u), &lt;Return&gt; for %u : ", nMin, nMax, nDefault);
+  gets(szBuff);
+  gotoxy(1,20);
+  clreol();
+  gotoxy(1,21);
+  clreol();
+  
+  // strip off leading spaces
+  char *ptr = szBuff;
+  while(*ptr == ' '){
+    ptr++;
+  }
+  
+  if (*ptr == '\0'){
+    return(nDefault);
+  }else{
+    sscanf(ptr, "%d", &amp;nRetval);
+    return(nRetval);
+  }
+  
+}
+
+char getChoice(void)
+{
+  char chRetval = ' ';
+  
+  while (strchr("WEFBLVPHQDRX", chRetval == NULL){
+    chRetval = toupper(getch());
+  }
+  return(chRetval);
+}
+
+//       Main Program                             //
+main()
+{
+  
+  // Initialize random number generator
+  randomize();
+  
+  resetDefaults();
+  
+  BOOLEAN bDone = FALSE;
+  while(!bDone){
+    displayValues();
+    char ch = getChoice();
+    switch(ch){
+      case 'X':
+        bDone = TRUE;
+        break;
+    
+      case 'H':   // hatch time
+        gnTimeToHatch = getNumber("Enter the number of cycles it takes an /
+egg to hatch",
+                             5, 100, gnTimeToHatch);
+        break;
+        
+      case 'W':   // Initial workers
+        guInitWorkers = getNumber("Enter initial number of worker ants",
+                               0, 100, guInitWorkers);
+        break;
+        
+        case 'E':   // Initial eggs
+          guInitEggs = getNumber("Enter initial number of worker eggs",
+                                 0, 100, guInitEggs);
+          break;
+        
+        case 'F':   // Initial number of food cells
+          guInitFood = getNumber("Enter number of cells initially containing /
+  food",
+                          0, 1000, guInitFood);
+          break;
+          
+        case 'B':   // Birth rate
+          guBirthRate = getNumber("Enter percentage chance of a birth each cycle",
+                                       5, 50, guBirthRate);
+          break;
+          
+        case 'V':   // Max velocity
+          guMaxSpeed = getNumber("Enter workers maximum speed", 1, 20,
+                                guMaxSpeed);
+          break;
+          
+        case 'Q':   // Queens start energy
+          guQeensEnergy = getNumber("Enter queens initial energy level",
+                                1000, 100000, guQueensEnergy);
+          break;
+          
+        case 'L':   // Max worker Lifespan
+          guMaxLifeSpan = getNumber("Enter maximum lifespan of worker ants",
+                                50, 500, guMaxLifeSpan);
+          break;
+        
+        case 'P':   // Workers portion of food
+          guWorkersPortion = getNumber("Enter amount of food a worker eats /
+each time it finds some food",
+                                   0, 500, guWorkersPortion);
+          break;
+        
+        case 'D':   // Delay between each round
+          guPause = getNumber("Enter delay for each cycle in milliseconds",
+                           0, 10000, guPause);
+          break;
+        
+        case 'R':   // Run simulation
+          runSimulation();
+          break;
+    }
+  }
+  clrscr();
+}
+</pre>
+</BODY></HTML>

@@ -1,0 +1,305 @@
+<HTML><HEAD>
+<TITLE>November 1992/A Simple Real-Time Executive/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2<B></B> tinyexec.c</A></h4>
+<pre>/***************************************
+*                                      *
+*              tiny exec               *
+*                                      *
+****************************************
+  written by: Charles B. Allison
+  Allison Technical Services
+  8343 Carvel
+  Houston, TX 77036
+  PHONE#  (713) 777-0401 | BBS/FAX (713) 77-4746
+****************************************
+version 1.1
+last change 6-3-92 11:35
+*/
+/* ***** include files ****** */
+#include &lt;dos.h&gt;
+#include &lt;conio.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;time.h&gt;
+#include "tinyexec.h"
+/* ********* define statements ********* */
+/* #define DEBUG 1*/
+#define MICROSOFT 1
+#define NUM_TIMERS 3 /* number of timers */
+#define NUM_TASKS 3  /* number of tasks  */
+#define TASK_TICKS 2 /* TASK_TICKS is the # of */
+       /* rtc clock ticks between task exec runs */
+#define OLD_TICKS 1
+/* OLD_TICKS is the number of rtc clock ticks between
+running oldtimer, the system clock at 18.2Hz */
+#define NORMAL_COUNT 0
+/* value normally used in counter 65536 (= 0)*/
+#define RTC_COUNT (unsigned)((65536L/OLD_TICKS)&amp;0xffff)
+/* value to be used in rtc interrupt rate
+      -- relates to OLD_TICKS */
+#ifdef MICROSOFT /* Microsoft compatibility */
+#include &lt;graph.h&gt;
+#pragma intrinsic (inp, outp, _enable, _disable)
+#define gotoxy(x,y) _settextposition(y,x)
+#define clrscr()_clearscreen(_GWINDOW)
+#endif
+/* ********** Inline Functions ************ */
+/* -------- set_timer ----------- */
+/* set timer i to count down in time t */
+#define set timer(i,t) _disable();\
+timers [i] =t;\
+_enable();
+/* -------- req_task ----------- */
+/* request task i */
+#define req_task(i)_disable();\
+task_flag[i] = REQ_TASK;\
+_enable();
+/* -------resume_task -------- */
+#define resume_task(i)_disable();\
+task_flag[i] |= REQ_TASK;\
+task_flag[i]++;\
+_enable();
+/* use following inline when ints are disabled */
+/* -------- iset_timer ----------- */
+/* set timer i to count down in time t */
+#define iset_timer(i,t) timers[i]=t;
+/* -------- ireq_task ----------- */
+/* request task i ints disabled */
+#define ireq_task(i) task_flag[i] = REQ_TASK;
+/* -------iresume_task -------- */
+/* resume task - interrupts disabled */
+#define iresume_task(i) task_flag[i] |= REQ_TASK;\
+task_flag[i]++;
+/* ******** function prototypes ************* */
+void main(void);
+void task0(void);
+void task1(void);
+void init_rtc(void);  /* set up rtc/tasker */
+void close_rtc(void); /* shut down rtc/tasker */
+void init_cntr(unsigned count);
+void interrupt rtcint(void);
+void timr0(void);
+void timr1(void);
+void timr2(void);
+/* ******* tiny exec variables ******** */
+/* timer counter and function arrays */
+unsigned timers[NUM_TIMERS] = { 0, 0, 0 };
+void (*timer[NUM_TIMERS]) (void)={timr0,timr1,timr2};
+/* ticks between task exec */
+unsigned task_time = TASK_TICKS;
+/* new timer ticks between old timer calls */
+unsigned old_time=OLD_TICKS;
+/* storage for old system clock int vector*/
+void (interrupt far *oldtimer)(void);
+/* task flag and function arrays */
+unsigned task_flag[NUM_TASKS] = {0,0,IN_PROC};
+void (*task[NUM_TASKS])(void) = {task0,task1,main};
+int cur_task_num;/* indicates what is current task */
+/* *************** functions ***************** */
+/* combination real time clock and task exec */
+void interrupt rtcint(void)
+{
+int i; /* local stack variable */
+/* handle timers here, then 18.2Hz system clock
+then do tasks
+***************************************** */
+for(i = 0;i &lt; NUM_TIMERS;i++ )
+   {
+    if (timers[i])
+      {
+       if(!(--timers[i])) (*timer[i])();
+      }
+   }
+/* call system clock 18.2 x per second */
+if(!(--old_time))
+  {
+   old_time=OLD_TICKS;
+#ifndef DEBUG
+  (*oldtimer)();      /* call old timer here */
+  }  else {
+    outp (XT8259,CLR_INT);  /* clear int req */
+#endif
+  }
+/* ------end of timers ---------- */
+task_time--;    /* one less time tick */
+if(task_time) return; /*not time for task exec */
+task_time = TASK_TICKS; /* do tasks now*/
+/* --------- task exec section ---------- */
+for(i = 0; i &lt; NUM_TASKS;i++)
+ {
+ if (task_flag[i] &amp; IN_PROC)
+  {
+   cur_task_num = i;
+   return;  /* found one in process so return */
+  }
+ if(task_flag[i] &amp; REQ_TASK)
+  {
+   task_flag[i]=IN_PROC | (task_flag[i] &amp; ~REQ_TASK);
+       /* begin task */
+       cur_task_num = i; /* current task in process*/
+       _enable();        /* now allow interrupts */
+       (*task[i])();     /* do task */
+       _disable();
+       task_flag[i] &amp;: ~IN_PROC;  /* done */
+      }
+  }
+}
+/* ***************** init_rtc ******************** */
+void init_rtc(void)  /* routine to set up rtc/tasker */
+{
+ _disable();
+ oldtimer = _dos_getvect(TIMER); /* get timer vector*/
+ _dos_setvect(TIMER,rtcint); /* set real time timer */
+ init_cntr( RTC_COUNT);
+ _enable();
+}
+/* ****************** close_rtc ******************* */
+void close_rtc(void) /* shut down rtc/tasker */
+{
+ _disable();
+ _dos_setvect(TIMER,oldtimer); /* restore timer */
+ init_cntr( NORMAL_COUNT);
+ _enable();
+}
+/* *************** init_cntr ***************** */
+void init_cntr(unsigned count)
+{
+ int lowb, highb;
+ lowb = count % 256;
+ highb = count / 256;
+ outp (TIMR1_C,LOAD_T1); /* load count for 8253 */
+ outp (TIMRI_T1, lowb);
+ outp (TIMRI_T1, highb);
+}
+/* **** Example main and tasks *********** */
+void set_beep(void);
+void clr_beep(void);
+void tsk1sub1 (void); /*subtasks for task 1 */
+void tsk1sub2 (void);
+int beep_len = 6; /* default to about 1/3 sec */
+
+#define SPKR_CNTRL 0x61
+#define SPKR_ENABLE 0x03
+#define SPKR_DISABLE 0xfc
+
+int t0_flag =0, t1_flag = 0;
+int timer0= 0,timer1 = 0,timer2 = 0;
+int state_of_tasks[NUM_TASKS];
+int state_of_timers[NUM_TIMERS];
+/* --------- main ------------ */
+void main (void)
+{
+int i,oldt0,oldtmr0=0,endit = 1;
+time_t t;
+#ifndef DEBUG
+ init_rtc(); /* open rtc */
+#endif
+clrscr();
+gotoxy(1,1);
+printf("Counts for t0_flag t1_flag ");
+printf("timer0 timer1 timer2");
+gotoxy(1,4);
+printf("task and timer flag images");
+gotoxy(1,5);
+printf("task0 task1 timer0 timer1 timer2");
+set_timer(0,18); /* begin timer 0 in 12 ticks */
+req_task(0);     /* request task 0 to run once */
+set_timer(1,90); /*begin timer 1 in 90 ticks */
+while(endit)
+ {
+  if(kbhit())
+   {
+    switch(getch()){
+     case '\x1b':  /* exit on Esc */
+      endit = 0;
+      break;
+     case ' ':
+      req_task(1); /* do a beep*/
+      break;
+     default:
+      break;
+    } /* end of switch */
+  } /* end of if */
+if(t0_flag != oldt0)
+ {
+  oldt0=t0_flag;
+  gotoxy(1,6); /* show current tasks and timers */
+  for(i=0;i&lt;NUM_TASKS-1;i++)
+    printf("%4x ",state_of_tasks[i]);
+  for(i=0;i&lt;NUM_TIMERS;i++)
+    printf(" %4d ",state_of_timers[i]);
+ }
+#ifdef DEBUG
+ rtcint();
+#endif
+gotoxy(1,2);
+printf("           %4d    %4d     %4d   %4d   %4d",\
+     t0_flag,t0_flag,timer0,timer1,timer2);
+if(timer0 != oldtmr0)
+   {
+    oldtmr0 = timer0;
+    t=time(NULL);
+    gotoxy(1,20);
+    printf("%s",ctime(&amp;t));
+   }
+ } /* end of while */
+#ifndef DEBUG
+ close_rtc();  /* restore rtc */
+#endif
+}
+/* *********** tasks ************** */
+/* -------- task0 ----------- */
+void task0(void)
+{
+/* get current timer and task states */
+int i;
+t0_flag++;
+for(i=0;i&lt;NUM_TIMERS;i++)
+  state_of_timers[i] = timers[i];
+for(i=0;i&lt;NUM_TASKS;i++)
+ state_of_tasks[i] = task_flag[i];
+}
+/* ------- task1 --------- */
+void task1(void)
+{ /* handle beeps - 2 subtasks */
+static void (*subexec1[])(void) = {
+  tsk1sub1,
+  tsk1sub2
+  };
+t1_flag++;
+(*subexec1[task_flag[cur_task_num] &amp; 0x01])();
+} /* end task 1 */
+void tsk1sub1 (void)
+{                /* turn on beep */
+outp(SPKR_CNTRL,inp(SPKR_CNTRL)| SPKR_ENABLE);
+set_timer(2,beep_len); /*beep length*/
+}
+void tsk1sub2(void)
+{              /* turn off beep here */
+outp(SPKR_CNTRL, inp(SPKR_CNTRL) &amp; SPKR_DISABLE);
+}
+/* ***************** timers ********************** */
+/*Note - timers are run with interrupts disabled*/
+void timr0(void)
+{
+timer0++; /* count of timer runs */
+timers[0]=18; /* set time again */
+}
+void timr1(void)
+{
+timer1++; /* count of timer runs */
+timers[1]=2; /* set timer again */
+ireq_task(0);  /* request task 0 */
+}
+void timr2(void)
+/* beep turn off timer */
+{
+timer2++; /* count of timer runs */
+iresume_task(1);
+}
+/* End of File */</pre>
+
+</BODY>
+</HTML>

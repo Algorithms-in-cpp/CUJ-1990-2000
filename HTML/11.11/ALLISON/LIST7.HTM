@@ -1,0 +1,269 @@
+<HTML><HEAD>
+<TITLE>November 1993/Code Capsules/Listing 7</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 7 <I>Bits object implementation</I></A></h4>
+<pre>/* bits.c */
+
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;limits.h&gt;
+#include &lt;string.h&gt;
+#include &lt;assert.h&gt;
+#include "bits.h"
+
+/* Pick the base integral type */
+typedef unsigned char Block;
+
+/* Some implementation specifics */
+#define BLKSIZ          (CHAR_BIT * sizeof(Block))
+#define offset(b)       (b % BLKSIZ)
+#define mask1(b)        ((Block)1 &lt;&lt; offset(b))
+#define mask0(b)       ~((Block)1 &lt;&lt; offset(b))
+
+/* Data Structure */
+typedef struct bits
+{
+   size_t nbits_;      /* The # of bits */
+   Block *bits_;       /* The base array */
+   size_t nblks_;      /* The # of blocks in base array */
+   Block clean_mask_;  /* To mask-off unused bits */
+} Bits;
+
+/* Private functions */
+static size_t word_(Bits* bp, size_t bit)
+{
+   return bp-&gt;nblks_- 1 - bit/BLKSIZ;
+}
+
+static void set_(Bits *bp, size_t b)
+{
+   bp-&gt;bits_[word_(bp,b)] |= mask1(b);
+}
+
+static void reset_(Bits *bp, size_t b)
+{
+   bp-&gt;bits_[word_(bp,b)] &amp;= mask0(b);
+}
+
+static void toggle_(Bits *bp, size_t b)
+{
+   bp-&gt;bits_[word_(bp, b)] ^= mask1(b);
+}
+
+static int test_(Bits *bp,size_t b)
+{
+   return !!(bp-&gt;bits_[word_(bp,b)] &amp; mask1(b));
+}
+
+static size_t count_block_(Block n)
+{
+   size_t sum = 0;
+   
+   while (n)
+   {
+      if (n &amp; (Block)1)
+         ++sum;
+      n &gt;&gt;= 1;
+   }
+   return sum;
+}
+
+static void cleanup_(Bits *bp)
+{
+   if (bp-&gt;nbits_% BLKSIZ)
+      bp-&gt;bits_[0] &amp;= bp-&gt;clean_mask_;
+}
+
+/* Implementation of public interface */
+Bits * bits_create(size_t nbits)
+{
+   Bits *bp = malloc(sizeof(Bits));
+   size_t nbytes;
+   if (bp == NULL)
+      return NULL;
+
+   /* Allocate base array */
+   bp-&gt;nblks_ = (nbits + BLKSIZ - 1) / BLKSIZ;
+   nbytes = bp-&gt;nblks_ * sizeof(Block);
+   bp-&gt;bits_ = malloc(nbytes);
+   if (bp-&gt;bits_ == NULL)
+   {
+      free(bp);
+      return NULL;
+   }
+   
+   memset(bp-&gt;bits_,'\0',nbytes);
+   bp-&gt;nbits_ = nbits;
+   bp-&gt;clean_mask_ = ~(Block)0 &gt;&gt; (bp-&gt;nblks_*BLKSIZ - nbits);
+   return bp;
+}
+
+unsigned bits_to_uint(Bits *bp)
+{
+   size_t nblks = sizeof(unsigned) / sizeof(Block);
+   if (nblks &gt; 1)
+   {
+      int i;
+      unsigned n = bp-&gt;bits_[bp-&gt;nblks_ - nblks];
+      
+      /* Collect low-order sub-blocks into an unsigned */
+      if (nblks &gt; bp-&gt;nblks_)
+         nblks = bp-&gt;nblks_;
+      while (--nblks)
+         n = (n &lt;&lt; BLKSIZ) | bp-&gt;bits_[bp-&gt;nblks_ - nblks];
+      return n;
+   }
+   else
+      return (unsigned) bp-&gt;bits_[bp-&gt;nblks_ - 1];
+}
+
+Bits * bits_from_uint(Bits *bp, unsigned n)
+{
+   size_t nblks = sizeof(unsigned) / sizeof(Block);
+   assert(bp);
+   memset(bp-&gt;bits_, '\0', bp-&gt;nblks_ * sizeof(Block));
+   if (nblks &gt; 1)
+   {
+      int i;
+      if (nblks &gt; bp-&gt;nblks_)
+         nblks = bp-&gt;nblks_;
+      for (i = 1; i &lt;- nblks; ++i)
+      {
+         bp-&gt;bits [bp-&gt;nblks_ - i] = (Block) n;
+         n &gt;&gt;= BLKSIZ;
+      }
+   }
+   else
+      bp-&gt;bits_[bp-&gt;nblks_- 1] = n;
+   
+   return bp;
+}
+
+Bits * bits_set(Bits *bp, size_t bit)
+{
+   assert(bp &amp;&amp; (bit &lt; bp-&gt;nbits_));
+   set_(bp,bit);
+   return bp;
+}
+
+Bits * bits_set_all(Bits *bp)
+{
+   assert(bp);
+   memset(bp-&gt;bits_,~Ou,bp-&gt;nblks_*sizeof(Block));
+   cleanup_(bp);
+   return bp;
+}
+
+Bits * bits_reset(Bits *bp, size_t bit)
+{
+   assert(bp &amp;&amp; (bit &lt; bp-&gt;nbits_));
+   reset_(bp,bit);
+   return bp;
+}
+
+Bits * bits_reset_all(Bits *bp)
+{
+   assert(bp);
+   memset(bp-&gt;bits_,'\0',bp-&gt;nblks_*sizeof(Block));
+   return bp;
+}
+
+Bits * bits_toggle(Bits *bp, size_t bit)
+{
+   assert(bp &amp;&amp; (bit &lt; bp-&gt;nbits_));
+   toggle_(bp,bit);
+   return bp;
+}
+
+Bits * bits_toggle_all(Bits *bp)
+{
+   size_t nw;
+   
+   assert(bp);
+   nw = bp-&gt;nblks_;
+   while (nw--)
+      bp-&gt;bits_[nw] = ~bp-&gt;bits_[nw];
+   cleanup_(bp);
+   return bp;
+}
+
+int bits_test(Bits *bp,size_t bit)
+{
+   assert(bp &amp;&amp; (bit &lt; bp-&gt;nbits_));
+   return test_(bp,bit);
+}
+
+int bits_any(Bits *bp)
+{
+   int i;
+   
+   assert(bp);
+   for (i = 0; i &lt; bp-&gt;nblks_; ++i)
+      if (bp-&gt;bits_[i])
+         return 1;
+   return 0;
+}
+
+size_t bits_count(Bits *bp)
+{
+   int i;
+   size_t sum;
+   
+   assert(bp);
+   for (i = 0, sum = 0; i &lt; bp-&gt;nblks_; ++i)
+      sum += count_block_(bp-&gt;bits_[i]);
+   return sum;
+}
+
+Bits * bits_put(Bits *bp, FILE *f)
+{
+   int i;
+   
+   assert(bp);
+   for (i = 0; i &lt; bp-&gt;nbits_; ++i)
+      fprintf(f,"%d",bits_test(bp,bp-&gt;nbits_-1-i));
+   return bp;
+}
+
+Bits * bits_get(Bits *bp, FILE *f)
+{
+   char *buf;
+   char format[9];
+   
+   /* Reset all bits */
+   assert(bp);
+   bits_reset_all(bp);
+   
+   /* Allocate string buffer */
+   buf = malloc(bp-&gt;nbits_+1);
+   if (buf == NULL)
+      return 0;
+   
+   /* Build read format (e.g., " %16[01]") */
+   sprintf(format," %%%d[01]",bp-&gt;nbits_);
+   if (fscanf(f,format,buf) == 1)
+   {
+      int i;
+      size_t slen = strlen(buf);
+      
+      /* Set corresponding bits in bitset */
+      for (i = 0; i &lt; slen; ++i)
+         if (buf[slen-1-i] == '1')
+            bits_set(bp,i);
+   }
+   free(buf);
+   return bp;
+}
+
+void bits_destroy(Bits *bp)
+{
+   assert(bp);
+   free(bp-&gt;bits_);
+   free(bp);
+}
+/* End of File */
+</pre>
+</BODY>
+</HTML>

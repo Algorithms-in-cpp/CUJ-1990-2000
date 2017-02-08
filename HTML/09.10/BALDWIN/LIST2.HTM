@@ -1,0 +1,194 @@
+<HTML><HEAD>
+<TITLE>October 1991/Debugging In C &#151; An Overview/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2 (memdebug.c)</a></h4>
+<pre>/* memdebug.c source file for debugging versions of malloc,
+   calloc, realloc and free. Copywrite 1990 by Wahhab
+   Baldwin. Permission to copy freely granted if this
+   notice is included.
+*/
+
+#include &lt;malloc.h&gt;
+#include &lt;string.h&gt;
+
+#if defined(DEBUG)
+    #undef DEBUG
+#endif
+#include "memdebug.h"
+
+#define MAXMODS 100
+#define SENTINAL_INT OxEEEE
+
+void d_add_to_ll(PMEMCHAIN mptr, size_t bytes,
+                 char *module, int line);
+void d_fatal (char *msg, int value, char *module, int line);
+
+char modlist[MAXMODS] [11];
+PMEMCHAIN memchainhead;
+
+void *d_malloc(size_t bytes, char *module, int line)
+{
+    PMEMCHAIN mptr;
+
+    if (bytes &lt; 1)
+       d_fatal("Called malloc() with &lt; 1 bytes:",
+                  bytes, module, line);
+    mptr = malloc(bytes + sizeof(MEMCHAIN) + 2);
+    if (!mptr)
+       d_fatal("malloc() failed", bytes, module, line);
+    d_add_to_ll(mptr, bytes, module, line);
+    return (mptr + 1);
+}
+
+void *d_calloc(size_t n, size_t bytes, char *module,
+             int line)
+{
+    PMEMCHAIN mptr;
+
+    if (bytes &lt; 1)
+       d_fatal("Called calloc() with &lt; 1 bytes:",
+                  bytes, module, line);
+    if (n &lt; 1)
+       d_fatal("Called calloc() with count &lt; 1:",
+                  n, module, line);
+    mptr = calloc(1, n * bytes + sizeof(MEMCHAIN) + 2);
+    if (!mptr)
+       d_fatal("calloc() failed", bytes, module, line);
+    d_add_to_ll(mptr, n * bytes, module, line);
+    return (mptr + 1);
+}
+
+void *d_realloc(void *rptr, size_t bytes, char *module,
+int line)
+{
+    PMEMCHAIN mptr;
+
+    if (!rptr)
+       d_fatal("Called realloc() with null pointer", 0,
+                  module, line);
+    if (bytes &lt; 1)
+       d_fatal("Called realloc() with &lt; 1 bytes:",
+                  bytes, module, line);
+    for (mptr = memchainhead; mptr; mptr = mptr-&gt;next)
+       if (mptr + 1 == (PMEMCHAIN) rptr)
+           break;
+    if (!mptr)
+       d_fatal("Reallocating unallocated memory at",
+                  (int)rptr, module, line);
+    if (mptr-&gt;sentinal != SENTINAL_INT)
+       d_fatal("realloc(): Beginning sentinal damaged--contains",
+           mptr-&gt;sentinal, module, line);
+    if (*(int*)((char *)(mptr + 1) + mptr-&gt;bytes) !=
+                  SENTINAL_INT)
+       d_fatal("Realloc(): Ending sentinal damaged--contains",
+           *(int *)((char *)(mptr + 1) + mptr-&gt;bytes),
+           module, line);
+    mptr = realloc(mptr, bytes + sizeof(MEMCHAIN) + 2);
+    if (!mptr)
+       d_fatal("realloc() failed", bytes, module, line);
+    if (mptr-&gt;prev)
+       /* Update addresses in linked list */
+       mptr-&gt;prev-&gt;next = mptr;
+    if (mptr-&gt;next)
+       mptr-&gt;next-&gt;prev = mptr;
+    mptr-&gt;bytes = bytes;
+    *(int *)((char *)(mptr + 1) + bytes) = SENTINAL_INT;
+    return(mptr + 1);
+    /* User address starts after structure */
+}
+void d_free(void *fptr, char *module, int line)
+{
+    PMEMCHAIN mptr;
+
+    if (!fptr)
+       d_fatal("Freeing null pointer", 0, module, line);
+    for (mptr = memchainhead; mptr; mptr = mptr-&gt;next)
+       if (mptr + 1 == (PMEMCHAIN) fptr)
+           break;
+    if (!mptr)
+       d_fatal("Freeing unallocated memory at",
+               (int)fptr, module, line);
+    if (mptr-&gt;sentinal != SENTINAL_INT)
+       d_fatal("free(): Beginning sentinal damaged--contains",
+           mptr-&gt;sentinal, module, line);
+    if (*(int*)((char *)fptr + mptr-&gt;bytes) != SENTINAL_INT)
+       d_fatal("free(): Ending sentinal damaged--contains",
+           *(int *)((char *)fptr + mptr-&gt;bytes),
+           module, line);
+    if (mptr-&gt;prev)
+       /* Drop this entry from list */
+       mptr-&gt;prev-&gt;next = mptr-&gt;next;
+    else
+       memchainhead = mptr-&gt;next;
+    if (mptr-&gt;next)
+       mptr-&gt;next-&gt;prev = mptr-&gt;prev;
+    free(mptr);
+}
+
+void d_add_to_ll(PMEMCHAIN mptr, size_t bytes, char *module,
+int line)
+{
+    void *vptr;
+    unsigned short ix;
+    char *sptr;
+
+    /* First byte past MEMCHAIN structure */
+    vptr = mptr + 1;
+    mptr-&gt;line = line;
+    if (sptr = strrchr(module, '\\'))
+       /* Skip path information */
+       module = sptr + 1;
+    for (ix = 0; ix &lt; MAXMODS &amp;&amp; *modlist[ix] &amp;&amp;
+              strcmp(modlist[ix], module); ix++)
+       ;
+    if (ix == MAXMODS + 1)
+       d_fatal("Module table overflow, MAXMODS =",
+              MAXMODS, module, line);
+    if (!*modlist[ix])
+       strcpy(modlist[ix], module);
+    mptr-&gt;module_ix = ix;
+    /* Number of user-requested bytes   */
+    mptr-&gt;bytes = bytes;
+    mptr-&gt;next = memchainhead;     /* Zero if first entry */
+    if (memchainhead)
+       /* Place new entry at front of list */
+       memchainhead-&gt;prev = mptr;
+    mptr-&gt;prev = 0;
+    memchainhead = mptr;
+    *(int *)((char *)vptr + bytes) = SENTINAL_INT;
+    mptr-&gt;sentinal = SENTINAL_INT;
+}
+void d_fatal(char *msg, int value, char *module, int line)
+{
+printf("FATAL MEMORY ERROR IN %s LINE %d.\n%s %d\n",
+module, line, msg, value);
+exit(1);
+}
+void d_showmem()
+{
+    PMEMCHAIN mptr;
+
+    printf("\n****MEMORY DEBUG DISPLAY****\n");
+    if (!memchainhead)
+       printf("****NO MEMORY ALLOCATED***\n");
+    else {
+       printf("FILE      LINE SIZE ADDRESS\n");
+       for (mptr = memchainhead; mptr; mptr = mptr-&gt;next) {
+           printf("%-10.10s %.4d %.4d %d\n",
+                  modlist[mptr-&gt;module_ix],
+                  mptr-&gt;line, mptr-&gt;bytes, mptr+1);
+           if (*(int *)((char *)(mptr + 1) + mptr-&gt;bytes) !=
+                  SENTINAL_INT)
+               printf("\t***ENDING SENTINAL DAMAGED\n");
+           if (mptr-&gt;sentinal != SENTINAL_INT)
+               printf("\t***BEGINNING SENTINAL DAMAGED\n");
+       }
+    }
+}
+
+/* End of File */</pre>
+
+</BODY>
+</HTML>

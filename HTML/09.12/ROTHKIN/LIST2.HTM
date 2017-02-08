@@ -1,0 +1,233 @@
+<HTML><HEAD>
+<TITLE>December 1991/PC UART Device Driver/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2 (testasy.c)</A></h4>
+<pre>#include &lt;conio.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;time.h&gt;
+#include &lt;dos.h&gt;
+#include "uart.h"
+#include "uartmacs.c"
+
+/* Set to 1 by dummy interrupt machine if
+   correct interrupt during port presence test */
+static char g_got_int_flag;
+
+/* Base address of port being tested */
+static unsigned int g_port_base_address;
+
+/******************************************************
+rc = Test_for_asynch_port (port_address, irq_level )
+    int port_address - Base address of port to test
+                    for
+    int irq_level - Interrupt level (3 - 7) that
+                  port is supposed to be on
+rc = 1 : Port check passes
+rc = -1: Port check fails or IRQ out of range
+*******************************************************/
+
+/* Enable stack probing for this function */
+#pragma check_stack(on)
+int Test_for_asynch_port( unsigned int port_address,
+                      unsigned int irq_level )
+{
+   int mask_save;
+   int new_mask;
+   unsigned int interrupt_number;
+   static char a_funcname[] =
+      "Test_for_asynch_port: ";
+   void (interrupt far * p_vec_saved)();
+   time_t start_time;
+   time_t time_now;
+
+   /* Validate range of irq level */
+   if ( (irq_level &lt; 3) || ( irq_level &gt; 7 ) )
+   {
+      fprintf(stderr,"%s bad irq level %u\n",
+         a_funcname,irq_level);
+      return(-1);
+   }
+
+   /* Clear flag - we haven't gotten a successful
+     interrupt yet. */
+   g_got_int_flag = 0;
+
+   /* Save port address for interrupt routine */
+   g_port_base_address = port_address;
+
+   /* Make sure interrupt generation is disabled */
+   outp(port_address+INTERRUPT_ENABLE_REGISTER,0x00);
+
+   /* Delay for port to catch up */
+   IO_DELAY(3);
+
+   /* Clear interrupt identification register */
+   inp(port_address+INTERRUPT_IDENT_REGISTER);
+
+   /* Delay for port to catch up */
+   IO_DELAY(3);
+
+   /* Clear receive register. */
+   inp(port_address+RECEIVE_REGISTER);
+
+   /* Delay for port to catch up */
+   IO_DELAY(3);
+
+   /* Clear line status interrupt */
+   inp(port_address+LINE_STATUS_REGISTER);
+
+   /* Delay for port to catch up */
+   IO_DELAY (3);
+
+   /* Clear modem status interrupt */
+   inp(port_address+MODEM_STATUS_REGISTER);
+
+   /* Calculate interrupt number */
+   interrupt_number = 0x08 + irq_level;
+
+   /* Save current interrupt vector */
+   p_vec_saved = _dos_getvect(interrupt_number);
+
+   _disable();         /* disable interrupts */
+
+   /* Latch test interrupt routine into vector */
+   _dos_setvect(interrupt_number,
+      Catch_asynch_test_interrupt);
+
+   /* Save current 8259 state and enable this
+      interrupt */
+   mask_save = inp(R8259A_MASK);
+   new_mask = ((int)
+      ( Oxffff ^ ( 0x0001 &lt;&lt; irq_level) )) &amp;
+      mask_save;
+
+   /* Delay for port to catch up */
+   IO_DELAY (3);
+
+   /* Output new mask to 8259 interrupt controller */
+   outp(R8259A_MASK,new_mask);
+
+   /* Delay for port to catch up */
+   IO_DELAY (3);
+
+   _enable();                      /* Enable interrupts */
+
+   /* Activate OUT2 to enable interrupt generation by
+      the UART */
+   outp(port_address+MODEM_CONTROL_REGISTER,0x08);
+
+   /* Delay for port to catch up */
+   IO_DELAY (3);
+
+   /* Enable generation of THRE interrupt */
+   outp(port_address+INTERRUPT_ENABLE_REGISTER,0x02);
+
+
+   /* Save start time */
+   time(&amp;start_time);
+
+   /* Loop until flag indicating receipt of interrupt
+      has been set (up to 3 seconds) */
+   while ( g_got_int_flag == 0 )
+   {
+      /* If more than 3 seconds have passed,
+         stop waiting */
+      time(&amp;time_now);
+      if ( (time_now - start_time) &gt; 3)
+         break;
+   }
+
+   /* Make sure interrupt generation is disabled */
+   outp(port_address+INTERRUPT_ENABLE_REGISTER,0x00);
+
+   /* Delay for port to catch up */
+   IO_DELAY (3);
+
+   /* Deactivate OUT2 to disable interrupt generation
+      by UART */
+   outp(port_address+MODEM_CONTROL_REGISTER,0x00);
+
+   /* Delay for port to catch up */
+   IO_DELAY (3);
+
+   /* Clear interrupt identification register */
+   inp(port_address+INTERRUPT_IDENT_REGISTER);
+
+   /* Delay for port to catch up */
+   IO_DELAY (3);
+
+   /* Clear receive register. */
+   inp(port_address+RECEIVE_REGISTER);
+
+   /* Delay for port to catch up */
+   IO_DELAY (3);
+
+   /* Clear line status interrupt */
+   inp(port_address+LINE_STATUS_REGISTER);
+
+   /* Delay for port to catch up */
+   IO_DELAY (3);
+
+   /* Clear modem status interrupt */
+   inp(port_address+MODEM_STATUS_REGISTER);
+
+   _disable();                     /* Disable interrupts */
+
+   /* Restore 8259 state */
+   outp(R8259A_MASK,mask_save);
+
+   /* Restore interrupt vector */
+   _dos_setvect (interrupt_number,p_vec_saved);
+
+   _enable ();
+
+   if ( g_got_int_flag == 1)
+      return(1);
+   else
+      return(-1);
+}
+/* Disable stack probing for interrupt catcher */
+#pragma check_stack(off)
+void interrupt far Catch_asynch_test_interrupt(void)
+{
+   register int value_from_port;
+
+   _disable();     /* Disable all interrupts */
+
+   /* read port's interrupt identification register */
+   value_from_port = inp(g_port_base_address+
+                     INTERRUPT_IDENT_REGISTER);
+
+   if ( !(value_from_port &amp; 0x01) )
+   {   /* There is an interrupt pending */
+      if (value_from_port &amp; 0x02)
+      {   /* interrupt for transmit holding
+            register empty */
+
+         /* Read the port's line status register and
+            check for THRE just to double check */
+         value_from_port = inp(g_port_base_address +
+                           LINE_STATUS_REGISTER);
+         if ( value_from_port &amp; 0x20 )
+            /*We have succeeded! Set global
+              flag. */
+            g_got_int_flag = 1;
+      }
+   }
+
+   /* Output End Of Interrupt to interrupt
+      controller */
+   outp(R8259A_CONTROL,0x20);
+
+   /* Note - Interrupts are not re-enabled to ensure
+            that the IRET will be executed before
+            the next interrupt */
+
+   return;
+}
+/* End of File */
+</pre>
+</BODY>
+</HTML>

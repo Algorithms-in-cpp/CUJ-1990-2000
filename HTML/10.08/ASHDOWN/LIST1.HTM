@@ -1,0 +1,430 @@
+<HTML><HEAD>
+<TITLE>August 1992/Radiosity and Realism/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1 (RAY_RAD)</A></h4>
+<pre>/* RAY_RAD - A Very Simple Ray-Traced Radiosity Renderer         */
+
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;math.h&gt;
+
+#define FLOOR          0       /* X-Y plane, Z = 0.0            */
+#define SOUTH_WALL     1       /* X-Z plane, Y = 0.0            */
+#define EAST_WALL      2       /* Y-Z plane, X = 8.0            */
+#define NORTH_WALL     3       /* X-Z plane, Y = 8.0            */
+#define WEST_WALL      4       /* X-Z plane, X = 0.0            */
+#define MAX_RAYS       25000   /* Maximum number of rays        */
+#define MAX_VAL        1.0e+6  /* Maximum floating point value  */
+#define MIN_VAL        1.0e-6  /* Minimum floating point value  */
+#define NUM_LOOP       20      /* Number of iterations          */
+#define NUM_SURF       10      /* Number of surfaces            */
+#define PI             3.141592654
+#define DRAND()        ((double) rand() / (double) RAND_MAX)
+
+typedef struct         /* 3-D point coordinates                 */
+{
+  double x;            /* X-axis coordinate                     */
+  double y;            /* Y-axis coordinate                     */
+  double z;            /* Z-axis coordinate                     */
+} PT_3D;
+
+typedef struct         /* 3-D ray                               */
+{
+  PT_3D org;           /* Origin                                */
+  PT_3D dir;           /* Direction                             */
+} RAY;
+
+typedef struct         /* Element                               */
+{
+  double total;        /* Total flux                            */
+  double unsent;       /* Unsent flux                           */
+} ELEM;
+
+typedef struct         /* Surface                               */
+{
+  PT_3D vertex[4];     /* Vertex array                          */
+  int num_row;         /* Number of element rows                */
+  int num_col;         /* Number of element columns             */
+  double col_dim;      /* Element column dimension              */
+  double row_dim;      /* Element row dimension                 */
+  double emittance;    /* Emittance                             */
+  double reflectance;  /* Reflectance                           */
+  ELEM *elemp;         /* Element array pointer                 */
+} SURF;
+
+static int send_flux(int, int, int);
+static void display_surface(void);
+static void find_element(RAY *, int *, int *, int *);
+static void global_to_local(int, PT_3D *, PT_3D *);
+static void local_to_global(int, RAY *, RAY *);
+static void select_ray(int, int, int, RAY *);
+
+static double MaxEmittance = 0.0;       /* Maximum emittance   */
+static SURF RoomSurf[NUM_SURF] = {      /* Room surfaces       */
+
+{ { { 0.0, 0.0, 0.0 }, { 8.0, 0.0, 0.0 },  /* Floor            */
+  { 8.0, 8.0, 0.0 }, { 0.0, 8.0, 0.0 } }, 8, 8, 1.0, 1.0,
+    0.0, 0.2, NULL },
+{ { { 0.0, 0.0, 0.0 }, { 0.0, 0.0, 8.0 },  /* South wall       */
+  { 8.0, 0.0, 8.0 }, { 8.0, 0.0, 0.0 } }, 8, 8, 1.0, 1.0,
+    0.0, 0.5, NULL },
+{ { { 8.0, 0.0, 0.0 }, { 8.0, 0.0, 8.0 },  /* East wall        */
+  { 8.0, 8.0, 8.0 }, { 8.0, 8.0, 0.0 } }, 8, 8, 1.0, 1.0,
+    0.0, 0.5, NULL },
+{ { { 8.0, 8.0, 0.0 }, { 8.0, 8.0, 8.0 },  /* North wall       */
+  {0.0, 8.0, 8.0 }, { 0.0, 8.0, 0.0 } }, 8, 8, 1.0, 1.0,
+    0.0, 0.5, NULL },
+{ { { 0.0, 8.0, 0.0 }, { 0.0, 8.0, 8.0 },  /* West wall        */
+  { 0.0, 0.0, 8.0 }, { 0.0, 0.0, 0.0 } }, 8, 8, 1.0, 1.0,
+    0.0, 0.5, NULL },
+{ { { 0.0, 0.0, 8.0 }, { 0.0, 3.0, 8.0 },  /* South ceil.      */
+  { 8.0, 3.0, 8.0 }, { 8.0, 0.0, 8.0 } }, 8, 3, 1.0, 1.0,
+    0.0, 0.8, NULL },
+{ { { 5.0, 3.0, 8.0 }, { 5.0, 5.0, 8.0 },  /* East ceiling     */
+  {8.0, 5.0, 8.0 }, { 8.0, 3.0, 8.0 } }, 3, 2, 1.0, 1.0,
+    0.0, 0.8, NULL },
+{ { { 0.0, 5.0, 8.0 }, { 0.0, 8.0, 8.0 },  /* North ceil.      */
+  { 8.0, 8.0, 8.0 }, { 8.0, 5.0, 8.0 } }, 8, 3, 1.0, 1.0,
+    0.0, 0.8, NULL },
+{ { { 0.0, 3.0, 8.0 }, { 0.0, 5.0, 8.0 },  /* West ceiling     */
+  { 3.0, 5.0, 8.0 }, { 3.0, 3.0, 8.0 } }, 3, 2, 1.0, 1.0,
+    0.0, 0.8, NULL },
+{ { { 3.0, 3.0, 8.0 }, { 3.0, 5.0, 8.0 },  /* Ceil. light      */
+  { 5.0, 5.0, 8.0 }, { 5.0, 3.0, 8.0 } }, 2, 2, 1.0, 1.0,
+    5000.0, 0.8, NULL } };
+
+int main(void)
+{
+  int col;             /* Column counter                       */
+  int elem;            /* Element counter                      */
+  int maximum;         /* Maximum number of rays               */
+  int num_elem;        /* Number of elements                   */
+  int num_rays;        /* Number of rays                       */
+  int row;             /* Row counter                          */
+  int surf;            /* Surface counter                      */
+  ELEM *elemp;         /* Element pointer                      */
+  SURF *surfp;         /* Surface pointer                      */
+
+  for (surf = 0; surf &lt; NUM_SURF; surf++) {
+    /* Instantiate elements                                    */
+    surfp = &amp;(RoomSurf[surf]);
+    num_elem = surfp-&gt;num_row * surfp-&gt;num_col;
+    if ((surfp-&gt;elemp = (ELEM *) malloc(num_elem * sizeof(ELEM)))
+       == NULL) {
+      fputs("Out of memory!\n", stderr);
+      return (2);
+    }
+
+    elemp = surfp-&gt;elemp;
+    for (elem = 0; elem &lt; num_elem; elem++, elemp++)
+      elemp-&gt;total = elemp-&gt;unsent = surfp-&gt;emittance;
+
+    if (surfp-&gt;emittance &gt; MaxEmittance)
+      MaxEmittance = surfp-&gt;emittance;
+  }
+
+  do {
+    /* Distribute flux between elements                         */
+    num_rays = 0;
+    for (surf = 0; surf &lt; NUM_SURF; surf++) {
+      surfp = &amp;(RoomSurf[surf]);
+      for (row = 0; row &lt; surfp-&gt;num_row; row++)
+        for (col = 0; col &lt; surfp-&gt;num_col; col++} {
+          if ((maximum = send_flux(surf, row, col)) &gt; num_rays)
+            num_rays = maximum;
+        }
+    }
+    display_surface();      /* Display intermediate results    */
+  } while (num_rays &gt; 0);   /* Repeat until convergence        */
+  
+  for (surf = 0; surf &lt; NUM_SURF; surf++)   /* Free memory     */
+    free(RoomSurf[surf].elemp);
+
+  return (0);
+}
+static int send_flux (  /* Send flux to other elements          */
+  int s_surf,           /* Sending surface index                */
+  int s_row,            /* Sending element row                  */
+  int s_col )           /* Sending element column               */
+{
+  int h_col;            /* Hit element column                   */
+  int h_row;            /* Hit element row                      */
+  int h_surf;           /* Hit surface index                    */
+  int num_rays;         /* Number of rays                       */
+  int ray;              /* Ray counter                          */
+  double inc_flux;      /* Incident (ray) flux                  */
+  double ref_flux;      /* Reflected flux                       */
+  RAY shoot;            /* Shooting ray                         */
+  ELEM *h_elemp;        /* Hit element pointer                  */
+  ELEM *s_elemp;        /* Sending element pointer              */
+  SURF *h_surfp;        /* Hit surface pointer                  */
+  SURF *s_surfp;        /* Sending surface pointer              */
+
+  s_surfp = &amp;(RoomSurf[s_surf]);
+  s_elemp = s_surfp-&gt;elemp + s_row * s_surfp-&gt;num_col + s_col;
+
+  /* Number of rays to shoot proportional to unsent flux        */
+  if ((num_rays = (int) (MAX_RAYS * s_elemp-&gt;unsent /
+      MaxEmittance)) == 0)
+    return (0);
+
+  inc_flux = s_elemp-&gt;unsent / num_rays;   /* Get ray flux      */
+
+  For (ray = 0; ray &lt; num_rays; ray++) {    /* Distribute flux  */
+    select_ray(s_surf, s_row, s_col, &amp;shoot);  /* Select ray   */
+
+    /* Find hit surface and element                            */
+    find_element(&amp;shoot, &amp;h_surf, &amp;h_row, &amp;h_col);
+
+    /* Calculate flux reflected from hit element               */
+    h_surfp = &amp;(RoomSurf[h_surf]);
+    h_elemp = h_surfp-&gt;elemp + h_row * h_surfp-&gt;num_col + h_col;
+    ref_flux = h_surfp-&gt;reflectance * inc_flux;
+
+    h_elemp-&gt;total += ref_flux;   /* Update total flux         */
+    h_elemp-&gt;unsent += ref_flux;  /* Update unsent flux        */
+  }
+
+  s_elemp-&gt;unsent = 0.0;  /* Reset sender's unsent flux        */
+
+  return (num_rays);
+}
+
+static void select_ray (  /* Randomly select ray               */
+  int surf,    /* Surface index                                */
+  int row,     /* Element row                                  */
+  int col,     /* Element column                               */
+  RAY *rayp )  /* Ray pointer                                  */
+{
+  double horz;      /* Ray direction local horizontal angle    */
+  double vert;      /* Ray direction local vertical angle      */
+  RAY local;        /* Ray local coordinates                   */
+  SURF *surfp;      /* Surface pointer                         */
+
+  surfp = &amp;(RoomSurf[surf]);
+
+  /* Randomly select local (surface) ray origin coordinates     */
+  /* within sending element boundary                            */
+  local.org.x = ((double) col + DRAND()) / surfp-&gt;col_dim;
+  local.org.y = ((double) row + DRAND()) / surfp-&gt;row_dim;
+  local.org.z = 0.0;
+
+  /* Randomly select local (surface) ray direction coordinates   */
+  /* with cosine probability distribution in vertical plane      */
+  horz = 2.0 * PI * DRAND();            /* Horizontal angle      */
+  vert = acos(sqrt(1.0 - DRAND()));     /* Vertical angle        */
+
+  /* Convert from spherical to rectilinear coordinates           */
+  local.dir.x = sin(vert) * cos(horz);
+  local.dir.y = sin(vert) * sin(horz);
+  local.dir.z = cos(vert);
+
+  /* Convert ray coordinates from local to global                */
+  local_to_global(surf, &amp;local, rayp);
+}
+static void find_element (       /* Find intersected element      */
+  RAY *rayp,            /* Ray pointer                            */
+  int *h_surfp,         /* Hit surface index pointer              */
+  int *h_rowp,          /* Hit element row pointer                */
+  int *h_colp )         /* Hit element column pointer             */
+{
+  int surf;             /* Surface counter                        */
+  double s = MAX_VAL;   /* Smallest parametric value              */
+  double t;             /* Current parametric value               */
+  PT_3D hit;            /* Hit point coordinates                  */
+  PT_3D temp;           /* Temporary point coordinates            */
+  SURF *surfp;          /* Surface pointer                        */
+
+  for (surf = 0; surf &lt; NUM_SURF; surf++) {
+    surfp = &amp;(RoomSurf[surf]);
+
+    /* Determine if and where ray intersects surface plane       */
+    switch (surf) {
+      case EAST_WALL:
+      case WEST_WALL:
+        if (fabs(rayp-&gt;dir.x) &gt; MIN_VAL) {
+          t = (surfp-&gt;vertex[0].x - rayp-&gt;org.x) / rayp-&gt;dir.x;
+          if (t &gt; MIN_VAL &amp;&amp; t &lt; s) {
+            s = t;
+            *h_surfp = surf;
+          }
+        }
+        break;
+      case SOUTH_WALL:
+      case NORTH_WALL:
+        if (fabs(rayp-&gt;dir.y) &gt; MIN_VAL) {
+          t = (surfp-&gt;vertex[0].y - rayp-&gt;org.y) / rayp-&gt;dir.y;
+          if (t &gt; MIN_VAL &amp;&amp; t &lt; s) {
+            s = t;
+            *h_surfp = surf;
+          }
+        }
+        break;
+      case FLOOR:
+        if (fabs(rayp-&gt;dir.z) &gt; MIN_VAL) {
+          t = (surfp-&gt;vertex[0].z - rayp-&gt;org.z) / rayp-&gt;dir.z;
+          if (t &gt; MIN_VAL &amp;&amp; t &lt; s) {
+            S = t;
+            *h_surfp = surf;
+          }
+        }
+        break;
+      default:
+        if (fabs(rayp-&gt;dir.z) &gt; MIN_VAL) {
+          t = (surfp-&gt;vertex[0].z - rayp-&gt;org.z) / rayp-&gt;dir.z;
+          if (t = MIN_VAL &amp;&amp; t &lt; s) {
+            /* Check for intersection inside surface boundary    */
+            temp.x = rayp-&gt;org.x + t * rayp-&gt;dir.x;
+            temp.y = rayp-&gt;org.y + t * rayp-&gt;dir.y;
+            if ((temp.x &gt;= surfp-&gt;vertex[0].x &amp;&amp; temp.x &lt; surfp-&gt;vertex[3].x) &amp;&amp; 
+                (temp.y &gt;= surfp-&gt;vertex[0].y &amp;&amp; temp.y &lt; surfp-&gt;vertex[1].y)) {
+              s = t;
+              *h_surfp = surf;
+            }
+          }
+        }
+        break;
+    }
+  }
+
+  /* Calculate hit point global coordinates                     */
+  temp.x = rayp-&gt;org.x + s * rayp-&gt;dir.x;
+  temp.y = rayp-&gt;org.y + s * rayp-&gt;dir.y;
+  temp.z = rayp-&gt;org.z + s * rayp-&gt;dir.z;
+
+  /* Convert global to local (surface) coordinates              */
+  global_to_local(*h_surfp, &amp;temp, &amp;hit);
+
+  /* Calculate hit element row and column indices               */
+  *h_rowp = (int) (hit.y / surfp-&gt;row_dim);
+  *h_colp = (int) (hit.x / surfp-&gt;col_dim);
+}
+
+static void global_to_local ( /* Convert global to local         */
+
+  int surf,             /* Surface index                         */
+  PT_3D *globalp,       /* Global coordinates pointer            */
+  PT_3D *localp )       /* Local coordinates pointer             */
+{
+  PT_3D *vp;    /* Vertex pointer                                */
+
+  vp = &amp;(RoomSurf[surf].vertex[0]);
+  switch (surf) {
+    case FLOOR:
+      localp-&gt;x = globalp-&gt;x - vp-&gt;x;
+      localp-&gt;y = globalp-&gt;y - vp-&gt;y;
+      break;
+    case SOUTH_WALL:
+      localp-&gt;x = globalp-&gt;z - vp-&gt;z;
+      localp-&gt;y = globalp-&gt;x - vp-&gt;x;
+      break;
+    case EAST_WALL:
+      localp-&gt;x = globalp-&gt;z - vp-&gt;z;
+      localp-&gt;y = globalp-&gt;y - vp-&gt;y;
+      break;
+    case NORTH_WALL:
+      localp-&gt;x = globalp-&gt;z - vp-&gt;z;
+      localp-&gt;y = vp-&gt;x - globalp-&gt;x;
+      break;
+    case WEST_WALL:
+      localp-&gt;x = globalp-&gt;z - vp-&gt;z;
+      localp-&gt;y = vp-&gt;y - globalp-&gt;y;
+      break;
+    default:
+      localp-&gt;x = globalp-&gt;y - vp-&gt;y;
+      localp-&gt;y = globalp-&gt;x - vp-&gt;x;
+      break;
+  }
+}
+
+static void local_to_global (     /* Convert ray coordinates     */
+  int surf,            /* Surface index                          */
+  RAY *localp,         /* Local coordinates pointer              */
+  RAY *globalp )       /* Global coordinates pointer             */
+{
+
+  PT_3D *vp;    /* Vertex pointer                                */
+
+  vp = &amp;(RoomSurf[surf].vertex[0]);
+  switch (surf) {
+    case FLOOR:
+      globalp-&gt;org.x = vp-&gt;x + localp-&gt;org.x;
+      globalp-&gt;org.y = vp-&gt;y + localp-&gt;org.y;
+      globalp-&gt;org.z = vp-&gt;z + localp-&gt;org.z;
+      globalp-&gt;dir.x = localp-&gt;dir.x;
+      globalp-&gt;dir.y = localp-&gt;dir.y;
+      globalp-&gt;dir.z = localp-&gt;dir.z;
+      break;
+    case SOUTH_WALL:
+      globalp-&gt;org.x = vp-&gt;x + localp-&gt;org.y;
+      globalp-&gt;org.y = vp-&gt;y + localp-&gt;org.z;
+      globalp-&gt;org.z = vp-&gt;z + localp-&gt;org.x;
+      globalp-&gt;dir.x = localp-&gt;dir.y;
+      globalp-&gt;dir.y = localp-&gt;dir.z;
+      globalp-&gt;dir.z = localp-&gt;dir.x;
+      break;
+    case EAST_WALL:
+      globalp-&gt;org.x = vp-&gt;x - localp-&gt;org.z;
+      globalp-&gt;org.y = vp-&gt;y + localp-&gt;org.y;
+      globalp-&gt;org.z = vp-&gt;z + localp-&gt;org.x;
+      globalp-&gt;dir.x = -localp-&gt;dir.z;
+      globalp-&gt;dir.y = localp-&gt;dir.y;
+      globalp-&gt;dir.z = localp-&gt;dir.x;
+      break;
+    case NORTH_WALL:
+      globalp-&gt;org.x = vp-&gt;x - localp-&gt;org.y;
+      globalp-&gt;org.y = vp-&gt;y - localp-&gt;org.z;
+      globalp-&gt;org.z = vp-&gt;z + localp-&gt;org.x;
+      globalp-&gt;dir.x = -localp-&gt;dir.y;
+      globalp-&gt;dir.y = -localp-&gt;dir.z;
+      globalp-&gt;dir.z = localp-&gt;dir.x;
+      break;
+    case WEST_WALL:
+      globalp-&gt;org.x = vp-&gt;x + localp-&gt;org.z;
+      globalp-&gt;org.y = vp-&gt;y - localp-&gt;org.y;
+      globalp-&gt;org.z = vp-&gt;z + localp-&gt;org.x;
+      globalp-&gt;dir.x = localp-&gt;dir.z;
+      globalp-&gt;dir.y = -localp-&gt;dir.y;
+      globalp-&gt;dir.z = localp-&gt;dir.x;
+      break;
+    default:
+      globalp-&gt;org.x = vp-&gt;x + localp-&gt;org.y;
+      globalp-&gt;org.y = vp-&gt;y + localp-&gt;org.x;
+      globalp-&gt;org.z = vp-&gt;z - localp-&gt;org.z;
+      globalp-&gt;dir.x = localp-&gt;dir.y;
+      globalp-&gt;dir.y = localp-&gt;dir.x;
+      globalp-&gt;dir.z = -localp-&gt;dir.z;
+      break;
+  }
+}
+
+static void display_surface(void)       /* Display surfaces       */
+{
+  int col;              /* Element column index                  */
+  int row;              /* Element row index                     */
+  int surf;             /* Surface counter                       */
+  ELEM *elemp;          /* Element pointer                       */
+  SURF *surfp;          /* Surface pointer                       */
+  static int loop = 0;  /* Iteration counter                     */
+
+  printf("Loop %d\n", loop++);
+  for (surf = 0; surf &lt; NUM_SURF; surf++) {
+    printf("Surface %d\n", surf);
+    surfp = &amp;(RoomSurf[surf]);
+    for (row = 0; row &lt; surfp-&gt;num_row; row++) {
+      for (col = 0; col &lt; surfp-&gt;num_col; col++) {
+        elemp = surfp-&gt;elemp + row * surfp-&gt;num_col + col;
+        printf("% 8.2f ", elemp-&gt;total / (PI * surfp-&gt;row_dim *
+            surfp-&gt;col_dim));
+      }
+      putchar('\n');
+    }
+  }
+}
+
+/* End of File */</pre>
+
+</BODY>
+</HTML>

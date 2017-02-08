@@ -1,0 +1,185 @@
+<HTML><HEAD><TITLE>July 1990/Resident Print Handlers Using Turbo C/Listing 1</TITLE></HEAD><BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4><A name="0184_00DB"><A name="0184_00DB">Listing 1<A name="0184_00DB"></h4><P>
+<pre>/*  Program to Replace Print Screen Function */
+
+#include &lt;stdio.h&gt;
+#include &lt;dos.h&gt;
+#include &lt;bios.h&gt;
+char put_out(char character);
+char status();
+void printrow(int y,int screen);
+
+int i, j, attr, buffer[80][2];
+unsigned char far *new_chars;
+char output1,output2;
+
+void interrupt print_handler()
+{
+   put_out(0x02);      /*Enter graphics mode*/
+   put_out(0x4C);      /*Enter landscape mode*/
+   for (j=0;   j&lt;3;  j++)
+   {
+      put_out(0x1B);
+      put_out(0x4F);
+      put_out(0x00);
+      put_out(0xD4);
+      put_out(0x00);
+      put_out(0x24);
+      /*Set origin to row 228 and column 36*/
+      for (i=0;  i&lt;25;  i++)
+         printrow(i, j);
+      if (j&lt;2)
+         put_out(0x0C); /*Advance color panel*/
+   }
+   put_out(0x04);    /*Eject printed sheet*/
+}
+
+char put_out(char character)
+{
+   char status=1;
+   int port = 0x378;
+   /*Send character to parallel port*/
+   outp(port,character);
+   /*Wait for printer to be ready*/
+   while ((!(status=inp(port+1) &amp; 0x80));
+   outp(port+2,0x0D);    /*Start output strobe*/
+   outp(port+2,0x0C);    /*End output strobe*/
+}
+void printrow(int y, int screen)
+{
+   int i,j,k,m,temp,ch,offset,tester;
+   char far *address;
+   unsigned char char_test,char_or;
+for (i=0; i&lt;80; i++)
+{
+   offset = 2* (80*y + i);
+   address = 0xB8000000L + offset;
+   attr = *{address+1);   /*get attribute*/
+   ch = *address;         /*get character*/
+   buffer[i][0] = ch;   /*character to first buffer*/
+   temp = attr &amp; 0x07;
+   buffer[i] [1] = 0;
+   if ((screen == 0) &amp;&amp; ((temp%2) == 0))
+      buffer[i][1] = 1;
+   if ((screen == 2) &amp;&amp; (temp &lt;4))
+      buffer[i][1] = 1;
+   if ((screen == 1) &amp;&amp; ((temp == 0) | | (temp == 1) | |
+      (temp == 4) || (temp == 5)))
+      buffer[i][1] = 1;
+   temp = (attr &amp; 0x70)&gt;&gt;4;
+   if ((screen == 0) &amp;&amp; ((temp%2) == 0))
+      buffer[i][1] += 2;
+   if ((screen == 2) &amp;&amp; (temp &lt;4))
+      buffer[i] [1] += 2;
+   if ((screen == 1) &amp;&amp; ((temp == 0) | | (temp == 1) | |
+      (temp == 4) || (temp == 5)))
+      buffer[i][1] += 2; /*set 2nd buffer to show printing */
+                      /*of foreground and background */
+
+for (i=0; i&lt;14; i++)
+{
+   for (k=0; k&lt;3; k++)
+   {
+      put_out(0x1B);
+      put_out(0x4B);    /*Raster data follows*/
+      put_out(0x00);
+      put_out(0xA0);    /*160 bytes to be output*/
+      for (j=0;  j&lt;80; j++)
+      {
+         /*determine what bits to set for*/
+         /*correct color*/
+         switch(buffer[j][1])
+         {
+         case 0:      /*Color not printed*/
+                put_out(0x00);
+                put_out(0x00);
+                break;
+         case 1:      /*Foreground on ly printed*/
+                output1 = 0x00;
+                output2 = 0x00;
+                tester = 0;
+                for (m=0; m&lt;4; m++)
+                {
+                   char_test = 0x80 &gt;&gt; m;
+                   char_or = 0xC0 &gt;&gt; tester;
+                   if ((*(new_chars+buffer[j][0]*14+i) &amp;
+                      char_test) != 0)
+                   output1 = output1 | char_or;
+                   tester += 2;
+                tester = 0;
+                for (m=0; m&lt;4; m++)
+                {
+                   char_test = 0x80 &gt;&gt; (m+4);
+                   char_or = 0xC0 &gt;&gt; tester;
+                   if ((*(new_chars+buffer[j][0]*14+i) &amp;
+                      char_test) != 0)
+                   output2 = output2 | char_or;
+                   tester += 2;
+                }
+                put_out(output1);
+                put_out(output2);
+                break;
+                put_out(output1);
+                put_out(output2);
+                break;
+         case 2:      /*Background only printed*/
+                output1 = 0x00;
+                output2 = 0x00;
+                tester = 0;
+                for (m=0; m&lt;4; m++)
+                {
+                   char_ test = 0x80 &gt;&gt; m;
+                   char_or = 0xC0 &gt;&gt; tester;
+                   if ((*(new_chars+buffer[j][0]*14+i) &amp;
+                      char_test) == 0)
+                   output1 = output1 | char_or;
+                   tester += 2;
+                }
+                tester = 0;
+                for (m=0; m&lt;4; m++)
+                {
+                   char_test = 0x80 &gt;&gt; (m+4);
+                   char_or = 0xC0 &gt;&gt; tester;
+                   if ((*(new_chars+buffer[j] [0]*14+i) &amp;
+                      char_test) == 0)
+                   output2 = output2 | char_or;
+                   tester += 2;
+                }
+                
+         case 3:      /*Solid color printed*/
+                put_out(0xFF);
+                put_out(0xFF);
+                break;
+         }
+       }
+      }
+   }
+}
+main()
+{
+   char far *address;
+   unsigned char check;
+   union REGS reg;
+   struct SREGS inreg;
+   address = 0x00000017;
+   check = *address;
+   if (check == 0xF0)  /*Check if still address in ROM BIOS*/
+   {
+      setvect(5,print_handler);  /*Replace interrupt address*/
+                             /*with that of print_handler*/
+      
+      _BH = 2;
+      _AH = 0x11;
+      _AL = 0x30;
+      geninterrupt(0x10); /*Get address of character table*/
+      new_chars = (unsigned char far *) (_ES*0x10000 +_BP);
+      printf("\nText Screen Printing Routine for"
+          " PlotMaster Installed\n");
+      
+      keep(0,0x200);  /*Terminate and stay resident*/
+   }
+   else
+      printf("\nAlternate Print Screen Routine Has"
+          " Already Been Installed\n");
+}</pre>
+</BODY></HTML>

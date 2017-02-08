@@ -1,0 +1,172 @@
+<HTML><HEAD>
+<TITLE>February 1994/Coding with Printable Characters/Listing 6</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 6 <I>Encode 9 bytes to 11 characters</I></A></h4>
+<pre>/* EBAZ.Cz
+ * Contributed to Public Domain 9/93
+ * by Thad Smith, Boulder Co.
+ */
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include "baz.h"
+#include "bazcom.h"
+#include "crc16.h"
+
+static unsigned int crc;/* input CRC */
+static int width;       /* # output chars/line */
+static int col;         /* current column      */
+static int ninb;        /* # bytes in inbuf    */
+static unsigned char inbuf[BINB_LEN * 2];
+static char outbuf[ENCB_LEN * 2];
+static int (*outfunc) (const char *out, size_t len);
+
+#define BASESQ (unsigned long)(BASE*BASE)
+#define MAKE_PRINT(c) (char)((c)+FIRST_CODE)
+#define CV2ASCII(p,v) ((p)[0]=MAKE_PRINT((v)/BASE), \
+                   (p)[1]=MAKE_PRINT((v)%BASE))
+
+static int putn (const char *out, int n);
+
+/* Initialize the BAZ911 encoder. */
+int ebaz_init (
+   int p_width,           /* width of output lines */
+   outf_t *p_outfunc
+){
+   initcrctab ();
+   crc = CRC_INIT_VALUE;
+   ninb = 0;
+   col = 0;
+   outfunc = p_outfunc;
+   width = p_width;
+   return 0;
+}
+
+/* Encode the next block of data. */
+int ebaz_data (
+   const unsigned char *data,
+   size_t len           /* length of data or 0=end */
+){
+   int         s;       /* output return status */
+
+   if (len) {
+      unsigned int cl;  /* # bytes needed for block */
+      while (len &gt; MAX_ENDBLK_DB - ninb) {
+         if (ninb) {
+            if (ninb &lt; BINB_LEN) {
+               cl = BINB_LEN - ninb;
+               memcpy (inbuf + ninb, data, cl);
+               len -= cl;
+               data += cl;
+               ninb = BINB_LEN;
+            }
+            /* convert block in inbuf */
+            crc = updcrc (crc, inbuf, BINB_LEN);
+            encode_9_to_11 (outbuf, inbuf);
+            if ((s = putn (outbuf, ENCB_LEN)) != 0)
+               return s;
+
+            /* Now move remainder in inbuf down */
+            memmove (inbuf, inbuf + BINB_LEN, ninb -= BINB_LEN);
+          } else {
+            /* Encode full blocks from input buffer */
+            for (; len &gt; MAX_ENDBLK_DB;
+                data += BINB_LEN, len -= BINB_LEN) {
+
+              crc = updcrc (crc, data, BINB_LEN);
+              encode_9_to_11 (outbuf, data);
+              if ((s = putn (outbuf, ENCB_LEN)) !=0)
+                 return s;
+            }
+         }
+      }
+      /* Copy remainder of input to working buffer */
+      memcpy (inbuf + ninb, data, len);
+      ninb += len;
+      return 0;
+
+   } else {              /* final block of data */
+      /** Write endmarker with final byte count.
+       * Insert CRC and fill out blocks with 0xff to
+       * prevent change when output is truncated.   */
+      char        endmark[2];
+      endmark[0] = END_FLAG;
+      endmark[1] = MAKE_PRINT(ninb);
+      if ((s = putn (endmark, sizeof endmark)) != 0)
+         return s;
+
+      crc = updcrc (crc, inbuf, ninb);
+      inbuf[ninb++] = (crc &gt;&gt; 8) &amp; 0xff;
+      inbuf[ninb++] = crc &amp; 0xff;
+      memset (inbuf + ninb, 0xff, BINB_LEN * 2 - ninb);
+      encode_9_to_11 (outbuf, inbuf);
+      if (ninb &gt; BINB_LEN) {
+         ninb += 2;
+         encode_9_to_11 (outbuf + ENCB_LEN,
+                      inbuf + BINB_LEN);
+      } else if (ninb &lt; BINB_LEN-2) ninb = BINB_LEN-2;
+      /* Truncate the last block to the number of
+       * required characters for the length.        */
+      if ((s = putn (outbuf, ninb + 2)) != 0)
+         return s;
+      return outfunc ("\n", 1);
+   }
+}
+
+/* Send output to the output function, adding newline
+ * character every width encoded characters.        */
+static int
+putn (const char *out, int n)
+{
+  int         s;       /* output return status */
+  while (width &amp;&amp; col + n &gt; width) {
+     if (width &gt; col) {
+        if ((s = outfunc (out, width - col)) != 0)
+           return s;
+     }
+     if ((s = outfunc ("\n", 1)) != 0)
+        return s;
+     n    -= (width - col);
+     out  += (width - col);
+     col   = 0;
+   }
+   col +=n;
+   return outfunc (out, n);
+}
+
+/* Encode 9 bytes into 11 printable ASCII chars.  */
+void encode_9_to_11 (char out[11],
+                  const unsigned char in[9])
+{
+   unsigned long block; /* conversion area      */
+   int  i;              /* input byte index     */
+   unsigned int qb = 0; /* prefixes             */
+   ldiv_t      ld;      /* quotient, remainder  */
+
+   for (i = 1; i &lt; 9; i += 4) {
+     unsigned     q;
+     block = ((unsigned long)
+            (((unsigned)in[i+0]&lt;&lt;8) | in[i+1])&lt;&lt;16)+
+           (((unsigned) in[i+2]&lt;&lt;8) | in[i+3]);
+
+     q = (unsigned) (block &gt;&gt; 16) / PBMULT;
+     block = block- ((unsigned long)(q*PBMULT) &lt;&lt; 16);
+     ld = ldiv ((long) block, (long) BASESQ);
+     CV2ASCII(out+i+2, (unsigned) ld.quot);
+     CV2ASCII(out+i+4, (unsigned) ld.rem);
+     qb = qb * PBASE + q;
+   }
+
+   /* Now convert the remaining byte and prefixes
+   * from previous block conversions                */
+   block = ((unsigned long) qb &lt;&lt; 8) |in[0];
+   ld =ldiv ((long) block, (long) BASESQ);
+   out[0] = MAKE_PRINT((unsigned) ld.quot);
+   CV2ASCII(out+1, (unsigned) ld.rem);
+}
+
+/* End of file */
+</pre>
+</BODY>
+</HTML>

@@ -1,0 +1,326 @@
+<HTML><HEAD>
+<TITLE>August 1991/Illustrated C/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1"><A NAME="heading1">Listing 1</A></h4>
+<pre>  1: /******************************************************
+  2: * plist.c: Process Source Listings for Publication
+  3: *       Written by Leor Zolman, 4/91
+  4: *
+  5: * Usage:
+  6: *     plist [-t#[,@]] [-n[#]] [-c#] [-o] &lt;file(s)&gt;
+  7: *
+  8: *  Options:
+  9: * -t#[,@]:  Set new tab spacing to every # columns
+ 10: *         If @ given, specifies OLD tab spacing
+ 11: *         (Both # and @ default to TAB_SETTING)
+ 12: *  -n[#]:   Generate line numbers, using # as field
+ 13: *         width (defaults to NUM_WIDTH)
+ 14: *  -c#:     Right-justify comments to column #
+ 15: *  -o     Write output into ".lst" file(s)
+ 16: *         If omitted, output goes to stdout.
+ 17: *  Compile:
+ 18: *   Turbo C:
+ 19: *     tcc plist.c [wildargs.obj]
+ 20: *   Xenix C:
+ 21: *     cc plist.c -o plist
+ 22: ******************************************************/
+ 23:
+ 24: #include &lt;stdio.h&gt;
+ 25: #include &lt;stdlib.h&gt;
+ 26: #include &lt;ctype.h&gt;
+ 27: #include &lt;string.h&gt;
+ 28:
+ 29: #define XENIX 0            /* 1 for Xenix, 0 for DOS */
+ 30: #define MAXLINE 200        /* longest allowable line */
+ 31: #define TAB_SETTING 4      /* default soft tab setting */
+ 32: #define NUM_WIDTH 3        /* default line # width */
+ 33: #define TRUE    1
+ 34: #define FALSE   0
+ 35:
+ 36: char *makofname(char *, char *);
+ 37: void do_line(char *);
+ 38: void dofile(char *);
+ 39:
+ 40: #if XENIX
+ 41:   char *strstr( char*, char * );
+ 42: #endif
+ 43:
+ 44: void pass1(char *, char *);
+ 45: void pass2(char *);
+ 46:
+ 47: int docmnts = FALSE;       /* do comments              */
+ 48: int donums = FALSE;        /* line numbering flag      */
+ 49: int make_lst = FALSE;      /* create .LST files        */
+ 50: int numwidth = NUM_WIDTH;
+ 51: int tabstop = TAB_SETTING;
+ 52: int old_tab = TAB_SETTING;
+ 53: int cmnt_col;              /* col. to right-justify to */
+ 54:
+ 55: char fmt[20];              /* line numbering fmt spec  */
+ 56: FILE *fpi, *fpo;           /* Input and output ptrs    */
+ 57: int lineno;                /* current line number      */
+ 58:
+ 59: void main(argc, argv)
+ 60: int argc;
+ 61: char **argv;
+ 62: {
+ 63:   int i, j;
+ 64:                        /* Process command line options: */
+ 65:   for (i = 1; i &lt;argc; i++)
+ 66:     if (argv[i][0] == '-')
+ 67:     {
+ 68:       switch (tolower(argv[i][1]))
+ 69:       {
+ 70:         case 'n': donums = TRUE;
+ 71:               if (j = atoi(&amp;argv[i][2]))
+ 72:                 numwidth = j;
+ 73:               break;
+ 74:
+ 75:         case 't': j = sscanf(&amp;argv[i][2], "<I>%</I>d,<I>%</I>d",
+ 76:                 &amp;tabstop, &amp;old_tab);
+ 77:               break;
+ 78:
+ 79:         case 'c': docmnts = TRUE;
+ 80:               cmnt_col = atoi(&amp;argv[i][2]);
+ 81:               if (cmnt_col &lt; 30)
+ 82:                 fprintf(stderr,
+ 83:                   "WARNING: -c value small!\n");
+ 84:               break;
+ 85:
+ 86:         case 'o': make_lst = TRUE;
+ 87:               break;
+ 88:
+ 89:         default: fprintf(stderr, "Unknown option: '<I>%</I>s'\n",
+ 90:                    argv[i]);
+ 91:               exit(0);
+ 92:        }
+ 93:        for (j = i; j &lt;argc - 1; j++)       /* compress */
+ 94:          argv[j] = argv[j + 1];            /* arg list */
+ 95:        argc-;
+ 96:        i-;
+ 97:      }
+ 98:
+ 99:   if (argc &lt; 2)
+100:     exit(fprintf(stderr,
+101:       "Usage: plist [-t#] [-n[#]] files...\n"));
+102:
+103:   if (donums)        /* create line number format string */
+104:     sprintf(fmt, "<I>%%%</I>dd: ", numwidth);
+105:
+106:   for (i = 1; i &lt; argc; i++)
+107:     dofile(argv[i]); /* process list of given files      */
+108: }
+109:
+110: /*
+111:  * Process the named file.
+112:  * If make_lst is true, create a .LST file for output.
+113:  * Otherwise, write output to standard output.
+114:  */
+115:
+116: void dofile(fname)
+117: char *fname;
+118: {
+119:   char linbuf[MAXLINE];
+120:   char ofname[30];
+121:
+122:   if ((fpi = fopen(fname, "r")) == NULL)
+123:   {
+124:     fprintf(stderr,
+125:       "\aCan't open input file \"<I>%</I>s\"\n", fname);
+126:     return;
+127:   }
+128:
+129:   if (make_lst)              /* if making .LST files... */
+130:   {
+131:     makofname(ofname, fname);/* create output filename  */
+132:     if ((fpo = fopen(ofname, "w")) == NULL)
+133:     {
+134:       fprintf(stderr, "\aCan't create \"<I>%</I>s\"\n", ofname)
+135:       fclose(fpi);
+136:       return;
+137:     }
+138:     fprintf(stderr, "Creating <I>%</I>s...\n", ofname);
+139:   }
+140:   else                       /* write to standard output */
+141:     fpo = stdout;
+142:
+143:   for (lineno=1;
+144:     fgets(linbuf, MAXLINE, fpi); lineno++)
+145:         do_line(linbuf);     /* process each line        */
+146:
+147:   fclose(fpi);               /* close input file         */
+148:   if (make_lst)              /* and, if writing .LST,    */
+149:     fclose(fpo);             /* then close that too     */
+150: }
+151:
+152: /*
+153:  * do_line(): Process a line of text
+154:  */
+155:
+156: void do_line(cp)
+157: char *cp;
+158: {
+159:   char result[MAXLINE], *resultp;
+160:
+161:   resultp = result;
+162:   if (donums)           /* if we're generating line nos. */
+163:   {
+164:     sprintf(result, fmt, lineno);
+165:     resultp += numwidth + 2;
+166:   }
+167:
+168:   pass1(cp, resultp);          /* perform tab translation */
+169:   if (docmnts)
+170:     pass2(result);             /* right justify comments  */
+171:
+172:   fputs(result, fpo);          /* write finished line     */
+173: }
+174:
+175: /*
+176:  * Perform tab translation for the line pointed to by cp.
+177:  * Within comments, interpret soft tab as having spacing
+178:  * of ORIGINAL soft tab setting, not the new tab setting.
+179:  */
+180:
+181: void pass1(cp, resultp)
+182: char *cp, *resultp;
+183: {
+184:   char c;
+185:   int col, old_col;              /* current column no.   */
+186:   int in_cmnt = FALSE;           /* if in a comment      */
+187:
+188:   col = old_col = 1;
+189:
+190:   while (c = *cp++)
+191:   {
+192:     if (docmnts &amp;&amp; !in_cmnt &amp;&amp; c == '/' &amp;&amp; *cp == '*')
+193:       in_cmnt = TRUE; 
+194:
+195:     switch (c)
+196:     {
+197:       case '\t':                 /* process a tab:       */
+198:         if (!in_cmnt)
+199:         {                        /* if not in a comment  */
+200:           do                     /* then add real spaces */
+201:             *resultp++ = ' ';
+202:           while (col++ <I>%</I> tabstop);
+203:           do                     /* and log virtual ones */
+204:             ;
+205:           while (old_col++ <I>%</I> old_tab);
+206:          }
+207:          else                    /* if IN a comment,     */
+208:            do                    /* then translate as    */
+209:              *resultp++ = ' ';   /* per the OLD tab size */
+210:            while (old_col++ <I>%</I> old_tab);
+211:          break;
+212:
+213:        default:                  /* handle other chars:  */
+214:          *resultp++ = c;
+215:          col++;                  /* just pass on through */
+216:          old_col++;
+217:      }
+218:   }
+219:   *resultp = '\0';
+220: }
+221:
+222: /*
+223:  * Justify comments to a common right margin.
+224:  * Complain if there isn't enough room on a line to fit the
+225:  * comment into the desired column width.
+226:  */
+227:
+228: void pass2(line)
+229: char *line;
+230: {
+231:   char cmntbuf[MAXLINE];
+232:   char *cmnt_start, *cmnt_end;
+233:   int cmnt_len, code_len, col;
+234:
+235:   if (!(cmnt_start = strstr(line, "/*")) ||
+236:         !(cmnt_end = strstr(line, "*/")))
+237:     return;          /* If no complete comment, return   */
+238:
+239:   *(cmnt_end += 2) = '\0';           /* found a comment  */
+240:   strcpy(cmntbuf, cmnt_start);       /* save the comment */
+241:   cmnt_len = strlen(cmntbuf);        /* get its length   */
+242:
+243:   while (isspace(*-cmnt_start))      /* find last non-  */
+244:     ;                        /* space before the comment */
+245:   *++cmnt_start = '\0';      /* and terminte the code    */
+246:
+247:   code_len = cmnt_start - line;      /* length of code   */
+248:   if (code_len + cmnt_len &gt; cmnt_col)    /* comment fit? */
+249:   {                                  /* no. complain.    */
+250:     fprintf(stderr,
+251:       "\aWarning: comment on line <I>%</I>d doesn't fit.\n",
+252:       lineno);
+253:     strcat(line, cmntbuf);       /* and concatenate it   */
+254:   }
+255:   else
+256:   {              /* comment will fit. Pad with spaces:   */
+257:     for (col = code_len;
+258:           col &lt; (cmnt_col - cmnt_len); col++)
+259:       line[col] = ' ';
+260:     strcpy(&amp;line[col], cmntbuf);          /* add comment */
+261:   }
+262:   strcat(line, "\n");
+263: }
+264:
+265: /*
+266:  * Create output file name by replacing extension of
+267:  * original filename with ".lst":
+268:  */
+269:
+270: char *makofname(dest, orig)
+271: char *dest, *orig;
+272: {
+273:   int i;
+274:
+275:   strcpy(dest, orig);
+276:   for (i = 0; dest[i] &amp;&amp; dest[i] != '.'; i++)
+277:     ;
+278:   strcpy(&amp;dest[i], ".lst");
+279:   return dest;
+280: }
+281:
+282: #if XENIX
+283: /*
+284:  * Search for first occurence of substring s2 in s1:
+285:  * Return a pointer to the first occurence, or NULL if
+286:  * none was found.
+287:  * (provided for Xenix only; this function is included
+288:  * with most ANSI-C distribution libraries)
+289:  */
+290:
+291: char *strstr(s1, s2)
+292: char *s1, *s2;
+293: {
+294:   int i, j, nposs;
+295:   char *p1;
+296:
+297:   int len1 = strlen(s1);
+298:   int len2 = strlen(s2);
+299:
+300:   if (len1 &lt; len2)       /* can't have substring longer  */
+301:     return NULL;         /* than entire string!          */
+302:
+303:   nposs = len1 - len2;   /* # of possible positions      */
+304:
+305:   for (i = 0; i &lt;= nposs; i++)
+306:   {                      /* check each possible position */
+307:     for (j = 0, p1 = &amp;s1[i]; j &lt; len2; j++)
+308:       if (*pl++ != s2[j])
+309:         break;           /* break on 1st mismatch        */
+310:     if (j == len2)       /* if no mismatches,            */
+311:       return &amp;s1[i];     /* then pattern was found       */
+312:   }
+313:   return NULL;           /* didn't find the pattern      */
+314: }
+315: #endif
+
+/* End of File */
+</pre>
+</BODY>
+</HTML>

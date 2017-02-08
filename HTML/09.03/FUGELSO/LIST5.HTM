@@ -1,0 +1,75 @@
+<HTML><head><TITLE>March 1991/Real-Time Data Acquisition/Listing 5</TITLE></head>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 5 (lidar_write.c)</A></h4>
+<pre>/* ---
+  lidar_write task. This task waits for a
+  message from the read routing. When a message
+  arrives, a frame buffer is written to disk.
+  After the write, the message is enqueued
+  onto the graph queue.
+--- */
+
+#include    "lidar.h"
+
+main()
+{
+   int     raw_fd, alive_sem;
+   int     terminate = 0;
+   int     graph_qid, write_qid;
+   char    *fb_shm;
+   message mptr;
+   
+   /* --- set process priority --- */
+   setpriority (PRIO_PROCESS, 0, LIDAR_WRITE);
+   
+   /* --- open message queues --- */
+   graph_qid = msgget (GRAPHICS_Q, 0666 | IPC_CREAT);
+   write_qid = msgget (WRITE_Q, 0666 | IPC_CREAT);
+   
+   /* --- get alive semaphore --- */
+   alive_sem = sem_get (ALIVE_KEY, 0);
+   
+   /* -- create shared memory buffer -- */
+   fb_shm = shmat (shmget (FB_KEY, FRAME_SIZE * N_FRAMES,
+                0666 | IPC_CREAT), 0, 0);
+   
+   /* --- create a contiguous file --- */
+   mkcontig ("test.out", S_IWRITE, (long)N_RUNS *
+           (long)FRAME_SIZE);
+   
+   /* --- open raw, write file --- */
+   if ((raw_fd = open("test.out", O_WRONLY|O_CREAT)) == -1) {
+      printf("Unable to open raw file: lidar_write.\n");
+      exit (1);
+      }
+   
+   /* --- tell the world we're open for business --- */
+   sem_signal (alive_sem);
+   
+   /* --- main write loop --- */
+   while (!terminate) {
+      /* --- wait for a buffer ---- */
+      msgrcv (write_qid, &amp;mptr, MSG_SIZE, ANYTYPE, NOFLAGS);
+      
+      /* --- check for terminate --- */
+      if (mptr.key == QUIT)
+         terminate = 1;
+      else
+         write (raw_fd, fb_shm + mptr.key * FRAME_SIZE,
+                  WRITE_SIZE);
+      
+      /* --- pass frame buffer to graphics/processing
+            task --- */
+      msgsnd (graph_qid, &amp;mptr, MSG_SIZE, IPC_NOWAIT);
+      }
+   
+   /* -- release memory -- */
+   shmdt (fb_shm);
+   
+   /* --- close device --- */
+   close (raw_fd);
+}</pre>
+</BODY>
+</HTML>

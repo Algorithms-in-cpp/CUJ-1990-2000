@@ -1,0 +1,142 @@
+<HTML><HEAD>
+<TITLE>November 1994/Encapsulating the DOS IOCTL Interface/Listing 9</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 9 demo.cpp &#151; <I>Background print utility for testing IOCTL handle functions</A></I></h4>
+<pre>#include &lt;stdio.h&gt;
+#include &lt;conio.h&gt;
+#include &lt;alloc.h&gt;
+#include &lt;io.h&gt;
+#include &lt;errno.h&gt;
+#include "chandle.h"
+#include "fhandle.h"
+
+#define DEFAULT_SLICE 100
+#define DEFAULT_BUFSIZE 512
+#define ENABLE 1
+#define DISABLE 0
+#define TRUE 0
+#define FALSE -1
+#define min(x,y) (((x) &lt; (y)) ? (x) : (y))
+
+class FilePrint {
+public:
+    FilePrint() {
+       _slice_cnt = DEFAULT_SLICE;
+       _hold = _master_switch = DISABLE;
+       _inf = (fileHandle *) 0;
+       _dev = (charHandle *) 0;
+       _outbuf = _bufptr = (char *) 0;
+       _bufcnt = 0;
+       }
+    ~FilePrint() {
+       if( _dev ) delete _dev;
+       if( _inf ) delete _inf;
+       if( _outbuf ) free( (void *) _outbuf );
+       }
+    int Status(void) { return_hold; }
+    void Status( int flag ) {_hold = flag; }
+    void resetCount( int cnt ) { _slice_cnt = cnt; }
+    int attachDevice( const char *device );
+    int submitFile( const char *path );
+    int backgroundOutput(void);
+protected:
+    int _slice_cnt, _hold, _master_switch, _bufcnt;
+    char *_outbuf, *_bufptr; //-&gt; output buffer
+    charHandle *_dev; //-&gt; output device
+    fileHandle *_inf; //-&gt; file to print
+    virtual int output(int);
+    virtual int input(void);
+}; // .... end class FilePrint
+
+int FilePrint::attachDevice( const char *device )
+{
+   /* Initialize a new output device and allocate an
+   * output buffer. Return master status flag ....
+   */
+   if( _dev ) delete _dev;
+   _dev = charHandle::Init( device );
+   if( !_outbuf )
+      _outbuf = (char *) malloc( DEFAULT_BUFSIZE );
+   _master_switch = ( !_dev || !_outbuf ) ?
+                             DISABLE : ENABLE;
+   return _master_switch;
+}
+int FilePrint::submitFile( const char *path )
+{   //submit a file to print, return print status...
+   if( _hold == ENABLE || _inf ||
+                   _master_switch == DISABLE )
+      return FALSE;    //already printing or disabled
+   _inf = fileHandle::Init( path );   //open the file
+   _hold =_inf ? ENABLE : DISABLE;    //start up if OK
+   return _hold;
+}
+int FilePrint::backgroundOutput(void)
+{   //Print up to _slice_cnt bytes,
+   //return #bytes output .......
+   if( _hold == DISABLE ||
+        _master_switch == DISABLE ) return 0;
+   if( _bufcnt == 0 ) { //refill the buffer
+      if( (_bufcnt = input()) == 0 ) { //at EOF
+          _hold = DISABLE;
+          delete _inf; //close down and
+          _inf = NULL; //indicate job finished
+          return 0;
+      }
+      _bufptr = _outbuf;
+   }
+   int cnt, num_out = 0;
+   cnt = min(_slice_cnt,_bufcnt);
+   for( ; cnt; cnt-- )    {
+      if( output( (int) *_bufptr ) == TRUE ) {
+          _bufptr++;
+          num_out++;
+          _bufcnt--;
+      }
+      return num_out;
+   }
+}
+int FilePrint::output(int ch) //virtual
+{   //output a byte ........
+   if( !_dev-&gt;deviceReadyOut() )
+      return FALSE;
+   int rval = write( _dev-&gt;readHandle(),
+                          (void *) &amp;ch, 1 );
+   return rval &gt; 0 ? TRUE : FALSE;
+}
+int FilePrint::input(void)         //virtual
+{   //refill output buffer, return #bytes read .....
+   return read( _inf-&gt;readHandle(), (void *) _outbuf,
+                            DEFAULT_BUFSIZE );
+}
+int main( int argc, char **argv ) {
+    char device[] = "LPT1";
+    FilePrint fp;
+    if( argc &lt; 2 ) {
+        printf("Need at least 1 file to print...\n");
+        return 1;
+    }
+    else if( fp.attachDevice( device ) == DISABLE ) {
+        printf("Unable to attach %s for output\n", device );
+        return 1;
+    }
+    for( int i = 1; argv[i]; i++ )     {
+       if( fp.submitFile(argv[i]) == DISABLE ) {
+           printf("Unable to open %s\n", argv[i] );
+           continue;
+       }
+       while( fp.Status() == ENABLE ) {
+       //echo keys pressed to screen while printing
+          if( kbhit() )
+              if( getche() == 27 ) return 0; //quit
+          fp.backgroundOutput();
+       }
+       return 0;
+    }
+}
+
+// End of File</pre>
+
+</BODY>
+</HTML>

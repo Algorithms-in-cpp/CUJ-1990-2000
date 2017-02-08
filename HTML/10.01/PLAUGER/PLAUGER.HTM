@@ -1,0 +1,100 @@
+
+
+
+<HTML>
+<HEAD>
+
+<TITLE>January 1992/Standard C</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocjan.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Columns</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Standard C<A name="0046_000F"><A name="0046_000F"></font></h2><P>
+<h3 align="center"><A name="0046_0000"><A name="0046_0000">Implementing &lt;stdio.h&gt;</h3><P>
+<h3 align="center"><font color="#800000">P.J. Plauger</font></h3><hr><blockquote><P>
+<P><i><A name="0046_0000"><A name="0046_0000">P.J. Plauger is senior editor of The C Users Journal. He is secretary of the ANSI C standards committee, X3J11, and convenor<I></I> <I></I>of the ISO C standards committee, WG14. His latest book is The Standard C Library, published by Prentice-Hall. You can reach<I></I> <I></I>him at <I>PJP@wsa.oz; or uunet!munnari!wsa.oz!pjp</I>.</i></P><P>
+<h4><FONT COLOR="#000080"><A name="0046_0010">Introduction<A name="0046_0010"></FONT></h4></P>
+The header &lt;<I>stdio.h</I>&gt; is far and away the largest one in the Standard C library. Only <I>&lt;stdlib.h&gt;</I> comes close in size, and that one is a collection of several unrelated groups of functions. By contrast, the header &lt;<I>stdio.h</I>&gt; focuses exclusively on one topic &#151; performing input and output.<P>
+I have discussed many aspects of this header in the past:<P>
+<UL><li>"Evolution of the C I/O Model," <I>CUJ</I> August, 1989.</li>
+<li>"Streams," <I>CUJ</I> September/ October, 1989.</li>
+<li>"Formatted Output," <I>CUJ</I> November, 1989.</li>
+<li>"Formatted Input," <I>CUJ</I> December/January, 1990.</li></UL>
+If you don't have access to back issues of <I>CUJ</I>, take heart. You will find most of these words recycled in Chapter 12: &lt;<I>stdio.h</I>&gt; of <I>The Standard C Library</I>. I am not about to repeat them yet again here.<P>
+I am also not going to follow my usual practice of quoting the relevant portion of the C Standard. That would take a whole column in its own right. I have no qualms about getting paid in part for quoting from the standard &#151; I feel I contributed significantly to developing those words. I just don't believe that such an extensive quote best serves the goal of this column &#151; to broaden your understanding of Standard C.<P>
+Instead I will go right to the really new stuff. I describe how I implemented the functions in &lt;<I>stdio.h.</I>&gt; The challenges are:<P>
+<UL><li>to keep as much code as possible portable</li>
+<li>to ensure that the system-dependent code is implementable efficiently on many systems</li>
+<li>to keep performance up</li>
+<li>to keep the code as simple and readable as possible despite the above requirements</li></UL>
+Remember, what I show here is just one possible implementation. Different approaches can be better, depending on circumstances. My purpose in showing a particular implementation is to illustrate how <I>&lt;stdio.h&gt; can</I> work, not how it <I>must</I> work.<P>
+Two design decisions are critical to the implementation of &lt;<I>stdio.h</I>&gt;:<P>
+<UL><li>the contents of the <I>FILE</I> data structure</li>
+<li>the low-level primitives that interact with the operating system to perform the actual input/output</li></UL>
+I begin by discussing the first of these two topics in detail. You can then appreciate how the portable low-level I/O functions work. I save the primitives for later.<P>
+<h4><FONT COLOR="#000080"><A name="0046_0011">Data Structures<A name="0046_0011"></FONT></h4></P>
+<A href="list1.htm">Listing 1</a>
+shows the file <I>stdio.h.</I> By now you should be familiar with my use of the internal header <I>&lt;yvals.h&gt;</I> to supply implementation-dependent parameters. Here are the parameters defined in &lt;<I>yvals.h</I>&gt; that affect &lt;<I>stdio.h</I>&gt;, with some reasonable values for them:<P>
+<pre>#define _NULL   (void *)0/* value for NULL */
+#define _FNAMAX 64 /*  value for FILENAME_MAX */
+#define _FOPMAX 32 /*  value for FOPEN_MAX */
+#define _TNAMAX 16 /*  value for TMP_MAX */</pre>
+The file <I>stdio.h</I> contains a few other mysteries which shall become clear in time. For now, I concentrate on the type definition <I>FILE</I>. Its members are:<P>
+<UL><li>_<I>Mode</I> &#151; a set of status bits for the stream, defined below</li>
+<li>_<I>Handle</I> &#151; the handle, or file descriptor, returned by the operating system for the opened file</li>
+<li>_<I>Buf</I> &#151; a pointer to the start of the stream buffer, or a null pointer if no buffer has been allocated</li>
+<li>_<I>Bend</I> &#151; a pointer to the first character beyond the end of the buffer, undefined if_<I>Buf</I> is a null pointer</li>
+<li>_<I>Next</I> &#151; a pointer to the next character to read or write, <I>never a null pointer</I></li>
+<li>_<I>Rend</I> &#151; a pointer to the first character beyond the end of data to be read, <I>never a null pointer</I></li>
+<li>_<I>Rsave</I> &#151; holds_<I>Rend</I> if characters have been pushed back</li>
+<li>_<I>Wend</I> &#151; a pointer to the first character beyond the end of where data can be written, <I>never a null pointer</I></li>
+<li>_<I>Back</I> &#151; a stack of pushed-back characters</li>
+<li>_<I>Cbuf</I> &#151; a one-character buffer to use when no other buffer is available</li>
+<li>_<I>Nback</I> &#151; a count of the number of pushed-back characters</li>
+<li>_<I>Tmpnam</I> &#151; a pointer to the name of a temporary file to be removed when the file is closed, or a null pointer</li></UL>
+The design of the <I>FILE</I> data structure is driven by the needs of the macros <I>getc</I> and <I>putc</I> (and their companions <I>getchar</I> and <I>putchar</I>). Each of these expands to a conditional expression that either accesses the stream buffer directly or calls the underlying function. The predicate (test expression) part of the conditional expression must be simple and <I>always</I><I> </I><I>safe to execute</I>. Thus, <I>str-&gt;_Next</I><I> </I><I>&lt;</I><I> </I><I>str-&gt;_Rend</I> is always true if characters that can be read are in the buffer for the stream pointed at by <I>str</I>. And <I>str-&gt;_Next</I><I> </I><I>&lt;</I><I> </I><I>str-&gt;_Wend</I> is always true if space is available in the buffer to write characters to the stream. An expression such as <I>str-&gt;_Wend</I><I> </I>=<I> </I><I>str-&gt;_Buf</I>, for example, disallows writes to the buffer from these macros.<P>
+The functions that you call to read and write streams make more extensive tests. A read function, for example, distinguishes a variety of conditions such as: characters are available, buffer currently exhausted, end-of-file encountered, buffer not yet allocated, reading currently disallowed, and reading never allowed. The functions rely heavily on the various indicators in the member <I>_Mode</I> to make those distinctions.<P>
+Only functions within the Standard C library need be privy to the meaning of these indicators. For that reason, and others, I created the internal header <I>"</I><I>xstdio.h</I><I>"</I>. All the functions described in this chapter include <I>"</I><I>xstdio.h</I><I>"</I>. It defines macros for the stream-mode indicators. It includes <I>&lt;stdio.h&gt;</I> and declares all the internal functions used to implement the capabilities of &lt;<I>stdio.h&gt;</I>. It also defines a number of macros and types of interest only to the formatted input and output functions.<P>
+Unlike <I>&lt;stdio.h&gt;,</I> the header <I>"xstdio.h"</I> contains too many distractions to present at this point. I show you what goes into it only as the need arises. Here, for example, are the macro names for the various indicators in the member <I>_Mode</I>. Each is defined as a value with a different bit set, as in <I>0x1</I><I>, </I><I>0x2</I><I>, </I><I>0x4</I><I>, </I><I>0x8</I>, and so on. The actual values are unimportant, so I omit them here:<P>
+<UL><li><I>_MOPENR</I> &#151; set if file is open for reading</li>
+<li><I>_MOPENW</I> &#151; set if file is open for writing</li>
+<li><I>_MOPENA </I>&#151; set if all writes append to end of file</li>
+<li><I>_MTRUNC </I>&#151; set if existing file was truncated on open (not used after open)</li>
+<li><I>_MCREAT </I>&#151; set if a new file can be created on open (not used after open)</li>
+<li><I>_MBIN </I>&#151; set if stream is binary, not set if stream is interpreted as text</li>
+<li><I>_MALBUF </I>&#151; set if the buffer must be freed on close</li>
+<li><I>_MALFIL </I>&#151; set if the <I>FILE</I> data object must be freed on close</li>
+<li><I>_MEOF </I>&#151; the end-of-file indicator</li>
+<li><I>_MERR </I>&#151; the error indicator</li>
+<li><I>_MLBF </I>&#151; set if line buffering is in effect</li>
+<li><I>_MNBF </I>&#151; set if no buffering should occur</li>
+<li>_<I>MREAD</I> &#151; set if a read has occurred since last file-positioning operation</li>
+<li><I>_</I><I>MWRITE</I> &#151; set if a write has occurred since last file-positioning operation</li></UL>
+These macros have private names &#151; beginning with an underscore and an uppercase letter &#151; even though they don't have to. As I developed the library, I found myself moving them in and out of <I>&lt;stdio.h&gt;</I>. Some versions of the macros visible to user programs used these macro names, later versions did not. In the end, I left the names in this form as insurance. You may find occasion to introduce macros that manipulate the indicators in the member <I>_Mode</I><I>.</I><P>
+The indicators are actually the union of two sets. One is the set of indicators that determines how to open a file. The other is the set of indicators that helps record the state of the stream. Since the two sets partially overlap, I chose to keep them all in one "space" of bit encodings. A tidier implementation might well choose to separate the two uses. You might also want to define two sets of values if you are starved for bits in <I>_Mode</I>. In either case, you must add code to translate between the two representations.<P>
+<h4><FONT COLOR="#000080"><A name="0046_0012">Opening And Closing Files<A name="0046_0012"></FONT></h4></P>
+The best way to see how the library uses a <I>FILE</I> data object is to track one through its lifetime. <A href="list2.htm">Listing 2</a>
+shows the file <I>fopen.c</I><I>.</I> It defines the function <I>fopen</I> that you call to open a file by name. That function first looks for an idle entry in the static array of <I>FILE</I> pointers called <I>_Files</I>. It contains <I>FOPEN_MAX</I> elements. If all of these point to <I>FILE</I> data objects for open files, all subsequent open requests fail.<P>
+<A href="list3.htm">Listing 3</a>
+shows the file <I>xfiles.c</I> that defines the <I>_Files</I> data object. It defines static instances of <I>FILE</I> data objects for the three standard streams. Each is initialized to be open with appropriate parameters. I have wired in the handles <I>0</I> for standard input, <I>1</I> for standard output, and <I>2</I> for standard error. This is a widely used convention, inherited from UNIX. You may have to alter or map these values.<P>
+Elements beyond the first three in <I>_Files</I> are initialized to null pointers. Should <I>fopen</I> discover one of these, the function allocates a <I>FILE</I> data object and marks it to be freed on close. <I>fopen</I> discovers a closed standard stream by observing a non-null element of <I>_Files</I> that points at a <I>FILE</I> data object whose member <I>_Mode</I> is zero.<P>
+<I>fopen</I> calls on the internal function <I>_Foprep</I> to complete the process of opening a file. <A href="list4.htm">Listing 4</a>
+shows the file <I>freopen.c</I><I>.</I> The function <I>freopen</I> also calls this internal function. Note how it records the state of the indicator <I>_MALFIL</I> until after <I>fclose</I> has closed the file currently associated with the stream. The one operation that <I>freopen</I> does <I>not</I> want <I>fclose</I> to perform is to free the <I>FILE</I> data object.<P>
+You may as well see <I>fclose</I> too, at this point. <A href="list5.htm">Listing 5</a>
+shows the file <I>fclose.c</I><I>.</I> It undoes the work of the file-opening functions in a fairly obvious fashion. The one bit of magic is where it calls the function <I>_Fclose</I> to close the file associated with the stream.<P>
+<A href="list6.htm">Listing 6</a>
+shows the file <I>xfoprep.c</I> that defines the function <I>_Foprep</I><I>.</I> It parses the <I>mods</I> (second) argument to <I>fopen</I> or <I>freopen</I>, at least as much as it can understand, and initializes members of the <I>FILE</I> data object accordingly. In the end, however, it must call on some outside agency to finish the job of opening the file. <I>_Foprep</I> passes on the file name, the encoded indicators, and whatever is left of <I>mods</I> to a function called <I>_Fopen</I><I>.</I><P>
+<h4><FONT COLOR="#000080"><A name="0046_0013">Primitives<A name="0046_0013"></FONT></h4></P>
+<I>_Fclose</I> and <I>_Fopen</I> are two of several low-level primitives that stand between <I>&lt;stdio.h&gt;</I> and the outside world. Each must perform a standardized function for the Standard C library. Each must also be reasonably easy to tailor for the divergent needs of different operating systems. This implementation has nine functions in <I>&lt;stdio.h&gt;</I> that must be tailored to each operating system.<P>
+By implementing these interface primitives, you can use this library in conjunction with several popular operating systems. I have cobbled up versions that work with:<P>
+<UL><li>Turbo C on PC compatibles</li>
+<li>Sun UNIX on Sun 3 workstations</li>
+<li>ULTRIX on DEC VAX minicomputers</li></UL>
+I say "cobbled" because my versions cut an occasional corner. They may, for example, call functions that violate the name-space caveats of the C Standard. (I may call <I>unlink</I> instead of writing an assembly-language equivalent called <I>_Unlink</I><I>.</I>) Or they may not deal with all the nonstandard ways that a carriage return can appear within an MS-DOS file.<P>
+Nevertheless, I'm comfortable that these primitives are reasonable and workable. Next month, I'll discuss the I/O primitives in detail. I'll also show you an example of one way to float <I>&lt;stdio.h&gt;</I> atop an operating system.<P>
+<I>This article is excerpted in part from P.J. Plauger</I>, The Standard C Library, (<I>Englewood Cliffs</I>, <I>N.J</I>.: <I>Prentice-Hall</I>, <I>1992</I>).<P>
+
+<h4><a href="../../../source/1992/jan92/plauger.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

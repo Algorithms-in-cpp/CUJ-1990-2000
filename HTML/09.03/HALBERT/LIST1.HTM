@@ -1,0 +1,172 @@
+<HTML><HEAD>
+<TITLE>March 1991/Embedded Real-Time Multitasking Kernel/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1 (multask.s)</A></h4>
+<pre>        title     multask.s
+        name      mtask
+*********************************************************************
+*
+* NAME        :
+*
+* DESCRIPTION : multasking routines for the motorola 68xx series
+*               of microcomputers
+*
+*      init_task(task#, task_address) /* called from system mode */
+*      continue_task(task#)           /* called from system mode */
+*      suspend()                      /* called from task mode   */
+*
+*      The task_mode flag to keep track of which mode is in effect
+*      allows the use of subroutines hat are called by both system
+*      and task code. If those subroutines call suspend(). then in
+*      the case of a system mode caller syspend() must return
+*      control immediately.
+*
+*********************************************************************/
+
+* COMMON DEFINITIONS */
+stksize  equ  255
+tasks    equ  4
+  
+  xref SF    ;Stack Frame
+      
+      SECTION DATA,?,DATA
+
+sys_stk      dw   0
+sys_sf       dw   0
+task_num     dw   0
+task_mode    db   0
+tstk         dw   0                ; temporary stack storage
+task_tab     ds   tasks*2          ; tasks words
+fram_tab     ds   tasks*2          ; frame words
+       SECTION STACK,?,DATA
+   xdef  _task_stks, task_stks
+_task_stks
+task_stks    ds   stksize*(tasks+1)
+pad2         dw   0                ; end boundry for data
+   xdef  _sp?
+_sp?: DS 2
+pad3         dw   0                ; end boundry for stacks
+       
+       SECTION PROGRAM_CODE,?,CODE
+        
+        xdef     init_task?
+        xdef     continue_task?
+        xdef     suspend?
+
+*********************************************************************
+*
+* NAME       : init_task(task_number, task_address)
+*
+* DESCRIPTION: initializes the task specified by the task address
+*      saves the stack pointer into sys_stack
+*      saves the task number into task_num
+*      calculates the beginning of the task's stack
+*      loads the stack pointer with the results of the preceeding
+*         calculation
+*      sets task_mode to one to indicate that we are in task mode
+*         push address of callsus to new stack in case the task returns
+*         this prepares the return address of a hung task that
+*         repeatedly gives up control by calling suspend
+*      this routine drops through to suspend.
+*      so in effect this routine sets up a task with a stack then
+*      prepares the stack for the next call as if it were running
+*      then suspends itself.
+*
+init_task?:
+   sts  sys_stk             ; Save the system stack
+   std  task_num            ; save parameter task number for later
+   ldd  SF                  ; get stack frame pointer and save into
+   std  sys_sf              ; system variable
+   ldd  task_num
+   ldaa #stksize            ; make calculation of task_num times
+   mul                      ; stack size then add to beginning
+   addd #(task_stks+stksize)      ; of stack pool
+   std  tstk                ; put d into temporary stack storage
+   lds  tstk                ; get new stack from temp. stack storage
+   subd #3                  ; adjust frame pointer for next routine
+   std  SF                  ; load new stack frame pointer
+   inc  task_mode           ; put us into task mode
+   ldd  #callsus            ; get address of suspend and
+   pshb                     ; load it into the new stack
+   psha                     ;
+   pshx                     ; save stack into new stack
+
+* fall through to next routine (suspend)
+
+*********************************************************************
+*
+* NAME       : suspend()
+*
+* DESCRIPTION: suspend the current task by saving the current stack
+*              stack pointer into the task table and then getting the
+*              system stack and transfer control to the system, setting
+*              task mode to 0 and start executing the next task in the
+*              master while loop in main.
+*
+suspend?:                     ; see if we are in task mode if s?o
+       tst   task_mode      ; go to suspend task
+       bne   sustsk         ; else return
+       rts
+sustsk:
+       ldd   task_num       ; get the task number and multiply by two
+       lsld                 ; for indexing purposes into the task table
+       ldx   #task_tab
+       abx
+       sts   x              ; store the stack into the proper table entry
+       ldx   #fram_tab      ; get address of frame table and store SF
+       abx                  ; into indexed address of frame table array
+       ldd   SF
+       std   x
+       lds   sys_stk        ; restore the system stack
+       ldd   sys_sf         ; restore stack frame pointer
+       std   SF
+       clr   task_mode      ; go into system mode
+       rts                  ; and return
+
+*********************************************************************
+*
+* NAME       : continue(task_number)
+*
+* DESCRIPTION: continues the task specified by the task number
+*              get the task number in the task table
+*              loads the stack pointer at the table index
+*              set task mode to one indication we are task mode
+*              and returns
+*
+*
+
+continue_task?:
+       sts  sys_stk         ; store the stack
+       std  task_num        ; save into variable task_num
+       ldd  SF
+       std  sys_sf
+       ldd  task_num
+       lsld                 ; multiply task number by 2
+       ldx  #task_tab       ; get address of tasktable into index
+       abx                  ; add (task hum * 2) + table address
+       lds  x               ; load new stack into sp
+       ldx  #fram_tab       ; get the task's frame pointer and update
+       abx                  ; the frame pointer
+       ldd  x
+       std  SF
+       inc  task_mode       ; set task mode to task
+       rts                  ; return ( to new task)
+
+*********************************************************************
+*
+* NAME       :  callsus
+*
+* DESCRIPTION:  this routine is in case the task returns all the way
+*               back to the main routine.
+*
+
+callsus:
+       bsr suspend?
+       bra callsus
+       
+       end
+</pre>
+</BODY>
+</HTML>

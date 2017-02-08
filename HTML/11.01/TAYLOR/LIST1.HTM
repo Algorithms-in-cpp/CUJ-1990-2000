@@ -1,0 +1,127 @@
+<HTML><HEAD>
+<TITLE>January 1993/The UUCP g Protocol/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2 <B><I></B>The</I><B></B> fgsenddata <B><I></B>function sends out a data packet</I><B></B>.</A></h4>
+<pre>boolean
+fgsenddata (zdata, cdata)
+     char *zdata;
+     int cdata;
+{
+  char *z;
+  int itt, iseg, csize;
+  unsigned short icheck;
+
+  itt = DATA;
+  csize = iGremote_packsize;
+  iseg = iGremote_segsize + 1;
+
+  if (cdata &lt; iGremote_packsize)
+    {
+      /* If the remote packet size is larger than 64,
+         the default, we can assume they can handle a
+         smaller packet as well, which will be more
+         efficient to send.                           */
+      if (iGremote_packsize &gt; 64)
+        {
+          /*  The packet size is 1 &lt;&lt; (iseg + 4).  */
+          iseg = 1;
+          csize = 32;
+          while (csize &lt; cdata)
+           {
+             csize &lt;&lt;= 1;
+             ++iseg;
+           }
+        }
+
+      if (csize != cdata)
+        {
+         int cshort;
+
+         /* We have to move the data within the packet,
+            unfortunately. It only happens once per
+            file transfer. It would also be nice if we
+            computed the checksum as we move. We zero
+            out the unused bytes.
+*/
+         itt = SHORTDATA;
+         cshort = csize - cdata;
+         if (cshort &lt;= 127)
+           {
+             memmove (zdata + 1, zdata, cdata);
+             zdata[0] = (char) cshort;
+             memset (zdata + cdata + 1, 0, cshort - 1);
+           }
+         else
+           {
+             memmove (zdata + 2, zdata, cdata);
+             zdata[0] = (char) (0x80 | (cshort &amp; 0x7f));
+             zdata[1] = (char) (cshort &gt;&gt; 7);
+             memset (zdata + cdata + 2, 0, cshort - 2);
+           }
+        }
+    }
+
+  z = zdata - CFRAMELEN;
+
+  z[IFRAME_DLE] = DLE;
+  z[IFRAME_K] = (char) iseg;
+
+  icheck = (unsigned short) igchecksum (zdata, csize);
+  
+  /* Wait until there is room in the receiver's window
+     for us to send the packet. We do this now so that
+     we send the correct value for the last packet
+     received. Note that if iGsendseq == iGremote_ack,
+     this means that the sequence numbers are actually
+     8 apart, since the packet could not have been
+     acknowledged before it was sent; this can happen
+     when the window size is 7.                        */
+  while (iGsendseq == iGremote_ack
+        || CSEQDIFF (iGsendseq, iGremote_ack) &gt; iGremote_winsize)
+{
+     if (! fgwait_for_packet (TRUE, cGtimeout,
+                           cGretries))
+        return FALSE;
+    }
+
+  /* Ack all packets up to the next one, since the UUCP
+     protocol requires that all packets be acked in
+     order.                                                */
+  while (CSEQDIFF (iGrecseq, iGlocal_ack) &gt; 1)
+    {
+      iGlocal_ack = INEXTSEQ (iGlocal_ack);
+      if (! fgsend_control (RR, iGlocal_ack))
+        return FALSE;
+    }
+  iGlocal_ack = iGrecseq;
+
+  z[IFRAME__CONTROL] = (char) ((itt &lt;&lt; 6) | (iGsendseq &lt;&lt; 3) | iGrecseq);
+
+  iGsendseq = INEXTSEQ (iGsendseq);
+
+  icheck = ((unsigned short)
+       ((0xaaaa - (icheck ^ (z[IFRAME_CONTROL] &amp; 0xff))) &amp; 0xffff));
+  z[IFRAME_CHECKLOW] = (char) (icheck &amp; 0xff);
+
+  z[IFRAME_CHECKHIGH] = (char) (icheck &gt;&gt; 8);
+
+  z[IFRAME_XOR] = (char) (z[IFRAME_K] ^ z[IFRAME_CHECKLOW]
+            ^ z[IFRAME_CHECKHIGH] ^ z[IFRAME_CONTROL]);
+
+  /* If we're waiting for acks of retransmitted
+     packets, then don't send this packet yet. The
+     other side may not be ready for it yet. Instead,
+     code infggot_ack will send the outstanding packets
+     when an ack is received.                           */
+  if (iGretransmit_seq != -1)
+    return TRUE;
+
+  return fsend_data (z, CFRAMELEN + csize, TRUE);
+}
+
+/* End of File */
+</pre>
+</BODY>
+</HTML>

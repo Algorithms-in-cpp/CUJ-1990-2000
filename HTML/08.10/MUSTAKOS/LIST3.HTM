@@ -1,0 +1,546 @@
+<HTML><HEAD><TITLE>October 1990/Developing A C Simulation Library/Listing 3</TITLE></HEAD><BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4><A name="022D_0147"><A name="022D_0147">Listing 3 (CSIM.C)<A name="022D_0147"></h4><P>
+<pre>#include  &lt;alloc.h&gt;
+#include  &lt;bios.h&gt;
+#include  &lt;dos.h&gt;
+#include  &lt;stdio.h&gt;
+#include  &lt;stdlib.h&gt;
+#include  &lt;string.h&gt;
+#include  "csimint.h"
+
+int start_kb_process(void (*task)(void), int stacksize)
+{
+  int proc_id;
+  set_kb_process = 1;
+  proc_id = start_process(task, stacksize);
+  set_kb_process = 0;
+  return(proc_id);
+}
+
+int start_process(void (*task)(void), int stacksize)
+{
+  char *stack;
+  struct _simprocessT *process;
+  int *off_seg = (int *)&amp;stack;
+  unsigned int stackbytes;
+  int oldinit;
+  
+  /*  Check to see if tack handler has been installed */
+  
+  if (getvect(_INTRPT_) != task_handler)
+     /*  if it has not been installed, attempt to    */
+     
+     if (install_handler())
+       /* if it doesn't install, report err &amp; exit */
+     {
+        printf("error installing task handler \n");
+        exit_processing(1);
+     }
+  if (stacksize &gt; 0x0fdf)
+    /* Max stack size in paragraphs (SEGMENT counts) */
+  {
+      printf("stack size error: proc id : %d",
+            totalprocs);
+      exit_processing(2);
+  }
+  stackbytes = stacksize * 16;
+  
+  /* Setup Process header and stack               */
+  
+  process = (struct_simprocessT *
+           )calloc(sizeof(struct _simprocessT) +
+                  stackbytes, 1);
+  /* make sure there was enough memory              */
+  if (process == NULL)
+     return(2);
+  
+  stack = (char *)(process + 1);
+  
+  /* 'Normalize' the bottom of stack pointer, that is
+     make sure the offset is less then 16, as would be
+     the case if the program where compiled in the huge
+     memory model */
+  if (off_seg[0] &gt; 16)
+     for (; off_seg[0] &gt; 16;
+         off_seg[1]++, off_seg[0] -= 16)
+         ;
+  /* remember, the stack actually starts high and
+     builds its way down, so put the pointer at the top.*/
+  stack += stackbytes - 1;
+  
+  /* finish setup of stack and base pointers           */
+  
+  process-&gt;reg_sp = FP_OFF(stack);
+  process-&gt;reg_ss = FP_SEG(stack);
+  
+  process-&gt;reg_bp = FP_OFF(stack);
+  
+  process-&gt;proc_id = totalprocs++;
+  process-&gt;init = 1;
+  
+  /*  Setup start jump                                  */
+  process-&gt;reg_cs = FP_SEG(task);
+  process-&gt;reg_ip = FP_OFF(task);
+  /*  link into current processes                       */
+  if (processlist == NULL)
+  {
+     processlist = process;
+     processlist-&gt;next = process;
+     processlist-&gt;prev = process;
+  }
+  else
+  {
+     process-&gt;prev = processlist;
+     process-&gt;next = processlist-&gt;next;
+     process-&gt;next-&gt;prev = process;
+     processlist-&gt;next = process;
+     processlist = process;
+  }
+  if (set_kb_process)
+     kbprocess = processlist;
+ /*  make sure we can get back to where we were...    */
+ glbl_ss = _SS;
+ glbl sp=  _SP;
+ glbl_bp = _BP;
+ oldinit = _sim_init_val;
+ 
+ /*  tell the task handler what routine the
+     process uses   */
+  
+ glbl_fc = task;
+ 
+ /*  tell the task handler that this proc is initing */
+ 
+ _sim_init_val = 1;
+ 
+ /*  set up the new stak and base pointers and ...   */
+ _SS = process-&gt;reg_ss;
+ _SP = process-&gt;reg_sp;
+ _BP = process-&gt;reg_bp;
+ 
+ /*  have the task_handle do the rest                */
+ geninterrupt(_INTRPT_);
+ 
+ _SS = glbl_ss;
+ _SP = glbl_sp;
+ _BP = glbl_bp;
+ glbl_fc = NULL;
+ _sim_init_val = oldinit;
+ processlist = processlist-&gt;prev;
+ return(0);
+
+}
+
+void stop_process(int process_id)
+{
+ struct_simprocessT *process;
+ int go;
+ 
+ go = 1;
+ process = processlist;
+ 
+ while (go)
+ {
+  if (process_id == process-&gt;proc_id)
+  { 
+   
+   process-&gt;status.kill_flag = 1;
+   process-&gt;start_time = _sim_system_time;
+   go = 0;
+  }
+  if (process-&gt;next == processlist)
+  {
+   if (go)
+    printf(
+     "\nattempted to stop non-existant proc\n");
+   
+   go = 0;
+  }
+  else
+  {
+   process = process-&gt;next;
+  }
+ }
+}
+
+void sim_start(void)
+{
+ _sim_init_val = 0;
+ _last_update_time = *systimer;
+ geninterrupt(_INTRPT_);
+}
+
+void exit_processing(int condition)
+{
+ struct_simprocessT *pholder;
+ setvect(_INTRPT_, old_vector);
+ printf("Exit processing, code : %d\n", condition);
+ processlist-&gt;prev-&gt;next = NULL;
+ do
+ {
+     pholder = processlist;
+     processlist = processlist-&gt;next;
+     free(pholder);
+ } while (processlist != NULL);
+ exit(condition);
+}
+
+int install_handler(void)
+{
+ void *new_vector;
+ 
+ _sim_init_val = 2;
+ old_vector = getvect(_INTRPT_);
+ setvect(_INTRPT_, task_handler);
+ new_vector = getvect(_INTRPT_);
+ if (new_vector == old_vector)
+  return(1);
+ return(0);
+void interrupt task_handler(unsigned bp, unsigned di,
+                       unsigned si, unsigned ds,
+                       unsigned es, unsigned dx,
+                       unsigned cx, unsigned bx,
+                       unsigned ax, unsigned ip,
+                       unsigned cs, unsigned flags)
+{
+ int notfound;
+ struct_simprocessT *procpntr;
+
+ if (_sim_init_val == 2)
+        /*  if this ever happens, it means that the task
+        handler was installed before it should have
+        been, so de-install it and stop the program  */
+ {
+  exit_processing(10);
+ }
+ if (_sim_init_val == 0)  /*  sim_start has been run */
+ {
+    processlist-&gt;reg_bp = _BP;
+    processlist-&gt;reg_sp = _SP;
+    processlist-&gt;reg_ss = _SS;
+  
+  if (processlist-&gt;status.kill_flag)
+  {
+   if (processlist == kbprocess)
+      /*  You can,t kill the kbproc                */
+      processlist-&gt;status.kill_flag = 0;
+   else
+   {
+    if (processlist-&gt;next == processlist)
+       /*  no more procs                          */
+       exit_processing(20);
+
+    /*  break list                               */
+    processlist-&gt;prev-&gt;next =
+       processlist-&gt;next;
+
+    /*  move in front of break                   */
+    processlist = processlist-&gt;prev;
+    
+    /*  free dead proc                           */
+    free(processlist-&gt;next-&gt;prev);
+    
+    /*  fix break                                */
+    processlist-&gt;next-&gt;prev = processlist;
+   }
+  }
+  if ((kbprocess != NULL) &amp;&amp; (bioskey(1)))
+     processlist = kbprocess;
+  else
+  {
+     if (_sim_time_ratio ! = 0.0)
+     {
+       for (notfound = 1; notfound;)
+       {
+         if ((kbprocess != NULL) &amp;&amp;
+            (bioskey(1)))
+         {
+            processlist = kbprocess;
+            notfound = 0;
+         }
+         else
+         {
+            processlist = processlist-&gt;next;
+            if ((*systimer -
+                 _last_update_time) &gt;
+                (1 /_sim_time_ratio))
+            {
+                _sim_system_time +=
+                    (*systimer -
+                     _last_update_time) *
+                    _sim_time_ratio;
+                _last_update_time = *systimer;
+            }
+            if ((processlist-&gt;start_time &lt;=
+                 _sim_system_time) &amp;&amp;
+                (processlist-&gt;status.
+                 wait_flag == 0))
+                notfound = 0;
+         }
+       }
+       _sim_system_time = processlist-&gt;start_time;
+   }
+   else
+   {
+       if (processlist-&gt;status.wait_flag)
+       {
+         for (procpntr = processlist-&gt;next;
+             procpntr &amp;&amp;
+             (procpntr-&gt;status.wait_flag) &amp;&amp;
+             (procpntr-&gt;status.kill_flag);)
+         {
+             procpntr = procpntr-&gt;next;
+             if (procpntr == processlist)
+                procpntr = NULL;
+                }
+                if (procpntr == NULL)
+                {
+                   fprintf(stderr, "waitlock\n");
+                   exit_processing(1);
+                }
+                _sim_system_time =
+                   procpntr-&gt;start_time;
+         }
+         else
+                _sim_system_time =
+                   processlist-&gt;start_time;
+         procpntr = processlist-&gt;next;
+         while (procpntr != processlist)
+         {
+             if ((!procpntr-&gt;status.wait_flag) &amp;&amp;
+                (_sim_system_time &gt;
+                procpntr-&gt;start_time))
+                _sim_system_time =
+                procpntr-&gt;start_time;
+             procpntr = procpntr-&gt;next;
+         }
+         processlist = processlist-&gt;next;
+         while ((processlist-&gt;status.wait_flag  ||
+                processlist-&gt;status.kill_flag)     ||
+                (processlist-&gt;start_time &gt;
+                _sim_system_time))
+             processlist = processlist-&gt;next;
+         _last_update_time = *systimer;
+       }
+     }
+     CurrentTime = _sim_system_time / 18.2;
+     disable();
+     _SP = processlist-&gt;reg_sp;
+     _SS = processlist-&gt;reg_ss;
+     _BP = processlist-&gt;reg_bp;
+     enable();
+
+     if (processlist-&gt;init == 1)
+      /*  process is in its 1st step, so initialize it */
+     {
+       ax = processlist-&gt;reg_ax;
+       bx = processlist-&gt;reg_bx;
+       cx = processlist-&gt;reg_cx;
+       dx = processlist-&gt;reg_dx;
+       es = processlist-&gt;reg_es;
+       ds = processlist-&gt;reg_ds;
+       si = processlist-&gt;reg_si;
+       di = processlist-&gt;reg_di;
+       bp = processlist-&gt;reg_bp;
+       ip = processlist-&gt;reg_ip;
+       cs = processlist-&gt;reg_cs;
+       flags = processlist-&gt;reg_flag;
+       processlist-&gt;init = 0;
+      }
+     }
+     else  /*  sim_start has not been run  */
+     {
+      if (_sim_init_val == 1)
+      {
+       processlist-&gt;reg_ax = ax;
+       processlist-&gt;reg_bx = bx;
+       processlist-&gt;reg_cx = cx;
+       processlist-&gt;reg_dx = dx;
+       processlist-&gt;reg_es = es;
+       processlist-&gt;reg_ds = ds;
+       processlist-&gt;reg_si = si;
+       processlist-&gt;reg_di = di;
+       processlist-&gt;reg_ip = FP_OFF(glbl_fc);
+       processlist-&gt;reg_cs = FP_SEG(glbl_fc);
+       processlist-&gt;reg_flag = flags;
+       processlist-&gt;reg_bp = _BP;
+       processlist-&gt;reg_sp = SP;
+       processlist-&gt;reg_ss = _SS;
+       processlist-&gt;init = 1;
+       cs = cs;
+       ip = ip;
+       bp = bp;
+       }
+      }
+     }
+
+     int set_time_ratio(float ratio)
+     {
+      _sim_time_ratio = ratio;
+      return(0);
+     }
+
+     int my_process_id(void)
+     {
+      return(processlist-&gt;proc_id);
+     }
+
+     int wait_until_time(long unsigned starttime)
+     {
+      if (starttime &lt; (_sim_system_time / 18.2))
+      {
+         printf("Waiting for a time that is past in %d",
+                processlist-&gt;proc_id);
+         exit_processing(-1);
+      }
+      wait_for_time(float)(starttime * 18.2 -
+                        _sim_system_time) / 18.2);
+      return(0);
+     }
+     int wait_for_time(float delaytime)
+     {
+      if (_sim_time_ratio == 0)
+      {
+         processlist-&gt;start_time = _sim_system_time +
+            delaytime * 18.2;
+     }
+     else
+         processlist-&gt;start_time = _sim_system_time +
+         (long)(18.2 * delaytime);
+
+      geninterrupt(_INTRPT_);
+      return(0);
+     }
+     
+     int init_post(char *postname)
+     {
+         struct _postT *post;
+         
+         for (post = postlist; post != NULL; post = post-&gt;next)
+         {
+            if (strcmp((char *)&amp;post-&gt;name, postname) == 0)
+                return(post-&gt;handle);
+         }
+         post = (struct _postT *)calloc(sizeof(struct _postT),
+                                   1);
+         if (post == NULL)
+            return(- 1);
+
+         post-&gt;handle = totalposts++;
+         post-&gt;value = NULL;
+         strcpy((char *)&amp;post-&gt;name, postname);
+         
+         post-&gt;waiting = calloc(1, sizeof(void *));
+         post-&gt;waiting[0] = NULL;
+         
+         post-&gt;next = postlist;
+         post-&gt;prev = NULL;
+         
+         postlist-&gt;prev = post;
+         postlist = post;
+         return(post-&gt;handle);
+     }
+     int set_post(int posthandle, void *pointer)
+     {
+         struct _postT *post;
+         struct _simprocessT *procpntr;
+         int loop;
+         for (post = postlist; post != NULL; post = post-&gt;next)
+         {
+           if (post-&gt;handle == posthandle)
+           {
+             if (post-&gt;value != NULL)
+             {
+                 wait_for_time(0);
+                 if (post-&gt;value != NULL)
+                     return(post-&gt;handle);
+             }
+             if (post-&gt;waiting[0] != NULL)
+             {
+                 post-&gt;waiting[0]-&gt;status.wait_flag = 0;
+                 post-&gt;waiting[0]-&gt;start_time =
+                     _sim_system_time;
+                 loop = 0;
+                 procpntr = processlist-&gt;next;
+                 while (procpntr != processlist)
+                {
+                   if ((procpntr-&gt;status.wait_flag) &amp;&amp;
+                       (procpntr-&gt;waitpost == post))
+                   {
+                       post-&gt;waiting[loop] = procpntr;
+                       loop++;
+                   }
+                   procpntr = procpntr-&gt;next;
+                }
+                post-&gt;waiting[loop] = NULL;
+         }
+         post -&gt;value = pointer;
+         wait_for_time(0);
+         return(0);
+       }
+     }
+     return(-posthandle);
+   }
+   
+   void *get_post(int posthandle)
+   {
+     struct _postT *post;
+     void *ret;
+     
+     for (post = postlist; post != NULL; post = post-&gt;next)
+     {
+       if (post-&gt;handle == posthandle)
+       {
+         ret = post-&gt;value;
+         
+         if (ret == NULL)
+           return(ret);
+
+         post-&gt;value = NULL;
+         return(ret);
+       }
+     }
+     return(NULL);
+   }
+
+   void *wait_post(int posthandle)
+   {
+     struct _postT *post;
+     void *ret;
+     int loop;
+
+     for (post = postlist; post != NULL; post = post-&gt;next)
+     {
+       if (post-&gt;handle == posthandle)
+       {
+         ret = post-&gt;value;
+         
+         if (ret == NULL)
+         {
+           for (loop = 0; post-&gt;waiting[loop]; )
+             loop++;
+           post-&gt;waiting = realloc(post-&gt;waiting,
+                               (loop + 2) *
+                               sizeof(void *));
+           post-&gt;waiting[loop] = processlist;
+           post-&gt;waiting[loop + 1] = NULL;
+           while (ret == NULL)
+           {
+             processlist-&gt;status.wait_flag = 1;
+             processlist-&gt;waitpost = postlist;
+             wait_for_time(0);
+             ret = post-&gt;value;
+             post-&gt;value = NULL;
+         }
+         processlist-&gt;waitpost = NULL;
+         return(ret);
+       }
+       post-&gt;value = NULL;
+       return(ret);
+     }
+   }
+   return(NULL);
+ }
+</pre>
+</BODY>
+</HTML>

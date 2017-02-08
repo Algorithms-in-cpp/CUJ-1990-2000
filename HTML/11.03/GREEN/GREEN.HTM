@@ -1,0 +1,153 @@
+
+
+<HTML>
+<HEAD>
+
+<TITLE>March 1993/SSX -- Stack Swap eXecutive</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocmar.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Real-Time &amp; Embedded Systems</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">SSX &#151; Stack Swap eXecutive<A name="00AF_0041"><A name="00AF_0041"></font></h2><P>
+<h3 align="center"><font color="#800000"><A name="00AF_0000"><A name="00AF_0000">Tom Green and Dennis Cronin</font></h3><hr><blockquote><P>
+<P><i><A name="00AF_0000"><A name="00AF_0000">Tom Green is a UNIX Software engineer who specializes in UNIX driver development. He also writes MS-DOS, Windows and embedded 80x86 applications. He may be reached via electronic mail at tomg@cd.com.</i></P><P>
+<P><i>Dennis Cronin almost completed an EE degree but got lured into the sordid world of fast computers, easy money, and loose connections. Specialties: UNIX driver development and embedded systems. He may be reached via electronic mail at denny@cd.com.</i></P><P>
+<h4><FONT COLOR="#000080"><A name="00AF_0042">Introduction<A name="00AF_0042"></FONT></h4></P>
+A project we worked on recently required us to port existing disk-controller software from an 80186-based board to a new 80386-based product. The total port required that we port not only the actual controller software, but also our real-time executive and a debugger as well. Our existing real-time executive was written in C and assembly language. We simply set out to directly port it to the 386. Oh yeah, we also committed to a pretty aggressive (translation: insane) schedule.<P>
+The existing executive used a software-interrupt entry point with parameters passed in registers &#151; pretty standard stuff. Task switches were implemented in assembly language, swapping in and out registers for the new task and the running task. We used a similar interrupt interface in the protected-mode version with 80386 task gates used to swap in and out registers for tasks. After we ported the disk controller software to protected mode, we tied the whole thing together and tried to run the new software. The new software worked fine. There was one problem though &#151; it was slower than the old version running on the 80186!<P>
+We were quite surprised (the words dismayed and panicked come to mind as well) by the results of our first test. We set out to find the problem. We discovered that our disk-controller software was doing a rather large number of task switches per second and making a pile of calls into the real-time executive.<P>
+Referring to our trusty Intel black book, we then noted that calling an 80386 task gate takes 309 clock cycles &#151; not good. But after looking over the executive, we decided that calling 80386 task gates was not our only speed problem. The whole process of calling our executive took a lot of time. First an assembly-language routine was called from the disk-controller C-code software. The assembly-language routine would get all of the parameters passed C-style and then stuff them in registers. Next a software interrupt was executed, followed by getting the registers back onto the stack so we could call into the C portion of the executive. We also had to preserve the state of the registers so that, on return from the executive, the registers would be restored for the calling software. It should be noted that this basic approach resulted from our early experiences with a particular commercial real-time executive and its C support libraries.<P>
+After studying things, we realized we could streamline the whole process dramatically. Why not simply take advantage of the fact that a C compiler saves and restores as much context as necessary between C function calls? The compiler knows when making a call to another C routine which registers will be saved across the call. This meant that we could ditch swapping tasks with an 80386 task gate and skip the 309 cycles used to do a task switch. And switching tasks was now a simple C-language call into the linked executive &#151; a small set of subroutines linked with the main application, instead of a remote set of services accessible only through software interrupts.<P>
+Since the basic mechanism of the task switch is now a rather trivial stack frame switch, we called the design the Stack Swap eXecutive, or SSX (<A href="list1.htm">Listing 1</a>,
+ <A href="list2.htm">Listing 2</a>,
+ and <A href="list3.htm">Listing 3</a>)
+.<P>
+<h4><FONT COLOR="#000080"><A name="00AF_0043">Pros and Cons of SSX<A name="00AF_0043"></FONT></h4></P>
+There are many things to recommend SSX. The native C-language interface and frisky stack-swap task switch make it very fast and efficient. And it is very small. The small size can save precious RAM or EPROM space that a larger executive might take up. SSX is also very portable. This article uses the executive in the MS-DOS environment but it is flexible enough to use in embedded applications or on different processor families. And since SSX is a very minimal executive, it is also easy to understand, port, modify, and extend.<P>
+There are, of course, a few limitations to using SSX. SSX is written in C and works best with an application written in C or C++, although it's not too hard to call into SSX from assembly after saving a few registers. SSX must be linked with your application. If you have a number of separate programs which much share CPU time and resources, they must all be linked together. Another disadvantage with SSX is its lack of features compared with many commercially-available executives.<P>
+<h4><FONT COLOR="#000080"><A name="00AF_0044">Features of SSX<A name="00AF_0044"></FONT></h4></P>
+SSX is a real-time, preemptive, multitasking executive. Tasks are allowed to run until:<P>
+<UL><li>The task readies another task of equal or higher priority</li>
+<li>A time slice (a clock tick) passes and there are other ready tasks of equal priority</li>
+<li>An interrupt readies a task of equal or higher priority</li>
+<li>The task explicitly gives up the CPU by calling the <I>ssx_delay</I> routine</li></UL>
+Synchronization of tasks is accomplished via shared data structures of type <I>wait_q</I>. A task that needs to wait for an event calls <I>ssx_wait</I> with a <I>wait_q</I> as an argument. If the event has already occurred, as indicated by a message flag at the queue, the task does not get suspended but remains ready.<P>
+When another task (or interrupt) wishes to ready a sleeping task, it issues an <I>ssx_alert</I> to the queue. The highest priority task waiting is readied. If no task is waiting, the message flag is set.<P>
+Out of these two basic primitives you can build just about anything you could possibly need!<P>
+This model of synchronization has the advantage that it is quite efficient to implement. There is no hashing of addresses onto sleep queues or any of that kind of messiness. Moreover, it seems reasonable to assume in today's object-oriented society that if tasks are cozy enough to be synchronizing with each other, they should be well enough acquainted to share the <I>wait_q</I> data object.<P>
+At the risk of making our lean mean executive seem feature-laden, we also provided a primitive for waiting at a <I>wait_q</I> with an alarm timer set. If the event does not occur within the specified period of time, the alarm goes off and the task becomes ready again with a return value indicating the reason for the resumption.<P>
+And to round out our real-time toolkit, we have the <I>ssx_task_delay</I> call which simply excuses the task from execution for a specified number of clock ticks.<P>
+A crucial aspect of any real-time executive is how it is accessed from an interrupt to signal events to task-level code. SSX provides two calls which are used to frame the interrupt handler code. <I>ssx_lock</I> is called right after the interrupt handler saves the necessary CPU register. <I>ssx_lock</I> disables task switching so that the executive doesn't try to switch out the interrupt handler before it has completed its processing. <I>ssx_unlock</I> is called at the end of the interrupt handler right before it restores the CPU registers. This allows task switching to take place again.<P>
+It should be noted that for extra efficiency you can skip both these calls if the interrupt handler meets the following criteria:<P>
+<UL><li>It only makes one <I>ssx_alert</I> call.</li>
+<li>All hardware processing is done before the call to <I>ssx_alert</I> (e.g. the interrupt controller has been reset and any other steps necessary to clear the interrupt at the requestor have been taken).</li></UL>
+The idea is that at that point, the interrupt thread has just become a continuation of the task that was running. The actual interrupt return can now happen at any time.<P>
+The <I>ssx_lock</I> and <I>ssx_unlock</I> calls can also be used from the task level to temporarily disable rescheduling. If a task is going to do something time-consuming enough that it doesn't want to risk masking interrupts, but can't afford to be switched out while performing the specific activities, it can call <I>ssx_lock</I> to lock control of the CPU. Interrupts can still be handled, but any changes they make to the task state will not be examined until the <I>ssx_unlock</I> call is invoked.<P>
+For a complete list of function calls see <A href="tab1.htm">Table 1</a>.
+<P>
+<h4><FONT COLOR="#000080"><A name="00AF_0045">Porting SSX<A name="00AF_0045"></FONT></h4></P>
+SSX currently works with Borland C and C++ compilers in the small model. SSX will need porting to a different memory model or an environment other that MS-DOS. To port SSX from the MS-DOS environment to a new one you must port four functions. They are:<P>
+<UL><li><I>ssx_task_create</I></li>
+<li><I>stack_swap</I></li>
+<li><I>disable_ints</I></li>
+<li><I>enable_ints</I></li></UL>
+A task is created by a call to <I>ssx_task_create</I> before or after <I>ssx_run</I> is called. You must have at least one task created before calling <I>ssx_run</I>. When a task is created a stack space is allocated. This stack is then set up so that when the task's stack pointer is swapped in, a simple return from <I>stack_swap</I> will start the task off. <A href="fig1.htm">Figure 1</a>
+shows what the newly-created task's stack looks like after being created for the MS-DOS executive.<P>
+This sets the task up to be run for the first time. The code<P>
+<pre>/* stack_swap - switch from stack of current task
+ * to stack of new task
+ */
+
+LOCAL void
+stack_swap(unsigned int **old_stack_ptr, unsigned int **new_stack_ptr)
+{
+   asm or di,di  /* fool compiler into saving */
+   asm or si,si /* di and si registers */
+
+   /* save stack ptr of old task */
+   *old_stack_ptr = (unsigned int *)_SP;
+   /* load stack ptr register with stack ptr */
+   /* of new task */
+   _SP=(unsigned int)*new_stack_ptr;
+}</pre>
+shows the C listing of <I>stack_swap</I>. On entry, the code executes two lines of in-line assembly language. These instructions make sure the compiler saves and restores the two register variables, 80X86 registers <I>di</I> and <I>si</I>. The last two instructions use the pseudo-variable _<I>SP</I>. With Borland C compilers _<I>SP</I> allows you to directly access the 80X86 <I>sp</I> (stack pointer) register. This part of the code stores the stack pointer of the old task and puts the stack pointer of the new task in the <I>sp</I> register. This is all the code has to do to switch tasks.<P>
+The code<P>
+<pre>stack_swap proc near
+
+; prologue for a C function
+push  bp
+mov bp,sp
+push  si
+push  di
+
+; this fools compiler into saving
+; si and di because
+; they are register variables
+or   di,di
+or   si,si
+
+; save stack pointer for old task
+mov bx,word ptr [bp+4]
+mov word ptr [bx],sp
+
+; load stack ptr register with stack
+; ptr of new task
+mov bx,word ptr [bp+6]
+mov sp,word ptr [bx]
+
+; epilogue for a C function
+pop di
+pop si
+pop bp
+ret
+stack_swap endp</pre>
+shows an 80X86 assembly-language listing of the C function <I>stack_swap</I>. In the epilogue of the function <I>stack_swap</I>, registers <I>di, si</I>, and <I>bp</I> are popped off the stack. We have placed these values on the task's stack during <I>ssx_task_create</I>. The last instruction is <I>ret</I> which will pop the return address off the stack and execute the function <I>run_new_task</I>. <I>run_new_task</I> enables interrupts and runs the new task by calling a function pointer. The code<P>
+<pre>/* run_new_task - starts up a new
+ * task making sure interrupts are
+ * enabled
+ */
+
+LOCAL void
+run_new_task(void)
+{
+   ints_on();
+   (t_current-task_ptr)();
+}</pre>
+shows the function <I>run_new_task</I>.<P>
+<I>disable_ints</I> is a routine that gets the current state of interrupts and then disables interrupts and returns the previous state of interrupts. In the MS-DOS version of SSX this function is coded as in-line assembly language code. The pseudocode<P>
+<pre>disable_ints(void)
+{
+   save current state of interrupts (enabled or disabled);
+   disable interrupts;
+   returned saved state of interrupts (positive integer if they were enabled,
+      0 is disabled)
+}</pre>
+indicates what is necessary to port <I>disable_ints</I> to other environments.<P>
+<I>enable_ints</I> enables interrupts. In the MS-DOS version of this function we have used a Turbo C macro that places an 80X86 <I>sti</I> instruction in the code.<P>
+<h4><FONT COLOR="#000080"><A name="00AF_0046">SSX Demo Code<A name="00AF_0046"></FONT></h4></P>
+The file <I>demo.c</I> (<A href="list4.htm">Listing 4</a>)
+ demonstrates many of the calls in SSX. This MS-DOS demo program sets up a timer interrupt and then creates several tasks. The timer interrupt handler uses vector 8 on the MS-DOS PC. This vector is called 18.2 times a second. Each time the interrupt routine is called <I>ssx_clock_tick</I> is called. This is one area of the code that is not portable. On an MS-DOS AT PC you could also use the interrupt that is called 1,024 times a second if you need more resolution than this timer supplies.<P>
+After the timer handler is setup the demo program sets up several tasks. Here is a description of the tasks that are made.<P>
+<UL><li>Print queue tasks &#151; These tasks increment a counter (one for each task) and print the value of the counter. These tasks use a semaphore that allows only one task at a time to call <I>cprintf</I> since it is not reentrant. The code</li>
+<pre>/* initialize semaphore to having
+ * waiting message */
+#define SET_SEMAPHORE(wqptr) (wqptr)-mesg_flg=1; (wqptr)-task_ptr=NULL
+
+/* initialize wait_q to NULL task_ptr and no message waiting */
+#define INIT_WAIT_Q(wqptr) (wqptr)-mesg_flg=0; (wqptr)-task_ptr=NULL</pre>
+contains macros to setup semaphores and wait queues. Many Standard C functions are not reentrant, so keep that in mind when using C library functions. Five of these tasks are created.
+<li>Time-slice tasks &#151; These tasks get a full time slice to increment a counter (one for each task). Since print-queue tasks have to get permission to print each time through, their counters will increment slower than these time-slice tasks. Five of these tasks are created.</li>
+<li>Print-time-slice task &#151; This task prints the counter values for each time-slice task once every three seconds. This task must also use our print semaphore each time it needs to print.</li>
+<li>Keypress task &#151; This task checks for a keypress every two seconds and calls <I>ssx_stop</I> if it finds one.</li>
+<li>System-time task &#151; This prints the system time in seconds every second. This task must also use our print semaphore each time it needs to print.</li></UL>
+This code has been tested with Turbo C 2.0, Turbo C++ 1.0, and Borland C 3.1. To make the demo program type:<P>
+<pre>tcc demo.c ssx.c</pre>
+or<P>
+<pre>bcc demo.c ssx.c</pre>
+Since this code uses in-line assembly language you will also need <I>tasm</I> if you are using Turbo C 2.0 or Turbo C++ 1.0.<P>
+We hope you will find this executive portable and easy to use. For many applications this will have more than enough features. If you find it is missing something you need, no big deal. Change it. It's easy. It's all in C.<P>
+
+<h4><a href="../../../source/1993/mar93/green.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

@@ -1,0 +1,116 @@
+<HTML><HEAD>
+<TITLE>June 1994/Code Capsules/Listing 9</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 9 <I>Recursive directory delete program that illustrates non-local branching</I></A></h4>
+<pre>/* ddir.c: Remove subdirectory tree*/
+
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;io.h&gt;
+#include &lt;string.h&gt;
+#include &lt;sys/stat.h&gt;
+#include &lt;setjmp.h&gt;
+#include &lt;dirent.h&gt;
+#include &lt;dir.h&gt;
+
+/* longjmp return codes */
+#define BAD_DIR 1
+#define DIR_OPEN_ERR 2
+#define FILE_DEL_ERR 3
+#define DIR_DEL_ERR 4
+
+/* DOS-specific macros - change for other OS */
+#define CMD_FORMAT "del *.* &lt;%s &gt; nul"
+#define CMD_LEN 17
+
+/* Change this to "/" for UNIX */
+char Response_file[L_tmpnam+1] = "\\";
+
+/* Calling environment buffer */
+jmp_buf env;
+
+main(volatile int argc, char **volatile argv)
+{
+   FILE *f;
+   volatile char *old_path = getcwd(NULL,64);
+   void rd(char *);
+
+   /* Create response file for DOS del command */
+   tmpnam(Response_file+1);
+   if ((f = fopen(Response_file,"w")) == NULL)
+      abort();
+   fputs("Y\n",f);
+   fclose(f);
+   switch(setjmp(env))
+   {
+      case BAD_DIR:
+         fputs("Invalid directory\n",stderr);
+         break;
+      case DIR_OPEN_ERR:
+         fputs("Error opening directory\n",stderr);
+         break;
+      case FILE_DEL_ERR:
+         fputs("Error deleting file\n",stderr);
+         break;
+      case DIR_DEL_ERR:
+         fputs("Error deleting directory\n",stderr);
+         break;
+   }
+
+   /* Delete the directories */
+   while (--argc)
+      rd((char *) *++argv);
+
+   /* Clean-up */
+   remove(Response_file);
+   chdir((char *) old_path);
+   return 0;
+}
+
+void rd(char* dir)
+{
+   char sh_cmd[L_tmpnam+CMD_LEN];
+   DIR *dirp;
+   struct dirent *entry;
+   struct stat finfo;
+
+   /* Log onto the directory that is to be deleted */
+   if (chdir(dir))
+      longjmp(env,BAD_DIR);
+   printf("%s:\n",strlwr(dir));
+
+   /* Delete all normal files via OS shell */
+   sprintf(sh_cmd,CMD_FORMAT,Response_file);
+   system(sh_cmd);
+
+   /* Delete any remaining directory entries */
+   if ((dirp = opendir(".")) == NULL)
+      longjmp(env,DIR_OPEN_ERR);
+   while ((entry = readdir(dirp)) != NULL)
+   {
+      if (entry-&gt;d_name[0] == '.')
+         continue;
+      stat(entry-&gt;d_name,&amp;finfo);
+      if (finfo.st_mode &amp; S_IFDIR)
+         rd(entry-&gt;d_name);       /* Subdirectory */
+      else
+      {
+         /* Enable delete of file, then do it */
+         chmod(entry-&gt;d_name,S_IWRITE);
+         if (unlink(entry-&gt;d_name))
+            longjmp(env,FILE_DEL_ERR);
+      }
+   }
+   closedir(dirp);
+
+   /* Remove the directory from its parent */
+   chdir("..");
+   if (rmdir(dir))
+      longjmp(env,DIR_DEL_ERR);
+}
+/* End of File */
+</pre>
+</BODY>
+</HTML>

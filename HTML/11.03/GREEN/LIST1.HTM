@@ -1,0 +1,858 @@
+<HTML><HEAD>
+<TITLE>March 1993/SSX -- Stack Swap eXecutive/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1 SSX.C &#151; <I>Stack Swap eXecutive</I></A></h4>
+<pre>/****************************************************/
+/*   By Tom Green and Dennis Cronin                 */
+/*   10/19/92                                       */
+/****************************************************/
+
+/* turn on inline asm */
+#pragma inline
+
+#include &lt;alloc.h&gt;
+#include &lt;dos.h&gt;
+#include &lt;string.h&gt;
+#include &lt;setjmp.h&gt;
+#include "ssx.h"
+#include "ssx_conf.h"
+
+/*  Task Control Block */
+
+typedef struct tcb {
+    /* task chain forward ptr */
+    struct tcb *forw;
+    /* task chain backward ptr */
+    struct tcb *back;
+    /* delay chain forward ptr */
+    struct tcb *dforw;
+    /* delay chain backward ptr */
+    struct tcb *dback;
+    /* pointer to task code */
+    fptr task_ptr;
+    /* pointer to start of allocated stack */
+    unsigned int *stack;
+    /* task's current stack pointer */
+    unsigned int *stack_ptr;
+    /* delay counter */
+    long timeout;
+    /* flag for task timed out */
+    unsigned char timedout;
+    /* flag for TCB in use */
+    unsigned char active;
+    /* status flags */
+    unsigned char status;
+    /* task priority */
+    unsigned char priority;
+    /* task ID */
+    unsigned char id;
+    /* for storing extra task context */
+    char context[CNTXT_SZ];
+} tcb;
+
+/* misc. defines */
+#define TRUE            1
+#define FALSE           0
+
+/* background task defines */
+#define BG_TASK_ID      0xff
+#define BG_TASK_PRI     0xff
+
+/*  make data and code local to this file */
+#define LOCAL static
+
+/* flags for the TCB status word */
+#define T_READY         0    /* ready to run */
+#define T_WAITING       1    /* waiting on wait_q */
+#define T_DELAYED       2    /* delay timer running */
+
+/* local function prototypes */
+
+LOCAL tcb *get_tcb(void);
+LOCAL void free_tcb(tcb *tbp);
+LOCAL void put_ready(tcb *tbp);
+LOCAL void rotate_tasks(tcb *tbp);
+LOCAL void put_delay(long timeout);
+LOCAL void run_new_task(void);
+LOCAL void bg_task(void);
+LOCAL void stack_swap(unsigned int **old_stack_ptr,
+                    unsigned int **new_stack_ptr);
+LOCAL int disable_ints(void);
+
+/*  local variables  */
+
+LOCAL long sys_time;                /* system timer */
+LOCAL unsigned char slice_cnt;
+LOCAL int running;
+LOCAL int initd;
+LOCAL jmp_buf jbuf;
+LOCAL int switch_lock;
+
+/* task control */
+LOCAL tcb t_pool[MAX_TASKS + 1]; /* pool of TCBs */
+LOCAL tcb t_ready;    /* head of ready task queue */
+LOCAL tcb t_null;     /* the NULL task */
+LOCAL tcb *t_free;    /* head of free queue */
+LOCAL tcb *t_current; /* pointer to current task */
+
+/* delay control */
+LOCAL tcb d_chain;    /* q head for delayed tasks */
+
+/* MACROS to unlink from task and delay queues */
+
+/* t_unlink - must be used w/ interrupts off */
+#define     t_unlink(tbp)                           \
+
+   {                                                \
+      (tbp)-&gt;back-&gt;forw = (tbp)-&gt;forw;             \
+      if((tbp)-&gt;forw != NULL)                      \
+         (tbp)-&gt;forw-&gt;back = (tbp)-&gt;back;          \
+   }
+
+/* d_unlink - must be used w/ interrupts off */
+#define     d_unlink(tbp)                            \
+   {                                                \
+      (tbp)-&gt;dback-&gt;dforw = (tbp)-&gt;dforw;           \
+      if((tbp)-&gt;dforw != NULL)                      \
+         (tbp)-&gt;dforw-&gt;dback = (tbp)-&gt;dback;       \
+   }
+
+/* ssx_init - init ssx data */
+
+int
+ssx_init(void)
+{
+   int i;
+   tcb *tcbp;
+
+   if(initd)
+       return(INIT_ERROR);
+
+   memset(&amp;d_chain,0,sizeof(d_chain));
+
+   /* init TCB free queue links */
+   for(i=0,tcbp=t_pool;i &lt; MAX_TASKS-1;i++,tcbp++){
+       tcbp-&gt;forw = &amp;t_pool[i+1];
+
+   }
+   t_pool[i].forw = NULL;
+
+   for(i = 0;i &lt; MAX_TASKS;i++){
+       t_pool[i].active=FALSE;
+   }
+
+   t_current = NULL;
+   t_free = t_pool;
+   t_ready.forw = NULL;
+   switch_lack = 0;
+
+   /* set up background task */
+   if((ssx_task_create(BG_TASK_PRI,BG_TASK_ID,
+                    bg_task,0x200, "bg_task"))
+                    != SUCCESS)
+      return(INIT_ERROR);
+
+   initd = TRUE;
+
+   return(SUCCESS);
+}
+
+/* sx_run - this starts executive */
+
+void
+ssx_run(void)
+{
+   int val;
+
+   val = setjmp(jbuf);
+
+   if(val != 0)
+      return;
+
+   slice_cnt = 0;
+   sys_time = 0;
+
+   /* make current task ptr point to dummy tcb so
+    * beginning of time stack pointer save will
+    * have a safe place to save to.               */
+
+   t_current = &amp;t_null;
+
+   /* mark SSX as active */
+   running = TRUE;
+
+   /* this will start the first task rolling */
+   ssx_switch( );
+}
+
+/* sx_stop - this stops executive */
+
+void
+ssx_stop(void)
+{
+   int i;
+   int_state_var istate;
+
+   ints_off(istate);
+
+   /* free any allocated stacks */
+   for(i = 0; i &lt; MAX_TASKS; i++){
+       if(t_pool[i].stack != NULL){
+          free(t_pool[i].stack);
+          t_pool [i].stack = NULL;
+       }
+   }
+   initd = FALSE;
+   running = FALSE;
+
+   restore_ints(istate);
+
+   longjmp(jbuf,1);
+}
+
+/* ssx_task_create - create task and set up tcb */
+
+int
+ssx_task_create(unsigned char task_pri,
+              unsigned char task_id,fptr task_ptr,
+              unsigned int stack_size,char *name)
+{
+   unsigned int i;
+   tcb *tbp;
+   int_state_var istate;
+
+   ints_off(istate);
+
+   if(task_id == 0) {
+       restore_ints(istate);
+       return(TID_ERR);
+   }
+
+   /* check for TID already in use */
+   for(i = 0,tbp = t_pool;i &lt; MAX_TASKS;i++,tbp++) {
+      if(tbp-&gt;active &amp;&amp; tbp-&gt;id == task_id) {
+         restore_ints(istate);
+         return(TID_ERR);
+      }
+   }
+
+   if((tbp = get_tcb()) == NULL) {  /* get a tcb */
+      restore_ints(istate);
+      return(TCB_ERR);
+   }
+
+   /* allocate stack for this task */
+   if((tbp-&gt;stack = (unsigned int *)
+                   malloc(stack_size)) == NULL){
+      restore_ints(istate);
+      return(STACK_ERR);
+   }
+
+   /* fill in the blanks */
+   strncpy(tbp-&gt;context,name,CNTXT_SZ);
+   tbp-&gt;priority = task_pri;
+   tbp-&gt;id = task_id;
+   tbp-&gt;status = T_READY;
+   tbp-&gt;timedout = FALSE;
+   tbp-&gt;timeout = OL;
+   tbp-&gt;forw = tbp-&gt;back =
+   tbp-&gt;dforw = tbp-&gt;dback = NULL;
+
+   tbp-&gt;task_ptr = task_ptr;
+
+   tbp-&gt;stack_ptr = (unsigned int *)(tbp-&gt;stack +
+                  (stack_size / 2));
+
+   /* setup task stack to have address of start up
+    * routine and fake di, si, bp registers to pop.
+    * This part is not portable. the stack looks
+    * like this:
+    *
+    *  |-|         high
+    *  |address of run_new_task  |
+    *  |-|
+    *  |bp                       |
+    *  | ---------------------|
+    *  |si                       |
+    *  |-|
+    *  |di                       |
+    *  |-|          low    */
+
+   *(-tbp-&gt;stack_ptr) = (unsigned int)run_new_task;
+   *(-tbp-&gt;stack_ptr) = 0;     /* fake BP,SI,DI */
+   *(-tbp-&gt;stack_ptr) = 0;     /* on stack */
+   *(--tbp-&gt;stack_ptr) = 0;
+
+   /* put on active chain */
+   rotate_tasks(tbp);
+
+   ssx_switch();
+
+   restore_ints(istate);
+
+   return(SUCCESS);
+}
+
+/* ssx_task_delay - cause task to delay for number of ticks */
+
+void
+ssx_task_delay(long timeout)
+{
+   int_state_var istate;
+
+   ints_off(istate);
+
+   if(timeout == 0) {
+      ssx_switch();
+      restore_ints(istate);
+      return;
+   }
+
+   put_delay(timeout);  /* put current task on */
+                    /* delay queue */
+   t_unlink(t_current); /* take off ready queue */
+
+   ssx_switch();
+   restore_ints(istate);
+}
+
+/* ssx_task_delete - delete a task and remove from queues */
+
+int
+ssx_task_delete(unsigned char task_id)
+{
+   unsigned int i;
+   tcb *tp;
+   int_state_var istate;
+
+   ints_off(istate);
+
+   /* look for background task ID */
+   if(task_id == BG_TASK_ID){
+      restore_ints(istate);
+      return(TID_ERR);
+   }
+
+   /* look for 'self' form */
+   if(task_id == 0) {
+      if(t_current) {
+         /* get current task's id */
+         task_id = t_current-&gt;id;
+      }
+   }
+
+   /* brute force, search all TCBs for matching ID */
+   for(i = 0,tp = t_pool;i &lt; MAX_TASKS;i++,tp++)   {
+      if(tp-&gt;active &amp;&amp; tp-&gt;id == task_id) {
+         break;
+
+      }
+   }
+
+   /* see if found match */
+   if(i == MAX_TASKS){
+      restore_ints(istate);
+      return(TID_ERR);
+   }
+
+   switch(tp-&gt;status &amp; (T_DELAYED | T_WAITING)) {
+      case T_DELAYED:
+         d_unlink(tp); /* remove from delay q */
+         break;
+      case T_WAITING:
+         t_unlink(tp); /* remove from some */
+                     /* wait_q */
+         break;
+      case T_DELAYED | T_WAITING:
+         t_unlink(tp); /* remove from some */
+                     /* wait_q */
+         d_unlink(tp); /* remove from delay q */
+         break;
+      case T_READY:
+         t_unlink(tp); /* remove from ready q */
+         break;
+   }
+
+   free(tp-&gt;stack);     /* free allocated stack */
+   tp-&gt;stack = NULL;
+   free_tcb(tp);        /* free up the TCB */
+
+   ssx_switch();
+   restore_ints(istate);
+   return(SUCCESS);
+}
+
+/* ssx_change_priority - change priority for currently
+*                        running task,
+*                        don't immediately reschedule
+*                        returns old priority           */
+
+unsigned char
+ssx_change_priority(unsigned char new_priority)
+{
+   unsigned char old_priority;
+   int_state_var istate;
+
+   ints_off(istate);
+   old_priority = t_current-&gt;priority;
+   t_current-&gt;priority = new_priority;
+   t_unlink(t_current);
+   rotate_tasks(t_current);
+   restore_ints(istate);
+   return(old_priority);
+}
+
+/* ssx_wait - wait on wait_q. reschedule later */
+
+void
+ssx_wait(wait_q *wqptr)
+{
+
+   tcb *tp;
+   tcb *t_cur;
+   int_state_var istate;
+
+   ints_off(istate);
+
+   /* check for message flag already set */
+   if(wqptr-&gt;mesg_flg){
+      wqptr-&gt;mesg_flg = FALSE;
+      restore_ints(istate);
+      return;
+   }
+
+   t_cur = t_current;
+   t_unlink(t_cur);  /* take off ready queue */
+
+   tp = (tcb *)&amp;wqptr-&gt;task_ptr;
+
+   /* find where to insert waiting task into
+    * wait queue                              */
+   while((tp-&gt;forw) != NULL) {
+      if(t_cur-&gt;priority &lt;= tp-&gt;forw-&gt;priority)
+         break;
+      tp = tp-&gt;forw;
+   }
+
+   /* insert into queue */
+   if((t_cur-&gt;forw = tp-&gt;forw)!= NULL)
+       t_cur-&gt;forw-&gt;back = t_cur;
+
+   tp-&gt;forw = t_cur;
+   t_cur-&gt;back = tp;
+   t_cur-&gt;status = T_WAITING;
+
+   ssx_switch();
+   restore_ints(istate);
+}
+
+/* ssx_wait_with alarm - wait on wait_q with alarm.
+ *                       reschedule now               */
+
+int
+ssx_wait_with_alarm(wait_q *wqptr,long timeout)
+{
+   tcb *tp;
+   tcb *t_cur;
+   int_state_var istate;
+
+   ints_off(istate);
+
+   /* check for message flag already set */
+   if(wqptr-&gt;mesg_flg){
+      wqptr-&gt;mesg_flg = FALSE;
+      restore_ints(istate);
+      return(SUCCESS);
+   }
+
+   t_cur = t_current;
+   t_unlink(t_cur);  /* take off ready queue */
+
+   tp = (tcb *)&amp;wqptr-&gt;task_ptr;
+
+   /* find where to insert waiting task into wait queue */
+   while((tp-&gt;forw) != NULL) {
+      if(t_cur-&gt;priority &lt;= tp-&gt;forw-&gt;priority)
+         break;
+      tp = tp-&gt;forw;
+   }
+
+   /* insert into queue */
+   if((t_cur-&gt;forw = tp-&gt;forw) != NULL)
+       t_cur-&gt;forw-&gt;back = t_cur;
+   tp-&gt;forw = t_cur;
+   t_cur-&gt;back = tp;
+   t_cur-&gt;status = T_WAITING;
+
+   /* if there is timeout value, put task on delay queue */
+   if(timeout)
+      put_delay(timeout);
+
+   ssx_switch();
+
+   /*  we were scheduled back in so
+    * see if task timed out and return error */
+
+   if(t_cur-&gt;timedout){
+      t_cur-&gt;timedout = FALSE;
+      restore_ints(istate);
+      return(TO_ERR);
+   }
+
+   restore_ints(istate);
+
+   /* task did not time out, so return success */
+   return(SUCCESS);
+}
+
+/* ssx_alert - alert wait_q. reshedule if task
+ *             alerted is equal or higher
+ *             priority than current task         */
+
+int
+ssx_alert(wait_q *wqptr)
+{
+   tcb *np;
+   tcb *oldtcb;
+   int_state_var istate;
+
+   ints_off(istate);
+
+   /* check for message waiting */
+   if(wqptr-&gt;mesg_flg){
+      restore_ints(istate);  /* cannot alert if */
+      return(MW_ERR);        /* messgae is waiting */
+   }
+
+   np=(tcb *)wqptr-&gt;task_ptr;
+
+   /* check if there is a task waiting on wait_q */
+   if(np != NULL){
+      t_unlink(np);
+      if(np-&gt;status &amp; T_DELAYED)
+         d_unlink(np);
+      np-&gt;status &amp;= ~(T_WAITING | T_DELAYED);
+      put_ready(np);
+      /* switch to waiting task if it is equal
+       * or higher priority                          */
+      if(np-&gt;priority &lt;= t_current-&gt;priority){
+         oldtcb = t_current;
+         t_current = np;
+         /* check and see if scheduling is disabled */
+         if(switch_lock == 0)
+            stack_swap(&amp;oldtcb-&gt;stack_ptr
+                    ,&amp;np-&gt;stack_ptr);
+      }
+      restore_ints(istate);
+      return(SUCCESS);
+   }
+
+   /* fell thru, simply leave message in wait_q */
+   wqptr-&gt;mesg_flg = TRUE;
+   restore_ints(istate);
+   return(SUCCESS);
+}
+
+/* ssx_clock_tick - call this to update ssx clock from
+ *                  timer interrupt handler             */
+
+void
+ssx_clock_tick(void)
+{
+   tcb *tp;
+   int_state_var istate;
+
+   ints_off(istate);
+
+   if(running == FALSE){
+      restore_ints(istate);
+      return;
+   }
+
+   sys_time++;
+
+   /* do time updates */
+   tp = (tcb *)&amp;d_chain;
+   /* check for timed out tasks */
+   while((tp = tp-&gt;dforw) != NULL) {
+      if((sys_time - tp-&gt;timeout) &gt;= 0) {
+         d_unlink(tp); /* this one's ready */
+         tp-&gt;timedout = TRUE;
+         if(tp-&gt;status &amp; T_WAITING)
+            t_unlink(tp);
+         tp-&gt;status = T_READY;
+         /* put task on ready queue */
+         rotate_tasks(tp);
+      }
+      else
+         break;         /* passed the ready ones */
+   }
+
+   /* round robin rotation */
+   if((++slice_cnt) == TIME_SLICE){
+      slice_cnt = 0;
+      /* if task is running and was left ready */
+      if(t_current &amp;&amp; t_current-&gt;status
+         == T_READY){
+         /* remove from ready queue */
+         t_unlink(t_current);
+         /* puts at back of pri group */
+         rotate_tasks(t_current);
+      }
+   }
+
+   ssx_switch();
+   restore_ints(istate);
+}
+
+/* ssx_set_time - this sets SSX system time */
+
+void
+ssx_set_time(long time)
+{
+   int_state_var istate;
+
+   ints_off(istate);
+   sys_time = time;
+   restore_ints(istate);
+}
+
+/* ssx_get_time - this returns SSX system time */
+
+long
+ssx_get_time(void)
+{
+   return(sys_time);
+}
+
+/* ssx_lock - disable task switching */
+
+void
+ssx_lock(void)
+{
+   int_state_var istate;
+
+   ints_off(istate);
+   switch_lock++;
+   restore_ints(istate);
+}
+
+/* ssx_unlock - enable task switching */
+
+void
+ssx_unlock(void)
+{
+   int_state_var istate;
+
+   ints_off(istate);
+   /* call ssx_switch if we are not nested */
+   if(-switch_lock == 0)
+      ssx_switch();
+   restore_ints(istate);
+}
+
+/* ssx_switch - run next ready task
+ * notes: there must always be a runnable task w/
+ * SSX. a background task is created by ssx_init
+ * and this task can never wait or do anything
+ * that would remove it from the active queue.
+ * this saves checks in this routine, making
+ * it more efficient.                             */
+ 
+void
+ssx_switch(void)
+{
+   tcb *oldtcb;
+
+   if(!running)
+      return;
+
+   oldtcb = t_current;
+
+   /* switch tasks */
+   t_current = t_ready.forw; /* get next */
+                         /* ready task */
+   /*
+    * if new task is same as old, do not
+    * bother with switch
+    */
+   if(t_current == oldtcb)
+      return;
+
+   /* check and see if scheduling is disabled */
+   if(switch_lock == 0){
+      /* we have a new task so do a task switch */
+      stack_swap(&amp;oldtcb-&gt;stack_ptr,
+                &amp;t_current-&gt;stack_ptr);
+   }
+}
+
+/* get_tcb - get task control block */
+
+LOCAL tcb *
+get_tcb(void)
+{
+   tcb *tbp;
+
+   if(t_free == NULL)
+      return(NULL);
+   tbp = t_free;
+   t_free = tbp-&gt;forw;
+   tbp-&gt;active = TRUE;
+
+   return(tbp);
+}
+
+/* free_tcb - free task control block */
+
+LOCAL void
+free_tcb(tcb *tbp)
+{
+   /* '****' for debug TCB not in use */
+   tbp-&gt;timeout = 0x2a2a2a2aL;
+   tbp-&gt;active = FALSE;
+   tbp-&gt;forw = t_free;
+   t_free = tbp;
+}
+
+/* put_ready - put task at head of ready queue */
+
+LOCAL void
+put_ready(tcb *tbp)
+{
+   tcb *tp,*np;
+   unsigned int priority;
+
+   /* get priority of task to be inserted in chain */
+   priority = tbp-&gt;priority;
+
+   /* put on the active chain */
+   tp = (tcb *)&amp;t_ready;
+   /* sort in order of decreasing priority, put at
+    * head of pri group                                 */
+   while((np = tp-&gt;forw) != NULL &amp;&amp; np-&gt;priority
+                                &lt; priority)
+      tp = np;
+   /* link in */
+   tbp-&gt;forw = np;
+   tbp-&gt;back = tp;
+   tp-&gt;forw = tbp;
+   if(np != NULL)
+      np-&gt;back = tbp;
+}
+
+/* rotate_tasks - put task at back of ready queue */
+
+LOCAL void
+rotate_tasks(tcb *tbp)
+{
+
+   tcb *tp,*np;
+   unsigned int priority;
+
+   /* get priority of task to be inserted in chain */
+   priority = tbp-&gt;priority;
+
+   /* put on the active chain */
+   tp = (tcb *)&amp;t_ready;
+   /* sort in order of decreasing priority,
+    * put at back of pri group                  */
+   while((np = tp-&gt;forw) != NULL &amp;&amp; np-&gt;priority
+                               &lt;= priority)
+      tp = np;
+   /* link in */
+   tbp-&gt;forw = np;
+   tbp-&gt;back = tp;
+   tp-&gt;forw = tbp;
+   if(np != NULL)
+      np-&gt;back = tbp;
+}
+
+/* put_delay - put task on delay queue */
+
+LOCAL void
+put_delay(long timeout)
+{
+   tcb *tp,*np;
+
+   t_current-&gt;timeout =
+       timeout + sys_time;  /* actual time ready */
+   t_current-&gt;timedout=FALSE;
+   t_current-&gt;status |= T_DELAYED;
+   tp = (tcb *)&amp;d_chain;
+   /* sort in order increasing target time */
+   /* trick to solve wrap of sys_time */
+   while((np = tp-&gt;dforw) != NULL) {
+       if(timeout &lt;= np-&gt;timeout - sys_time)
+           /* hit a more future one */
+           break;
+       tp = np;
+   }
+   /* link in */
+   t_current-&gt;dforw = np;
+   t_current-&gt;dback = tp;
+   tp-&gt;dforw = t_current;
+   if(np != NULL)
+       np-&gt;dback = t_current;
+}
+
+/* run_new_task - starts up a new task making sure
+ *                interrupts are enabled             */
+
+LOCAL void
+run_new_task(void)
+{
+   ints_on();
+   (t_current-&gt;task_ptr) ();
+}
+
+/* bg_task - must have a background task */
+
+LOCAL void
+bg_task(void)
+{
+   while(1);
+}
+
+/* WARNING - routines from here on are not portable */
+
+/* stack_swap - switch from stack of curent task to
+ *              stack of new task                   */
+
+LOCAL void
+stack_swap(unsigned int **old_stack_ptr,
+         unsigned int **new_stack_ptr)
+{
+   asm or di,di    /* fool compiler into saving */
+   asm or si,si    /* di and si registers */
+
+   /* save stack pointer of old task from sp reg */
+   *old_stack_ptr = (unsigned int *)_SP;
+
+   /* load sp reg with stack pointer of new task */
+   _SP=(unsigned int)*new_stack_ptr;
+}
+
+/* disable_ints - disable interrupts and return state
+ *                of interrupts before before they
+ *                were disabled. Returns positive
+ *                integer if they were enabled        */
+
+LOCAL int
+disable_ints(void)
+{
+   asm pushf         /* save flags to get */
+                  /* interupt status  */
+   asm cli           /* interrupts off */
+   asm pop ax        /* get interrupt state from */
+                  /* flags that were pushed */
+   asm and ax,0200h  /* and flags to get interrupt */
+                  /* status */
+   return(_AX);
+}
+/* End of File */
+</pre>
+</BODY>
+</HTML>

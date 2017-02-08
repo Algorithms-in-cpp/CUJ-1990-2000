@@ -1,0 +1,312 @@
+<HTML><HEAD><TITLE>January 1990/UNIX 'termcap' Facility Improves Portability By Hiding Terminal/Listing 5</TITLE></HEAD><BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4><A name="0022_0012"><A name="0022_0012">Listing 5<A name="0022_0012"></h4><P>
+<pre>/*
+life.c
+copyright 1985, 1988 Ronald Florence
+
+compile:
+   cc -O -s life.c keys.c -lcurses -ltermcap -o life
+*/
+
+
+#include    &lt;curses.h&gt;
+#include    &lt;signal.h&gt;
+#ifndef KEY_DOWN
+#include    "keys.h"
+#endif
+
+#define ESC     0x1b
+#define life        '@'
+#define crowd       (life + 4)
+#define lonely      (life + 2)
+#define birth       (' ' + 3)
+#define minwrap(a,d)    a = --a &lt; 0 ? d : a
+#define maxwrap(a,d)    a = ++a &gt; d ? 0 : a
+#define wrap(a,z)   if (a &lt; 0) (a) += z;        \
+          else if  (a &gt; z) (a) = 1;   \
+          else if  (a == z) (a) = 0
+#define MAXX         (COLS-1)
+#define MAXY         (LINES-3)
+#define boredom      5
+
+typedef struct node
+{
+  int   y, x;
+  struct node   *prev, *next;
+}  LIFE;
+
+struct
+{
+  int y, x;
+} pos[8] = {    { 1,-1}, {1, 0}, {1, 1}, {0, 1},
+       {-1, 1}, {-1, 0}, {-1,-1}, { 0,-1}
+      };
+
+LIFE    *head, *tail;
+
+extern  char    *malloc();
+char
+  *rules[] = {
+    " ",
+    "The Rules of Life:",
+    " ",
+    "   1. A cell with more than three neighbors",
+    "      dies of overcrowding.",
+    "   2. A cell with less than two neighbors",
+    "      dies of loneliness.",
+    "   3. A cell is born in an empty space",
+    "      with exactly three neighbors.",
+    " ",
+    0
+    },
+
+  *rules2[] = {
+    "Use the arrow keys or the vi cursor keys",
+    "(H = left, J = down, K = up, L = right)",
+    "to move the cursor around the screen.",
+    "The spacebar creates and destroys life.",
+    "&lt;Esc&gt; starts the cycle of reproduction.",
+    "&lt;Del&gt; ends life.",
+    " ",
+    "Press any key to play The Game of Life.",
+    0
+    };
+
+main(ac, av)
+    int    ac;
+    char   **av;
+{
+  int   i = 0, k, die();
+
+  initscr();
+  crmode();
+  noecho();
+  signal(SIGINT, die);
+  lookupkeys();
+  head = (LIFE *)malloc(sizeof(LIFE));
+     /* lest we have an unanchored pointer */
+  tail = (LIFE *)malloc(sizeof(LIFE));
+  head-&gt;next = tail;
+  tail-&gt;prev = head;
+
+  if (ac &gt; 1)
+    readfn(*++av);
+  else
+    {
+      erase();
+      if (COLS &gt; 40)
+    for ( ; rules[i]; i++)
+      mvaddstr(i+1, 0, rules[i]);
+      for (k = 0; rules2[k]; k++)
+    mvaddstr(i+k+1, 0, rules2[k]);
+      refresh();
+      while (!getch())
+        ;
+      setup();
+    }
+  nonl();
+
+  while (TRUE)
+    {
+     display();
+     mark_life();
+     update();
+    }
+}
+
+
+die()
+{
+  signal(SIGINT, SIG_IGN);
+  move(LINES-1, 0);
+  refresh();
+  endwin();
+  exit(0);
+}
+
+
+kill_life(ly, lx)
+    register  int   ly, lx;
+{
+  register LIFE     *lp;
+
+  for (lp = head-&gt;next; lp != tail; lp = lp-&gt;next)
+    if (lp-&gt;y == ly &amp;&amp; lp-&gt;x == lx)
+      {
+    lp-&gt;prev-&gt;next = lp-&gt;next;
+    lp-&gt;next-&gt;prev = lp-&gt;prev;
+    free(lp);
+    break;
+      }
+}
+
+display()
+{
+  int       pop = 0;
+  static int    gen, oldpop, boring;
+  char  c;
+  register  LIFE  *lp;
+  erase();
+  for(lp = head-&gt;next; lp != tail; lp = lp-&gt;next)
+    {
+      mvaddch(lp-&gt;y, lp-&gt;x, life);
+      pop++;
+    }
+  if (pop == oldpop)
+    boring++;
+  else
+    {
+      oldpop = pop;
+      boring = 0;
+    }
+  move(MAXY+1, 0);
+  if (!pop)
+    {
+      printw("Life ends after %d generations.", gen);
+      die();
+    }
+  printw("generation - %-4d", ++gen);
+  printw(" population - %-4d", pop);
+  refresh();
+  if (boring == boredom)
+    {
+     mvprintw(MAXY, 0, "Population stable. Abort? ");
+     refresh();
+     while (!(c = getch()))
+    ;
+     if (toupper(c) == 'Y')
+    die();
+    }
+}
+mark_life()
+{
+  register k, ty, tx;
+  register LIFE *lp;
+
+  for (lp = head-&gt;next; lp; lp = lp-&gt;next)
+    for (k = 0; k &lt; 8; k++)
+      {
+    ty = lp-&gt;y + pos[k].y;
+    wrap(ty, MAXY);
+    tx = lp-&gt;x + pos[k].x;
+    wrap(tx, MAXX);
+    stdscr-&gt;_y[ty][tx]++;
+      }
+}
+
+
+update()
+{
+  register int i, j, c;
+  for (i = 0; i &lt;= MAXY; i++)
+    for (j = 0; j &lt;= MAXX; j++)
+      {
+    c = stdscr-&gt;_y[i][j];
+    if (c &gt;= crowd || c &gt;= life &amp;&amp; c &lt; lonely)
+      kill_life(i, j);
+    else if (c == birth)
+      newlife(i, j);
+      }
+}
+
+setup()
+{
+  int   x, y, c, start = 0;
+
+  erase();
+  y = MAXY/2;
+  x = MAXX/2;
+  while (!start)
+    {
+     move(y, x);
+     refresh();
+     switch (c = getkey())
+    {
+    case 'h' :
+    case 'H' :
+    case ('H' - '@'):
+    case KEY_LEFT:
+    case KEY_BACKSPACE:
+      minwrap(x, MAXX);
+      break;
+    case 'j' :
+    case 'J' :
+    case ('J' - '@'):
+    case KEY_DOWN:
+      maxwrap(y, MAXY);
+      break;
+    case 'k' :
+    case 'K' :
+    case ('K' - '@'):
+    case KEY_UP:
+      minwrap(y, MAXY);
+      break;
+    case '1' :
+    case 'L' :
+    case ('L' - '@'):
+    case KEY_RIGHT:
+      maxwrap(x, MAXX);
+      break;
+    case ' ' :
+      if (inch() == life)
+        {
+          addch(' ');
+          kill_life(y, x);
+        }
+      else
+        {
+          addch(life);
+          newlife(y, x);
+        }
+      break;
+    case 'q' :
+    case 'Q' :
+    case ESC :
+      ++start;
+      break;
+    }
+    }
+}
+
+newlife(ny, nx)
+    int    ny, nx;
+{
+  LIFE  *new;
+
+  new = (LIFE *)malloc(sizeof(LIFE));
+  new-&gt;y = ny;
+  new-&gt;x = nx;
+  new-&gt;next = head-&gt;next;
+  new-&gt;prev = head;
+  head-&gt;next-&gt;prev = new;
+  head-&gt;next = new;
+}
+
+
+readfn(f)
+    char   *f;
+{
+  FILE  *fl;
+  int   y, x;
+
+  if ((fl = fopen(f, "r")) == NULL)
+    errx("usage: life [file (line/col pts)]\n", NULL);
+  while (fscanf(fl, "%d%d", &amp;y, &amp;x) != EOF)
+    {
+      if (y &lt; 0 || y &gt; MAXY || x &lt; 0 || x &gt; MAXX)
+    errx("life: invalid data point in %s\n", f);
+      mvaddch(y, x, life);
+      newlife(y, x);
+    }
+  fclose(fl);
+
+}
+errx(m,d)
+    char   *m, *d;
+{
+  fprintf(stderr, m, d);
+  endwin();
+  exit(0);
+}</pre>
+
+</BODY></HTML>

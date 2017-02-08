@@ -1,0 +1,194 @@
+<HTML><HEAD>
+<TITLE>September 1993/Using the Windows DIB Color Table/Listing 4</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 4 <I>Creating and displaying a DIB</A></I></h4>
+<pre>/*
+  This simplied structure could be passed to the
+  display routine or a command and structure could be
+  passed and the required data extracted from it
+  to fill in this structure.
+*/
+struct BitMapRecord
+{
+ int     srcWidth;     /* Total source width (X).   */
+ int     srcHeight;    /*   "     "    height (Y).  */
+ HANDLE  srcBitsHdl;   /* Handle to raw bitmap.     */
+ BYTE    colorPlanes;
+ BYTE    BitsPerPixel;
+ RECT    displayRect;  /* Display destination rect. */
+ int     background;   /* Background brush value.   */
+ WORD    options
+
+ RECT    mainWin;      /* Client display rectangle. */
+ HANDLE  DIBHndl;
+ pBITMAPINFO bmi;
+} dispRec;
+
+/*----------------------------------------------------*/
+
+/* Global variable(s): */
+HPALETTE newPalette;
+
+/* Parameters passed to this routine: */
+HWND displayHWND;
+
+/* Local variables to this routine: */
+HDC     hDC;
+HANDLE  hBrush;
+LPSTR   srcPtr;
+int     result,scanlines;
+HBITMAP dstBitMap;
+HANDLE  DIBHndl;
+LPSTR   DIBPtr;
+
+       :
+       :
+
+result = NO_ERROR;
+
+GetClientRect(displayHWND, (LPRECT)&amp;dispRec.mainWin);
+
+hDC = GetDC(displayHWND);
+if (hDC != NULL)
+{
+ if (dispRec.options &amp; PAL_CLEAR_BACKGROUND)
+ {
+  /* Fill background: */
+  hBrush = GetStockObject(dispRec.background);
+  if (hBrush != NULL)
+    FillRect(hDC,
+           (LPRECT)&amp;dispRec.mainWin,
+           (HBRUSH)hBrush);
+ }
+
+ srcPtr = (LPSTR)GlobalLock(dispRec.srcBitsHdl);
+
+ if (srcPtr != NULL)
+ {
+  dstBitMap = CreateBitmap(dispRec.srcWidth,
+                       dispRec.srcHeight,
+                       dispRec.colorPlanes,
+                       dispRec.BitsPerPixel,
+                       srcPtr);
+
+  if (dstBitMap != NULL)
+  {
+   /* Fill in pBITMAPINFO structure: */
+   dispRec.bmi.bmiHeader.biSize =
+      (DWORD)sizeof(BITMAPINFOHEADER);
+   dispRec.bmi.bmiHeader.biWidth =
+      (DWORD)dispRec.srcWidth;
+   dispRec.bmi.bmiHeader.biHeight =
+      (DWORD)dispRec.srcHeight;
+   dispRec.bmi.bmiHeader.biPlanes =
+      dispRec.colorPlanes;
+   dispRec.bmi.bmiHeader.biBitCount =
+      dispRec.BitsPerPixel;
+   dispRec.bmi.bmiHeader.biCompression = BI_RGB;
+   dispRec.bmi.bmiHeader.biSizeImage =
+      (DWORD)dispRec.srcWidth *
+      (DWORD)dispRec.srcHeight *
+      (DWORD)dispRec.BitsPerPixel;
+   dispRec.bmi.bmiHeader.biClrUsed = OL;
+   dispRec.bmi.bmiHeader.biClrImportant = OL;
+
+   /*
+     Retrieve DIB size. The third parameter is the
+     start scan line in the source bitmap. The next
+     parameter is the number of scan lines to be
+     "formatted". The next parameter would normally
+     point to the buffer which would receive the
+     DIB data, but when it is set to NULL, only
+     the required size is returned (ie, no DIB is
+     generated).
+   */
+   scanlines = GetDIBits(hDC,
+                     dstBitMap,
+                     0,
+                     dispRec.srcHeight,
+                     NULL,
+                     (LPBITMAPINFO)&amp;dispRec.bmi,
+                     DIB_PAL_COLORS);
+
+   dispRec.DIBHndl =
+      GlobalAlloc(
+          (GMEM_DDESHARE|GMEM_MOVEABLE|GMEM_ZEROINIT),
+          (dispRec.bmi.bmiHeader.biSizeImage+4096));
+
+   /*
+     The extra 4K added to the allocation above is
+     solely an old programmer's paranoia...
+   */
+
+   if (dispRec.DIBHndl != NULL)
+   {
+    DIBPtr = (LPSTR)GlobalLock(dispRec.DIBHndl);
+
+    if (DIBPtr != NULL)
+    {
+     /* Build actual DIB: */
+     scanlines = GetDIBits(hDC,
+                       dstBitMap,
+                       0,
+                       dispRec.srcHeight,
+                       DIBPtr,
+                       (LPBITMAPINFO)&amp;dispRec.bmi,
+                       DIB_PAL_COLORS);
+     if (scanlines != 0)
+     {
+      /* Handle palette items: */
+      if (newPalette == NULL)
+        SetGrayScalePalette(displayHWND);
+
+      if (SelectPalette(hDC,newPalette,0) != NULL)
+      {
+       SetSystemPaletteUse(hDC,SYSPAL_STATIC);
+       UnrealizeObject(newPalette);
+       RealizePalette(hDC);
+      }
+
+      /* Perform "image" processing: */
+      BuildMapping((struct BitMapRec FAR *)&amp;dispRec);
+
+      /* Post actual image: */
+      if (SetDIBitsToDevice(hDC,
+                        dispRec.displayRect.left,
+                        dispRec.displayRect.top,
+                        dispRec.srcWidth,
+                        dispRec.srcHeight,
+                        0,  /* for this example */
+                        0,  /*  "    "     "    */
+                        0,  /* start scan line  */
+                        dispRec.srcHeight,
+                        DIBPtr,
+                        (LPBITMAPINFO)&amp;dispRec.bmi,
+                        DIB_PAL_COLORS) == 0)
+                        result = PAL_SDIBITS_ERROR;
+     }
+     else result = PAL_GETDIB2_ERROR;
+
+     GlobalUnlock(dispRec.DIBHndl);
+
+     ValidateRect(displayHWND,
+                (LPRECT)&amp;dispRec.mainWin);
+    }
+    else result = PAL_DIBPTR_ERROR;
+   
+    if (result != NO_ERROR)
+      GlobalFree(dispRec.DIBHndl);
+   }
+   else result = PAL_DIBALLOC_ERROR;
+   DeleteObject(dstBitMap);
+  }
+  else result = PAL_CREATEBM_ERROR;
+
+  GlobalUnlock(dispRec.srcBitsHdl);
+ }
+ else result = PAL_LOCKSRC_ERROR;
+
+/* End of File */
+</pre>
+</BODY>
+</HTML>

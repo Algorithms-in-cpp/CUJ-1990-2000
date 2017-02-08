@@ -1,0 +1,323 @@
+<HTML><HEAD>
+<TITLE>February 1993/Image Processing, Part 9: Histogram-Based Image Segmentation/Listing 9</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 9 <I>Application for thresholding and segmenting an image file</I></A></h4>
+<pre>       /***************************************
+       *
+       *   file d:\cips\mainseg.c
+       *
+       *   Functions: This file contains
+       *      main
+       *
+       *   Purpose:
+       *      This file contains the main calling
+       *      routine in an edge detection program.
+       *
+       *   External Calls:
+       *      gin.c - get_image_name
+       *      numcvrt.c - get_integer
+       *                    int_convert
+       *      tiff.c - read_tiff_header
+       *                  enhance_edges
+       *      hist.c - zero_histogram
+       *                 smooth_histogram
+       *                 show_histogram
+       *                 calculate_histogram
+       *      segment.c - threshold_image_array
+       *                    grow
+       *                    find_peaks
+       *                    peaks_high_low
+       *                    valley_high_low
+       *                    threshold_and_find_means
+       *
+       *   Modifications:
+       *      27 September 1992 - created
+       *
+       ****************************************/
+
+#include "cips.h"
+
+short the_image[ROWS][COLS];
+short out_image[ROWS][COLS];
+unsigned long histogram[GRAY_LEVELS+1];
+
+main(argc, argv)
+   int argc;
+   char *argv[];
+{
+   char   name[80], name2[80], response[80];
+   int    count, i, ie, i1, j, k, le, length, ll,
+          peakl, peak2, size,
+          t, type, v, width;
+   short  background, hi, low, object, value;
+   struct tiff_header_struct image_header;
+   
+   _setvideomode(_TEXTC80); /* MSC 6.0 statements */
+   _setbkcolor(1);
+   _settextcolor(7);
+   _clearscreen(_GCLEARSCREEN);
+   
+   if(argc &lt; 7){
+    printf("\n\nmainseg in-file out-file hi low value operation");
+    printf("\n\t\toperation = threshold grow peaks valleys adaptive");
+    printf("\n");
+    exit(0);
+   }
+   
+   strcpy(name, argv[1]);
+   strcpy(name2, argv[2]);
+   hi     = atoi(argv[3]);
+   low    = atoi(argv[4]);
+   value  = atoi(argv[5]);
+   
+   il = 1;
+   ie = 1;
+   ll = ROWS+1;
+   le = COLS+1;
+   
+   read_tiff_header(name, &amp;image_header);
+   
+   length = (90 + image_header.image_length)/ROWS;
+   width  = (90 +image_header.image_width)/COLS;
+   count  = 1;
+   printf("\nlength=%d width=%d", length, width);
+   
+   if(does_not_exist(name2)){
+      read_tiff_header(name, &amp;image_header);
+      round_off_image_size(&amp;image_header, &amp;length, &amp;width);
+      image_header.image_length = length*ROWS;
+      image_header;image_width = width*COLS;
+      create_allocate_tiff_file(name2, &amp;image_header,
+                                out_image);
+   }  /* ends if does_not_exist */
+   zero_histogram(histogram);
+   
+      /**********************************
+      *
+      *   Manual Threshold operation
+      *
+      ***********************************/
+   
+   if(argv[6][0] == 't'){
+      for(i=0; i&lt;length; i++){
+         for(j=0; j&lt;width; j++){
+           printf("\nrunning %d of %d", count, length*width);
+           count++;
+              read_tiff_image(name, the_image,
+                   il+i*ROWS, ie+j*COLS,
+                   ll+i*ROWS, le+j*COLS);
+              printf("\nMS&gt; Calling threshold");
+              threshold_image_array(the_image, out_image,
+                         hi, low, value);
+              write_array_into_tiff_image(name2, out_image,
+                               il +i*ROWS,
+                               ie+j*COLS,
+                               11+i*ROWS,
+                               le+j*COLS);
+         }  /* ends loop over i */
+      }  /* ends loop over j */
+   }  /* ends if t */
+   
+      /**********************************
+      *
+      *   Grow region operation
+      *
+      **********************************/
+   
+   if(argv[6][0] == 'g'){
+      for(i=0; i&lt;length; i++){
+         for(j=0; j&lt;width; j++){
+           printf("\nrunning %d of %d", count, length*width);
+           count++;
+              read_tiff_image(name, the_image,
+                   il+i*ROWS, ie+j*COLS,
+                   11+i*ROWS, le+j*COLS);
+              printf("\nMS&gt; Calling grow");
+              grow(the_image, value);
+              write_array_into_tiff_image(name2, the_image,
+                                     il+i*ROWS,
+                                     ie+j*COLS,
+                                     11+i*ROWS,
+                                     le+j*COLS);
+        }  /* ends loop over i */
+     }  /* ends loop over j */
+    }  /* ends if g */
+   
+      /**********************************
+      *
+      *   Peak threshold operation
+      *
+      ***********************************/
+   
+   if(argv[6][0] == 'P'){
+   
+       /* calculate histogram for the
+          entire image file */
+      
+      zero_histogram(histogram);
+      for(i=0; i&lt;length; i++){
+         for(j=0; j&lt;width; j++){
+            printf("\nrunning %d of %d", count, length*width);
+            count++;
+            read_tiff_image(name, the_image,
+                    il+i*ROWS, ie+j*COLS,
+                    ll+i*ROWS, le+j*COLS);
+            printf("\nMS&gt; Calling hist functions");
+            calculate_histogram(the_image, histogram);
+         }  /* ends loop over i */
+      }  /* ends loop over j */
+      
+      smooth_histogram(histogram);
+      show_histogram(histogram);
+      find_peaks(histogram, &amp;peak1, &amp;peak2);
+      printf("\npeakl=%d peak2=%d", peak1, peak2);
+      peaks_high_low(histogram, peak1, peak2,
+                     &amp;hi, &amp;low);
+      printf("\nhi=%d low=%d", hi, low);
+      
+              /* now read the image file again
+                 and threshold and grow objects. */
+      count = 1;
+      for(i=0; i&lt;length; i++){
+         for(j=0; j&lt;width; j++){
+            printf("\nrunning %d of %d", count, length*width);
+            count++;
+            read_tiff_image(name, the_image,
+                   il+i*ROWS, ie+j*COLS,
+                   ll+i*ROWS, le+j*COLS);
+            threshold_image_array(the_image, out_image,
+                                  hi, low, value);
+            write_array_into_tiff_image(name2, out_image,
+                               il+i*ROWS,
+                               ie+j*COLS,
+                               ll+i*ROWS,
+                               le+j*COLS);
+         }  /* ends loop over i */
+      }  /* ends loop over j */
+   }  /* ends if p */
+   
+      /********************************
+      *
+      *   Valley threshold operation
+      *
+      ********************************/
+   
+   if(argv[6][0] = = 'v'){
+   
+       /* calculate histogram for the
+          entire image file */
+
+      zero_histogram(histogram);
+      for(i=0; i&lt;length; i++){
+         for(j=0; j&lt;width; j++){
+            printf("\nrunning %d of %d", count, length*width);
+            count++;
+            read_tiff_image(name, the_image,
+                    il+i*ROWS, ie+j*COLS,
+                    ll+i*ROWS, le+j*COLS);
+            printf("\nMS&gt; Calling hist functions");
+            calculate_histogram(the_image, histogram);
+         }  /* ends loop over i */
+      }  /* ends loop over j */
+      
+      smooth_histogram(histogram);
+      show_histogram(histogram);
+      find_peaks(histogram, &amp;peak1, &amp;peak2);
+      printf("\npeakl=%d peak2=%d", peak1, peak2);
+      valley_high_low(histogram, peak1, peak2,
+                      &amp;hi, &amp;low);
+      printf("\nhi=%d low=%d", hi, low);
+      
+              /* now read the image file again
+                 and threshold and grow objects. */
+      count = 1;
+      for(i=0; i&lt;length; i++){
+         for(j=0; j&lt;width; j++){
+            printf("\nrunning %d of %d", count, length*width);
+            count++;
+            read_tiff_image(name, the_image,
+                   il+i*ROWS, ie+j*COLS,
+                   ll+i*ROWS, le+j*COLS);
+            threshold_image_array(the_image, out_image,
+                                  hi, low, value);
+            write_array_into_tiff_image(name2, out_image,
+                               il+i*ROWS,
+                               ie+j*COLS,
+                               ll+i*ROWS,
+                               le+j*COLS);
+         }  /* ends loop over i */
+      }  /* ends loop over j */
+   }  /* ends if v */
+   
+      /********************************
+      *
+      *   Adaptive threshold operation
+      *
+      ********************************/
+   
+   if(argv[6][0] == 'a'){
+   
+       /* calculate histogram for the
+          entire image file */
+      
+      zero_histogram(histogram);
+      for(i=0; i&lt;length; i++){
+         for(j=0; j&lt;width; j++){
+            printf("\nrunning %d of %d", count, length*width);
+            count++;
+            read_tiff_image(name, the_image,
+                    il+i*ROWS, ie+j*COLS,
+                    ll+i*ROWS, le+j*COLS);
+            printf("\nMS&gt; Calling hist functions");
+            calculate_histogram(the_image, histogram);
+         }  /* ends loop over i */
+      }  /* ends loop over j */
+      
+              /* find the peaks for the entire
+                 image file. */
+      
+      smooth_histogram(histogram);
+      show_histogram(histogram);
+      find_peaks(histogram, &amp;peakl, &amp;peak2);
+      printf("\npeakl=%d peak2=%d", peak1, peak2);
+      peaks_high_low(histogram, peak1, peak2,
+                     &amp;hi, &amp;low);
+      printf("\nhi=%d low=%d", hi, low);
+      
+              /* Second Pass */
+      
+      count = 1;
+      for(i=0; i&lt;length; i++){
+         for(j=0; j&lt;width; j++){
+            printf("\nrunning %d of %d", count, length*width);
+            count++;
+            read_tiff_image(name, the_image,
+                   il+i*ROWS, ie+j*COLS,
+                   ll+i*ROWS, le+j*COLS);
+            threshold_and find_means(the_image,
+                          out_image, hi, low,
+                          value, &amp;object,
+                          &amp;background);
+            peaks_high_low(histogram, object, background,
+                           &amp;hi, &amp;low);
+            printf("\nafter means calculated - hi=%d low=%d", hi,
+                  low);
+            threshold_image_array(the_image, out_image,
+                                  hi, low, value);
+            write_array_into_tiff_image(name2, out_image,
+                               il+i*ROWS,
+                               ie+j*COLS,
+                               ll+i*ROWS,
+                               le+j*COLS);
+         }  /* ends loop over i */
+      }  /* ends loop over j */
+   }  /* ends if a */
+
+}  /* ends main */
+
+/* End of File */</pre>
+
+</BODY>
+</HTML>

@@ -1,0 +1,253 @@
+<HTML><HEAD>
+<TITLE>October 1991/Questions & Answers/Listing 4</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 4</A></h4>
+<pre>#include &lt;dos.h&gt;
+#include &lt;time.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;bios.h&gt;
+#include &lt;conio.h&gt;
+
+#define F10 0x0144 /* F10 key */
+#define F1 0x013b  /* F1 key */
+#define TRUE  1
+#define FALSE 0
+#define PJN_INTER 0x001C /* Timer interrupt */
+#define  NO_WAIT  0#define WAIT   1
+#define  CLEAR_WAIT 2
+
+typedef struct {
+  unsigned key;
+  void (*function_ptr) ();
+  } PJN_KEYS;
+
+static int on_key_flag =FALSE;
+extern PJN_KEYS *active_keys; /* Nominates active keys in calling program   */
+
+void setup_screens(void);
+void output_screen(int i, int j);
+void print_message(void);
+void help_message(void);
+void press_a_key(int row);
+extern void on_key(void);
+extern void off_key(void);
+void check_key(void);
+void on_key(void);
+void off_key(void);
+unsigned GetKey( int fWait);
+void (interrupt far * old_handler) ();
+extern void (*pjn_next_fn)();
+
+PJN_KEYS *active_keys; /* Pointer to pass active keys to functions in ON */
+void (*pjn_next_fn)() = NULL; /* Global function to pass to control loop */
+
+main()
+  {
+   int i = 0;
+   int function;
+   static PJN_KEYS key_calls[] = { { F10, print_message},
+             { F1, help_message},
+             { '', NULL}
+             };
+
+   active_keys = key_calls; /*  Nominate active keys */
+
+   setup_screens ();
+
+   on_key();
+
+   do
+   {
+   output_screen(i, function);
+   i++;
+
+   if (pjn_next_fn ! = NULL)
+      {
+      function = 1;
+      printf("Executing a function %lx", pjn_next_fn);
+      (*pjn_next_fn) (); /*  go to next function if not Null */
+      }
+   } while (i &lt; 100);
+
+   off_key();
+
+  }
+
+/*_________Print message that required key pressed ______*/
+void print_message(void)
+  {   off_key();
+   printf("System stopped with F10 key");
+   exit(99);
+  }
+
+/*________Print help message ________________________*/
+void help_message(void)
+  {
+   off_key();
+   printf("Help message - F1");
+   on_key();
+   return;
+  }
+
+/*_____________Paint initial screens _________________*/
+void setup_screens(void)
+  {
+  printf(" Demo program for keyboard interrupts");
+    press_a_key(10);
+  }
+
+/*_________________Wait for a key press _________________*/
+
+/* Note: New handler must be off if this is to work.*/
+
+void press_a_key(int wrow)
+  {
+   printf(" Press a key");
+   GetKey(WAIT);
+  }
+
+/*__________________Dummy screen output __________________*/
+
+void output_screen(int i, int j)
+  {
+   printf("\nThe current value is %d function %d ", i, j);
+  }
+
+/*****************************************************************/
+/* ON KEY function similar to the Basic one */
+
+/* NOTE:   When the keys are on, no returns are made to the
+    input buffer. Therefore if a 'press a key' type
+    function is required, the keys must be turned off
+    first
+*/
+
+
+/*______________New timer interrupt handler _________________*/
+
+void interrupt far our_handler()
+  {
+   int i;
+   unsigned m_char;
+
+   m_char = GetKey ( NO_WAIT );
+
+   for( i = 0; i &lt;= 10; i++)
+     {
+     if (m_char == active_keys[i].key)
+     pjn_next_fn = active_keys[i]. function_ptr;
+     /* Assign next fn ptr */
+     if ((active_keys[i].function_ptr) == NULL)  return;
+     }
+   /* Not required, but nice to have */
+   _chain_intr(old_handler);
+   }
+/*_________________-Turn on new handler __________________*/
+
+void on_key(void)
+  {
+   if(on_key flag)  /*  Handler already loaded. */
+     {
+     off_key();
+     printf("\nYou cannot load the ON_KEY handler twice.");
+     printf( "\nProgram aborted.");
+     exit(99);
+     }
+   printf(" Turning on key");
+
+   old_handler = _dos_getvect(PJN_INTER);
+
+   _disable();
+   _dos_setvect(PJN_INTER, our_handler);
+   _enable();
+   on_key_flag = TRUE;
+  }
+/*_______________-Return old keyboard interrupthandler _______*/
+
+void off_key(void)
+   {
+   printf(" Disabling");
+   _disable();
+   _dos_setvect (PJN_INTER, old_handler);
+   _enable();
+   on_key_flag = FALSE;
+   pjn_next_fn = NULL;
+   }
+/*_______________-Microsoft get key function _________________*/
+/* GetKey - Gets a key from the keyboard. This routine
+* distinguishes between ASCII keys and function or control
+* keys with differenct shift states. It also accepts
+* a flag to return immediately if no key is available.
+*
+* Params: fWait - Code to indicate how to handle keyboard buffer:
+*  NO_WAIT   Return 0 if nokey in buffer, else return key
+*  WAIT     Return first key if available, else wait for key
+*  CLEAR_WAIT Thow away any key in buffer and wait for new key
+*
+* Return: One of the following:
+*
+* Keytype                High Byte    Low Byte
+* ____________           __________   ________
+*
+* No key available (onlywith NO_WAIT)    0     0
+* ASCII value                0     ASCII code
+* Unshifted function or keypad       1     scan code
+* Shifted function orkeypad         2     scan code
+* CTRL function orkeypad           3     scan code
+* ALT function or keypad           4     scan code
+*
+* Note: getkey cannot return codes forkeys not recognized by
+*     BIOS int 16, such as the CTRL-UP   or the 5 key on the
+*     numeric keypad&gt;
+*/unsigned GetKey( int fWait)
+  {
+   unsigned uKey, uShift;
+
+   /* If CLEAR_WAIT, drain the keyboard buffer. */
+   if( fWait == CLEAR_WAIT )
+     while(_bios_keybrd(_KEYBRD_READY ))
+       _bios_keybrd( _KEYBRD_READ );
+
+   /* If NO-WAIT, return 0 if there is nokey ready. */
+   if ( !fWait &amp;&amp; !_bios_keybrd( _KEYBRD_READY ))
+     return FALSE;
+
+  /* Get key code. */
+  uKey = _bios_keybrd( _KEYBRD_READ );
+
+/* If lowbyte is not zero, it's an ASCII key. Check scan code to
+* see if it's on the numerickeypad. If not, clear high byte and
+* return.
+*/
+
+  if( uKey &amp; 0x00ff )
+    if( (uKey &gt;&gt; 8) &lt; 69 )
+      return( uKey &amp; 0x00ff );
+
+/* For function keys and numeric keypad, put scan code inlow byte
+* and shift state codes in high byte.
+*/
+
+  uKey &gt;&gt;= 8;
+  uShift = _bios_keybrd( _KEYBRD_SHIFTSTATUS ) &amp; 0x000f;
+  switch( uShift )
+   {
+   case 0:
+     return ( 0x0100 | uKey ); /* None (1) */
+   case 1:
+   case 2:
+   case 3:
+     return( 0x0200 | uKey ); /* Shift (2) */
+   case 4:
+     return( 0x0300 | uKey ); /* Control (3) */
+   case 8:
+     return( 0x0400 | uKey ); /* Alt (4)  */
+   }
+  }
+
+/*  End of File */
+</pre>
+</BODY>
+</HTML>

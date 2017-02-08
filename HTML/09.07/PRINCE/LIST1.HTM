@@ -1,0 +1,151 @@
+<HTML><HEAD>
+<TITLE>July 1991/Double To (And From) String Conversion/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1</A></h4>
+<pre>/*  4.xBSD and AT&amp;T V.3 documented entry points are
+** #define ecvt(arg,ndigs,decexp,neg) cvt(arg,ndigs,decexp,neg,0)
+**  #define fcvt(arg,ndigs,decexp,neg) cvt(arg,ndigs,decexp,neg,1)
+** and gcvt, for which a simplified version is given which
+** does not strip trailing .0000
+** Microsoft gcvt() has only 3 arguments (?)
+**
+** Nota Bene:
+** AT&amp;T sense of 4th argument */
+typedef int LOGICAL;
+#include &lt;math.h&gt;
+#include "float.h"
+
+extern struct {
+    double n[308];
+    double p[DBL_MAX_10_EXP];
+}       dp10_;
+
+char *ecvt(value, ndigit, decpt, sign)
+    double value;
+    int ndigit, *decpt, *sign;
+{
+    char *cvt();
+    return (cvt(value, ndigit, decpt, sign, 0 ));
+}
+
+char *fcvt(value, ndigit, decpt, sign)
+    double value;
+    int ndigit, *decpt, *sign;
+{
+    char *cvt();
+    return (cvt(value, ndigit, decpt, sign, 1 ));
+}
+
+char *cvt(arg, ndigs, decexp, neg, ffmt)
+    register double arg;
+    int ndigs, *decexp;
+    LOGICAL *neg, ffmt;
+{
+    static char buf[80];    /* shouldn't need more than 25 */
+    long high, low;         /* assumed wide enough for 9+ digits */
+#ifdef_STDC_
+#include &lt;limits.h&gt;
+#if (LONG_MAX &lt; 999999999)   /* uncomment #error if possible */
+/*#error "code assumes 9 digits fit in long"*/
+#endif
+#include &lt;stdlib.h&gt;
+#define split(a,b) (r=ldiv(a,b))
+#else
+     typedef struct {
+    long quot;
+    long rem;
+     }      ldiv_t;
+#ifdef sun
+#define split(a,b) (r.rem=a-(r.quot=a/b)*b)
+#else
+#define split(a,b) (r.quot=a/b,r.rem=a%b)
+#endif
+#endif
+    ldiv_t r;
+    int scale, totdigs, scalarg, maxscale;
+    char *bufptr;
+    register double x, dri;/* accumulate powers of 10 */
+    LOGICAL pneg;
+    register int i;
+
+#define ODD(i) ((i)&amp;1)           /* like Pascal */
+
+    *decexp = 3;                /* so gcvt won't add 0's or exponent */
+#define isnan(arg) (arg != arg)
+    if (isnan(arg))
+   return "NAN";                /* Sun library has isnan(),isinf() *
+                           but IEEE compliant compiler would recognize
+                           defines * #define isinf(arg) (arg==1/0.) */
+    
+    arg = (*neg = (arg &lt; 0)) ? -arg : arg; /* only gcvt() actually
+                                        inserts '-' */
+    if (arg &gt;= DBL_MAX*2) {
+      *decexp = 8;
+      return "Infinity";
+    }
+    if (arg == 0) {    /* don't force weird e format for 0 */
+      *decexp = 1;
+      return "0";
+    }
+/* search in table can be used instead of log()
+** need negative powers in table
+** speed up search by using log10() to find approximate index */
+    scalarg = (int) log10(arg) + (arg &gt; 1); /* ceil() in line */
+/* adjust */
+    if (scalarg &gt;= DBL_MIN_10_EXP &amp; scalarg &lt;= DBL_MAX_10_EXP)
+       scalarg += (arg &gt;= dp10_.p[scalarg]) - (arg &lt; dp10_.p[scalarg - 1]);
+    if ((scale = ffmt ? ndigs : ndigs - scalarg) &gt; (maxscale = 18 - scalarg)) {
+/* reduce ndigs for 18 max */
+      ndigs += maxscale - scale;
+      scale = maxscale;
+    }
+    if (scale &gt;= 14) {     /* extend range by splitting high end off first */
+      if (scale - 14 &lt;= DBL_MAX_10_EXP)
+         arg *= dp10_.p[scale - 14];
+      else {        /* avoid overflow */
+         arg *= dp10_.p[DBL_MAX_10_EXP / 2];
+         arg *= dp10_.p[scale - 14 - DBL_MAX_10_EXP / 2];
+      }         /* can't compare accurately with original arg */
+      low = arg = (arg - (high = arg)) * 1e5; /* split off 4 digits */
+      high = high * 100000 + low;/* add 5 more */
+      low = (arg - low) * 1e9 + .5; /* round off last 9 */
+    } else if (scale &lt; 9) { /* split low end off first */
+      high = 0;
+      if ((ndigs &gt; 9) | ffmt) /* prevents violating table boundary */
+         arg -= (high = arg / dp10_.p[9 - scale]) * dp10_.p[9 - scale];
+      low = (scale &lt; 0 ? arg / dp10_.p[-scale] : arg * dp10_.p[scale]) + .5;
+    } else {        /* 9 &lt;= scale &lt; 14 */
+      arg *= dp10_.p[scale - 9];
+      low = (arg - (high = arg)) * 1e9 + .5;
+    }
+    high += low &gt;= 1000000000; /* carry from rounding */
+
+/*  convert high//low to string */
+   *(bufptr = buf + 19) = '\0';
+   for (i = 0; ++i &lt;= 9;) {
+     split(low, 10);
+     *(--bufptr) = r.rem + '0';
+     low = r.quot;
+     split(high, 10);
+     *(bufptr - 9) = r.rem + '0';
+     high = r.quot;
+   }
+/*  discard leading zero */
+    for (totdigs = 18, bufptr -= 9; (bufptr[0] == '0')
+         &amp; (bufptr[1] != '\0'); ++bufptr) --totdigs;
+/*  one trailing zero ought to be discarded, in the case where it
+**  is the result of rounding up, so that, if the carry goes all the way
+**  across, totdigs will not be greater than requested
+**  also, trailing zeros beyond DBL_DIG can degrade accuracy of conversion back to binary */
+
+    *decexp = totdigs - (ffmt ? ndigs : scale);
+    
+    return bufptr;
+}
+
+/* End of File */
+</pre>
+</BODY>
+</HTML>

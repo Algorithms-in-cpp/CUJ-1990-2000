@@ -1,0 +1,381 @@
+<HTML><HEAD>
+<TITLE>June 1992/Illustrated C/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2</A></h4>
+<pre>  1: /************************************************************
+  2:  *  Program: RMENU Menu Interpreter
+  3:  *  Module: rmenu1.c
+  4:  *      Main and Utility Functions
+  5:  *  Written by: Leor Zolman, 7/91
+  6:  ***********************************************************/
+  7:
+  8: #include "cmenu.h"
+  9: #include "rcmenu.h"
+ 10:
+ 11: #if __STDC__
+ 12: #   pragma hdrstop
+ 13: #   include &lt;stdarg.h&gt;
+ 14: #else
+ 15: #   include &lt;varargs.h&gt;
+ 16: #endif
+ 17:
+ 18: /********************** Global Data *************************/
+ 19:
+ 20: LEVELS LMenus[MAX_NEST];
+ 21: int nestlev;                    /* current nesting level        */
+ 22: int echox, echoy;               /* Location of item # echo area */
+ 23: int debug;                      /* true to display sys commands */
+ 24: char SysShell[80];              /* System command interpreter   */
+ 25:
+ 26: /************************************************************
+ 27:  * main():
+ 28:  *  Initialize the program and run
+ 29:  *  the master menu
+ 30:  ************************************************************/
+ 31:
+ 32: main(argc, argv)
+ 33: int argc;
+ 34: char **argv;
+ 35: {
+ 36:     char *mname = "menu";
+ 37:     int i, j;
+ 38:
+ 39:     debug = 0;                  /* No debugging by default      */
+ 40:
+ 41:                                /* Process command line options: */
+ 42:     for (i = 1; i &lt; argc; i++)
+ 43:         if (argv[i][0] == '_' )
+ 44:         {
+ 45:             switch (tolower(argv[i][1]))
+ 46:             {
+ 47:                 case 'd':   debug = TRUE;
+ 48:                             break;
+ 49:
+ 50:                 default:    fprintf(stderr, "Unknown option: '%s'\n",
+ 51:                                         argv[i]);
+ 52:                             exit(0);
+ 53:             }
+ 54:             for (j = i; j &lt; argc - 1; j++)         /* compress */
+ 55:                 argv[j] = argv[j + 1];              /* arg list */
+ 56:             argc--;
+ 57:             i--;
+ 58:         }
+ 59:
+ 60:     init_win();                            /* initialize curses */
+ 61:
+ 62:     if (argc == 2)
+ 63:         mname = argv[1];
+ 64:
+ 65:     nestlev = 0;
+ 66:     do_menu("", mname);
+ 67:     free_menus();
+ 68:     close_win();
+ 69:     return OK;
+ 70: }
+ 71:
+ 72:
+ 73: /************************************************************
+ 74:  * do_menu():
+ 75:  *  Run a compiled menu file, supporting recursive
+ 76:  *  calls for nested external menus.
+ 77:  *  Default command/menu path is supplied as "path".
+ 78:  ************************************************************/
+ 79:
+ 80: int do_menu(path, file)
+ 81: char *path, *file;
+ 82: {
+ 83:     char pathname[MAX_PATH];
+ 84:
+ 85:     strcpy(pathname, path);
+ 86:     if (*path)
+ 87:         strcat(pathname, "/");
+ 88:     strcat(pathname, file);
+ 89:     strcat(pathname, ".mnc");
+ 90:
+ 91:     if (ld_menu(pathname) == ERROR)
+ 92:         return EXITALL;
+ 93:
+ 94:     return sub_menu(0, path);          /* run main menu in file */
+ 95: }
+ 96:
+ 97:
+ 98: /*************************************************************
+ 99:  * ld_menu():
+100:  *  Load a compiled menu object file from disk,
+101:  *  into nesting level nestlev, allocating memory
+102:  *  as required.
+103:  *  For each menu in the menu file being loaded,
+104:  *  compute screen placement as per spacing/columns
+105:  *  specifications and the total number of items.
+106:  ************************************************************/
+107:
+108: int ld_menu(path)
+109: char *path;
+110: {
+111:     LEVELS *Levp = &amp;LMenus[nestlev];
+112:     MENU *Mp;
+113:     ITEM *Ip;
+114:     MENU2 *M2p;
+115:
+116:     FILE *fp;
+117:     int widest;
+118:     int i, j, k, l;
+119:
+120:     if ((fp = fopen(path, "rb")) == NULL)
+121:         return fatal("Can't open %s", path);
+122:
+123:     if (fread((Void *) &amp;Levp-&gt;n_menus, sizeof (int), 1, fp)
+124:                     != 1)
+125:         return fatal("Error reading menu count from %s", path);
+126:
+127:     for (i = 0; i &lt; Levp-&gt;n_menus; i++)
+128:     {
+129:         if (i &lt; Levp -&gt; max_menus)
+130:             M2p = Levp -&gt; Menus[i];
+131:         else                        /* allocate memory for Menu */
+132:         {
+133:             M2p = Levp -&gt; Menus[i] = (MENU2 *) malloc(sizeof(MENU2));
+134:             if (M2p == NULL)
+135:                 return fatal("Out of memory loading %s", path);
+136:             Levp -&gt; max_menus++;
+137:             M2p -&gt; most_items = 0;
+138:         }
+139:
+140:         Mp = &amp;M2p -&gt; Menu;
+141:
+142:         if (fread((Void *) Mp, sizeof(MENU), 1, fp) != 1)
+143:             return fatal("Error reading Menu data from %s", path);
+144:
+145:                            /* Now determine screen placement strategy. */
+146:
+147:         placement(Mp);
+148:
+149:         M2p -&gt; field_len = min(MAX_TXTWID,
+150:                     (SCREEN_COLS /Mp -&gt; columns) - 5);
+151:
+152:                /* Read in each item, and assign screen coordinate info */
+153:                /* to each on-the-fly as per spacing/column parameters  */
+154:
+155:         for (j = 0; j &lt; Mp -&gt; nitems; j++)
+156:         {
+157:             if (j &lt; M2p -&gt; most_items)
+158:                 Ip = M2p -&gt; Items[j];
+159:             else
+160:              {
+161:                 Ip = M2p -&gt; Items[j] = (ITEM *) malloc(sizeof(ITEM));
+162:                 if (Ip == NULL)
+163:                    return fatal("Out of RAM in %s, menu #%d/item #%d",
+164:                         path, i,j);
+165:                 M2p -&gt; most_items++;
+166:              }
+167:              if (fread((Void *) Ip, sizeof(ITEM), 1, fp) != 1)
+168:                  return fatal("Error reading %s", path);
+169:
+170:              Ip -&gt; text[M2p -&gt; field_len - 1] = '\0';     /* truncate */
+171:
+172:              if ((Ip -&gt; acttyp == ACT_LMENU) ||
+173:                   Ip -&gt; acttyp == ACT_EMENU) &amp;&amp;
+174:                  strlen(Ip -&gt; text) + 6 &lt; M2p -&gt; field_len)
+175:             {
+176:                  int limit;
+177:
+178:                  limit = min (Mp -&gt; widest + 2,
+179:                          M2p -&gt; field_len - 7);
+180:                  for (k = strlen(Ip -&gt; text);
+181:                          k &lt; limit &amp;&amp; k &lt; (MAX_TXTWID - 6); k++)
+182:                      strcat(Ip -&gt; text, " ");
+183:                  strcat(Ip -&gt; text, "(MENU)");
+184:             }
+185:
+186:             M2p -&gt; coords[j].ypos =
+187:                     HOME_Y + (j % (MAX_IROWS / Mp -&gt; spacing))
+188:                                 * Mp -&gt; spacing;
+189:
+190:             widest = Mp -&gt; widest;
+191:             M2p -&gt; coords[j].xpos = HOME_X +
+192:                     (
+193:                       (Mp -&gt; columns == 1)
+194:                             ?
+195:                       (
+196:                         (SCREEN_COLS - HOME_X -
+197:                          (widest + (widest &lt; 66) ? 14 : 6) )) / 2
+198:                       )
+199:                             :
+200:                       (j / (MAX_IROWS / Mp -&gt; spacing) *
+201:                            (SCREEN_COLS / Mp -&gt; columns))
+202:                     );
+203:
+204:
+205:             M2p -&gt; coords[j].spaces_needed =
+206:                     min(M2p -&gt; field_len, Mp -&gt; widest)
+207:                             - strlen(Ip -&gt; text);
+208:         }
+209:     }
+210:     fclose(fp);
+211:     return OK;
+212: }
+213:
+214:
+215: /***********************************************************
+216:  * placement():
+217:  * Calculate values for columns and spacing
+218:  * for the given Menu:
+219:  ************************************************************
+220:
+221: Void placement(Mp)
+222: MENU *Mp;
+223: {
+224:     int columns = Mp -&gt; columns;
+225:     int spacing = Mp -&gt; spacing;
+226:     int nitems = Mp -&gt; nitems;
+227:
+228:                            /* Step 1: fill in real values if either */
+229:                            /*    columns or spacing was not specified: */
+230:
+231:     if (spacing == DEFAULT &amp;&amp; columns == DEFAULT)
+232:     {
+233:         if (nitems &lt;= (MAX_IROWS / 2))
+234:         {
+235:             Mp -&gt; columns = 1;
+236:             Mp -&gt; spacing = 2;
+237:         }
+238:         else if (nitems &lt;= MAX_IROWS)
+239:             if ((Mp -&gt; widest * 2 + 5) &lt;= SCREEN_COLS)
+240:                 Mp -&gt; columns = Mp -&gt; spacing = 2;
+241:             else
+242:                 Mp -&gt; columns = Mp -&gt; spacing = 1;
+243:         else
+244:         {
+245:             Mp -&gt; spacing = 1;
+246:             Mp -&gt; columns = (nitems - 1) / MAX_IROWS + 1;
+247:         }
+248:     }
+249:     else if (spacing == DEFAULT)
+250:         Mp -&gt; spacing =
+251:                  (nitems &lt;= (MAX_IROWS / 2)) ? 2 : 1;
+252:     else if (columns == DEFAULT)
+253:         if (Mp -&gt; spacing == 1)
+254:             Mp -&gt; columns = (nitems - 1) / MAX_IROWS + 1;
+255:         else
+256:             Mp -&gt; columns = (nitems - 1) / (MAX_IROWS / 2) + 1;
+257:
+258:                                      /* Step 2: Adjust if out of range: */
+259:
+260:     while (MAX_IROWS / Mp -&gt; spacing * Mp -&gt; columns &lt; nitems)
+261:         if (Mp -&gt; spacing != 1)
+262:             Mp -&gt; spacing = 1;
+263:         else
+264:             Mp -&gt; columns++;
+265:     return;
+266: }
+267:
+268:
+269: /************************************************************
+270:  * free_menus():
+271:  *  Free up memory allocated for ALL menu items:
+272:  ************************************************************/
+273:
+274: Void free_menus()
+275: {
+276:     int i, j, k;
+277:     MENU2 *m2p;
+278:
+279:     for (i = 0; i &lt; MAX_NEST; i++)
+280:         for (j = 0; j &lt; LMenus[i].max_menus; j++)
+281:         {
+282:             m2p = LMenus[i].Menus[j];
+283:             for (k = 0; k &lt; m2p -&gt; most_items; k++)
+284:                 free(m2p -&gt; Items[k]);
+285:             free(m2p);
+286:         }
+287: }
+288:
+289:
+290: /************************************************************
+291:  * fatal(): Complain and exit.
+292:  ************************************************************/
+293:
+294:  #if __STDC__           /* use ANSI variable-#-of-args method */
+295:
+296: int fatal (char *fmt, ...)
+297: {
+298:     char ftext[80], ffmt[55];
+299:     va_list arglist;
+300:
+301:     va_start(arglist, fmt);
+302:
+303: #else                       /* or old varargs method:            */
+304:
+305: int fatal(fmt, va_alist)
+306: char *fmt;
+307: va_dcl
+308: {
+309:     char ftext[80], ffmt[55];
+310:     va_list arglist;
+311:
+312:     va_start(arglist);
+313: #endif
+314:
+315:     vsprintf(ffmt, fmt, arglist);
+316:     sprintf(ftext, "Fatal error in rmenu: %s", ffmt);
+317:
+318:     put_msg(1, ftext);
+319:
+320:     va_end(arglist);
+321:     return ERROR;
+322: }
+323:
+324:
+325:/************************************************************
+326:* put_msg(): Display a message on the menu screen
+327:*  Return the character typed to continue
+328:************************************************************/
+329:
+330: #if_STDC__
+331: int put_msg (int bell, char *fmt, ...)
+332: {
+333:     char ftext[80];
+334:     va_list arglist;
+335:     char c;
+336:
+337:     va_start(arglist, fmt);
+338:
+339: #else
+340: int put_msg(bell, fmt, va_alist)
+341: int bell;
+342: char *fmt;
+343: va_dcl
+344: {
+345:     char ftext[80];
+346:     va_list arglist;
+347:     char c;
+348:
+349:     va_start(arglist);
+350: #endif
+351:
+352:     move(ERR_ROW, 0);
+353:     hlight_on();
+354:
+355:     if (bell)
+356:         beep();
+357:
+358: /*  vwprintw(stdscr, fmt, arglist); */
+359:     vsprintf(ftext, fmt, arglist);
+360:     addstr(ftext);
+361:     va_end(arglist);
+362:     refresh();
+363:
+364:     c = getch();
+365:
+366:     move (ERR_ROW, 0);
+367:     hlight_end();
+368:     clrtoeol();
+369:     refresh();
+370:     return c;
+371: }
+/* End of File */</pre>
+
+</BODY>
+</HTML>

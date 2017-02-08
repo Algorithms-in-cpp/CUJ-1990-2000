@@ -1,0 +1,392 @@
+<HTML><HEAD>
+<TITLE>September 1993/A Fixed-Point Numeric Class for C++/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1 fixed.cpp</A></h4>
+<pre>/*----------------------------------------------------
+        Module: FIXED.CPP
+     
+      Class: Fixed
+      
+      Description: A fixed point numerical
+      class that performs numerical operations
+      in a 15.16 bit signed format, using a signed
+      long as native storage.
+      
+      This format is capable of storing numbers
+      in a range of +32,767 to -32,768 in 1/65535ths
+      increments (approx. 0.0000153, or about 5
+      decimals of accuracy).
+      
+      Revision History
+-----------------------------------------------------
+  Date       Name  Comment
+-----------------------------------------------------
+
+Feb-16-93    rbf   Added the addProduct function
+
+Nov-24-92    rbf   Initial Creation
+
+---------------------------------------------------*/
+
+#include "FIXED.H"
+#include &lt;stdio.h&gt;
+
+/*--------------------------------------------------
+   default constructor
+---------------------------------------------------*/
+
+Fixed::Fixed()
+{
+   fixeddata.long_rep = FixedData)0;
+}
+
+/*-------------------------------------------------
+   default copy constructor
+--------------------------------------------------*/
+
+Fixed::Fixed(const Fixed&amp; rhs)
+{
+   fixeddata.long_rep = rhs.fixeddata.long_rep;
+}
+
+/*-------------------------------------------------
+   constructor taking a double
+--------------------------------------------------*/
+
+Fixed::Fixed(double rhs)
+{
+   // shift it into the 2nd 16 bits-------+
+   //          round it---------+         |
+   //  then truncate it --+     |         |
+   //                     |     |         |
+   fixeddata.long_rep = (long)(0.5 + (rhs * 65536.0));
+}
+
+/*-------------------------------------------------
+   constructor taking an int
+--------------------------------------------------*/
+
+Fixed::Fixed(int rhs)
+{
+   // shift it into the 2nd 16 bits
+   fixeddata.long_rep = (FixedData)rhs &lt;&lt; 16;
+}
+
+/*-------------------------------------------------
+   default assignment
+--------------------------------------------------*/
+
+Fixed&amp;   Fixed::operator=(const Fixed&amp; rhs)
+{
+   fixeddata.long_rep = rhs.fixeddata.long_rep;
+   
+   return *this;
+}
+
+/*-------------------------------------------------
+   default destructor
+--------------------------------------------------*/
+
+Fixed::~Fixed()
+{
+   ; // if there were something to destroy,
+     // we'd do it here
+}
+
+/*-------------------------------------------------
+   ostream output
+--------------------------------------------------*/
+
+// describe how to output a fixed value
+
+ostream&amp; operator&lt;&lt;( ostream&amp; s, Fixed&amp; rhs )
+{
+   return ( s &lt;&lt;
+      (((double)rhs.fixeddata.long_rep) / 65536.0) );
+}
+
+/*-------------------------------------------------
+   addition operator
+   the order of the addition makes no difference
+--------------------------------------------------*/
+
+Fixed operator+(const Fixed&amp; lhs,
+     const Fixed&amp; rhs)
+{
+   Fixed return_val(rhs); // create a return temporary
+   
+   // add the data parts together
+   return_val.fixeddata.long_rep +=
+      lhs.fixeddata.long_rep;
+   
+   return return_val;
+}
+
+/*-------------------------------------------------
+   subtraction operator
+   the order of the subtraction does make a difference
+   this function can be considered
+   "lhs.operator-( rhs )" for the
+   expression lhs-rhs
+--------------------------------------------------*/
+
+Fixed operator-(const Fixed&amp; lhs,
+     const Fixed&amp; rhs)
+{
+   Fixed return_val(lhs);// create a return temporary
+   
+   // do the math, subtracting the
+   // left hand side from the right
+   return_val.fixeddata.long_rep =
+        rhs.fixeddata.long_rep;
+   
+   return return_val;
+}
+
+/*-------------------------------------------------
+   multiplication operator
+--------------------------------------------------*/
+
+// Force the use of the real assembler
+// for 386 instructions
+#pragma inline
+// quiet the compiler from complaining since
+// it can't read ASM code
+#pragma argsused
+
+Fixed operator*(const Fixed&amp; lhs, const Fixed&amp; rhs)
+{
+   Fixed return_val; // create a return temporary
+   
+   _asm{
+   .386C;   /* enable 386 instruction set */
+   
+   mov   bx,word ptr [bp+10]; /* get rhs's offset */
+   mov   eax,dword ptr [bx];  /* move rhs's 32 bits*/
+                         /*  into eax */
+   mov   bx,word ptr [bp+8];  /* get this offset */
+   imul   dword ptr [bx];    /* mul by left hand side */
+   
+   /* if we overflow a 16 bit rational, */
+   /*   we don't check */
+   
+   mov   word ptr [bp-2],dx;     /* dx = high word of */
+                      /*  return_value's pointer */
+   
+   /* shift the 32 bit fraction */
+   /* into a 16 bit (eax-&gt;ax) */
+   shr   eax,16;
+   mov   word ptr [bp-4],ax;    /* low word */
+   } /* asm */
+   
+   return return_val;
+}
+
+/*-------------------------------------------------
+  division operator
+--------------------------------------------------*/
+
+// see comments for multiplication operator
+#pragma inline
+#pragma argsused
+
+Fixed operator/(const Fixed&amp; lhs, const Fixed&amp; rhs)
+{
+
+   Fixed temp = 0; // do our math in this temp on stack
+   
+   _asm{
+   .386C;   /* enable 386 instruction set */
+   
+   mov       eax,dword ptr [bp+8]; /* lhs */
+   sub     eax,eax;
+   mov     edx,[bp+10]; /* rhs */
+   shrd    eax,edx,16;   /* position result */
+   sar     edx,16;      /* in EAX */
+   idiv    dword ptr [bp+8]; /* lhs */
+   shld    edx,eax,16 /* whole part in DX */
+             /* fractional already in AX */
+   } /* asm */
+   
+   return Fixed(temp);
+}
+
+/*------------------------------------------------
+   addProduct member function
+-------------------------------------------------*/
+
+// see comments for multiplication operator
+#pragma inline
+#pragma argsused
+
+void      Fixed::addProduct(const Fixed&amp; rhs1,const
+Fixed&amp; rhs2)
+{
+   _asm{
+   .386C;  /*  enable 386 instruction set */
+   
+   /* word ptr [bp+4] is the address of *this data */
+   /* word ptr [bp+6] is the address of rhs1 data */
+   /* word ptr [bp+8] is the address of rhs2 data */
+   
+   mov   si,word ptr [bp+4] ; /* address of *this */
+   
+   mov   bx,  word ptr [bp+6]; /* get rhs1's offset */
+   mov   eax,dword ptr [bx];   /* move rhs1's 32 bits*/
+   
+   mov   bx,  word ptr [bp+8]; /* get rhs2's offset */
+   imul   dword ptr [bx];       /* mul rhs2 by rhs1 */
+   
+   /* if we overflow (as before) we don't check */
+   
+   /* shift the 32 bit fraction into a 16 bit (eax-&gt;ax) */
+   shr   eax,16;
+   
+   /* dx = high word (fractions) */
+   /* ax = low word (whole numbers) */
+   add   word ptr [si],ax;
+   adc   word ptr [si+2],dx;
+   
+   } /* asm */
+}
+
+/*-------------------------------------------------
+   relational operator equal to
+--------------------------------------------------*/
+
+int    operator==(const Fixed&amp; lbs,
+      const Fixed&amp; rhs)
+{
+   // compare the long values
+   return ( lhs.fixeddata.long_rep ==
+      rhs.fixeddata.long_rep );
+}
+
+/*------------------------------------------------
+   relational operator not equal to
+-------------------------------------------------*/
+
+int    operator!=(const Fixed&amp; lhs,
+      const Fixed&amp; rhs)
+{
+   // compare the long values
+   return ( lhs.fixeddata.long_rep !=
+      rhs.fixeddata.long_rep );
+}
+
+/*------------------------------------------------
+   relational operator greater than
+--------------------------------------------------*/
+
+int    operator&gt;(const Fixed&amp; lhs,
+      const Fixed&amp; rhs)
+{
+
+   // compare the the long values
+   return ( lhs.fixeddata,long_rep &gt;
+      rhs.fixeddata.long_rep);
+}
+
+/*-------------------------------------------------
+   relational operator less than
+--------------------------------------------------*/
+
+int    operator&lt;(const Fixed&amp; lhs,
+      const Fixed&amp; rhs)
+{
+   // compare the long values
+   return ( lhs.fixeddata. long_rep &lt;
+      rhs.fixeddata.long_rep);
+}
+
+/*-------------------------------------------------
+   relational operator greater than equal to
+--------------------------------------------------*/
+
+int    operator&gt;=(const fixed&amp; lhs,
+      const Fixed&amp; rhs)
+{
+   // compare the long values
+   return ( lhs.fixeddata, long_rep &gt;=
+      rhs.fixeddata.long_rep );
+}
+
+/*------------------------------------------------
+   relational operator less than equal to
+-------------------------------------------------*/
+
+int    operator&lt;=(const Fixed&amp; lhs,
+      const Fixed&amp; rhs)
+{
+   // compare the long values
+   return ( lhs.fixeddata.long_rep &lt;=
+      rhs.fixeddata.long_rep );
+}
+
+/*-------------------------------------------------
+   compound assignment addition operator
+--------------------------------------------------*/
+
+Fixed&amp; Fixed::operator+=(conts Fixed&amp; rhs)
+{
+   fixeddata.long_rep += rhs.fixeddata.long_rep;
+   return *this;
+}
+
+/*-------------------------------------------------
+   compound assignment subtraction operator
+--------------------------------------------------*/
+
+Fixed&amp; Fixed::operator-=(const Fixed&amp; rhs)
+{
+   fixeddata.long_rep -= rhs.fixeddata.long_rep;
+   
+   return *this;
+}
+
+/*-------------------------------------------------
+   compound assignment multiplication operator
+--------------------------------------------------*/
+
+Fixed&amp; Fixed::operator*=(const Fixed&amp; rhs)
+{
+   *this = *this * rhs;  // wimpy way of doing it.....
+   
+   return *this;
+}
+
+/*-------------------------------------------------
+   compound assignment division operator
+--------------------------------------------------*/
+
+Fixed&amp; Fixed::operator/=(const Fixed&amp; rhs)
+{
+   *this = *this / rhs;  // wimpy way of doing it.....
+   
+   return *this;
+}
+
+/*-------------------------------------------------
+   Unary plus operator
+--------------------------------------------------*/
+Fixed Fixed::operator+()
+{
+   return Fixed(*this);
+}
+
+/*-------------------------------------------------
+   Unary minus operator
+--------------------------------------------------*/
+Fixed Fixed::operator-()
+{
+   Fixed return_val ( *this );
+   return_val *= -1;
+   return return_val;
+}
+
+// End of File
+</pre>
+</BODY>
+</HTML>

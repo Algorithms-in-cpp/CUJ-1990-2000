@@ -1,0 +1,316 @@
+<HTML><HEAD>
+<TITLE>March 1992/The Device Driver As State Machine/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2 (exec.c) Execute Driver Command</A></h4>
+<pre>/* ----------------------------------------------------
+ *  Author:             T.W. Nelson
+ *  Compile options:
+ *  Version:            1.00
+ *  Date:  05-0ct-1991
+ *  Notes:
+ *
+ *  Source code Copyright (c) 1991 T.W. Nelson.
+ *  May be used only with appropriate
+ *  acknowledgement of copyright.
+ * -------------------------------------------------- */
+
+#include &lt;dos.h&gt;
+#include "driver.h"
+
+extern unsigned init(void), media_check(void),
+      build_bpb(void), ioctl_read(void),
+      device_read(void), nd_read(void),
+      input_status(void), input_flush(void),
+      device_write(void), verify_write(void),
+      output_status(void), output_flush(void),
+      ioctl_write(void), device_open(void),
+      device_close(void), rem_media(void),
+      output_busy(void), generic_ioctl(void),
+      get_logdev(void), set_logdev(void),
+      bad_command(void);
+
+static unsigned (*Dispatch[])(void) = {
+   init,            //0 = initialize driver
+   media_check,     //1
+   build_bpb,       //2 = build BIOS param block
+   ioctl_read,      //3 = read io control data
+   device_read,     //4
+   nd_read,         //5 = non-destructive read
+   input_status,    //6
+   input_flush,     //7 = flush input buffers
+   device_write,    //8
+   verify_write,    //9 = write with verify
+   output_status,   //10
+   output_flush,    //11 = flush output buffers
+   ioctl_write,     //12 = write io control data
+   device_open,     //13  (DOS 3+)
+   device_close,    //14  (DOS 3+)
+   rem_media,       //15 = removable media (3+)
+   output_busy,     //16 = output until busy (3+)
+   bad_command,     //17 = not used
+   bad_command,     //18 = not used
+   generic_ioctl,   //19 = generic io control (3.2+)
+   bad_command,     //20 = not used
+   bad_command,     //21 = not used
+   bad_command,     //22 = not used
+   get_logdev,      //23 = get logical device (3.2+)
+   set_logdev,      //24 = set logical device (3.2+)
+   };
+
+#define NUM_CMDS (sizeof(Dispatch)/sizeof(void *))
+
+REQHDR far *Rh = (REQHDR far *) 0;
+unsigned int errno = 0;     //for std library code
+extern unsigned tape_io(unsigned ofs, unsigned seg);
+
+static char signon[] =
+       "Demo TAPE device driver, V1.00\r\n\n";
+
+void    exec_command( REQHDR far *rhdr )
+{
+   /* Call the command-code routine from the dispatch
+    * table indexed by the command code. Access to
+    * caller's request header is made available thru
+    * global pointer 'Rh'. 'DONE' bit is always set
+    * on exit.
+    */
+
+    Rh = rhdr;      //assign to global copy
+    Rh-&gt;status = 0;     //clear status word
+
+    Rh-&gt;status = ( (Rh-&gt;cmd &gt;= NUM_CMDS)  ?
+                       bad_command() :
+                       (*Dispatch[ Rh-&gt;cmd ])() );
+    Rh-&gt;status |= IM_DONE;      //set 'done' bit
+}
+
+/*----------------------------------------------------
+ * Command-code routines. Called indirectly by the
+ * interrupt routine thru the dispatch table. All
+ * routines should return the appropriate status code
+ * to be assigned to the request header on return to
+ * exec_command().  Return will be 0 if no error,
+ * or (IS_ERROR + error_code) (see driver.h) if an
+ * error was detected.
+ *----------------------------------------------------*/
+
+unsigned init( void )            /* 0     */
+{
+   /* Driver initialization function. Called once
+    * by DOS on boot up when CONFIG.SYS is read.
+    * Only DOS functions 01h-OCh and 30h can be called
+    * here.
+    */
+
+    extern char _TheEnd;  //marks end of driver
+    void putstr( const char *str );   //below
+
+    putstr( signon);
+
+   /* Other initialization code goes here ......
+    * If needed, a pointer to the command line after
+    * 'DEVICE=' in CONFIG.SYS is available starting
+    * at Rh-&gt;xfer_cnt (or, Rh + 18).
+    */
+
+    // Return break address to DOS .......
+    Rh-&gt;xfer_seg = FP_SEG( (void far *) &amp;_TheEnd );
+    Rh-&gt;xfer_ofs = FP_OFF( (void far *) &amp;_TheEnd );
+
+    return 0;
+}
+
+unsigned media_check( void )     /* 1    */
+{
+   /* Block devices only. Function determines
+    * whether or not a floppy disk was changed,
+    * allowing DOS to bypass re-reading the FAT.
+    */
+    return 0;   }
+
+unsigned build_bpb(void)         /* 2    */
+{
+   /* Block devices only. Builds a table of disk
+    * parameters when media_check() returns the
+    * disk-change code.
+    */
+    return 0;   }
+
+unsigned ioctl_read(void)        /* 3    */
+{
+   /* Character and block devices. Allows device
+    * driver to pass data directly to application.
+    * Called by DOS int21h/44h subfunction 2. The
+    * IOCTL_RW bit (14) must be set in device block's
+    * attribute word.
+    */
+    return tape_io(Rh-&gt;xfer_ofs, Rh-&gt;xfer_seg);
+}
+
+unsigned device_read(void)       /* 4    */
+{
+   /* Character and block devices. Read data from
+    * the device into a specified buffer. Returns
+    * #bytes or sectors transfered.
+    */
+    return 0;   }
+
+unsigned nd_read(void)           /* 5    */
+{
+   /* Character devices only. Lets caller peek at
+    * next byte in device's buffer w/o removing it.
+    */
+    return 0;   }
+
+unsigned input_status(void)      /* 6    */
+{
+   /* Character devices only. Returns current input
+    * status for device. Sets IM_BUSY bit if input
+    * request cannot proceed immediately (characters
+    * are waiting to be read from the input buffers).
+    */
+    return 0;   }
+
+unsigned input_flush(void)       /* 7    */
+{
+   /* Character devices only. Function discards any
+    * data pending in device's input buffers.
+    */
+    return 0;   }
+
+unsigned device_write(void)      /* 8    */
+{
+   /* Character and block devices. Writes data from
+    * the specified buffer to a device. Returns #
+    * bytes or sectors written.
+    */
+    return 0;   }
+
+unsigned verify_write(void)      /* 9    */
+{
+   /* Character and block devices. Same as
+    * device_write(), but performs a read-after-
+    * write verification.
+    */
+    return 0;   }
+
+unsigned output_status(void)     /* 10   */
+{
+   /* Character devices only.  Returns the current
+    * output status for the device. Sets IM_BUSY bit
+    * if write request cannot proceed immediately.
+    */
+    return 0;   }
+
+unsigned output_flush(void)      /* 11   */
+{
+   /* Character devices only. Function discards any
+    * data in output buffers and any pending output
+    * requests.
+    */
+    return 0;   }
+
+unsigned ioctl_write(void)       /* 12 */
+{
+   /* Character and block devices. Allows application
+    * to pass control info directly to driver. Called
+    * by DOS int21h/44h subfunction 3. The IOCTL_RW
+    * bit (14) must be set in device block's attribute
+    * word.
+    */
+    return tape_io(Rh-&gt;xfer_ofs, Rh-&gt;xfer_seg);
+}
+
+unsigned device_open(void)       /* 13 */
+{
+   /* Character and block devices, DOS 3+. Manages
+    * reference count of #open files for block devices,
+    * or device initialization for character devices.
+    * Called only if bit 11 (OCR_MEDIA) is set in
+    * attribute word in header block.
+    */
+    return 0;   }
+
+unsigned device_close(void)      /* 14 */
+{
+   /* Character and block devices, DOS 3+. The
+    * opposite of command-code 13, device_open().
+    */
+    return 0;   }
+
+unsigned rem_media(void)         /* 15 */
+{  /* Block devices only. Sets IM_BUSY if media is
+    * non-removable. Called only if bit 11
+    * (OCR_MEDIA) is set in attribute word in header
+    * block.
+    */
+    return 0;   }
+
+unsigned output_busy(void)       /* 16 */
+{
+   /* Character devices only, DOS 3+. Transfers data
+    * to a device from specified buffer until device
+    * signals busy. Called only if attribute bit 13
+    * (OUTPUT_BUSY) is set.
+    */
+    return 0;   }
+
+unsigned generic_ioctl(void)     /* 19 */
+{
+   /* Character and block devices, DOS 3.2+. This
+    * function is generally the same as command-codes
+    * 3 and 12, with a different calling protocol. Bit
+    * 6 (GEN_IOCTL) must be set in attribute word.
+    */
+    return 0;   }
+
+unsigned get_logdev(void)        /* 23 */
+{
+   /* Block devices only, DOS 3.2+. Function returns
+    * number of logical devices (drive letters)
+    * assigned to a physical device. Bit 6
+    * (GEN_IOCTL) must be set in attribute word.
+    */
+    return 0;   }
+
+unsigned set_logdev(void)        /* 24 */
+{
+   /* Block devices only, DOS 3.2+. Function sets
+    * number of logical devices assigned to a
+    * physical device. Bit 6 (GEN_IOCTL) must be set
+    * in attribute word.
+    */
+    return 0;   }
+
+
+unsigned bad_command( void )
+{
+    return IS_ERROR + INV_COMMAND;
+}
+
+void putstr( const char *str )
+{
+   /* Utility function to output an asciiz-format
+    * string to monitor using BIOS-level output....
+    * Doesn't add an auto-CR; use '\r' in your
+    * string. Coding putstr() in C adds 200-300 more
+    * bytes (from int86()) to the TAPE.SYS image in
+    * memory, relative to an asm version.
+    */
+
+    union REGS regs;
+
+    while( *str) {
+       regs.h.al = (char) *str++;
+       regs.h.ah = 0x0e;   //BIOS write TTY
+       regs.x.bx = 0;      //page 0
+       int86( 0x10, &amp;regs, &amp;regs );
+    }
+}
+
+/* ------ End of File --------------------*/
+</pre>
+</BODY>
+</HTML>

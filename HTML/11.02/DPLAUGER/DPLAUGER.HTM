@@ -1,0 +1,106 @@
+
+
+<HTML>
+<HEAD>
+
+<TITLE>February 1993/Making C++ Safe for Threads</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocfeb.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Making C++ Safe for Threads<A name="0062_002C"><A name="0062_002C"></font></h2><P>
+<h3 align="center"><font color="#800000"><A name="0062_0000"><A name="0062_0000">Dave Plauger</font></h3><hr><blockquote><P>
+<P><i><A name="0062_0000"><A name="0062_0000">Dave has over 20 years experience with the design and development of operating systems. His main areas of expertise include real time and multi processing. Dave currently serves as Technical Editor of POSIX 1003.14 (Multiprocessing Profile) and has been a member of various POSIX working groups since the days of /usr/group. Dave may be reached at Mercury Computer Systems, Lowell MA. The phone number is (508) 458-3100; email djp@mc.com.</i></P><P>
+<h4><FONT COLOR="#000080"><A name="0062_002D">Introduction<A name="0062_002D"></FONT></h4></P>
+Multithreading is a powerful technique that can speed up application programs on both multiprocessors and uniprocessors. On multi processors there is a potential speedup due to parallel computation. On uni processors there is a potential speedup due to the overlap of I/O with computation.<P>
+The speedup is potential because, in the real world, there are always trade-offs. In order to have computational parallelism you need synchronization, which adds overhead. In order to overlap I/O with computation you again need synchronization in the form of I/O completion events.<P>
+Multi threading helps by hiding (but not eliminating) the complexity and the overhead associated with both types of parallelism. In the many cases where parallelism does help, programming with threads is a convenient way to use it.<P>
+<h4><FONT COLOR="#000080"><A name="0062_002E">Issues of Thread-Safety<A name="0062_002E"></FONT></h4></P>
+The main problem that arises when adding threads to programs is synchronizing updates to shared variables. The problem arises because updates to data structures often require several machine steps. These individual operations may be interleaved at random among multiple processors. And that can cause corrupted data structures, storage overwrites, and even more unpleasant problems. Even on a uni processor threads may be time-shared, which means they effectively run in parallel.<P>
+High-level languages generally let you ignore the underlying machine, but parallel programming drags you back into worrying about what is really happening. On the other hand, you do have enough information in the declarations to help spot the potential problems. Variables that are declared at file scope and static data within functions clearly need to be protected from uncoordinated updates by multiple threads.<P>
+Less obviously, control data structures used by library packages need careful attention as well. Examples of these are the <I>FILE</I> structures used in the Standard C library and the <I>dirent</I> structures used in UNIX and POSIX. These data structures hold state information between calls. Problems may arise if they are used in more than one thread at the same time, or even alternately.<P>
+The same issues arise with member data in C++ classes. In the C library, something has to be done for <I>errno, stdin, stdout</I>, and <I>stderr</I> (at least), to make them thread-safe. In C++, the analogous structures are <I>cin, cout, cerr</I>, and <I>clog</I>.<P>
+<h4><FONT COLOR="#000080"><A name="0062_002F">Two Solutions<A name="0062_002F"></FONT></h4></P>
+There are two general approaches to dealing with a global shared variable in a multi-threaded program:<P>
+<UL><li>provide locking in order to synchronize updates</li>
+<li>eliminate the problem by making the variable thread private</li></UL>
+There are lots of mechanisms to enforce locking. Some examples are semaphores, monitors, and message queues. The POSIX threads package (IEEE P1003.4a, Draft 6) provides the function <I>pthread_mutex_lock</I> and <I>pthread_mutex_unlock</I>.<P>
+Locks should be associated with the data, not the code. Locking code that happens to access shared variables may overly limit parallelism. For example, in an operating system one has to lock the global run queue or task data during updates, but one should avoid having a scheduler lock. The latter approach results in a system that may be thread-safe, but it will be slower than the original, single-threaded version. The trade-off one makes is to implement enough fine-grained locking to maximize parallelism without adding too much overhead.<P>
+Besides adding to the overhead of even a single-threaded program, locking introduces the problem of deadlock. Deadlock can be avoided by recognizing the hierarchical structure of the data, and obtaining locks in a strict order. However, this requires global knowledge of all data, which may be impossible in a modular system, such as a third-party library.<P>
+Thread-private data may be supported explicitly by the compiler, if you're lucky. But there are routines in each thread package that provide for thread-private data, because it is indispensable. In POSIX threads, the routines are <I>pthread_keycreate, pthread_getspecific</I>, and <I>pthread_setspecific</I>. These routines implement an associative memory, in which a shared key is associated with a thread-specific pointer.<P>
+The easiest form of thread-private storage to use is the stack. Each thread has its own stack, therefore all automatic variables are thread-safe. You can also place a data structure in thread-private storage by using <I>malloc</I> (in C) or <I>new</I> (in C++) to allocate the storage, then storing the pointer in thread-specific data. When a new thread is created, its specific data pointers are set to null. Knowing this, the program can tell at runtime when to allocate and initialize another instance of the data structure. Therefore, not every thread needs a copy of every data structure. <I>pthread_keycreate</I> registers a destructor function to be called for each key when the thread exits. This function may free the storage and otherwise clean things up.<P>
+It's best to make variables thread-private whenever possible. The access cost of thread-specific data is much less compared to lock/unlock overhead, and the associated code can be written using the simpler, uni processor model.<P>
+<h4><FONT COLOR="#000080"><A name="0062_0030">Other Methods<A name="0062_0030"></FONT></h4></P>
+One can dedicate a thread to particular functions, which makes data and code thread-private by convention. For example, one could contrive the program so that all calls to X-Window routines occur in a particular thread. The initial thread &#151; the one which runs <I>main</I> &#151; is the safest one to dedicate to older libraries. For backward compatibility, many threads packages associate the initial thread with global resources, such as <I>errno</I>.<P>
+Sometimes global shared variables can be used in a multi-threaded program without additional protection. For example, a Boolean variable used as a flag can be set or cleared without synchronization. The code sequence:<P>
+<pre>lock;
+flag = 1;
+unlock</pre>
+is silly. But, if two or more variables need to change "simultaneously," then locking may be needed to protect the program state, disallowing certain intermediate states.<P>
+Statistics counters employ another kind of update which may go unprotected. An expression like <I>++count</I> is a multi-step update of a global variable, and is a candidate for locking. But if all you ever care about are zero/non-zero values of the count, no harm will result even if multiple processors collide on an update. (The value will be at least 1.) This is worth mentioning because test coverage tools often insert such counters. It is seldom worth the trouble to make these tools thread-safe.<P>
+<h4><FONT COLOR="#000080"><A name="0062_0031">A Question of Semantics<A name="0062_0031"></FONT></h4></P>
+Choosing whether to add locking or to make data thread-private is more than a matter of mechanics. The bigger question concerns the thread model to be used. Are threads to be independent or cooperating? The answer to this question determines the implementation strategy.<P>
+If the threads are to be cooperating, meaning they produce or consume the same stream of data, then the data must have internal locking and external synchronization. In this model, the POSIX <I>opendir/readdir</I> facility, for example, would operate with a shared data structure. An application would want to have threads alternately read or write directory entries.<P>
+Each independent thread, on the other hand, would produce or consume its own stream of data. In this case, the buffering would be thread-private, and there would be no need for internal locking. Either approach is viable, it just depends upon the application. But what is the library writer supposed to do? The answer may be to supply both.<P>
+<h4><FONT COLOR="#000080"><A name="0062_0032">A Thread-Safe C++ Library<A name="0062_0032"></FONT></h4></P>
+If the underlying C implementation is thread-safe, then C++ is very close to it. However, there are a few special considerations. First, the I/O streams <I>cin, cout, cerr</I>, and <I>clog</I> are static objects provided by the library. Nothing prevents two threads from simultaneously writing to the same output stream, and thus corrupting its internal state.<P>
+Second, C++ uses an internal list to keep track of sizes of arrays of objects. This is due to the fact that C++ lets you say<P>
+<pre>delete [] array-ref</pre>
+which implies that the compiler/library has to determine the number of elements. (For various reasons, most implementations can't store the size in the same chunk of memory as the array itself.) Since an array may be allocated on one thread and freed on another, this internal list has to be global. Therefore it has to be protected during updates.<P>
+An important issue is whether I/O streams be thread-private or shared. Given the nature of the interface, which is to perform I/O by the character, word, or line, it doesn't do much good to provide locking within the interface functions. For example, one thread may print <I>hello</I> and another print <I>world</I>, but the screen output will be jumbled anyway unless the threads coordinate their outputs in some way outside of the I/O library. Adding locking within each I/O primitive call (inside the interface) will make the I/O library thread-safe. Indeed, this was the approach taken for POSIX threads. The problem is that it introduces a lot of overhead in the interest of safety.<P>
+Alternatively, you could establish the rule that I/O streams are thread-private. Cooperating threads will need to synchronize outside of the interface. (Maybe they would have to anyway.) Independent threads would read or write streams as efficiently as in the single-threaded case.<P>
+Given this rule, the library only has to concern itself with the streams it provides initially, namely: <I>cin, cout, cerr</I>, and <I>clog</I>. In C++, it's fairly easy to provide a "wrapper class" that can operate on a thread-private version of the original class.<P>
+<h4><FONT COLOR="#000080"><A name="0062_0033">Wrapper-Class Implementation<A name="0062_0033"></FONT></h4></P>
+The wrapper class defines a small object that holds the thread-specific data key, initial file descriptor, and other stream-initialization parameters. The declared object has a static initializer which takes care of allocating the key. Each of the pre-defined streams is both declared and replaced with a macro, as follows:<P>
+<pre>extern ostream_withassign cout;// stream declaration
+extern t_ostream_withassign __tcout;// stream wrapper
+#define cout (__tcout.ref())</pre>
+Any textual reference to<I> cout</I> is replaced with a call to the wrapper class, which returns a reference to the thread-private copy of the stream. The thread-private stream is not allocated and initialized until the first call to the <I>ref</I> member function is made. This introduces the limitation that <I>&amp;cout</I> may not be used in an initializer list &#151; because the address is no longer a constant value, but must be computed at runtime. The initial thread points at the pre-defined streams. Old binaries will therefore access the initial thread's I/O streams. This permits backward compatibility with single-threaded code.<P>
+The wrapper is a very small class that defines a static object (such as <I>__tcout</I>) which is shared by all threads. The static initializer does three things:<P>
+<UL><li>It allocates a key to access thread-private storage.</li>
+<li>It stores the stream-initialization parameters it will need later.</li>
+<li>It points the wrapper at the corresponding global stream.</li></UL>
+Static initializers are called from the initial thread before <I>main</I> executes.<P>
+A pointer to the wrapper class is stored in thread-private storage. This pointer is later presented as an argument to the destructor function called by thread-exit processing. Therefore, the thread-private wrapper object and its stream object are deleted when the thread exits.<P>
+The <I>ref</I> member function simply uses the key stored in the static object and tries to look up the thread-private pointer to the wrapper. The very first time a new thread calls any I/O function, <I>ref</I> will find that its thread-private pointer is null. When the pointer is null, <I>ref</I> allocates a new wrapper object and a new stream, then stores the pointer to its wrapper object in thread-private storage. Subsequently, <I>ref</I> returns a reference to the stream object assocated with the wrapper object, both of which are private to the thread.<P>
+With this implementation, only threads that use stream I/O get copies of stream objects. Threads can be created at any time, since I/O stream allocation occurs on demand. The main cost added to implement thread-private streams is one lookup in thread-private storage for every I/O call. This is much cheaper than adding lock/unlock to every I/O call.<P>
+<h4><FONT COLOR="#000080"><A name="0062_0034">A C++ Wish List<A name="0062_0034"></FONT></h4></P>
+It would be nicer if you could have redefined <I>cout</I> as an object of the wrapper class instead of having to use a macro. In other words, you would want to say<P>
+<pre>extern t_ostream_withassign cout</pre>
+Then you could rely on the user-defined type conversion facility to yield a reference to the desired class. That is, you would simply define<P>
+<pre>operator ostream_withassign&amp;() {return ref();}</pre>
+in the wrapper class.<P>
+I tried this and it mostly works, but the following limitations were found:<P>
+Invocations of member functions didn't work. For example, <I>cout.flush()</I> had to be transformed to <I>((ostream</I><I>_</I><I>withassign&amp;)(cout)).flush()</I>. Here is a case where it would be nice to be able to overload the dot operator. Then you could say:<P>
+<pre>ostream_withassign&amp; operator.()
+   {return ref();}</pre>
+The result is that the wrapper class could substitute a reference to the desired class that defines the member functions.<P>
+The compiler complains when the expression in a return statement does not match the function's declaration. For example:<P>
+<pre>ostream_withassign&amp; f()
+   {return cout;}</pre>
+would work only if the compiler applied the user-defined type conversion.<P>
+There is a similar warning when the type of an initializer does not match the type of the variable being initialized. For example,<P>
+<pre>ostream_withassign &amp;os = cout</pre>
+would work only if the compiler applied the user-defined type conversion. If the user-defined type conversion were applied uniformly and it were possible to overload the dot operator, then it would be easier to implement a very useful form of indirection for any object.<P>
+<h4><FONT COLOR="#000080"><A name="0062_0035">Arrays of Objects<A name="0062_0035"></FONT></h4></P>
+As I stated above, the other change needed for the C++ library was to add locking around an internal list. This change is not visible to the library's user. The implementation of the locking mechanics used is perhaps worthy of discussion.<P>
+The list is protected with simple, mutual exclusion, using <I>pthread_mutex_lock</I> and <I>pthread_mutex_unlock</I> in the underlying implementation. The list-handling file has a definition at file scope like<P>
+<pre>static_thread_lock_def list_lock;</pre>
+where <I>thread_lock_def</I> defines a static initializer that allocates and initializes a <I>pthread_mutex_t</I>.<P>
+The body of the code where mutual exclusion is needed has the syntax:<P>
+<pre>{ thread_lock L(list_lock);
+   // do something to the list
+} //end of critical region</pre>
+The braces are used to control the scope of <I>L</I>, which is a reference to the lock. The class <I>thread_lock</I> acquires the <I>pthread_mutex</I> in its initializer, and releases it in its destructor. Thus, the scope of <I>L</I> determines the bounds of the critical region.<P>
+This could be considered just another stupid C++ trick except that, should there be a return or an exception within the region, the destructor for <I>L</I> will be called, which will release the lock. Thus, locking is integrated with returns and exceptions because of this method.<P>
+There is a quiet gotcha in this implementation. Should you forget to supply a variable name (in this case it's <I>L</I>), and write <I>thread_lock(list_lock)</I>, C++ will lock then immediately unlock <I>list_lock</I>, leaving the critical region unprotected.<P>
+The reason there is no warning has something to do with the great debate over the lifetime of temporaries. For example, in a simple expression like <I>X + Y</I> the compiler may have to make temporary copies of intermediate results, which one would expect to get deleted at the end of the expression, not at the end of the current scope. See your local language lawyer for details.<P>
+<h4><FONT COLOR="#000080"><A name="0062_0036">Conclusion<A name="0062_0036"></FONT></h4></P>
+I successfully converted the Hewlett-Packard C++ library to a thread-safe form. Along the way, I observed:<P>
+<UL><li>C++ is very close to being thread-safe, except for some potential uses of I/O streams and arrays of objects.</li>
+<li>Making global data thread-private is more efficient than adding locking.</li>
+<li>I/O streams should be thread-private, because the shared use of a stream requires external coordination anyway.</li>
+<li>Uniform application of user-defined type conversion coupled with the ability to overload the dot operator would be useful extensions. This would aid in the creation of wrapper classes for indirect access to any object.</li>
+<li>Locking based upon C++ scoping rules integrates locking with exceptions.</li></UL>
+</BLOCKQUOTE>
+</BODY>
+</HTML>

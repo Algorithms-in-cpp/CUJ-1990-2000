@@ -1,0 +1,238 @@
+<HTML><HEAD>
+<TITLE>January 1994/Handling Time-Consuming Windows Tasks/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2 <I>Member function definitions for class Cschlr</I></A></h4>
+<pre>#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include "cschlr.hpp"
+
+const int MAIN = CSC_NO_THREAD;        //main prgram context
+const int DUMMY = MAIN + 1;            //temporary context
+const int EMPTY =-1;                   //no delayed thread marker
+
+/* The following static varaible is used to facilitate the
+   implementation of Kill. This limits the number of Cschlr
+   object per Windows application to 1 only */
+static Cschlr *schlr;
+
+/* Used for the implicit termination of a thread when
+   execution falls through the thread function body */
+static void Kill()
+{
+  schlr-&gt;Suicide();
+}
+
+/* Used to check if it is time to wake up the sleeping threads. */
+void Cschlr::WakeUp()
+{
+  time_t current;
+  schlr_table *ptr;
+
+  /* check time and dispatch thread */
+  time(&amp;current);
+  while ((head != EMPTY) &amp;&amp;
+        (current &gt;= (ptr = (table + head))-&gt;wakeuptime))
+    {
+    readyQ.Enqueue(head);
+    head = ptr-&gt;next;
+    ptr-&gt;next = EMPTY;
+    }
+}
+
+/* Used to perform a task switch. Control is passed
+   back to the Windows PeekMessage loop */
+void Cschlr::Switch(Csemq *sem)
+{
+   WakeUp();
+   sem-&gt;Enqueue(nRunning);
+   task[nRunning]-&gt;Transfer(*task[MAIN]);
+}
+
+/* Constructor to set up the task table */
+Cschlr::Cschlr()
+{
+  nTask = 0;
+  nRunning = CSC_NO_THREAD;
+  head = EMPTY;
+  table = new schlr_table[CSC_NO_THREAD];
+  schlr = this;
+
+  //used to resume main program
+  task[MAIN] = new Cthread(NULL, 0, NULL, 0);
+
+  //used in Suicide to switch task
+  task[DUMMY] = new Cthread(NULL, 0, NULL, 0);
+}
+
+/* Empty destructor */
+Cschlr::~Cschlr()
+{
+  //do nothing
+}
+
+/* Used to create a thread and pass to it a user variable */
+int Cschlr::CreateThread(THDFN func, int stacksize, void *param)
+{
+  THDFN retaddr;   //these two variables must appear
+  void *ptr;       //together for CreateThread to work
+  int i;
+
+  int thread = CSC_NO_THREAD;
+
+  if (nTask &lt; CSC_NO_THREAD + 1)
+    {
+    for (i = 0; i &lt; CSC_NO_THREAD + 1; i++)
+      {
+      if (task[i] == NULL)
+        break;
+      }
+    retaddr = Kill;     //set return address to point to Kill
+    ptr = param;        //set user parameter pointer
+    task[i] = new Cthread(func, stacksize, (int *) &amp;retaddr, 4);
+    readyQ.Enqueue(i);
+    thread = nTask++;
+    }
+
+  return (thread);
+}
+
+/* Used by a calling thread to commit suicide or self-terminate */
+void Cschlr::Suicide()
+{
+   int current;
+
+   current = nRunning;
+   nRunning = readyQ.Dequeue();
+   delete task[current];
+   task[current] = NULL;
+   nTask--;
+   task[DUMMY]-&gt;Transfer(*task[nRunning]);
+}
+
+/* Used to create a semaphore object */
+Csemq* Cschlr::CreateSem(long lValue)
+{
+  return (new Csemq(lValue));
+}
+
+/* Used to destroy a semaphore object */
+void Cschlr::DestroySem(Csemq* sem)
+{
+  delete sem;
+}
+
+/* Used to signal a semaphore */
+void Cschlr::Signal(Csemq *sem, long 1MaxCount)
+{
+  if (sem-&gt;GetType() == CST_COUNT)
+    {
+    if (sem-&gt;GetCount() &lt; lMaxCount)
+      sem-&gt;UpdateCount(1);
+    }
+  else
+    {
+    readyQ.Enqueue(sem-&gt;Dequeue());
+    }
+}
+
+/* Used to wait on a semaphore */
+void Cschlr::Wait(Csemq *sem)
+{
+
+  if (sem-&gt;GetType() == CST_COUNT)
+    {
+    if (!sem-&gt;GetCount())
+      {
+      //move running thread to semaphore queue and
+      //switch to a ready-to-run thread
+      Switch(sem);
+      }
+    else
+      //decrement sempahore count and continue execution
+      sem-&gt;UpdateCount(-1);
+    }
+  else
+    {
+    //move running thread to semaphore queue and
+    //switch to a ready-to-run thread
+    Switch(sem);
+    }
+}
+
+/* Used to give up the cpu voluntarily */
+void Cschlr::Preempt()
+{
+  Switch(&amp;readyQ);
+}
+/* Used to put the calling thread to sleep for the
+   specified number of seconds */
+void Cschlr::Sleep(long lseconds)
+{
+  time_t current;
+  schlr_table *ptr;
+  schlr_table *thread;
+  int prev;
+  int next;
+
+  current = time(0) + lSeconds; //init wakeup time
+
+  if (head == EMPTY)
+    {                           //no thread delayed
+    head = nRunning;
+    next = EMPTY;
+    }
+  else                          //scan delayed threads
+    {
+    prev = EMPTY;
+    next = head;
+    while ((next != EMPTY) &amp;&amp; (current &gt;=
+       (ptr = (table + next))-&gt;wakeuptime))
+      {
+      prev = next;
+      next = ptr-&gt;next;
+      }
+    if (prev == EMPTY)
+      head = nRunning;
+    else
+      (table + prev)-&gt;next = nRunning;
+    }
+
+  ptr = (table + nRunning);
+  ptr-&gt;wakeuptime = current;
+  ptr-&gt;next = next;
+
+  Switch(&amp;waitQ);
+
+}
+
+/* Used to retrieve the status of a semaphore */
+void Cschlr::GetSemStates(Csemq *sem, long &amp;lCount, int &amp;fWait)
+{
+  if (sem-&gt;GetType() == CST_COUNT)
+    {
+    1Count = sem-&gt;GetCount();
+    fWait = 0;
+    }
+  else
+    {
+    1Count = 0;
+    fWait = 1;
+    }
+}
+
+/* Used by the main PeekMessage loop to multiplex the
+   cpu among a number of threads */
+void Cschlr::Run()
+{
+  if ((nRunning = readyQ.Dequeue()) != CSC_NO_THREAD)
+    task[MAIN]-&gt;Transfer(*task[nRunning]);
+  else
+    WakeUp();
+}
+
+// End of File
+</pre>
+</BODY>
+</HTML>

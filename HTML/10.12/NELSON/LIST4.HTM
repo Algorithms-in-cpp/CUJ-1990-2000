@@ -1,0 +1,323 @@
+<HTML><HEAD>
+<TITLE>December 1992/We Have MailBimodal Interrupt Handling Under 80286 DOS Extenders/Listing 4</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 4 <B></B>TERM286.C &#151; <B><I></B>the terminal emulator, code to open and close the COM port, and the protected-mode interrupt service routine.</I></A></h4>
+<pre>/*
+ * TERM286.C Copyright (C) 1992 Mark R. Nelson.
+ *
+ * This file, along with TERM286.H and REAL_ISR.C, make up a simple terminal
+ * emulator that will run under the Phar Lap 286|DOS Extender. This program
+ * demonstrates the use of a bimodal interrupt handler. The protected
+ * mode interrupt is in this routine, the real mode interrupt is found in
+ * REAL_ISR.C. The real mode interrupt is linked into a DLL which is loaded
+ * at run time.
+ */
+
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;ctype.h&gt;
+#include &lt;conio.h&gt;
+#include &lt;dos.h&gt;
+#include "phapi.h"
+#include "term286.h"
+
+/*
+ * The inline version of outp() for Turbo C will generate a warning message
+ * under some circumstances. This turns off that message by removing the
+ * macro the defines the inline version.
+ */
+
+#ifdef __TURBOC__
+#undef outp
+#endif
+
+/*
+ * These constants define the registers and bits used in setting up the
+ * 8250 UART.
+ */
+
+#define DIVISOR_LATCH_LSB                 0
+#define DIVISOR_LATCH_MSB                 1
+#define INTERRUPT_ENABLE_REGISTER         1
+#define   IER_RECEIVE_DATA_INTERRUPT      0x01
+#define LINE_CONTROL_REGISTER             3
+#define   LCR_NUMBER_OF_STOP_BITS         0x04
+#define   LCR_PARITY_N                    0x00
+#define   LCR_PARITY_0                    0x08
+#define   LCR_PARITY_E                    0x18
+#define    LCR_DIVISOR_LATCH_ACCESS       0x80
+#define MODEM_CONTROL_REGISTER            4
+#define   MCR_DATA_TERMINAL_READY         1
+#define   MCR_REQUEST_TO_SEND             2
+#define   MCR_OUT2                        8
+#define LINE_STATUS_REGISTER              5
+#define   LSR_THRE                        0x20
+
+/*
+ * The real mode ISR and the Port data structure are both found in the real
+ * mode DLL. Because of this, they both have to be declared as being far data.
+ */
+
+extern struct port_data far Port;
+void far interrupt real_isr( void );
+
+/*
+ * This is the protected mode ISR. It is identical to the real mode ISR,
+ * except for the increment of the protected mode interrupt count near the end.
+ * This routine reads in the character that caused the interrupt, then tries to
+ * stuff it in the buffer and update the head pointer. Finally, it increments
+ * the diagnostic counter, outputs an EOI to the 8259 PIC, and exits.
+ */
+
+void far interrupt prot_isr()
+{
+   unsigned char c;
+   int space_used;
+
+   c = ( unsigned char ) inp( Port.uart_address );
+   space_used = Port.head_pointer - Port.tail_pointer;
+   if ( space_used &lt; 0 )
+      space_used += 1024;
+   if ( space_used &lt; 1023 ) {
+      Port.buffer[ Port.head_pointer++ ] = c;
+      Port.head_pointer &amp;= 1023;
+   }
+   Port.prot_count++;
+   outp( 0x20, 0x20 );
+}
+
+/*
+ * This routine sets up the 4 data format parameters for and 8250 family UART.
+ * It also does a small amount of error checking, but doesn't affect interrupts.
+ * It can be used before or after the port has been opened.
+ */
+
+int SetComParameters( int baud_rate,
+                  char parity,
+                  int word_length,
+                  int stop_bits )
+{
+   int divisor;
+   int lcr_out;
+
+   if ( word_length &lt; 5 | | word_length &gt; 8 )
+      return( 0 );
+   lcr_out = word_length - 5;
+   switch ( toupper( parity ) ) {
+      case 'N' :
+         break;
+      case '0' :
+         lcr_out | = LCR_PARITY_O;
+         break;
+      case 'E' :
+         lcr_out | = LCR_PARITY_E;
+         break;
+      default :
+         return( 0 );
+   }
+   switch ( stop_bits ) {
+      case 1 :
+         break;
+      case 2 :
+         lcr_out |= LCR_NUMBER_OF_STOP_BITS;
+         break;
+      default :
+         return( 0 );
+   }
+   if ( baud_rate &lt; 10 )
+      return( 0 );
+   divisor = ( int ) ( 115200L / baud_rate ) ;
+   outp( Port.uart_address + LINE_CONTROL_REGISTER,
+              LCR_DIVISOR_LATCH_ACCESS );
+   outp( Port.uart_address + DIVISOR_LATCH_LSB, divisor &amp; Oxff );
+   outp( Port.uart_address + DIVISOR_LATCH_MSB, divisor &gt;&gt; 8 );
+   outp( Port.uart_address + LINE_CONTROL_REGISTER, lcr_out );
+   return( 1 );
+}
+
+/*
+ * This routine is the one that actually sets up the interrupt routines.
+ * It does this via several calls to Phar Lap 286 Extender routines.
+ */
+
+void SetInterruptVectors( void )
+{
+   REALPTR real_isr_ptr;
+
+   Port.irq_mask = 1 &lt;&lt; ( Port.interrupt_number % 8 );
+   outp( Port.uart_address + INTERRUPT_ENABLE_REGISTER, 0 );
+   real_isr_ptr= DosProtToReal( (PVOID) real_isr );
+   if ( real_isr_ptr == 0 )
+      exit( 1 );
+   DosLockSegPages( SELECTOROF( real_isr ) );
+   DosLockSegPages( SELECTOROF( &amp;Port ) );
+   DosSetRealProtVec( Port.interrupt_number,
+                   (PIHANDLER) prot_isr,
+                   real_isr_ptr,
+                   (PIHANDLER far *) &amp;Port.old_prot_vector,
+                   (REALPTR far *) &amp;Port.old_real_vector );
+}
+/*
+ * This routine does everything necessary to open the port so the
+ * main program can begin sending and receiving characters. It sets
+ * up the UART with the correct data format, then sets up the
+ * interrupt service routines, and finally enables interrupts.
+ * At that point the UART can now begin really doing something.
+ */
+
+enum port_names { COM1, COM2 };
+
+int OpenComPort( enum port_names port_name,
+              unsigned int baud_rate,
+              char parity,
+              unsigned int word_length,
+              unsigned int stop_bits )
+{
+   int temp;
+
+   switch ( port_name ) {
+      case COM1 :
+         Port.uart_address = 0x3f8;
+         Port.interrupt_number = 12;
+         break;
+      case COM2 :
+         Port.uart_address = Ox2f8;
+         Port.interrupt_number = 1;;
+         break;
+      default :
+         return 0;
+   }
+   Port.head_pointer = 0;
+   Port.tail_pointer = 0;
+   if ( ! SetComParameters( baud_rate, parity, word_length, stop_bits ) )
+      return( 0 );
+   SetInterruptVectors();
+
+/*
+ * This section of code actually enables interrupts.
+ */
+
+   temp = inp( 0x21 );
+   outp( 0x21, temp &amp; ~Port.irq_mask );
+   outp( Port.uart_address + MODEM_CONTROL_REGISTER,
+           MCR_DATA_TERMINAL_READY + MCR_REQUEST_TO_SEND + MCR_OUT2 );
+   outp( Port.uart_address + INTERRUPT_ENABLE_REGISTER,
+           IER_RECEIVE_DATA_INTERRUPT );
+   return 1;
+}
+
+/*
+ * This short routine is used to send a character. All it does is wait
+ * for the UART to be ready to accept the character, then stuff it
+ * out the UART's transmit register.
+ */
+
+void SendChar( int c )
+{
+   int lsr;
+
+   for( ;; ) {
+      lsr = inp( Port.uart_address + LINE_STATUS_REGISTER );
+      if ( lsr &amp; LSR_THRE) {
+         outp( Port.uart_address, c );
+         return;
+      }
+   }
+}
+
+/*
+ * This boolean routine lets the main program know whether or not
+ * characters are ready to be pulled out of the input buffer.
+ */
+
+int DataReady( void )
+{
+
+   return( Port.head_pointer != Port.tail_pointer );
+}
+
+/*
+ * ReceiveChar reads in a single character from the input buffer, then
+ * updates the tail pointer and returns the character.
+ */
+
+int ReceiveChar( void )
+{
+   int c;
+
+   if ( Port.head_pointer == Port.tail_pointer )
+      return( -1 );
+   c= Port.buffer[ Port.tail_pointer++ ] &amp; Oxff;
+   Port.tail_pointer &amp;= 1023;
+   return( c );
+}
+
+/*
+ * CloseComPort() disables interrupts, then restores the old interrupt
+ * vectors and unlocks memory. It also drops DTR and CTS.
+ */
+
+void CloseComPort( void )
+{
+   int temp;
+
+   outp( Port.uart_address + INTERRUPT_ENABLE_REGISTER, 0 );
+   temp = inp( 0x21 );
+   outp( 0x21, temp | Port.irq_mask );
+   DosSetRealProtVec( Port.interrupt_number,
+                   (PIHANDLER) Port.old_port_vector,
+                   (REALPTR) Port.old_real_vector, 0, 0 );
+   DosUnlockSegPages( SELECTOROF( real_isr ) );
+   DosUnlockSegPages( SELECTOROF( &amp;Port ) );
+   outp( Port.uart_address + MODEM_CONTROL_REGISTER, 0 );
+}
+
+/*
+ * The main program opens the port, then sits in a simple loop. The
+ * loop just sends keystrokes out the com ports, and copies input
+ * data to the screen. The only thing unusual is the provision for
+ * printing out the port data if the input character is a ^Z.
+ */
+
+main()
+{
+   int c;
+
+   if ( !OpenComPort( COM1, 2400, 'N', 8, 1 ) ) {
+      printf( "Error opening port!\n" );
+      return 1;
+   }
+   for ( ; ; ) {
+      if (kbhit() ) {
+         c = getch();
+         if (c == 27)
+            break;
+         else if ( c == 26 ) {
+            printf( "\nPort status:\n" );
+            printf( "UART address     : %04.4x\n", Port.uart_address );
+            printf( "Head pointer     : %04.4x\n", Port.head_pointer );
+            printf( "Tail pointer     : %04.4x\n", Port.tail_pointer );
+            printf( "Old prot vector  : %08.8Fp\n", Port.old_prot_vector );
+            printf( "Old real vector  : %08.8Fp\n", Port.old_real_vector );
+            printf( "IRQ mask         : %02.2x\n", Port.irq_mask );
+            printf( "Interrupt number : %02.2x\n", Port.interrupt_number );
+            printf( "Real int count   : %04.4x\n", Port.real_count );
+            printf( "Prot int count   : %04.4x\n", Port.prot_count );
+         } else
+            SendChar( c );
+      }
+      if (DataReady() ) {
+         c = ReceiveChar();
+         putch( c );
+      }
+   }
+   CloseComPort();
+   return 0;
+}
+/* End of File */
+</pre>
+</BODY>
+</HTML>

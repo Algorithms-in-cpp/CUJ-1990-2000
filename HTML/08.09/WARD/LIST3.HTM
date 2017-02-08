@@ -1,0 +1,480 @@
+<HTML><HEAD><TITLE>September 1990/XMODEM, XMODEM-1K, And XMODEM/CRC/Listing 3</TITLE></HEAD><BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4><A name="01F9_012D"><A name="01F9_012D">Listing 3<A name="01F9_012D"></h4><P>
+<pre>/* ----------------------------------------------
+XMODEMS.C
+
+Author    Date       Description
+-------------------------------------------
+Jon Ward  22 Apr 90  Initial Revision.
+Jon Ward  23 Apr 90  Cleanup and modify for
+            XMODEM-1K and XMODEM-CRC.
+Jon Ward  26 Apr 90 Corrected implementation of
+            XMODEM-CRC.
+-----------------------------------------------*/
+#define XMODEM_LIB 1
+
+#include &lt;stdio.h&gt;
+#include "xmodem.h"
+
+#define STATIC static /* undef for debugging */
+
+
+/*------------------------------------------------
+     Local Function Prototypes
+------------------------------------------------*/
+STATIC int xm_send file (
+  FILE *f,    /* file pointer */
+  xblock *xb,   /* pointer to block data */
+  xfunc *xmf);  /* xmodem external functions */
+
+STATIC int xm_send_block (
+  xblock *xb,   /* pointer to block data */
+  xfunc *xmf);  /* xmodem external functions */
+
+
+
+/*------------------------------------------------
+This function sends a file via XMODEM, XMODEM-1K
+or XMODEM/CRC. The f argument represents the
+file to send that has been opened for reading.
+------------------------------------------------*/
+int xmodem_send (
+  int block_size,             /* maximum block size */
+  FILE *f,                /* file to write to */
+  int (*transmit) (char),          /* xmit function */
+  int (*receive) (long, unsigned int *),   /* recv function */
+  void (*dispstat) (long, long, const char *),  /* display function */
+  int (*check_abort) (void))            /* manual abort function */
+{
+xblock xb          /* block data */
+xfunc xmfuncs;        /* xmodem external functions */
+register int error_count;  /* counter for errors */
+register int can_count;        /* cancel counter */
+int error;          /* gen error var */
+unsigned int rerr;      /* received char error */
+
+
+/*-------------------------------------------------
+Initialize the function pointer structure.
+-------------------------------------------------*/
+if ((xmfuncs.dispstat = dispstat) == NULL)  
+  xmfuncs.dispstat = xm_no_disp_func;
+  
+if ((xmfuncs.check_abort = check_abort) == NULL)
+  xmfuncs.check_abort = xm_no_abort_func;
+  
+if ((xmfuncs.transmit = transmit) == NULL)
+  return (xm_perror (XERR_XMIT_FUNC, &amp;xmfuncs));
+  
+if ((xmfuncs.receive = receive) == NULL)
+  return (xm_perror (XERR_RCVR_FUNC, &amp;xmfuncs));
+
+
+/*-------------------------------------------------
+-------------------------------------------------*/
+xb.total_block_count = 0L;
+xb.total_byte_count = 0L;
+
+(*xmfuncs.dispstat) (0L, 0L, "");
+
+PURGE_RECEIVER(receive);
+
+/*-------------------------------------------------
+Purge all data from the receive buffer. Then we
+wait for 1 full minute. If we receive no
+characters during that time, then we return
+indicating the file was not transferred. If we
+receive a NAK, then we begin transmission. If
+we receive an excessive number of garbage
+characters, then we return indicating no file
+transfer.
+-------------------------------------------------*/
+for (error_count : 0, can_count = 0; 1; )
+  {
+  int rcvd_char;
+  
+  if (error_count &gt;= START_XMIT_RETRY_COUNT)
+    return (xm_perror (XERR_NAK_TIMEOUT, &amp;xmfuncs));
+  
+  /* try for 1 minute */
+  rcvd_char = (*xmfuncs.receive) (START_XMIT_TIMEOUT, &amp;rerr);
+  
+  if (rerr != 0)
+    {
+    xm_send_cancel (xmfuncs.transmit);
+    return (xm_perror (XERR_CHAR_ERROR, &amp;xmfuncs));
+    }
+  
+  
+  switch (rcvd_char)
+    {
+    case RECV_TIMEOUT:
+      xm_send_cancel (xmfuncs.transmit);
+      return (xm_perror (XERR_NAK_TIMEOUT, &amp;xmfuncs));
+    
+    case 'C':
+      xb.crc_used = 1;
+      break;
+    
+    case NAK:
+      xb.crc_used = 0;
+      break;
+    
+    case CAN:
+      if (++can_count &gt;= CAN_COUNT_ABORT)
+  {
+  xm_send_cancel (xmfuncs.transmit);
+  return (xm_perror (XERR_RCVR_CANCEL, &amp;xmfuncs));
+  }
+      continue;
+    
+    default:
+      can_count = 0;
+      error_count++;
+      continue;
+    }
+  
+  break;
+  }
+
+
+
+/*------------------------------------------------
+Setup the block size and the start of block
+character and send the file.
+------------------------------------------------*/
+if (block_size == XMODEM_1K_BLOCK_SIZE)
+  {
+  xb.buflen = XMODEM_1K_BLOCK_SIZE;
+  xb.start_char = STX;
+  }
+else
+  {
+  xb.buflen = XMODEM_BLOCK_SIZE;
+  xb.start_char = SOH;
+  }
+  
+if ((error = xm_send_file (f, &amp;xb, &amp;xmfuncs)) != XERR_OK)
+  return (error);
+
+/*-------------------------------------------------
+Now, we send an EOT to the receiver and we
+expect to get an ACK within 1 minute. If we
+don't then we timeout and report an error. If
+we get any character other than an ACK, we
+retransmit the EOT. If we get an ACK, then we
+exit with hopeful success.
+-------------------------------------------------*/
+while (1)
+  {
+  if ((*xmfuncs.transmit) (EOT) != XMIT_OK)
+    return (xm_perror (XERR_OFFLINE, &amp;xmfuncs));
+  
+  switch ((*receive) (START_XMIT_TIMEOUT, &amp;rerr))
+    {
+    case RECV_TIMEOUT:
+      return (xm_perror (XERR_LAST_ACK_TIMEOUT, &amp;xmfuncs));
+    
+    case ACK:
+      if (rerr != 0)
+   continue;
+   
+      break;
+    
+    default:
+      continue;
+    }
+  
+  break;
+  }
+  
+return (xm_perror (XERR_OK, &amp;xmfuncs));
+}
+
+
+/*------------------------------------------------
+This function transmits the file associated with
+the file pointer f according to the requirements
+of the XMODEM transfer protocol.
+------------------------------------------------*/
+STATIC int xm_send_file (
+  FILE *f,        /* file pointer */
+  register xblock *xb,    /* pointer to block data */
+  register xfunc *xmf)    /* xmodem external functions */
+{
+int done;
+
+/*------------------------------------------------
+Repeat until we have sent the whole file.
+------------------------------------------------*/
+for (done = 0, xb-&gt;block_num = 1; !done; xb-&gt;block_num++)
+  {
+  size_t bytes_read;
+  int error;
+
+
+
+/*------------------------------------------------
+Read a block of data. If it was not a full
+block, then check for a file error. If it was a
+file error, cancel the transfer and return an
+error. Otherwise, pad the remainder of the
+block with CPM EOFs.
+------------------------------------------------*/
+  bytes_read = fread (xb-&gt;buffer, 1, xb-&gt;buflen, f);
+  
+  if (bytes_read != xb-&gt;buflen)
+    {
+    
+    register int i;
+    
+    if (ferror (f))
+      {
+      xm_send_cancel (xmf-&gt;transmit);
+      return (xm_perror (XERR_FILE_READ, xmf));
+      }
+    
+    for (i = bytes_read; i &lt; xb-&gt;buflen; i++)
+      xb-&gt;buffer [i] = CPMEOF;
+    
+    done = -1;
+    }
+
+/*-------------------------------------------------
+Calculate the one's complement block number and
+send the block.
+-------------------------------------------------*/
+  xb-&gt;not_block_num = (unsigned char) (255 - xb-&gt;block_num);
+  
+  if ((error = xm_send_block (xb, xmf)) != XERR_OK)
+    return (error);
+  }
+
+return (XERR_OK);
+}
+
+
+/*-------------------------------------------------
+This function transmits the block described by the
+structure pointed to by the xb argument. The
+transmit and receive arguments point to functions
+that transmit and receive data to and from the
+modem. A value of 0 is returned to indicate that
+the block was successfully sent. A non-zero
+return value indicates an offline condition.
+-------------------------------------------------*/
+STATIC int xm_send_block (
+  register xblock *xb,  /* pointer to block data */
+  register xfunc *xmf)  /* xmodem external functions */
+{
+int error_count;
+
+error_count = 0;
+
+while (1)
+  {
+  int i;
+  int can_count;   /* number of CANS received */
+  int block_resp;  /* response to block */
+  unsigned rerr;   /* received char error */
+
+/*------------------------------------------------
+If there were too many errors, then exit with
+error.
+------------------------------------------------*/
+  if (error_count &gt; BLOCK_RETRY_COUNT)
+    {
+    xm_send_cancel (xmf-&gt;transmit);
+    return (xm_perror (XERR_ACK_TIMEOUT, xmf));
+    }
+
+/*------------------------------------------------
+Check for user abort and process it if
+applicable.
+------------------------------------------------*/
+  if ((*xmf-&gt;check_abort) () != 0)
+    {
+    xm_send_cancel (xmf-&gt;transmit);
+    return (xm_perror (XERR_USER_CANCEL, xmf));
+    }
+
+
+/*------------------------------------------------
+Transmit the block start character (it's
+different depending on whether we're sending
+1024-BYTE or 128-BYTE packets.
+
+Send the block number.
+
+Send the one's complement of the block number.
+------------------------------------------------*/
+  if ((*xmf-&gt;transmit) (xb-&gt;start_char) != XMIT_OK)
+    return (xm_perror (XERR_OFFLINE, xmf));
+  
+  if ((*xmf-&gt;transmit) (xb-&gt;block_num) != XMIT_OK)
+    return (xm_perror (XERR_OFFLINE, xmf));
+  
+  if ((*xmf-&gt;transmit) (xb-&gt;not_block_num) != XMIT_OK)
+    return (xm_perror (XERR_OFFLINE, xmf));
+
+/*------------------------------------------------
+Clear the CRC and checksum and send the data
+block while building the CRC or checksum.
+------------------------------------------------*/
+  xb-&gt;crc = 0;
+  xb-&gt;checksum = 0;
+  
+  for (i = 0; i &lt; xb-&gt;buflen; i++)
+    {
+    if ((*xmf-&gt;transmit) (xb-&gt;buffer [i]) != XMIT_OK)
+      return (xm_perror (XERR_OFFLINE, xmf));
+    
+    if (xb-&gt;crc_used != 0)
+      xb-&gt;crc = xm_update_CRC (xb-&gt;crc, xb-&gt;buffer [i]);
+    else
+      xb-&gt;checksum += xb-&gt;buffer [i];
+    }
+
+
+
+
+/*------------------------------------------------
+Send the CRC or checksum. If we send the CRC,
+we must send the High BYTE first.
+------------------------------------------------*/
+  if (xb-&gt;crc_used == 0)
+    {
+    if ((*xmf-&gt;transmit) (xb-&gt;checksum) != XMIT_OK)
+      return (xm_perror (XERR_OFFLINE, xmf));
+    }
+  else
+    {
+    if ((*xmf-&gt;transmit) ((unsigned char) (xb-&gt;crc &gt;&gt; 8)) != XMIT_OK)
+      return (xm_perror (XERR_OFFLINE, xmf));
+    
+    if ((*xmf-&gt;transmit) ((unsigned char) (xb-&gt;crc &amp; 0xFF)) != XMIT_OK)
+      return (xm_perror (XERR_OFFLINE, xmf));
+    }
+
+
+
+
+/*------------------------------------------------
+Wait for the receiver to respond with an ACK or
+a NAK. If we timeout waiting, then return an
+error code. If we get a NAK, retransmit the
+block. If we gat an ACK, then return with
+status OK. If we receive 2 consecutive CANs,
+then we abort the transmission.
+------------------------------------------------*/
+  can_count = 0;
+
+GET_BLOCK_RESPONSE:
+  block_resp = (*xmf-&gt;receive) (BLOCK_RESP_TIMEOUT, &amp;rerr);
+  
+  if (rerr != 0)
+    {
+    xm_perror (XERR_CHAR_ERROR, xmf);
+    goto GET_BLOCK_RESPONSE;
+    }
+  switch (block_resp)
+    {
+    case ACK:
+      error_count = 0;
+      
+      xb-&gt;total_block_count++;
+      xb-&gt;total_byte_count += xb-&gt;buflen;
+      
+      (*xmf-&gt;dispstat) (xb-&gt;total_block_count,
+          xb-&gt;total_byte_count,
+          NULL);
+      break;
+    
+    case CAN:
+      if (++can_count &gt;= CAN_COUNT_ABORT)
+  {
+  xm_send_cancel (xmf-&gt;transmit);
+  return (xm_perror (XERR_RCVR_CANCEL, xmf));
+  }
+    goto GET_BLOCK_RESPONSE;
+
+/*------------------------------------------------
+I have seen 2 ways of handling this problem. One
+is to return an error indicating that the sender
+never received a packet ACK. Another method
+retransmits the packet just sent in hopes that
+the receiver will get its ACK together. The
+second one is what I did.
+------------------------------------------------*/
+    case RECV_TIMEOUT:
+      error_count++;
+#if 0
+      return (xm_perror (XERR_ACK_TIMEOUT, xmf));
+#else
+      xm_perror (XERR_ACK_TIMEOUT, xmf);
+      continue;
+#endif
+
+    case NAK:
+      xm_perror (XERR_BLOCK_NAK, xmf);
+      error_count++;
+      continue;
+    
+    default:
+      goto GET_BLOCK_RESPONSE;
+    }
+  
+  break;
+  }
+
+return (XERR_OK);
+}
+
+
+
+/*------------------------------------------------
+This function updates a CRC accumulator for xmodem
+CCITT CRC.
+------------------------------------------------*/
+unsigned int xm_update_CRC (
+  register unsigned int crc,  /* current CRC */
+  unsigned int c)  /* character to add to CRC */
+{
+static unsigned int crc_polynomial = 0x1021;
+register int i;
+
+c &lt;&lt;= 8;
+
+for (i = 0; i &lt; 8; i++)
+  {
+  if ((c ^ crc) &amp; 0x8000)
+    crc = (crc &lt;&lt; 1) ^ crc_polynomial;
+  else
+    crc &lt;&lt;= 1;
+    
+    c &lt;&lt;= 1;
+    }
+  
+  return (crc);
+  }
+
+
+
+/*------------------------------------------------
+This function sends 8 CANs and 8 BSs as done by
+YAM. This is used to cancel an X or Y Modem send
+or receive.
+------------------------------------------------*/
+void xm_send_cancel (
+  int (*transmit) (char))  /* transmit function */
+{
+register int i;
+
+for (i = 0; i &lt; 8; i++)
+  (*transmit) (CAN);
+
+for (i = 0; i &lt; 8; i++)
+  (*transmit) (BACKSPACE);
+}</pre>
+
+</BODY></HTML>

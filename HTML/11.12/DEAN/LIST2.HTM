@@ -1,0 +1,399 @@
+<HTML><HEAD>
+<TITLE>December 1993/Bitmap Image Transformations/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2 Transform.c &#151; <I>Image transformation routines for scaling, shearing, and rotating images</I></A></h4>
+<pre>/*************************************************/
+/*                                               */
+/* Image transformation routines for 320 x 200   */
+/* 256 color mode, Borland C                     */
+/* Christopher Dean 05/10/93                     */
+/*                                               */
+/*************************************************/
+
+
+#include &lt;stdio.h&gt;
+#include &lt;alloc.h&gt;
+#include &lt;math.h&gt;
+#include &lt;mem.h&gt;
+#include &lt;assert.h&gt;
+
+/* direction defines */
+
+#define SHEAR_VERT_RIGHT 0
+#define SHEAR_VERT_LEFT 1
+#define SHEAR_HORZ_RIGHT 1
+#define SHEAR_HORZ_LEFT 0
+
+/* Calculate the Rothstein code given the slope p/q.
+  The code is stored in r and is max long */
+
+static void Rothstein(char *r,int p,int q,int max)
+{
+
+  int i;
+  unsigned long psum,qsum; /* use longs so sums
+                         don't overflow */
+  int t;
+
+  if (p &gt; q) {
+
+    /* if slope is greater than 45 degrees
+       inverse it */
+    t = p;
+    p = q;
+    q = t;
+  }
+  psum = p;
+  qsum = q;
+  memset(r,0,max);
+
+  /* algrebraically calculate horizontal grid
+    intersections as we go from 1 to max */
+
+  for (i = 1; i &lt; max; ++i) {
+    psum += p;
+    if (psum &gt; qsum) {
+
+      /* crossed an intersection */
+
+      qsum += q;
+      r[i] = 1; /* set code to reflect this */
+    }
+  }
+}
+
+/* TransXY - Expand an image to a new height and
+  width. It will perform the scaling on the rows
+  and columns simultaneously. */
+
+/* It allocates and returns the new image */
+
+
+char *TransXY(char *source,int width,int height,
+      int newwidth,int newheight)
+{
+  int maxx,maxy,expandx,expandy,i,sourcex,sourcey;
+  char *rx,*ry;      /* Rothstein codes */
+  char *dest,*dest1; /* pointers into destination
+                    image */
+  char c;
+
+  /* determine if we are shrinking or expanding
+    in any directions */
+
+  if (newwidth &gt; width) {
+    expandx = 1;
+    maxx = newwidth;
+  }
+  else {
+    expandx = 0;
+    maxx = width;
+  }
+  if (newheight &gt; height) {
+    expandy = 1;
+    maxy = newheight;
+  }
+  else {
+    expandy = 0;
+    maxy = height;
+  }
+
+  /* allocate the new image */
+
+  dest = (char *) malloc(4+(newwidth * newheight *
+        sizeof(char)));
+  assert(dest != NULL);
+
+  /* set up dimensions in Borland C
+    putimage buffer */
+
+  *((int *)dest) = newwidth;
+  *((int *)dest+1) = newheight;
+  dest1 = dest+4;
+  source+=4;
+
+  /* allocate and calculate Rothstein code
+    for both directions */
+
+  rx = (char *) malloc(sizeof(char) * maxx);
+  ry = (char *) malloc(sizeof(char) * maxy);
+  assert(rx != NULL);
+  assert(ry != NULL);
+  Rothstein(rx,newwidth,width,maxx);
+  Rothstein(ry,newheight,height,maxy);
+
+  /* always want a 1 as the first in code */
+
+  rx[0] = ry[0] = 1;
+
+  /* loop through rows of image */
+
+  for (sourcey = 0; sourcey &lt; maxy; ++sourcey) {
+    if (ry[sourcey] == 1) {
+
+       /* just copy the source row. Loop through
+         each column checking to see if that column
+         is also suppossed to be copied */
+
+       for (sourcex = 0; sourcex &lt; maxx; ++sourcex) {
+         if (rx[sourcex] == 1) {
+
+           /* copy the pixel in this row and
+           column */
+
+           *dest1 = *source;
+           ++dest1;
+           ++source;
+         }
+
+         else if (expandx) {
+
+         /* if expanding duplicate the previous
+           pixel, don't increment the source so it
+           keeps copying the last column with a 1
+           for as many zeros as there are. */
+
+           *dest1 = *(dest1-1);
+           ++dest1;
+         }
+         else
+
+           /* if shrinking then just skip this
+              column */
+
+           ++source;
+
+         }
+  }
+  else if (expandy) {
+
+         /* if expanding duplicate the previous row,
+           don't increment the source so it keeps
+           copying the last row with a 1 for as many
+           zeros as there are. Assumes ry[0] never is
+           zero */
+
+         memcpy(dest1, dest1-newwidth,newwidth);
+         dest1 += newwidth;
+
+    }
+    else
+
+      /* if shrinking then just skip this row */
+
+      source += width;
+  }
+  free(rx);
+  free(ry);
+  return(dest);
+}
+
+/* ShearVert - shear an image to a new height that
+  must be greater than the original height. Passing
+  in the new height will give you a shear of
+  (newheight-height) / width thus in some cases it may not
+  be possible to get the exact shear you want. The
+  dir parameter specifies whether it is a right shear
+  or left shear. The routine allocates and returns
+  the new image.
+*/
+
+char *ShearVert(char *source,int width,int height,
+  int newheight,int dir)
+{
+  char *r;
+  char *dest,*dest1;
+  char c;
+  int i,j,k,size,offset,Over45deg,h,adjust;
+
+  /* new height must be &gt;= old height */
+
+  if (newheight &lt; height)
+    newheight = height;
+
+  /* allocate new image */
+
+  size = 4 + (width * newheight * sizeof(char));
+  dest = (char *) malloc(size);
+  assert(dest != NULL);
+
+/* set background for putting sheared images to
+  screen */
+
+  memset(dest,255,size);
+
+/* initialize dimensions in Borland C
+  putimage buffer */
+
+  ((int *)dest) = width;
+  ((int *)dest+1) = newheight;
+  dest1 = dest+4;
+  source+=4;
+
+  r = (char *) malloc(sizeof(char) * width);
+  assert(r != NULL);
+
+  /* calculate Rothstein code and adjust
+    for shears greater than 45 degrees */
+
+  h = newheight - height;
+  Over45deg = h / width;
+  Rothstein(r,h-(width*Over45deg),width,width);
+
+  /* set dest to start of original image in new
+    buffer */
+
+  dest1 += (width * h);
+  if (dir == SHEAR_VERT_LEFT)
+
+    /* for left shears go from left to right
+       and move columns up */
+
+    adjust = 1;
+  else {
+
+    /* for right shears go from right to left
+      and move columns up */
+
+    adjust = -1;
+    source += width-1;
+    dest1 += width-1;
+  }
+
+  /* traverse width of original image raising each
+    column with a 1 in the Rothstein code up one
+    from the previous level */
+
+    for (i = 0; i &lt; width; ++i) {
+
+    /* adjust for greater than 45 degrees */
+
+      for (k= 0; k &lt; Over45deg; ++k)
+
+      /* move the column up one row */
+
+      dest1 -= width;
+
+    /* check Rothstein code and raise up if 1 */
+
+    if (r[i] == 1)
+      dest1 -= width;
+
+    /* copy the column into new destination
+      position */
+
+    for (j = 0,offset = 0; j &lt; height; ++j,
+           offset += width)
+       *(dest1+offset) = *(source + offset);
+
+    /* next column */
+
+    source += adjust;
+    dest1 += adjust;
+  }
+
+  free(r);
+  return(dest);
+}
+
+/* ShearHorz - shear an image to a new width that must
+  be greater than the original width. Passing in the
+  new width will give you a shear of (newwidth-width) /
+  height thus in some cases may not be possible to
+  get the exact shear you want. The dir parameter
+  specifies whether it is a right shear or left shear.
+  The routine allocates and returns the new image.
+*/
+
+
+char *ShearHorz(char *source,int width,int height,
+    int newwidth,int dir)
+{
+  char *r;
+  char *dest,*dest1;
+  char c;
+  int i,j,k,size,Over45deg,w,adjust,offset;
+
+  /* make sure new width &gt; old width */
+
+  if (newwidth &lt; width)
+    newwidth = width;
+
+  /* allocate and initialize new image */
+
+  size = 4 + (newwidth * height * sizeof(char));
+  dest = (char *) malloc(size);
+  assert(dest != NULL);
+  memset(dest,255,size);
+  *((int *)dest) = newwidth;
+  *((int *)dest+1) = height;
+  dest1 = dest+4;
+  source+=4;
+
+  if (dir == SHEAR_HORZ_RIGHT)
+
+    /* for right shears go from left
+      to right moving the rows over */
+
+    adjust = 1;
+
+  else {
+
+    /* for left shears go from right
+      to left moving the rows over */
+
+    adjust = -1;
+    source += width-1;
+    dest1 ++ newwidth-1;
+  }
+  r = (char *) malloc(sizeof(char) * height);
+  assert(r != NULL);
+
+  /* adjust for shears greater than 45 degrees
+    and calculate Rothstein code */
+
+  w = newwidth - width;
+  Over45deg = w / height;
+  Rothstein(r,w-(height*Over45deg),height,height);
+
+  /* traverse height of image moving each
+     row with a 1 in the Rothstein code over
+     one from the previous width */
+
+  for (i = 0; i &lt; height; ++i) {
+
+    /* adjust for shears greater than 45 degrees */
+
+    for (k= 0; k &lt; Over45deg; ++k)
+
+       /* move the row over one row */
+
+       dest1 += adjust;
+
+    /* move the row over one row */
+
+    if (r[i] == 1)
+       dest1 += adjust;
+
+    /* copy the row into its new destination */
+
+    for (j = 0,offset=0; j &lt; width; ++j,
+            offset += adjust)
+       *(dest1+offset) = *(source +offset);
+
+    /* next row */
+
+    source += width;
+    dest1 += newwidth;
+  }
+
+  free(r);
+  return(dest);
+}
+
+/* End of File */</pre>
+
+</BODY>
+</HTML>

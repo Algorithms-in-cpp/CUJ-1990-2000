@@ -1,0 +1,60 @@
+
+
+<HTML>
+<HEAD>
+
+<TITLE>December 1993/A Windows Debugging Stream</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocdec.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">A Windows Debugging Stream<A name="033B_0126"><A name="033B_0126"></font></h2><P>
+<h3 align="center"><font color="#800000"><A name="033B_0000"><A name="033B_0000">Kit Kauffmann</font></h3><hr><blockquote><P>
+<P><i><A name="033B_0000"><A name="033B_0000">Kit Kauffman is a (primarily) self-taught programmer, currently specializing in C++ and Windows. He is currently working for the Salt Lake office of Sunquest, a health-care software company. You can reach him at (801) 484-4407 or (801) 277-5790, E-mail: kitk@sunquest.com.</i></P><P>
+C++ compilers currently supply only one standard class library, the iostreams package, which provides file (and string) I/O. iostreams provide an excellent example of how a well-designed set of classes can be far superior to a function library. (Please see the <a href="sidebar1.htm">sidebar</a> for a quick overview of the iostream classes if you haven't used them before.)<P>
+For my Windows debugging needs, I usually create strings (with <I>sprintf</I> or <I>ostrstream</I>), and then send the string to the Windows debug output via <I>OutputDebugString</I>. (I normally examine debugging output with <I>DBWIN.EXE</I>, a sample Microsoft SDK program which creates a standard scrolling window for the output, and allows further control over the output target.)<P>
+Sometimes, I prefer to display debugging messages via <I>MessageBox</I>, which, like <I>OutputDebugString</I>, requires strings. I prefer the <I>ostrstream</I> class over <I>sprintf</I> for creating strings, but even with <I>ostrstream</I> I must create repetitive sequences, such as:<P>
+<pre>char buf[200];
+ostrstream s( buf, sizeof( buf ) );
+s &lt;&lt; "i = " &lt;&lt; i;
+OutputDebugStream( BUF );
+
+// or
+MessageBox( NULL, BUF, NULL, MB_OK );</pre>
+I want a direct debug stream which allows constructs such as the following:<P>
+<pre>MyDebugStream s;
+s &lt;&lt; "1 = " &lt;&lt; i;</pre>
+Languages with inheritance, like C++, are powerful tools in that they enable developers to build on what already exists. Since the iostreams classes already provide most of the functionality necessary, completing a class like <I>MyDebugStream</I> required only a little judicious inheritance.<P>
+iostreams design separates data-type formatting from buffer management/disposition. Stream objects (such as ostreams or istreams) perform the conversion of data, placing result strings in (or getting strings from) buffers managed by <I>streambuf</I> objects. <I>streambuf</I> objects, in turn, re-fill (or empty) the buffers when required, and manage the memory, disk space, or whatever I/O medium is the given <I>streambuf</I> target.<P>
+The programmer may construct stream objects by passing any <I>streambuf</I> to a stream constructor that accepts a <I>streambuf</I> pointer. Obviously, connecting an <I>istream</I> (an input stream) to an output-only device won't accomplish much, but in general, this flexibility in constructing <I>streambufs</I> provides great power for the streams programmer.<P>
+Since <I>ostream</I> already provides the necessary programming interface, with a <I>streambuf</I> performing the output work, I need only derive a custom <I>ostream</I> which will connect to a derived <I>streambuf</I>. To accomplish this task, I have created the class <I>MyDebugStream,</I> from <I>debug.h</I> (<A href="list1.htm">Listing 1</a>)
+. <I>MyDebugStream</I> contains only a constructor, which passes its parameters to the <I>MyDebugStreambuf</I> constructor (and connects to that same <I>streambuf</I> for output). These parameters specify whether output goes to a <I>MessageBox</I> or to the debug window, and specify a title for the <I>MessageBox</I> as well.<P>
+Since my custom <I>streambuf</I> must support <I>OutputDebugString</I> and/or <I>MessageBox</I>, which both require strings, and since <I>strstreambuf</I> already manages string I/O, I can obviously derive a custom <I>streambuf</I> from <I>strstreambuf</I> (see <A href="list2.htm">Listing 2</a>)
+. <I>streambuf</I> must implement three functions: <I>underflow</I>, to handle empty get buffers; <I>overflow</I>, to handle full put buffers; and <I>sync</I>, to handle explicit empty/fill requests. Because a debug stream is output only, a program outputting to the debug stream will not call <I>underflow</I>, but it may call <I>overflow</I> and <I>sync</I>. Therefore, I must provide a function to be called by <I>overflow</I> and <I>sync</I>. This function will in turn call <I>MessageBox</I> or <I>OutputDebugString</I>; I have added this function as the <I>Flush</I> method. Constructor/destructor logic allocates and frees a buffer, to round out the class.<P>
+The constructor saves the parameter information, and allocates a buffer for the parental <I>strstreambuf</I>. The <I>setp</I> function tells <I>strstreambuf</I> where the beginning and end of the buffer are located. Normally, users of <I>ostrstream</I> must explicitly call the I/O manipulator <I>ends</I> to put a null terminator on the string. I want this class to work even if the users forget, so my code sets aside an extra character in case the buffer is full.<P>
+The <I>overflow</I> and <I>sync</I> methods are very simple. The <I>out_waiting</I> call indicates that data is in the buffer, so my code calls <I>Flush</I>, and then calls the parental <I>overflow</I> or <I>sync</I>, just to be polite. The <I>Flush</I> method is almost trivial; a minor complication worth noting is that the <I>pptr</I> method called by <I>Flush</I> returns a pointer to the next character to write &#151; which is the perfect place to append a null.<P>
+<h4><FONT COLOR="#000080"><A name="033B_0127">Refinements<A name="033B_0127"></FONT></h4></P>
+The code as I have presented it so far needs a little refinement to handle a couple of problems. For example, the debug window requires carriage returns to break up the output into lines. Also, a program can't always use <I>MessageBox</I> (e.g., during the processing of a <I>WM_PAINT</I> message). To address these problems I have added some simple I/O manipulators: <I>BoxFlush</I>, to put the buffer into a <I>MessageBox</I>; and <I>DebugFlush</I>, to send the convenient carriage return to the debug window. This addition requires just the two #defines and the two functions at the end of <I>debug.h</I> and <I>debug.cpp</I> (see <A href="list1.htm">Listing 1</a>
+and <A href="list2.htm">Listing 2</a>)
+.<P>
+Now, I can write:<P>
+<pre>CDebugStream dbg( TRUE, "Debug Output" );
+int i;
+long l;
+
+dbg &lt;&lt; i &lt;&lt;" is an int!" &lt;&lt; DebugFlush;</pre>
+And the debugging message goes to the debug window, but if I then write:<P>
+<pre>dbg &lt;&lt; l &lt;&lt; " is a long!" &lt;&lt; endl;</pre>
+The debugging message goes to a <I>MessageBox</I>, as it will in this statement:<P>
+<pre>dbg &lt;&lt; i &lt;&lt; " is still an int!" &lt;&lt; BoxFlush;</pre>
+The debugging class makes it easy to switch back and forth between the debug window and <I>MessageBox</I>, and provides the less error-prone stream-style output method as well. Note that you could also easily alter or extend the <I>streambuf</I> class to support other types of string-oriented debugging output, such as the monochrome screen. Also, you can connect <I>streambuf</I> to any ostream variation with code like:<P>
+<pre>CDebugStreambuf sb( TRUE, "Title" );
+YourStream s( &amp;sb );</pre>
+<h4><FONT COLOR="#000080"><A name="033B_0128">Conclusion<A name="033B_0128"></FONT></h4></P>
+I originally felt somewhat intimidated by iostreams, and I was reluctant to try creating my own stream class. I found creating a stream class much easier than I had expected &#151; obviously a tribute to iostreams' good design. Of course, without C++'s inheritance features, I could not have provided so much functionality with so little code.<P>
+One final note: I designed these classes around the iostreams family supplied with Microsoft C++ v8, otherwise known as Visual C++. Any iostreams family with a compatible <I>strstreambuf</I> should work unchanged; you should be able to easily alter this class for a different implementation as well.<P>
+
+<h4><a href="../../../source/1993/dec93/kauffman.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

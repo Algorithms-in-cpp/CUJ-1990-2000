@@ -1,0 +1,119 @@
+<HTML><head><TITLE>December 1990/Writing MS-DOS Device Drivers/Listing 1</TITLE></head><BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4><A name="0276_016D"><A name="0276_016D">Listing 1 (block.c) Main Interrupt Routine<A name="0276_016D"></h4><P>
+<pre>#include   &lt;dos.h&gt;
+#include   "block.h"
+
+/*
+ * normalize()
+ *
+ * normalize() guarantees that the offset portion of a far
+ * pointer is as small as possible. A complete 20-bit address on
+ * the processor can be calculated as
+ *
+ *     (segment * 16) + offset
+ *
+ * thus, the offset can be kept to a value between 0 and 15. I
+ * use the FP_SEG and FP_OFF macro's in Microsoft's dos.h to
+ * manipulate the segment and offset of the far pointer. If your
+ * compiler doesn't support such a facility, see the  _rawscroll
+ * routine in RAW.ASM, where I do it in assembly language.
+ *
+ * The whole point of this is to allow a lot of pointer
+ * incrementing, using just the offset, without worrying about
+ * wrapping around.
+ */
+
+static void normalize(p)
+int far     **p;
+   {
+   offset       = FP_OFF(*p);
+   FP_SEG(*p)   = FP_SEG(*p) + (offset &gt;&gt; 4);
+   FP_OFF(*p)   = offset &amp; 017;
+   }
+
+/*
+ * interrupt()
+ *
+ * interrupt() takes care of the commands as they come in from
+ * the request header. Because of the size of the RAM disk
+ * buffer, the driver initialization could not be appended to the
+ * back of the driver, and is in-line like everything else.
+ */
+
+void    interrupt()
+   {
+   command      = rh-&gt;command;
+   start        = rh-&gt;b18.io.start;
+   count        = rh-&gt;b18.io.count;
+   transfer     = (int far *) rh-&gt;b14.transfer;
+   switch (command)
+       {
+       case    0:       /* driver initialization */
+          source            = ram_disk;
+          FP_SEG(source)    = FP_SEG(source) + 0x1000;
+          normalize(&amp;source);
+          rh-&gt;b14.transfer  = (char far *) source;
+          rh-&gt;b18.bpb       = bpb_tab;
+          rh-&gt;data          = 1;
+          rh-&gt;status        = DONE;
+          break;
+       case    1:       /* media check */
+          rh-&gt;b14.media_change_code   = 1;     /* disk has
+                                 * not been changed */
+          rh-&gt;status      = DONE;
+          break;
+       case    2:      /* build parameter block */
+          rh-&gt;b18.bpb = &amp;bpb;
+          break;
+       case    4:      /*  read */
+       case    8:      /*  write */
+       case    9:      /*  write with verify */
+
+          If (start &gt; MAX_BLK  <FONT FACE="Symbol" SIZE=2>½<FONT FACE="Symbol" SIZE=2>½ count &gt; MAX_BLK <FONT FACE="Symbol" SIZE=2>½<FONT FACE="Symbol" SIZE=2>½</FONT></FONT></FONT></FONT></FONT></FONT></FONT>
+              start + count &gt; MAX_BLK)
+              {
+              rh-&gt;status = BLK_NOT_FOUND <FONT FACE="Symbol" SIZE=2>½ ERROR;</FONT></FONT>
+              break;
+              }
+          If (command == 4)
+              {
+              source = ram_disk;
+              normalize(&amp;source);
+              source += (BLK_SIZE / sizeof(int)) * start;
+              dest   = transfer;
+              }
+          else
+              {
+              source = transfer;
+              dest   = ram_disk;
+              normalize(&amp;dest);
+              dest   += (BLK_SIZE / sizeof(int)) * start;
+              }
+          normalize(&amp;dest);
+          normalize(&amp;source);
+          for (k1 = 0; k1 &lt; count; k1++)
+              for (k2 = 0; k2 &lt; BLK_SIZE / sizeof(int); k2++)
+                  *dest++ = *source++;
+          rh-&gt;status = DONE;
+          break;
+       case    15:    /*  removable media check */
+          rh-&gt;status = DONE | BUSY;
+          break;
+       case    5:     /*  non-destructive read */
+       case    6:     /*  input status */
+       case    7:     /*  flush input buffers */
+       case    10:    /*  output status */
+       case    11:    /*  flush output buffers */
+       case    13:    /*  device open */
+       case    14:    /*  device done */
+          rh-&gt;status = DONE;
+          break;
+       case    3:     /*  ioctl read */
+       case    12:    /*  ioctl write */
+       default;
+          rh-&gt;status = UNKNOWN_COMMAND | ERROR | DONE;
+          break;
+       }
+    }
+</pre>
+</BODY></HTML>

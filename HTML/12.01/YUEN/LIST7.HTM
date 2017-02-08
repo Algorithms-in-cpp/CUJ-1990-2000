@@ -1,0 +1,207 @@
+<HTML><HEAD>
+<TITLE>January 1994/Handling Time-Consuming Windows Tasks/Listing 7</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 7 <I>Implements main logic of example program BIGJOB.cpp</I></A></h4>
+<pre>/* define externals and prototypes */
+#include "cschlr.hpp"
+
+VOID Timer(void);
+VOID Big(void);
+VOID PaintWindow( PGPFPARMS pGpfParms);
+VOID SelectRep( PGPFPARMS pGpfParms);
+VOID StartSalvage( PGPFPARMS pGpfParms);
+VOID AbortSalvage( PGPFPARMS pGpfParms);
+VOID CreateThreads(VOID);
+VOID PeekMessageLoop(MSG * pMsg, Cschlr *pTask);
+static double Savage(double x);
+
+enum Status {IDLE, RUNNING, DONE, ABORTED};
+
+SHORT idCommand = ID_REP10;             //iteration command
+short nIterations;                      //no. of iterations
+Status status = IDLE;                   //current status
+SHORT rep[4] = {10, 100, 1000, 10000};  //iteration values
+time_t lStart;                          //start time
+time_t lTime;                           //command total time
+BOOL fContinue;                         //continue flag
+
+int thdtimer, thdbig;                   //thread objects
+Csemq *semjob, *semtimer;               //semaphore objects
+const int STACKSIZE = 4096;             //stack size
+Cschlr mtask;                           //scheduler object
+
+/* Used to execute the Salvage benchmark once */
+static double Savage(double x)
+{
+  return tan(atan(exp(log(sqrt(x * x))))) + 1.0;
+}
+
+/* Used to diaply the main window to reflect the state of executeion */
+VOID PaintWindow( PGPFPARMS pGpfParms)
+{
+  static char *szFormat[]: {
+       "Idling...",
+       "Running... %ld seconds passed",
+       "Completed in %ld seconds: %d repetitions",
+       "Aborted after %ld seconds"
+       };
+
+  RECT rect;
+  char szMsg[50];
+  
+  GetClientRect(pGpfParms-&gt;hwnd, &amp;rect);
+  wsprintf(szMsg, szFormat[status], lTime, nIterations);
+  DrawText(pGpfParms-&gt;hdc, szMsg, -1, &amp;rect,
+          DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+}
+
+/* Timer thread function to display the status report
+  every 5 seconds */
+VOID Timer(VOID)
+{
+  int i;
+
+  while (1)
+       {
+       mtask.Wait(semtimer);
+       i = 0;
+       while (1)
+              {
+              mtask.Sleep(1L);
+              i++;
+              if (status == RUNNING)
+                {
+                if (i % 5 == 0)
+                     {
+                     InvalidateRect(hwndMainWindow, NULL, TRUE);
+                     lTime = time(0) - lStart;
+                     }
+                }
+              else
+                     break;
+              }
+       }
+}
+
+/* The thread to actually carry out the Salvage benchmark
+for a number of iterations */
+VOID Big(VOID)
+{
+  double x;
+  int i;
+
+  while (1)
+       {
+       mtask.Wait(semjob);
+       for (i = 0; i &lt; nIterations; i++)
+              {
+              if (!fContinue)
+                break;
+              x = Savage(1.0);
+              mtask.Preempt();
+              }
+       lTime = time(0) - lStart;
+       if (fContinue)
+              status = DONE;
+       else
+              status = ABORTED;
+       GpfMenuGray(hwndMainWindow,ID_START,FALSE);
+       GpfMenuGray(hwndMainWindow,ID_ABORT,TRUE);
+       InvalidateRect(hwndMainWindow, NULL, TRUE);
+       }
+}
+
+/* Used to check mark the iteration count selected by the user */
+
+VOID SelectRep( PGPFPARMS pGpfParms)
+{
+
+  GpfMenuTick(hwndMainWindow,idCommand,FALSE);
+  idCommand = pGpfParms-&gt;Command;
+  GpfMenuTick(hwndMainWindow,pGpfParms-&gt;Command,TRUE);
+  return;
+
+}
+
+/* Used to start the Salvage benchmark by signalling the thread Big */
+VOID StartSalvage( PGPFPARMS pGpfParms)
+{
+
+  GpfMenuGray(hwndMainWindow, ID_ABORT,FALSE);
+  GpfMenuGray(hwndMainWindow, ID_START,TRUE);
+  nIterations = rep[idCommand - ID_REP10];
+  fContinue = TRUE;
+  time(&amp;lStart);
+  status = RUNNING;
+  lTime = 0L;
+  InvalidateRect(hwndMainWindow, NULL, TRUE);
+
+  mtask.Signal(semjob);
+  mtask.Signal(semtimer);
+
+  return;
+
+}
+
+/* Used to abort the executing Salvage benchmark */
+VOID AbortSalvage( PGPFPARMS pGpfParms)
+{
+  fContinue = FALSE;
+  GpfMenuGray(hwndMainWindow, ID_START, FALSE);
+  GpfMenuGray(hwndMainWindow,ID_ABORT,TRUE);
+
+  return;
+
+}
+
+/* Used to create the Timer and Big threads */
+VOID CreateThreads(VOID)
+{
+  /* create mutlitasking environment */
+  thdtimer =mtask.CreateThread(Timer, STACKSIZE, NULL);
+  thdbig =mtask.CreateThread(Big, STACKSIZE, NULL);
+  semjob = mtask.CreateSem(0);
+  semtimer = mtask.CreateSem(0);
+  GpfMenuGray(hwndMainWindow, ID_ABORT,TRUE);
+  GpfMenuTick(hwndMainWindow, ID_REP10,TRUE);
+}
+
+/* Main PeekMessage loop to replace the normal
+   GetMessage loop */
+VOID PeekMessageLoop(MSG * pMsg, Cschlr *pTask)
+{
+
+  BOOL fGo = TRUE;
+
+  while (fGo)
+       {
+       if (pTask != NULL)
+         {
+         while (!PeekMessage(pMsg,NULL,NULL,NULL,PM_NOREMOVE))
+           pTask-&gt;Run();
+         }
+
+       if (GetMessage(pMsg,NULL,NULL,NULL))
+         {
+         if ((!pMsg-&gt;hwnd) || (!IsDialogMessage
+                           (GetActiveWindow(),pMsg)))
+           {
+           TranslateMessage(pMsg);
+           DispatchMessage(pMsg);
+           }
+
+         }
+
+       else
+           fGo = FALSE;
+
+       }
+}
+
+// End of File
+</pre>
+</BODY>
+</HTML>

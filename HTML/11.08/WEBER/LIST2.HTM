@@ -1,0 +1,587 @@
+<HTML><HEAD>
+<TITLE>August 1993/Detecting Text Regions Using Cellular Automata/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2 zone.c</A></h4>
+<pre>***************************************************************
+ * file: ZONE.C
+ * purpose: text region detection via cellular automata
+ *************************************************************/
+
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;errno.h&gt;
+#include "zone.h"
+
+/* local data */
+static ZONE zone_list[MAX_ZONES];  /* this could be dynamically allocated */
+static int zone_count;
+
+/* local prototypes */
+static unsigned char *sample_page(int *dx,int *dy,int *samplex,int *sampley);
+static void cut_vertical_lines(unsigned char *image,int dx,int dy);
+static void block_zones(unsigned char *image,int dx,int/, dy,int coarseness);
+static void sequence_zones(unsigned char *image,int dx,int dy,int order);
+static int extract_zone(unsigned char *image,int dx,int dy,int x,int y,ZONE
+*zone_ptr);
+static void overlap_zones(ZONE *zone_array,int *array_size);
+
+/***********************************************
+ * function: int zone(int coarseness)
+ *  The process steps are:
+ *      1) Sample the page
+ *      2) Cut vertical lines from the page
+ *      3) Block out zones via cellular automata
+ *      4) Extract the zones
+ *      5) Sequence zones
+ * parameters: coarseness value 0-5, order (COLUMN or ROW)
+ * returns: 1 if OK or 0 if error, see errno
+ *********************************************/
+int zone(int coarseness,int order)
+   {
+   unsigned char *image;
+   int dx,dy;
+   int samplex,sampley;
+   int i;
+
+   if (coarseness &lt; 0  coarseness &gt; 5)
+      {               /* test coarseness parameter */
+      errno = EINVAL;
+      return 0;
+      }
+                    /* get a scaled copy of the page */
+   image = sample_page(&amp;dx,&amp;dy,&amp;samplex,&amp;sampley);
+   if (image == NULL)                      /* memory? */
+      return 0;
+#if CUT_VERTICAL_LINES
+   cut_vertical_lines(image,dx,dy);        /* remove boxes around text */
+#endif
+   block_zones(image,dx,dy,coarseness);    /* block out zones */
+   sequence_zones(image,dx,dy,order);
+   for (i = 0 ; i &lt; zone_count ; i++)
+      {                                   /* translate to full page */
+      zone_list[i].x1 *= samplex;
+      zone_list[i].y1 *= sampley;
+      zone_list[i].x2 *= samplex;
+      zone_list[i].y2 *= sampley;
+      }
+   free(image);                            /* clean up */
+   return 1;
+   }
+
+/**************** LOCAL FUNCTIONS ****************/
+
+/************************************************
+ * function: static unsigned char *sample_page(int *dx,int *dy,int *samplex,int
+ * sampley)
+ * Sample the page. Normally, the entire page is stored in memory. Since the
+ * memory requirements are typically a megabyte, the page, in DOS machines,
+ * is somewhere in extended memory. So that this demo can work on machines
+ * lacking extended memory, I sampled the page when I scaled it for display.
+ * See display_sample() below. However, I have #ifed around the code that is
+ * normally used to sample the page from the memory image. You need to provide
+ * two functions, as well as the extended memory handler. They are void
+ * memory_info(DISPLAY_BOX *); which gets the x/y extents of the image, and
+ * (unsigned char * memory_ptr(int y); which returns a pointer to a scan line
+ * in the memory image. Sample_page() creates a standardized, reduced image
+ * suitable for cellular automation. The sample has each byte, not bit,
+ * representing a pixel area. The byte is 0xff if black or 0x00 if white. The
+ * sampling procedure is important for region finding. If possible it should be
+ * a function of the density of the original image. If the image isn't square,
+ * for example a 200x100 fax file, then the x and y sampling should be adjusted
+ * accordingly. Since I don'thave dpi information here, I am scaling it to a
+ * typical, 200dpi, value after it was adjusted for screen display.
+ * Note: Bit 7 is leftmost and 0 is rightmost; 1 bits are black, 0 are white.
+ * parameters: pointers to storage for the byte width and height of the sampled
+ *              image and the sample bit distance in x and y
+ * returns: pointer to sampled page or NULL if no memory
+ **************************************************/
+static unsigned char *sample_page(int *dx,int *dy,int *samplex,int *sampley)
+   {
+   static unsigned char bit_mask[] = {0x80,0x40,0x20,0x10,0x08,0x04,0x02,0x01};
+   unsigned char *image,*line_ptr,*line_ptr2,*buff_ptr;
+   DISPLAY_BOX file;
+   unsigned int x,y,width,height;
+
+   memory_info(&amp;file);     /* need to provide this, gets file dimensions */
+                       /* from memory image of file */
+   *samplex = SAMPLE_200_X;        /* sample sizes */
+   *sampley = SAMPLE_200_Y;
+   *dx = file.width  / *samplex;   /* extent of sample */
+   *dy = file.height  / *sampley;
+   while (((long)*dx * (long)*dy) &gt; MAX_MALLOC)
+      {           /* adjust sampling to fit memory restrictions */
+      (*samplex)++;
+      (*sampley)++;
+      *dx = file.width / *samplex;
+      *dy = file.height / *sampley;
+      }
+   if ((image = malloc(*dx * *dy)) == NULL)    /* allocate sample buffer */
+      return NULL;
+   memset(image,WHITE,*dx * *dy);          /* set to white */
+   width =*dx * *samplex;
+   height = *dy * *sampley;
+   if (*samplex &gt;= 8)
+      {                                   /* byte sampling */
+      for (y = 0, buff_ptr = image ; y &lt; height ; y += *sampley)
+         {                               /* for each y sample */
+                   /* need to provide memory_ptr which gets a pointer
+                    * to a scan line from the memory image of the file */
+         line_ptr = memory_ptr(y);
+         line_ptr2 = memory_ptr(y + *sampley/2); /* double sample in y */
+         for (x = 0 ; x &lt; width ; x += *samplex, buff_ptr++)
+            if (*(line_ptr+(x&gt;&gt;3))  *(line_ptr2+(x&gt;&gt;3)))
+               *buff_ptr = BLACK;  /* if byte has black, set sample */
+         }
+      }
+   else
+      {                                   /* bit sampling */
+      for (y = 0, buff_ptr = image ; y &lt; height ; y += *sampley)
+         {                               /* for each y sample */
+                   /* need to provide memory_ptr which gets a pointer
+                    * to a scan line from the memory image of the file */
+         line_ptr = memory_ptr(y);
+         line_ptr2 = memory_ptr(y + *sampley/2); /* double sample in y */
+         for (x = 0 ; x &lt; width ; x += *samplex, buff_ptr++)
+            if ((*(line_ptr+(x&gt;&gt;3))  *(line_ptr2+(x&gt;&gt;3))) &amp; bit_mask[x&amp;7])
+               *buff_ptr = BLACK;      /* if bit is black, set sample */
+         }
+      }
+   return image;
+   }
+
+#if CUT_VERTICAL_LINES
+/***********************************************
+ * function: static void cut_vertical_lines(unsigned char *image,int dx,int dy)
+ * Remove vertical lines from sample. The purpose of this function is to
+ * unbox text. Removing the vertical box lines accomplishes this. Trying
+ * to remove the horizontal lines is dangerous because you might also remove
+ * the text.
+ * parameters: pointer to sampled image buffer and x/y extents of buffer
+ * returns: nothing
+ *************************************************/
+static void cut_vertical_lines(unsigned char *image,int dx,int dy)
+   {
+   int x,y,count,y1;
+   unsigned char *ptr,*qtr;
+
+   for (x = 0 ; x &lt; dx ; x++)      /* scan image left to right */
+      {
+      ptr = image+x;
+      count = 0;
+      for (y = 0 ; y &lt; dy ; y++, ptr += dx)
+         {                   /* scan up and down counting line pixels */
+         if (*ptr)
+            count++;
+         else
+            count = 0;
+
+         if (count &gt;= VERTICAL_LINE_SIZE)
+            {               /* we have a veritcal line */
+            for (y1=y, qtr=ptr ; *ptr!=WHITE &amp;&amp; y&gt;=0 ; y--, ptr-=dx)
+               *ptr = WHITE;    /* white out moving up */
+            for (y=y1+1, ptr=qtr+dx ; *ptr!=WHITE &amp;&amp; y&lt;dy ; ptr+=dx)
+               *ptr = WHITE;    /* white out moving down */
+            count = 0;      /* reset counter */
+            }
+         }
+      }
+   }
+#endif
+
+/***********************************************
+ * function: static void block_zones(unsigned char *image,int dx,int dy,int
+ * coarseness)
+ *  Use cellular automata to create blocks from image. Each block represents
+ *  a region of text. There are two steps to the process. First, use cellular
+ *  automata to sketch the region. Second, use the coarseness (0-5) to coalesce
+ *  the regions. A higher coarseness value will make larger zones.
+ * parameters: pointer to image buffer, x/y extents of buffer and coarseness
+ *             of zoning (0-5)
+ * returns: nothing
+ ************************************************/
+static void block_zones(unsigned char *image,int dx,int dy,int coarseness)
+   {
+   int i,j,x,y,score;
+   unsigned char *line,*pixel;
+
+   for (y=1, line=image+dx ; y &lt; dy-1 ; y++, line+=dx)
+      {   /* walk through buffer scanning for neighbors */
+      for (x=1, pixel=line+1 ; x &lt; dx-1 ; x++, pixel++)
+         {
+         score = 0;
+         if (*(pixel-1) &amp; ALIVE)   /* left */
+            score++;
+         if (*(pixel+1) &amp; ALIVE)    /* right */
+            score++;
+         if (*(pixel-dx) &amp; ALIVE)  /* up */
+            score++;
+         if (*(pixel+dx) &amp; ALIVE)   /* down */
+            score++;
+         if (*pixel == WHITE &amp;&amp; score &gt;= LIFE_SCORE)
+            *pixel = PREGNANT;
+         else if (*pixel == BLACK &amp;&amp; score &lt;= DEATH_SCORE)
+            *pixel = SICK;
+         }
+      }
+   for (pixel = image ; pixel &lt; image + dy * dx ; pixel++)
+      {    /* birth and bury */
+      if (*pixel == PREGNANT)
+         *pixel = BLACK;
+      else if (*pixel == SICK)
+         *pixel = WHITE;
+      }
+   if (coarseness &lt;= 0)        /* no need to coalesce */
+      return;
+   /* coalesce regions, based on coarseness, i.e. coarseness == 2
+    * will close all horizontal/vertical gaps of 2 pixels */
+   for (y=0, line=image+1 ; y &lt; dy ; y++, line+=dx)
+      {  /* coalesce horizontally */
+      for (x=1, pixel=line ; x &lt; dx-coarseness ; x++, pixel++)
+         {
+         if (*pixel == WHITE &amp;&amp; *(pixel-1) == BLACK)
+            {
+
+            for (i = 1 ; i &lt;= coarseness ; i++)
+               {
+               if (*(pixel+i))
+                  {
+                  for (i = 0 ; i &lt; coarseness ; i++, pixel++)
+                     *pixel = BLACK;
+                  pixel-;
+                  x += coarseness-1;
+                  break;
+                  }
+               }
+            }
+         }
+      }
+   for (x=0, line=image+dx ; x &lt; dx ; x++, line++)
+      {  /* coalesce vertically */
+      for (y=1, pixel=line ; y &lt; dy-coarseness ; y++, pixel+=dx)
+         {
+         if (*pixel == WHITE &amp;&amp; *(pixel-dx) == BLACK)
+            {
+            for (i=1, j=dx ; i &lt;= coarseness ; i++, j+=dx)
+               {
+                  if (*(pixel+j))
+                  {
+                  for (i = 0 ; i &lt; coarseness ; i++, pixel+=dx)
+                     *pixel = BLACK;
+                  pixel -= dx;
+                  y += (coarseness-1);
+                  break;
+                  }
+               }
+
+            }
+         }
+      }
+   }
+
+/***************************************************
+ * function: static void sequence_zones(unsigned char *image,int dx,int dy,int order)
+ * Extract zones from buffer, place in zone_list, update zone_count and
+ * sequence zones so they are in either COLUMN_MAJOR or ROW_MAJOR reading order.
+ * parameters: pointer to image buffer and x/y extents of image in buffer
+ *              order, COLUMN_MAJOR or ROW_MAJOR
+ * returns: nothing
+ ***********************************************************/
+static void sequence_zones(unsigned char *image,int dx,int dy,int order)
+   {
+   int x,y,i,j,index,fudge_x,fudge_y;
+   unsigned char *ptr;
+   ZONE temp;
+
+   for (y=0, zone_count=0 ; y &lt; dy &amp;&amp; zone_count &lt; MAX_ZONES ; y+=MIN_Y_ZONE)
+      {  /* extract zones from block images in y order */
+      ptr = image + y * dx;
+      for (x = 0 ; x &lt; dx ; x += MIN_X_ZONE)
+         if (*(ptr+x))                      /* found point */
+            {
+            if (zone_count &gt;= MAX_ZONES)
+               break;
+            while (x &gt; 0 &amp;&amp; *(ptr+x-1))    /* back up to left side */
+               x--;
+            if (extract_zone (image,dx,dy,x,y,zone_list+zone_count))
+               zone_count++;              /* get zone */
+            }
+      }
+   if (zone_count == 0)
+      {            /* if no zones, make the entire page one big zone */
+      zone_list[0].x1 = zone_list[0].y1-0;
+      zone_list[0].x2 = dx-1;
+      zone-list[0].y2 = dy-1;
+      zone_count = 1;
+      return;
+      }
+   overlap_zones(zone_list,&amp;zone_count);         /* remove overlap */
+   if (order == COLUMN_MAJOR)
+      {
+      for (i = 0; i &lt; zone_count-1 ; i++)
+          {                                        /* sort on x1 */
+          for (j = i+1 ; j &lt; zone_count ; j++)
+             {
+             if (zone_list[j].x1 &lt; zone_list[i].x1)
+                {
+                temp = zone_list[i];
+                zone_list[i] = zone_list[j];
+                zone_list[j] = temp;
+                }
+             }
+          }
+      for (i = 0; i &lt; zone_count-1 ; i++)
+          {         /* order zones left to right, up to down */
+          x = zone_list[i].x2;
+          y = zone_list[i].y1;
+          fudge_x = zone_list[i].x1+dx/20;    /* 5% slippage on alignment */
+          for (j = i+1, index = -1 ; j &lt; zone_count ; j++)
+             { /* find any zones above and within x extent of zone_list[i] */
+             if (zone_list[j].x1 &gt; x)
+                break;
+             if (zone_list[j].y1 &lt; y &amp;&amp; zone_list[j].x1 &lt;= fudge_x)
+                {
+                x = zone_list[j].x2;
+                y = zone_list[j].y1;
+                index = j;
+                }
+             }
+          if (index != -1)
+             {
+             temp = zone_list[i];
+             zone_list[i] = zone_list[index];
+             zone_list[index] = temp;
+             }
+          }
+      }
+   else        /* ROW_MAJOR */
+      {   /* already sorted in y1 order */
+      for (i = 0 ; i &lt; zone count-1 ; i++)
+          {           /* order zones up to down, left to right */
+          y = zone_list[i].y2;
+          x = zone_list[i].x1;
+          fudge_y = zone_list[i].y1+dy/20;    /* 5% slippage on alignment */
+          for (j = i+1, index = -1 ; j &lt; zone_count ; j++)
+             { /* find any zones left of and within y extent of zone_list[i] */
+             if (zone_list[j].y1 &gt; y)
+                break;
+             if (zone_list[j].x1 &lt; x &amp;&amp; zone_list[j].y1 &lt;= fudge_y)
+                {
+                y = zone_list[j].y2;
+                x = zone_list[j].x1;
+                index = j;
+                }
+             }
+          if (index != -1)
+             {
+             temp = zone_list[i];
+             zone_list[i] = zone_list[index];
+             zone_list[index] = temp;
+             }
+          }
+      }
+   }
+
+/************************************************
+ * function: static int extract_zone(unsigned char *image,int dx,int dy,int
+ * x,int y,ZONE *zone_ptr)
+ *  Extracts a rectangular region from the buffer starting at a point. It does
+ *  this by walking the perimeter, recording the min and max x/y dimensions.
+ *  If the region is big enough to be significant, it is saved as a zone and
+ *  then whited out so it won't be reconsidered.
+ * parameters: pointer to image buffer and dx/dy extents of that buffer.
+ *             x &amp; y point to start extracting the zone.
+ *             pointer to storage for zone
+ * returns: 1 if zone OK or 0 if not
+ ************************************************/
+static int extract_zone(unsigned char *image,int dx,int dy,int x,int y,ZONE *zone_ptr)
+   {
+   int ix,iy,minx,miny,maxx,maxy; /* perimeter variables &amp; min/max values */
+   HEADING dir;                   /* current direction */
+   unsigned char *previous,*next,*here;    /* buffer pointers */
+
+   minx = maxx = ix = x;          /* preset min/max x/y and perimeter vars */
+   miny = maxy = iy = y;
+   dir = GOING_UP;                /* starting direction */
+   do     /* walk perimeter, recording min/max of rectangular region */
+      {
+      if (ix &lt; minx)              /* update min/max */
+          minx = ix;
+      if (ix &gt; maxx)
+          maxx = ix;
+      if (iy &lt; miny)
+          miny = iy;
+      if (iy &gt; maxy)
+          maxy = iy;
+      here = image + iy * dx + ix;   /* where are we? */
+      next = here + dx;
+      previous = here - dx;
+      switch (dir)                   /* based on current direction, */
+          {                         /* look around for next direction */
+          case GOING_UP:
+          if (ix &gt; 0 &amp;&amp; *(here-1))
+             {
+             ix-;
+             dir = GOING_LEFT;
+             break;
+             }
+          if (iy &gt; 0 &amp;&amp; *previous)
+             {
+             iy;
+             break;
+             }
+          if (ix &lt; dx-1 &amp;&amp; *(here+1))
+             {
+             ix++;
+             dir = GOING_RIGHT;
+             break;
+             }
+          if (iy &lt; dy-1 &amp;&amp; *next)
+             {
+             iy++;
+             dir = GOING_DOWN;
+             break;
+             }
+          break;
+          case GOING_RIGHT:
+          if (iy &gt; 0 &amp;&amp; *previous)
+             {
+             iy--;
+             dir = GOING_UP;
+             break;
+             }
+          if (ix &lt; dx-1 &amp;&amp; *(here+1))
+             {
+             ix++;
+             break;
+             }
+          if (iy &lt; dy-1 &amp;&amp; *next)
+             {
+             iy++;
+             dir = GOING_DOWN;
+             break;
+             }
+          if (ix &gt; 0 &amp;&amp; *(here-1))
+             {
+             ix--;
+             dir = GOING_LEFT;
+             break;
+             }
+          break;
+          case GOING_DOWN:
+          if (ix &lt; dx-1 &amp;&amp; *(here+1))
+             {
+             ix++;
+             dir = GOING_RIGHT;
+             break;
+             }
+          if (iy &lt; dy-1 &amp;&amp; *next)
+             {
+             iy++;
+             break;
+             }
+          if (ix &gt; 0 &amp;&amp; *(here-1))
+             {
+             ix--;
+             dir = GOING_LEFT;
+             break;
+             }
+          if (iy &gt; 0 &amp;&amp; *previous)
+             {
+             iy--;
+             dir = GOING_UP;
+             break;
+             }
+          break;
+          case GOING_LEFT:
+          if (iy &lt; dy-1 &amp;&amp; *next)
+             {
+             iy++;
+             dir =- GOING_DOWN;
+             break;
+             }
+          if (ix &gt; 0 &amp;&amp; *(here-1))
+             {
+             ix--;
+             break;
+             }
+          if (iy &gt; 0 &amp;&amp; *previous)
+             }
+             iy--;
+             dir = GOING_UP;
+             break;
+             }
+          if {ix &lt; dx-1 &amp;&amp; *(here+1))
+             {
+             ix++;
+             dir = GOING_RIGHT;
+             break;
+             }
+          break;
+          }
+      } while (ix !=  iy != y);        /* until we return to the start */
+   for (iy=miny, here=image+miny*dx+minx ; iy &lt;= maxy ; iy++, here+=dx)
+      memset(here,WHITE,maxx-minx+1);     /* whiteout the region */
+   if ((maxx-minx+1 &lt; MIN_X_ZONE)  (maxy-miny+1 &lt; MIN_Y_ZONE))
+      return 0;                            /* big enough? */
+   if {minx &gt; 0)            /* expand dimensions by one pixel */
+      minx--;
+   if (maxx &lt; dx-1)
+      maxx++;
+   if (miny &gt; 0)
+      miny--;
+   if (maxy &lt; dy-1)
+      maxy++;
+   zone_ptr-&gt;x1 = minx;      /* save zone */
+   zone_ptr-&gt;y1 = miny;
+   zone_ptr-&gt;x2 = maxx;
+   zone_ptr-&gt;y2 = maxy;
+   return 1;
+   }
+
+/************************************************
+ * function: static void overlap_zones{ZONE *zone_array,int *array_size)
+ * find zones that overlap and combine them
+ * parameters: pointer to array of zones and pointer to count of zones
+ * returns: nothing
+ ************************************************/
+static void overlap_zones(ZONE *zone_array,int *array_size)
+   {
+   in* i,j,ax1,ay1,ax2,ay2,bx1,by1,bx2,by2;
+
+   for (i = 0 ; i &lt; *array_size-1 ; i++)
+      {       /* compare each zone against the rest */
+      ax1 = (zone_array+i)-&gt;x1;
+      ay1 = (zone_array+i)-&gt;y1;
+      ax2 = (zone_array+i)-&gt;x2;
+      ay2 = (zone_array+i)-&gt;y2;
+      for (j = i+1 ; j &lt; *array_size ; j++)
+          {
+          bx1 = (zone_array+j)-&gt;x1;
+          by1 = (zone_array+j)-&gt;y1;
+          bx2 = (zone_array+j)-&gt;x2;
+          by2 = (zone_array+j)-&gt;y2;
+          if ((bx1&gt;=ax2)  (ax1&gt;=bx2)  (by1&gt;=ay2)  (ay1&gt;=by2))
+             continue;                   /* no overlap */
+          bx1 = min(bx1,ax1);             /* combine zones */
+          by1 = min(by1,ay1);
+          bx2 = max(bx2,ax2);
+          by2 = max(by2,ay2);
+          (zone_array+i)-&gt;x1 = bx1;
+          (zone_array+i)-&gt;y1 = by1;
+          (zone_array+i)-&gt;x2 = bx2;
+          (zone_array+i)-&gt;y2 = by2;
+          (*array_size)--;              /* new zone count */
+          memmove((char *)(zone_array+j),(char *)(zone_array+j+1),
+             sizeof(ZONE)*(*array_size-j));  /* shift array to remove zone */
+          i = -1;                        /* start all over */
+          break;
+          }
+      }
+   }
+/* End of File */</pre>
+
+</BODY>
+</HTML>

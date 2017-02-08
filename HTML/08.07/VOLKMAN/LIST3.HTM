@@ -1,0 +1,210 @@
+<HTML><HEAD><TITLE>July 1990/Multitasking With The DESQview API C Library/Listing 3</TITLE></HEAD><BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4><A name="0195_00F6"><A name="0195_00F6">Listing 3<A name="0195_00F6"></h4><P>
+<pre>/*
+ *
+ *  findroot.c :  A parallel root finding program
+ *  author:       Victor R. Volkman
+ *
+ *  Based on a problem suggested by: Professor Dave Poplawski
+ *                                   Department of Computer Science
+ *                                   Michigan Technological University
+ *                                   Houghton, Michigan 49931
+ */
+
+
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include "dvapi.h"
+#include "dvapi2.h"
+#include "monitor.h"
+
+#include "monitor.fd"
+#ifdef MAKEFD
+#include "findroot.fd"
+#endif
+
+double f();
+static double global_x0, global_x1, global_y0, global_y1;
+#define STACKSIZE 1000
+
+int master[NUMPRC];
+DESQ HAN glob_win_han;
+static MONITOR *root_mon;
+
+
+/* The main() program serves a passive role in the root finding
+   process. The main() program activates node-0 which assumes
+   temporary control over the other subprocesses. Note that
+   the lower and upper bounds (global_x0 and global_x1 must be
+   set prior to activating node-0. */
+
+main()
+{
+   int i;
+   int version;
+   DESQ_HAN task_han;
+   char stacks [NUMPRC] [STACKSIZE];
+   char node_str [40];
+   double dummy;
+
+   global_x0 = 0.0;         /* lower Limit */
+   global_x1 = 1.0          /* Upper Limit */
+
+   version = api_init ();
+   if (version &lt; REQ_DESQVIEW) {
+      printf("This program requires DESQView %d.%02d or later.\n",
+             REQ_DESQVIEW &gt;&gt; 8, REQ_DESQVIEW &amp; 0xFF);
+      exit (1);
+      }
+   /* set minimum API function level */
+   api_level (REQ_DESQVIEW);
+
+   if (NUMPRC % 2 != 0) {
+      printf("NUMPRC is%d, please use an even number of nodes\n",NUMPRC);
+      exit (-1);
+      }
+
+   glob_win_han = win_new(GLOB_NAME,strlen(GLOB_NAME),
+                      GLOB_HEIGHT,GLOB_WIDTH);
+   win_move(glob_win_han, 0, 0);    /*Set screen row = 0, col = 0    */
+   win_logattr(glob_win_han,TRUE);  /* Use logical screen attributes */
+   win_attr(glob_win_han,1);        /* Display text in default color */
+   win_frame(glob_win_han,FALSE);   /* Don't display a box border    */
+   win_unhide(glob_win_han);        /* Mark this window as visible   */
+   win_top{glob_wit_han);           /* Bring to top &amp; redraw window  */
+
+   win_printf(glob_win_han,
+
+           "Root finder activated with %d subprocesses and resolution %f...\n",
+           NUMPRC, EPSILON);
+   global_y0 = f(global_x0);          /* Establish initial values */
+   global_y1 = f(global_x1);
+   open_monitor("rootfinder",&amp;root_mon);
+   sendv(root_mon,0.0,MASTER);  /* Allow MASTER signal to be claimed */
+ 
+   for (i= 0; i&lt;NUMPRC; i++) {
+      master[i] = 0;
+      task_han= tsk_new(task_findroot, stacks[i], STACKSIZE, "", 0, 0, 0);
+      win_printf(glob_win_han,"spawned task %d\n",i);
+      win_top(glob_win_han);
+      sprintf(node_str,"%d",i);
+      mal_write(mal_of(task_han), node_str, sizeof(node_str));
+      }
+   recvl(root_mon,&amp;dummy,TERMINATE);
+   win_printf(glob_win_han,"Lower limit X0 is %f,
+            f(X0) is %f\n",global_x0,global_y0);
+   win_printf(glob_win_han,"Upper limit X1 is %f, f(X1) is %f\n",
+            global_x1,global_y1);
+   win_printf(glob_win_han,"Master status %d, %d, %d, %d\n",
+            master[0],master[1],master[2],master[3]);
+   win printf(glob_win_han,"Press any key to continue.../n");
+   win_top(glob_win_han);
+   close_monitor(&amp;root_mon);
+   getch();
+}
+task_findroot(void)
+{
+  char *msg_buffer;
+   char title[30];
+   DESQ_HAN my_mal_han;
+   DESQ_HAN win_han;
+   double interv, y0, y1, dummy;
+   int lastnode, indx;
+   int msg_len;
+   int node;
+   int term;
+
+   my__mal_han = mal_me();   /* Find out and read mail from parent */
+   mal_read(my_mal_han,&amp;msg_buffer,&amp;msg_len);
+   sscanf(msg_buffer,"%d",&amp;node);
+
+   sprintf(title,"Node %03d",node);
+   win_han = win_new(title,strlen(title),3,38+(node&lt;4)*40);
+   win_move(win_han,7+(node%4)*5,1+(node&gt;3)*40);
+   win_logattr(win_han,1);          /* Use logical screen attributes */
+   win_attr(win_han,1);             /* Display text in default color */
+   win_unhide(win_han);             /* Mark this window as visible   */
+   win_top(win_han);                /* Bring to top &amp; redraw window  */
+
+   lastnode = (node==(NUMPRC-1));
+   do
+     {
+     interv = (global_x1-global_x0)/(NUMPRC);
+     y1 = f(global_x0+interv*(node+1));
+
+     /* First, all even nodes send &amp; odd nodes receive, via recv semafore */
+     if (node %2 == 0}
+        sendv(root_mon,y1,node+1);
+     else /* I'm an odd node */
+        recvl(root_mon,&amp;y0,node);
+
+ /* Second, all odd nodes send &amp; even nodes receive, via recv semafore */
+ /* Node 0 may not receive, and the lastnode may not send */
+ if (!lastnode)
+    {
+    if (node %2 == 1)
+       sendv(root_mon,y1,node+1);
+    else if (node) /* I'm an even node &gt; 0 */
+       recvl(root_mon,&amp;y0, node);
+
+      else        /* I'm node 0, so my left value is already computed */
+        y0 = global_y0;
+      }
+
+    win_printf(win_han,"y0 = %f, y1 = %f\n",y0,y1); win_top(win_han);
+    /* Determine which process will be the controller */
+    if ((y1*y0) &lt; 0.0)
+      {
+      /* MASTER status must be inherited from the ex-controller */
+      win_fprintf(win_han,"Node %d waiting for MASTER status\n",node);
+      win_top(win_han);
+      recvl(root_mon,&amp;dummy,MASTER);
+      master[node]++;
+      win_printf(win_han,"Node %d has received MASTER status\n",node);
+      win_top(win_han);
+
+      /* compute new boundary conditions */
+      global_x0 += interv * node;
+      global_y0 = y0;
+
+      if (!lastnode)
+         global_x1 = global_x0 + interv;
+      global_y1 = y1;
+      term = (interv &lt; EPSILON);
+
+      /* synchronize waiting processes below */
+      for (indx=0; indx&lt;NUMPRC; indx++)
+         if (indx!=node)
+            sendv(root_mon, (double)term, indx+NUMPRC);
+
+      /* Relinquish MASTER status to the next controller or TERMINATE */
+      if (term)
+         sendv(root_mon,0.0,TERMINATE);
+      else
+         sendv(root_mon,0.0,MASTER);
+      }
+    else /* synchronize */
+      {
+      win_printf(win_han,"Node %d suspended until notified \n",node);
+      win_top(win_han);
+      recvl(root_mon,&amp;dummy,node+NUMPRC);
+      term = (int) dummy;
+      win_printf(win_han,"Node %d restarted by the MASTER \n",node);
+      win_top(win_han);
+      }
+    }
+    while (!term);
+
+  win_printf(win_han,"Leaving...\n");
+  tsk_free(tsk_me()); /* De-allocate DESQview resources */
+}
+
+double f(x)
+float x;
+{
+   return{x*x*x - x*x + x - 0.5);
+}</pre>
+
+</BODY>
+</HTML>

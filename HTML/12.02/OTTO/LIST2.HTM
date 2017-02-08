@@ -1,0 +1,277 @@
+<HTML><HEAD>
+<TITLE>February 1994/Two Fast Pattern-Matching Algorithms/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2<I> The Beaza-Yates and Gonnet algorithm</I></A></h4>
+<pre>/*********************************************
+ * Fast String Search, using shift or algorithm
+ * July 1993 by Erick Otto.
+ * Algorithms from Beaza-Yates and Gonnet
+ * are used in this code.
+**********************************************/
+
+#include    &lt;stdio.h&gt;
+#include    &lt;fcntl.h)
+#include    &lt;ctype.h&gt;
+
+#define WORD    32  /* # of bits in an Uint */
+#define B        1  /* # of bits to shift   */
+#define MAXSYM 256  /* alphabet size        */
+
+unsigned int stopmask;
+unsigned int T[MAXSYM];
+
+#define TBUF (8*BUFSIZ) /* X times system buffer */
+
+#define MAXPAT WORD
+
+main(argc, argv)
+int argc;
+char **argv;
+{
+   char buf[TBUF+2];
+   char match[MAXPAT];
+   register int fd, nread;
+   register char *beg, *lastnl, *end;
+   char filename[100];
+   char first;
+   char build();
+   
+   /* must be at least two arguments */
+   if (argc &lt; 2 ) {
+      fprintf(stderr,"\n\tMatch string expected\n");
+      exit(1);
+   }
+   if (argc &lt; 3 ) {
+      fprintf(stderr,"\n\tFile expected\n");
+      exit(1);
+   }
+   
+   strcpy(match, argv[1]);
+   strcpy(filename, argv[2]);
+   first = build(match);
+   
+   if ( (fd = open(filename,0_RDONLY)) == -1) {
+      fprintf(stderr,
+         "Can't open file %s\n",filename);
+         perror(filename);
+         exit(1);
+   }
+   
+   *buf = '\n'; /* sentinel for printing purposes */
+   beg = buf+1; /* start filling buffer at buf+1  */
+   
+   while((nread=read(fd,beg,(&amp;buf[TBUF]-beg))) &gt; 0){
+      end = beg+nread;
+      lastnl = end;
+      
+      while(*--lastnl != '\n')
+         ;
+      
+      /* lastnl points to the newline */
+      matchpat(buf+1, lastnl-buf,first);
+      
+      /* move the part skipped (from newline to end of */
+      /* buffer) back to the begin of the buffer.      */
+      memcpy(buf+1, lastnl, end-lastnl-1);
+      beg = buf+1 + (end-lastnl);
+   }
+   close(fd);
+}
+
+char
+build(pat)
+register char *pat;
+{
+   unsigned int mask;
+   int i,j;
+   char *C_pat;
+   char *space;
+   char *malloc();
+   char startrange;
+   char endrange;
+   char first;
+   
+   first = *pat;
+   
+   /* pre process */
+   
+   if (first == '.' || first == '[') {
+      fprintf(stderr,"%s %s\n",
+         "Can not start with wildcard \'.\'",
+         "or regular expression range");
+          exit(1);
+   }
+   
+   /* Initialize the table */
+   for (i=0;i&lt;MAXSYM;i++) {
+       T[i] = ~0;
+   }
+   
+   /* allow for . wildcard */
+   space=malloc((strlen(pat)+1) * sizeof(char));
+   if (space == NULL) {
+      fprintf(stderr,"Malloc failed\n");
+      exit(1);
+   }
+   C_pat = space;
+   mask = ~0;
+   
+   /* scan the pattern for ranges and or wildcards */
+   for(i=1;*pat;i &lt;&lt;= B) {
+      
+      switch(*pat) {
+      
+      case '[':
+        /*start of a range*/
+        
+        pat++;
+        while(*pat != ']' &amp;&amp; *pat) {
+          
+          if (isalnum(*pat)) {
+             
+             /* if nxt char is a dash it's a range */
+             
+             if (*(pat+1) == '-') {
+                startrange = *pat;
+                pat++;
+                pat++;
+                endrange = *pat;
+                for(j=startrange;j&lt;=endrange;j++){
+                    T[j] &amp;  = ~i;
+                }
+                *C_pat = startrange;
+             } else {
+                /*normal character in range*/
+                *C_pat = *pat;
+                T[*pat] &amp;= ~i;
+             }
+          } else if (*pat == '-') {
+             
+             if (*(pat-1) == '[')
+                fprintf(stderr,
+                   "Invalid Expression\n");
+                   exit(1);
+             } else {
+             
+                fprintf(stderr,
+                   "Invalid Expression\n");
+                   exit(1);
+             }
+             
+             pat++;
+          } /* while not ']' */
+          C_pat++;
+          break;
+          
+      case '.':
+        /* We need to set the char position to something  */
+         * special, in this case it doesn't really matter */
+         *C_pat++ = 'a';
+         mask &amp;=~i;
+         break;
+      default:
+        *C_pat++ = *pat;
+        break;
+      } /* end of switch */
+      pat++;
+   } /* end of for loop */
+   
+   /* close the string and rewind the ptr */
+   *C_pat= '\0';
+   C_pat = space;
+   
+   if (strlen(C_pat) &gt; MAXPAT) {
+      fprintf(stderr,
+         "Pattern too long max %d chars\n",WORD);
+         exit(1);
+   }
+   
+   /* apply wildcard mask to all elements */
+   for (i=0;i&lt;MAXSYM;i++) {
+      T[i] =T[i] &amp; mask;
+   }
+   
+   /* Set masks for all chars that occur in the */
+   /* pattern and calculate the match criteria  */
+   
+   stopmask=0;
+   for(j=1;*C_pat;j &lt;&lt;=B) {
+      T[*C_pat] &amp;= ~j;
+      stopmask |=j;
+      C_pat++;
+   }
+   
+      stopmask = ~(stopmask &gt;&gt;B);
+      free(space);
+      return(first);
+   }
+   
+   matchpat(text,n,first)
+   register char *text;
+   int n;
+   char first;
+   {
+   
+      register unsigned int state,initial;
+      int matches;
+      int gotoeol = 0;
+      register char *nl;
+      register char *end;
+      char *savepos;
+      char savechar;
+      
+      end = text+n;
+      
+      /* save the last character which we use */
+      /* as a sentinel for the while loop     */
+      savepos  = end+1;
+      savechar = *savepos;
+      *savepos = first;
+      
+      /* search */
+      matches = 0;
+      initial = ~0;
+      
+      do {
+         
+         /* fast scan */
+         while(*text != first) text++;
+         
+         if (text &gt; end) continue;
+         
+         state=initial;
+         
+         do {
+         
+            state= (state &lt;&lt; B) | T[*text];
+            
+            if (state &lt;stopmask) {
+               /****** match **********/
+
+               nl=text;
+
+               /*look back for the closest newline*/
+               while(*--nl != '\n')
+                  ;
+
+               while(*++nl != '\n') putchar(*nl);
+               putchar('\n');
+
+               /* skip the rest of the line */
+               text=nl;
+            }
+            text++;
+         } while ( state != initial);
+      } while (text &lt; end);
+      
+      /* reset the character saved */
+      *savepos=savechar;
+      return(0);
+   }
+   
+   /* End of File */
+</pre>
+</BODY>
+</HTML>

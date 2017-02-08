@@ -1,0 +1,103 @@
+<HTML><HEAD><TITLE>April 1990/Using Files As Semaphores/Listing 4</TITLE></HEAD><BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4><A name="00D1_0079"><A name="00D1_0079">Listing 4<A name="00D1_0079"></h4><P>
+<pre>#include &lt;errno.h&gt;           /*rwslock.c */
+#include &lt;limits.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+#define PATHDLM ('/')   /* path name delimiter */
+#include "rwsem.h"
+
+/* function declarations */
+int getcnt(char *file, int *cntp);
+int putcnt(char *file, int cnt);
+
+/* read/write semaphore set table definition */
+static rwsset_t rwst[RWSOPEN_MAX];
+
+/* rwslock: read/write semaphore lock */
+int rwslock(rwsset_t *rwsp, int rwsno, int ltype)
+{
+    int wsem = 0;           /* write semaphore */
+    int rsem = 0;           /* read semaphore */
+    int rc = 0;         /* readcount */
+    char rcpath[PATH_MAX + 1]; /* readcount file path name */
+
+    /* identify write and read semaphores and read-count file */
+    wsem = rwsno * 2;
+    rsem = wsem + 1;
+    sprintf(rcpath, "%s%cr%d", rwsp-&gt;rwsdir, (int)PATHDLM, rwsno);
+
+    switch (ltype) {
+    case RWS_UNLCK: /* unlock */
+        switch (rwsp-&gt;lockheld[rwsno]) {
+        case RWS_UNLCK: /* unlock */
+            break;  /* case RWS_UNLCK: */
+        case RWS_RDLCK: /* read lock */
+            if (semlower(rwsp-&gt;ssp, rsem) == -1) {  /* allocate readcount */
+                return -1;
+            }
+            getcnt(rcpath, &amp;rc);       /* get readcount */
+            rc--;             /* decrement readcount */
+            if (rc == 0) {          /* if no other readers, */
+                if (semraise(rwsp-&gt;ssp, wsem) == -1) {  /* free resource */
+                    semraise(rwsp-&gt;ssp, rsem);
+                    return -1;
+                }
+            }
+            putcnt(rcpath, rc);          /* store new readcount */
+            if (semraise(rwsp-&gt;ssp, rsem) == -1) {  /* free readcount */
+                return -1;
+            }
+            break; /* case RWS_RDLCK: */
+        case RWS_WRLCK: /* write lock */
+            if (semraise(rwsp-&gt;ssp, wsem) == -1) {
+                return -1;
+            }
+            break;   /* case RWS_WRLCK: */
+        default:
+            errno = RWSPANIC;
+            return -1;
+            break;  /* default: */
+        };
+        break;  /* case RWS_UNLCK: */
+    case RWS_RDLCK: /* read lock */
+        if (rwsp-&gt;lockheld[rwsno] == RWS_RDLCK) {
+            errno = 0;
+            return 0;
+        }
+        if (semlower(rwsp-&gt;ssp, rsem) == -1) {  /* allocate readcount */
+            return -1;
+        }
+        getcnt(rcpath, &amp;rc);        /* get readcount */
+        rc++;                /* increment readcount */
+        if (rc == 1) {           /* if no other readers, */
+            if (semlower(rwsp-&gt;ssp, wsem) == -1) {  /* allocate resource */
+                semraise(rwsp-&gt;ssp, rsem);
+                return -1;
+            }
+        }
+        putcnt(rcpath, rc);          /* store new readcount */
+        if (semraise(rwsp-&gt;ssp, rsem) == -1) {  /* free readcount */
+            if (rc == 1) semraise(rwsp-&gt;ssp, wsem);
+            return -1;
+        }
+        break;  /* case RWS_RDLCK: */
+    case RWS_WRLCK: /* write lock */
+        if (semlower(rwsp-&gt;ssp, wsem) == -1) {  /* allocate resource */
+            return -1;
+        }
+        break;  /* case RWS_WRLCK: */
+    default:
+        errno = EINVAL;
+        return -1;
+        break;  /* default: */
+    };
+
+    /* save type of lock held */
+    rwsp-&gt;lockheld[rwsno] = ltype;
+
+    errno = 0;
+    return 0;
+ }</pre>
+</BODY>
+</HTML>

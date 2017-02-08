@@ -1,0 +1,172 @@
+<HTML><HEAD>
+<TITLE>August 1994/Minimalist Scaling/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1 <I>First cut at scaling algorithm</I></A></h4>
+<pre>/*******************************************************************
+ * file: FAXSCALE.C
+ * purpose: Minimalist scaler. Scales images over a range of 3% to 3200% with
+ *  a worst case precision of 1/32. This code was designed to minimize data,
+ *  stack and code requirements while being reasonably fast and accurate. Since
+ *  the intended use is in fax machine, the scaled lines are clipped or white
+ *  filled to FAX_WIDTH bytes. Refer to the function headers for more detailed
+ *  information. Image lines follow the usual monochromatic format of 1 being
+ *  black, 0 being white and bit 7 of each byte being the leftmost pixel. This
+ *  code is an algorithm test bench. The production version is in assembly.
+ * environment: ANSI C tested with Borland 4.0, Zortech 3.1 and
+ *      MSC 5.1
+ * contains:
+ *      init_fax_scale() - initializes the scaler
+ *      scale_fax_line() - scales a single image line
+ * history:
+ *  06-09-92 - initial code
+ *  04-04-94 - polished, reformatted, retested, condensed
+ ******************************************************************/
+
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;assert.h&gt;
+
+/* data types and defines */
+
+typedef unsigned long ROTATOR;       /* rotator type sets scaling
+                               * range and precision*/
+#define PRECISION (4 * 8)            /* ANSI doesn't allow sizeof(ROTATOR)
+                               * in preprocessor */
+#define SCALE_MAX (PRECISION * 100)  /* upper limit of scaler in % */
+#define SCALE_MIN (100 / PRECISION)  /* lower limit of scaler in % */
+#define FAX_WIDTH 216                /* hardwired byte width of a fax line */
+
+/* rotate instruction, just a kludge until assembly */
+#define _ror(val) (val) = ((val) &gt;&gt; 1 | (val) &lt;&lt; (PRECISION-1))
+
+/* ROMmable const data */
+          /* sequential increase in bits per byte: do not change
+           * without looking closely at init_rotator( ) */
+static const unsigned char pattern[] =
+   {0x00,0x10,0x44,0x94,0xaa,0xda,0xee,0xfe,0xff,0xff};
+
+/* RAM data
+*/ static ROTATOR x_rotator;       /* rotating horizontal pattern */
+static ROTATOR y_rotator;          /* rotating vertical pattern */
+static unsigned int source_width;  /* number of bytes in a source line */
+static unsigned char x_base;       /* n/8 basis for x_rotator */
+static unsigned char y_base;       /* n/8 basis for y_rotator */
+
+/* local functions */
+static int init_rotator(int scale,ROTATOR *rotator,unsigned char *base);
+
+/*********************************************************************
+ *function: int init_fax_scale(int x_scale,int y_scale,unsigned int source_byte_width)
+ * Validate the scaling ranges and initialize the scaler. You
+ * must call this function first before you can use the scaler.
+ * parameters: horizontal and vertical scaling in percent followed
+ * by the byte width of a source line.
+ * returns: 1 if Ok or 0 if either scale is out of range ********************************************************************/
+int init_fax_scale(int x_scale,int y_scale,unsigned int source_byte_width)
+   {
+   if (!init_rotator(x_scale,&amp;x_rotator,&amp;x_base))
+      return 0;          /* set up x_rotator */
+   if (!init_rotator(y_scale,&amp;y_rotator,&amp;y_base))
+      return 0;          /* set up y_rotator */
+   source_width = source_byte_width;  /* save width */
+   if (((long)source_width * (long)x scale) / 100L &gt; FAX_WIDTH)
+      source_width = FAX_WIDTH;      /* clip to fax line */
+   return 1;
+   }
+/********************************************************************
+ * function: static int init_rotator(int scale,ROTATOR *rotator,unsigned char *base)
+ * local function calculates the rotator and basis.
+ * parameters: scale factor in percent, pointer to rotator,
+ *             pointer to basis.
+ * returns: 1 if Ok or 0 if scale is out of range *****************************************************************/
+static int init_rotator(int scale,ROTATOR *rotator,unsigned char *base)
+   {
+   unsigned int index,mix,i;
+
+   /* check scaling range */
+   if (scale &lt; SCALE_MIN ||scale &gt; SCALE_MAX)
+      return 0;
+   /* set basis */
+   *base = scale / 100;
+   /* get index into pattern */
+   scale % = 100;
+   index = (scale * 8) / 100;
+   /* How we mix 2 consecutive patterns to achieve balance.
+    * Express it this way to handle round off. */
+   mix = pattern[((((scale * 8) % 100) + 4) * 8) / 100];
+   /* for each byte in the rotator, select an appropriate
+    * pattern byte based on the index and the mix */
+   *rotator = 0;
+   for (i = sizeof(ROTATOR) ; i &gt; 0 ; i--)
+      {
+      *rotator &lt;&lt;= 8;
+      *rotator |= pattern[index + (mix &amp; 0x01)];
+      mix &gt;&gt; = 1;
+      }
+   assert((*rotator + *base) != 0);
+   assert(*base &lt;= PRECISION);
+   return 1;
+   }
+
+/*********************************************************************
+ * function: int scale_fax_line(unsigned char *dest, unsigned char *src)
+ *  Scale the line from src to dest. dest will always be FAX_WIDTH
+ *  wide even if it requires clipping or whiting out the tail. The
+ *  return value indicates the number of times to repeat the line.
+ *  A 0 return means skip it. This was done to keep buffer control in
+ *  the caller.  Call scale_fax_line() once for each source line.
+ * parameters:  pointer to destination and source
+ * returns:  number of times to repeat the line (0 to PRECISION) ********************************************************************/
+int scale_fax_line(unsigned char *dest, unsigned char *src)
+   {
+   int y_repeat,x_repeat,i,bit;
+   unsigned int accum,byte;
+   unsigned char *start;
+   ROTATOR rotator;
+
+   /* get line repeat value and rotate to next */
+   y_repeat = y_base + (y_rotator &amp; 0x01);
+   _ror(y_rotator);
+   /* if anything to do */
+   if (y_repeat)
+      {
+      rotator = x_rotator;
+      for (i=source_width, accum=1, start=dest ; i &gt; 0 ; i--, src++)
+         {  /* each byte in the source line */
+         for (bit=8, byte=*src ; bit &gt; 0 ; bit--)
+            {  /* for each bit in the byte */
+            x_repeat = x_base + (rotator &amp; 1);
+            _ror(rotator);      /* get repeat count and rotate */
+            while (x_repeat)--
+                 {             /* for each repeat */
+                 accum &lt;&lt;= 1;  /* copy bit into accumulator */
+                 accum += ((byte &amp; 0x80) != 0);
+                 if (accum &amp; 0x100)
+                    {         /* output a byte and reset sentinel */
+                    *dest++ = accum &amp; 0xff;
+                    accum = 1;
+                    }
+                 }
+            byte &lt;&lt;= 1;
+            }
+         }
+      if (accum &gt; 1)
+         {                       /* handle fragment */
+         while ((accum &amp; 0x100) == 0)
+            accum &lt;&lt;= 1;
+         *dest++ = accum &amp; 0xff;
+         }
+      while (dest &lt; start + FAX_WIDTH)
+         {                       /* white out tail */
+         *dest++ = 0;
+         }
+      }
+   return y_repeat;
+   }
+
+/* End of File */
+</pre>
+</BODY>
+</HTML>

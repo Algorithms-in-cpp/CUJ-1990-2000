@@ -1,0 +1,151 @@
+
+
+
+<HTML>
+<HEAD>
+
+<TITLE>February 1991/Doctor C's Pointers&reg;</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocfeb.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Columns</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Doctor C's Pointers&reg;<A name="0068_0039"><A name="0068_0039"></font></h2><P>
+<h3 align="center"><A name="0068_0000"><A name="0068_0000">Puzzles, Part 4</h3><P>
+<h3 align="center"><font color="#800000">Rex Jaeschke</font></h3><hr><blockquote><P>
+<P><i><A name="0068_0000"><A name="0068_0000">Rex Jaeschke is an independent computer consultant, author and seminar leader. He participates in both ANSI and ISO C Standards meetings and is the editor of The Journal of C Language Translation, a quarterly publication aimed at implementors of C language translation tools. Readers are encouraged to submit column topics and suggestions to Rex at 2051 Swans Neck Way, Reston, VA 22091 or via UUCP at uunet! aussie! rex or aussie! rex@uunet.uu.net.</i></P><P>
+This month we'll continue with our "quality of implementation" puzzles. Try to debug them yourself first and see what messages your compiler produces.<P>
+<h4><FONT COLOR="#000080"><A name="0068_003A">The Puzzles<B><A name="0068_003A"></B></FONT></h4></P>
+1. A typical example of C.<P>
+<pre>/* 1*/#include &lt;stdio.h&gt;
+
+/* 3*/main()
+/* 4*/{
+/* 5*/   char *pc;
+
+/* 7*/   printf("Enter up to 3 characters: ");
+/* 8*/   scanf("%3s", pc);
+/* 9*/   printf("Input is |%s|\n", pc);
+/*10*/}
+
+Enter up to 3 characters: asd
+Input is |asd|</pre>
+I've often seen publications introduce C using an example of a typical C program such as that above. It's typical because it has bugs. I also see it in many of my student's projects.<P>
+2. So why shouldn't it work?<P>
+<pre>/* 1*/#include &lt;stdio.h&gt;
+
+/* 3*/main()
+/* 4*/{
+/* 5*/   char *pc = "abcdef";
+
+/* 7*/   *pc = 'X';
+
+/* 9*/   printf("pc points to |%s|\n", pc);
+/*10*/}
+
+pc points to |Xbcdef|</pre>
+This program runs as shown on many systems. It also dies miserably on others, and both outcomes are acceptable, at least by ANSI C.<P>
+3. Why isn't 'end' recognized?<P>
+<pre>/* 1*/#include &lt;stdio.h&gt;
+
+/* 3*/main()
+/* 4*/{
+/* 5*/   char str[4];
+
+/* 7*/   printf("Enter up to 3 characters: ");
+/* 8*/   scanf("%3s", str);
+
+/*10*/   if (str == "end")
+/*11*/      printf("'end' entered\n");
+/*12*/   else
+/*13*/      printf("'end' was not entered\n");
+/*14*/}
+
+Enter up to 3 characters: 123
+'end' was not entered
+
+Enter up to 3 characters: end
+'end' was not entered</pre>
+4. More on string literals.<P>
+<pre>/* 1*/   #include &lt;stdio.h&gt;
+
+/* 3*/   main()
+/* 4*/   {
+/* 5*/      if ("abc" == "abc")
+/* 6*/         printf("Equal\n");
+/* 7*/      else
+/* 8*/         printf("Not Equal\n");
+/* 9*/   }
+
+The two possible outcomes are:
+
+Not Equal
+Equal</pre>
+5. Hey, who broke my <I>sizeof</I>?<P>
+<pre>/* 1*/   #include &lt;stdio.h&gt;
+
+/* 3*/   main()
+/* 4*/   {
+/* 5*/      static int j[10];
+/* 6*/      void f(int []);
+
+/* 8*/      f(j);
+/* 9*/   }
+
+/*11*/   void f(int x[])
+/*12*/   {
+/*13*/      int i;
+
+/*15*/      for (i = 0; i &lt; sizeof(x)/sizeof(x[0]); ++i)
+/*16*/         printf("i = %d\n", i);
+/*17*/}
+
+i = 0    /* small memory model */
+
+i = 0    /* large memory model */
+i = 1
+
+i = 0    /* 32-bit mode compiler */</pre>
+This very common example attempts to use <I>sizeof</I> on a formal array parameter to determine the number of elements in that array. Unfortunately, this construct compiles without error and gives you something other than what you initially expect.<P>
+<h4><FONT COLOR="#000080"><A name="0068_003B">The Solutions<A name="0068_003B"></FONT></h4></P>
+1. It is very unlikely this will fail to execute correctly on DOS. However, increasing significantly the number of characters accepted will certainly increase the chances of actual undefined behavior. Many of my seminars are conducted using VAX/VMS, a multi-user memory protected operating system. In such environments, weird behavior is likely to occur from the start.<P>
+<I>scanf</I> expects a pointer to <I>char</I> and that's what we give it. <I>scanf</I> then proceeds to read in characters storing them at the location pointed to by that pointer. The problem is, just where does that pointer point? Being of automatic storage duration, <I>pc</I><I>'s</I> initial value is undefined <I></I>&#151; it could be any bit pattern <I></I>&#151; and may look like a valid or invalid address. So <I>scanf</I> tries to store the characters read in some arbitrary location. Without memory protection, DOS allows you to overwrite any location in memory, including DOS itself and device registers, particularly in the larger memory models. On VAX/VMS, if <I>pc</I> contains an address outside the addresses allocated to this program, or in the range 0-511, or to part of the program that is located in a read-only program section (such as instructions and <I>const</I> data objects), a memory access violation results.<P>
+Several compilers did give useful warnings when asked.<P>
+<pre>line 8 -    Warning: Possible use
+of 'pc' before assigned a value
+
+line 9 - Warning: Possible use
+of 'pc' before assigned a value
+
+line 9 - Warning! 'pc' has been referenced but
+never assigned a value</pre>
+The (undefined) value of <I>pc</I> was used in two places, lines 8 and 9. One compiler correctly warned about both but the other warned only about line 9.<P>
+2. By initializing <I>pc</I> to a string, the code does not make it obvious that in <I>*pc = 'X' </I>we are attempting to modify the first character of a string literal. Perhaps if we wrote <I>"abcdef"[0] = 'X' </I>that would be more obvious. (By the way, this is a perfectly well-formed expression that achieves the same result.) The problem is even more obscure if <I>pc</I> is passed to a function that intends to modify what <I>pc</I> points to (as the first argument to <I>strcpy</I>, for example).<P>
+Based on its name you would expect a string literal to literally be stored exactly as written. In fact, most of us probably really think of string literals as being constants; and that's not unreasonable. The problem is that over the years some compilers have stored them in read-only memory while others placed them in read-write memory. As a result, ANSI C permits either, so it's your problem either to avoid intentionally modifying such strings or to know which of your target compilers permit this.<P>
+Since DOS has no memory protection capability, DOS-based compilers always allow strings to be overwritten. More sophisticated systems either force or allow strings to be placed in read-only memory at runtime. (Apparently, 32-bit compilers running under DOS extenders can also take advantage of the segment protection of the Intel 386 architecture.)<P>
+3. None of my compilers gave any warnings. However, PC-Lint produced the following interesting message:<P>
+<pre>line 10 - Warning: Constant value Boolean</pre>
+It's telling me that <I>str == "end"</I> is a constant expression which, therefore, can be evaluated at compile-time meaning that either the true or false path will be forever ignored. Since this presumably was not our intent, what's the real problem?<P>
+What we really want to do is to compare the null-terminated character array <I>str</I> with the string <I>"end"</I>. Now as we know, in almost all cases where we use the name of an array (or, in fact, any expression that designates an array) that expression is converted to a pointer to the first element. Therefore, the expression <I>str</I> becomes <I>&amp;str[0]</I> and the address of an array's element <I>is</I> a constant throughout the life of that array. (This is true even for automatic arrays. Granted that each time the same auto object is allocated it can be in a different place in memory, but for any one of its lives it will stay in the same location.) Similarly, <I>"end"</I> becomes <I>&amp;"end"[0]</I> since <I>"end"</I> is the 'name' of an unnamed array of 4 <I>char</I>s.<P>
+As a result, <I>(str == "end")</I> becomes <I>(&amp;str[0] == &amp;"end"[0])</I> which is a constant expression. And since, by definition, objects don't overlap in storage (unions excepted), the address of any element of one array can never be equal to that of an element in a different array. The resulting type of this expression is <I>int</I> (by definition) and its value is <I>0</I> (false).<P>
+Of course, what we really must use is <I>strcmp(str, "end") == 0</I>.<P>
+4. In the previous problem we learned that what is really going on is that the addresses of the first character in each string is being compared, <I>not</I> the value of the strings. So why are the addresses the same with some compilers and not others?<P>
+Whether identical string literals occupy the same memory (they are pooled) or are treated as being distinct is up to the implementation. It is more work for a compiler to compare every string literal token with every other. Most compilers simply treat each string as being distinct. A few provide options to go either way.<P>
+Consider the following program:<P>
+<pre>#include &lt;stdio.h&gt;
+
+main()
+{
+   printf("%p %p\n", "abc", "abc");
+}
+
+1bca:0026 1bca:0026   /* only one copy */
+1B20:0046 1B20:0042   /* two copies */</pre>
+Compilers then, can support one or more of the four possible combinations of string literals being read-only or writeable, and pooled or not.<P>
+5. When an array is passed to a function, what is actually passed is a pointer to its first element. <I>No</I> information is passed about the number of dimensions or their sizes. Once the called function takes control, the shape information for that array is lost &#151; the function simply knows it has a pointer to some type.<P>
+If we write the function definition in a different, but equivalent, form, the problem should be obvious:<P>
+<pre>/*11*/   void f(int *x) {...}</pre>
+Now we have explicitly admitted that <I>x</I> really is a pointer to the first element of the array passed in. Therefore, <I>sizeof(x)</I> gives us the size of that pointer, not the underlying array. Now we could use <I>sizeof(*x)</I>, but that only gives us the size of the object underlying <I>x</I> (an <I>int</I>) not the size of the whole underlying array.<P>
+In the small memory model and in 32-bit mode, pointers and <I>int</I>s are the same size (16 and 32 bits, respectively). In <I>large</I> mode, pointers are 32 bits and <I>int</I>s are 16.<P>
+So how can we solve the problem correctly if <I>sizeof</I> won't do? If the array passed were a null-terminated <I>char</I> array we could use <I>strlen</I>. For all other array types we would have to pass in the array size as an argument or use a global variable, unless there was some special terminating value we could check for.<P>
+</BLOCKQUOTE>
+</BODY>
+</HTML>

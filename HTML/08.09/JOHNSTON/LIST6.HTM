@@ -1,0 +1,333 @@
+<HTML><HEAD><TITLE>September 1990/Using An RPC Protocol To Create A Basic File Server/Listing 6</TITLE></HEAD><BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+<h4><A name="01F1_0128"><A name="01F1_0128">Listing 6<A name="01F1_0128"></h4><P>
+<pre>/*
+    +------------------------------------------------------------
+    | @(#) bfs_apl.c vl.0 90/04/02
+    |
+    |
+    |  Copyright (C) 1990, StonyBrook Technologies, Inc.,
+    |  All Rights Reserved.
+    |
+    |
+    |
+    +-------------------------------------------------------------
+    
+    bfs_apl.c -- this is a library of routines for accessing the
+              file server thru the client daemon.
+
+*/
+
+#include &lt;stdio.h&gt;
+#include &lt;sys/fcntl.h&gt;
+#inclucle &lt;sys/types.h&gt;
+#include &lt;sys/stat.h&gt;
+#include &lt;errno.h&gt;
+#include &lt;sys/signal.h&gt;
+#include "bfs.h"
+
+int    afifo;              /* apl read fifo (created by apl)     */
+int    afifow;             /* apl write fifo (created by apl)    */
+int    cfifo;              /* apl write fifo (created by cmon    */
+int    alink = 0;          /* apl fifo link counter (close = 0 ) */
+char   afname[132];       /* apl fifo name - /tmp/AFlFO.pid    */
+
+RFILE  rfile[MAX_RFILES];  /* apl file control blocks */
+
+/* rfopen procedure */
+
+RFILE *rfopen(rfname, rftype)
+char *rfname;
+char *rftype;
+{
+  int ridx, fidx, result;
+  char *sname, *fname, *cptr;
+  
+  if(!alink) bfs_apl_init();
+  
+  sname = rfname;
+  for(cptr=rfname; *cptr; cptr++)
+    if(*cptr == '!') {
+      *cptr = '\0';
+      fname = cptr+1;
+      for(ridx=0, fidx=-l; ridx&lt;MAX_RFILES; ridx++)
+        if(rfile[ridx].state == -1) {
+          fidx = ridx;
+          break;
+        }
+      if(fidx != -1) {
+        if(arpc_fopen(fidx, sname, fname, rftype) != -1) {
+          strcpy(rfile[fidx].sname, sname);
+          strcpy(rfile[fidx] .fname, fname);
+          strcpy(rfile[fidx] .ftype, rftype);
+          rfile[fidx].state = fidx;
+          errno = 0;
+          *cptr = '!';
+          return(&amp;rfile[fidx]);
+        } else {
+          *cptr = '!';
+          return(NULL);
+        }
+      } else {
+        *cptr = '!';
+        errno = EMFILE;
+        return(NULL);
+        }
+      }
+    errno = EINVAL;
+    return(NULL);
+  }
+  
+  /* rfclose procedure */
+  
+  int rfclose(rstream)
+  RFILE *rstream;
+  {
+    int result;
+    
+    if((rstream != NULL) &amp;&amp; (rstream-&gt;state)) {
+      result = arpc_fclose(rstream-&gt;state);
+      rstream-&gt;state = -1;
+      return(result);
+    }
+    errno = EINVAL;
+    return(-1);
+  }
+  
+  /* rfread procedure */
+  
+  int rfread(ptr, size, nitems, rstream)
+  char   *ptr;
+  int     size;
+  int     nitems;
+  RFILE  *rstream;
+  {
+    if((rstream != NULL) &amp;&amp; (rstream-&gt;state))
+       return(arpc_fread(rstream-&gt;state, ptr, size, nitems));
+    errno = EINVAL;
+    return(-1);
+  }
+  
+  /* rfwrite procedure */
+  
+  int rfwrite(ptr, size, nitems, rstream)
+  char   *ptr;
+  int     size;
+  int     nitems;
+  RFILE  *rstream;
+  {
+    if((rstream != NULL) &amp;&amp; (rstream-&gt;state))
+       return(arpc_fwrite(rstream-&gt;state, ptr, size, nitems));
+    errno = EINVAL;
+    return(-1);
+  }
+  
+  /* rfeof procedure */
+  
+  int rfeof(rstream)
+  RFILE *rstream;
+  {
+    if((rstream != NULL) &amp;&amp; (rstream-&gt;state))
+       return(arpc_feof(rstream-&gt;state));
+    errno = EINVAL;
+    return(-1);
+  }
+  
+  /* arpc_fopen procedure */
+  
+  arpc_fopen(fid, sname, fname, ftype)
+  int fid;
+  char *sname, *fname, *ftype;
+  {
+    RPC_FOPEN_CMD_MSG focmd;
+    RPC_FOPEN_RSP_MSG forsp;
+    
+  if(!afifo_open())
+    return(-1);
+    
+  focmd.hdr.cede = RPC_FOPEN_CMD;
+  focmd.hdr.csid = getpid();
+  focmd.hdr.ssid = fid;
+  focmd.hdr.dlen = sizeof(RPC_FOPEN_CMD_MSG) - sizeof(RPC_MSG);
+  
+  strcpy(focmd.sname, sname);
+  strcpy(focmd.fname, fname);
+  strcpy(focmd.ftype, ftype);
+  
+  cfifo_write(&amp;focmd, sizeof(RPC_FOPEN_CMD_MSG));
+  afifo_read(&amp;forsp, sizeof(RPC_FOPEN_RSP_MSG));
+  
+  if(forsp.status == -1)
+    afifo_close();
+  
+  errno = forsp.errno;
+  return(forsp.status);
+}
+  
+  /* arpc_fclose procedure */
+  
+  arpc_fclose(fid)
+  int fid;
+  {
+    RPC_FCLOSE_CMD_MSG fccmd;
+    RPC_FCLOSE_RSP_MSG fcrsp;
+    
+    fccmd.hdr.code = RPC_FCLOSE_CMD;
+    fccmd.hdr.csid = getpid();
+    fccmd.hdr.ssid = fid;
+    fccmd.hdr.dlen = 0;
+    
+    cfifo_write(&amp;fccmd, sizeof(RPC_FCLOSE_CMD_MSG));
+    afifo_read(&amp;fcrsp, sizeof(RPC_FCLOSE_RSP_MSG));
+    
+    afifo_close();
+    
+    errno = fcrsp.errno;
+    return(fcrsp.status);
+  }
+  
+  /* arpc_fread procedure */
+  
+  arpc_fread(fid, buf, size, nitems)
+  int fid, size, nitems;
+  char *buf;
+  {
+    RPC_FREAD_CMD_MSG frcmd;
+    RPC_FREAD_RSP_MSG frrsp;
+    
+    frcmd.hdr.code = RPC_FREAD_CMD;
+    frcmd.hdr.csid = getpid();
+    frcmd.hdr.ssid = fid;
+    frcmd.hdr.dlen = O;
+    frcmd.size = size;
+    frcmd.nitems = nitems;
+    
+    cfifo_write(&amp;frcmd, sizeof(RPC_FREAD_CMD_MSG));
+    afifo_read(&amp;frrsp, sizeof(RPC_FREAD_RSP_MSG));
+    
+    if(frrsp.hdr.dlen &gt; 0)
+      afifo_read(buf, frrsp.hdr.dlen);
+    
+    errno = frrsp. errno;
+    return(frrsp.status);
+  }
+  
+  /* arpc_fwrite procedure */
+  
+  arpc_fwrite(fid, but, size, nitems)
+  int fid, size, nitems;
+  char *buf;
+  {
+    RPC_FWRITE_CMD_MSG fwcmd;
+    RPC_FWRITE_RSP_MSG fwrsp;
+    int len;
+    
+    len = size * nitems;
+    fwcmd.hdr.code = RPC_FWRITE_CMD;
+    fwcmd.hdr.csid = getpid();
+    fwcmd.hdr.ssid = fid;
+    fwcmd.hdr.dlen = len;
+    fwcmd.size = size;
+    fwcmd.nitems = nitems;
+    
+    cfifo_write(&amp;fwcmd, sizeof(RPC_FWRITE_CMD_MSG));
+    cfifo_write(buf, len);
+    afifo_read(&amp;fwrsp, sizeof(RPC_FWRITE_RSP_MSG));
+    
+    errno = fwrsp.errno;
+    return(fwrsp.status);
+  }
+  
+  /* arpc_feof procedure */
+  
+  arpc_feof(fid)
+  int fid;
+  {
+    RPC_FEOF_CMD_MSG fecmd;
+    RPC_FEOF_RSP_MSG fersp;
+    
+    fecmd.hdr.code = RPC_FEOF_CMD;
+    fecmd.hdr.csid = getpid();
+    fecmd.hdr.ssid = fid;
+    fecmd.hdr.dlen = 0;
+    
+    cfifo_write(&amp;fecmd, sizeof(RPC_FEOF_CMD_MSG));
+    afifo_read(&amp;fersp, sizeof(RPC_FEOF_RSP_MSG));
+    
+    errno = fersp.errno;
+    return(fersp.status);
+  }
+  
+  
+  bfs_apl_init()
+  {
+    int i;
+    
+    for(i=0; i&lt;MAX_RFILES; i++) {
+      rfile[i].state = -1;
+      rfile[i].sname[0] = '\0';
+      rfile[i].fname[0] = '\0';
+      rfile[i].ftype[0] = '\0';
+    }
+  }
+  
+  afifo_open()
+  {
+    int pid, flags;
+    
+    if(alink) {
+      alink++;
+      return(1);
+    }
+    
+    pid = getpid();
+    
+    if((cfifo=open("/tmp/CFIFO", 0_WRONLY)) != -1) {
+      sprintf(afname, "/tmp/AFIFO.%d", pid);
+      if(mknod(afname, S_IFIFO<FONT FACE="Symbol" SIZE=2>½</FONT>0666, 0) == -1)</FONT></FONT>
+        return(0);
+      if((afifo=open(afname, O_RDONLY<FONT FACE="Symbol" SIZE=2>½</FONT>O_NDELAY)) == -1) {</FONT></FONT>
+      
+          unlink(afname);
+          close(cfifo);
+          return(0);
+      }
+      flags = fcntl(afifo, F_GETFL, &amp;flags);
+      flags &amp;= <SUP>~</SUP>0_NDELAY;
+      fcntl(afifo, F_SETFL, &amp;flags);
+      afifow=open(afname, O_WRONLY);
+      alink = 1;
+      return(1);
+    }
+    return(0);
+  }
+  
+  
+  afifo_close()
+  {
+    alink--;
+    if(!alink) {
+      close(cfifo);
+      close(afifo);
+      close(afifow);
+      unlink(afname);
+    }
+    return(1);
+  }
+  
+  
+  afifo_read(buf, cnt)
+  char *buf;
+  int cnt;
+  {
+    return(read(afifo, buf, cnt));
+  }
+  
+  
+  cfifo_write(buf, cnt)
+  char *buf;
+  int cnt;
+  {
+    return(write(cfifo, buf, cnt));
+  }
+</pre>
+</BODY></HTML>

@@ -1,0 +1,390 @@
+<HTML><HEAD>
+<TITLE>September 1994/Using Windows Memory Management Services/Listing 4</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 4 <I>Member functions of class </I>MemoryObject</A></h4>
+<pre>//  mobject.cpp
+//
+//  Copyright Singleton Systems Ltd 1994
+
+#include    "stdafx.h"
+#include    &lt;new.h&gt;
+#include    "farheapb.h"
+#include    "mobject.h"
+#include    &lt;iomanip.h&gt;
+#include    "newtest.h"
+
+// ... debugging code not shown here
+//     due to space constraints ...
+
+void FAR * MemoryObject::operator new (size_t size)
+// standard operator new, used for derived classes.
+   {return new (size) MemoryObject;}
+
+void FAR * MemoryObject::operator new
+                 (size_t /*std_size */, size_t size)
+//  Extended operator new, used by AllocateBlock and
+//  standard operator new
+{
+FP_FHB allocated_block;
+FP_MOBJECT first_fit = FindFreeSpace (size,
+                                allocated_block);
+if (first_fit == NULL)
+   {
+   //  Unable to satisfy request, raise memory
+   //  exception
+   _PNH handler = _set_new_handler (0);
+   //  Get current new handler and restore it
+   _set_new_handler (handler);
+   (* handler) (size);         //  call the handler
+   // Fail regardless of value returned by the handler
+   return NULL;
+   }
+
+_segment cur_seg = (_segment) SELECTOROF (first_fit);
+
+//  We now have a pointer to a free object which
+//  satisfies our request. We need to split it so
+//  that we get the amount we want, and the rest
+//  stays in the free list
+ASSERT (AfxIsValidAddress (first_fit,
+                       sizeof (MemoryObject)));
+ASSERT (first_fit-&gt;flags == unallocated);
+unsigned int total_block_size = size;
+//  Allocate in units of DWORDs
+total_block_size = ((total_block_size + 3) &gt;&gt; 2) &lt;&lt; 2;
+if (first_fit-&gt;mo_block_size &lt;
+   total_block_size + sizeof (MemoryObject))
+   {
+   //  We need to have space for this block plus at
+   //  least another MemoryObject. Not enough space
+   //  to split the block, so do not, just unchain
+   //  from free list
+   if (first_fit-&gt;prev_mo != NULL)
+      (cur_seg:&gt;first_fit-&gt;prev_mo)-&gt;next_mo =
+                          first_fit-&gt;next_mo;
+   else
+      //  This is the first block in the free list
+      allocated_block-&gt;free_list =
+                          first_fit-&gt;next_mo;
+   if (first_fit-&gt;next_mo != NULL)
+      (cur_seg:&gt;first_fit-&gt;next_mo)-&gt;prev_mo =
+                          first_fit-&gt;prev_mo;
+   else    //  This is the last block in the list
+      allocated_block-&gt;end_free_list =
+                          first_fit-&gt;prev_mo;
+   }
+else
+   {
+   FP_MOBJECT new_free =
+      (FP_MOBJECT) ((DWORD) first_fit +
+                   total_block_size);
+   //  Convert first_fit to DWORD, to increment by
+   //  units of bytes rather then MemoryObjects
+   ASSERT (AfxIsValidAddress (new_free,
+                       sizeof (MemoryObject)));
+   new_free-&gt;my_heap_block = first_fit-&gt;my_heap_block;
+   new_free-&gt;prev_mo = first_fit-&gt;prev_mo;
+   new_free-&gt;next_mo = first_fit-&gt;next_mo;
+   new_free-&gt;mo_block_size =
+      first_fit-&gt;mo_block_size - total_block_size;
+   new_free-&gt;SetAllocationFlag (unallocated);
+   first_fit-&gt;mo_block_size = total_block_size;
+   if (first_fit-&gt;prev_mo != NULL)
+      (cur_seg:&gt;first_fit-&gt;prev_mo)-&gt;next_mo=
+                MO_BASED_VOID_FROM_LP (new_free);
+   else   //  This is the first block in the list
+      allocated_block-&gt;free_list =
+                MO_BASED_VOID_FROM_LP (new_free);
+   if (first_fit-&gt;next_mo != NULL)
+      (cur_seg:&gt;first_fit-&gt;next_mo)-&gt;prev_mo =
+                MO_BASED_VOID_FROM_LP (new_free);
+   else    //This is the last block in the list
+      allocated_block-&gt;end_free_list =
+                MO_BASED_VOID_FROM_LP (new_free);
+   }
+
+//  We have removed the allocated block from the free
+//  list, so we need to add it to the in-use list
+if (allocated_block-&gt;in_use_list == NULL)
+   //  This is the first block to be allocated
+   {
+   allocated_block-&gt;end_in_use_list =
+          allocated_block-&gt;end_in_use_list =
+                 MO_BASED_VOID_FROM_LP (first_fit);
+   }
+else
+   //  Scan through the in-use list to insert the
+   //  block in address order
+   {
+   FP_MOBJECT p_mo =
+             cur_seg :&gt;allocated_block-&gt;in_use_list;
+   while (OFFSETOF (p_mo) != NULL)
+      if (first_fit &gt; p_mo) p_mo =
+                       cur_seg:&gt;p_mo-&gt;next_mo;
+      else break;
+   //  Now insert first_fit before p_mo
+   first_fit-&gt;next_mo = MO_BASED_VOID_FROM_LP (p_mo);
+   if (OFFSETOF (p_mo) == NULL)
+      {
+      //  We have reached the end of the list, so
+      //  insert here
+      #if defined (_DEBUG)
+      //  For easy display in the MSVC Debugger
+      //  Locals window
+      FP_MOBJECT trace1 =
+         cur_seg:&gt;allocated_block-&gt;end_in_use_list;
+      #endif
+      (cur_seg:&gt;allocated_block-&gt;end_in_use_list)
+         -&gt;next_mo
+            = MO_BASED_VOID_FROM_LP (first_fit);
+      first_fit-&gt;prev_mo =
+                allocated_block-&gt;end_in_use_list;
+      allocated_block-)end_in_use_list =
+                MO_BASED_VOID_FROM_LP (first_fit);
+      }
+   else
+      {
+      ASSERT (AfxIsValidAddress (p_mo,
+                       sizeof (MemoryObject)));
+      first_fit-&gt;prev_mo = p_mo-&gt;prev_mo;
+      if (p_mo-&gt;prev_mo == NULL)
+         //  This is the first block
+         allocated_block-&gt;in_use_list =
+                MO_BASED_VOID_FROM_LP (first_fit);
+      else
+         (cur_seg:&gt;p_mo-&gt;prev_mo)-&gt;next_mo =
+                MO_BASED_VOID_FROM_LP (first_fit);
+      p_mo-&gt;prev_mo =
+                MO_BASED_VOID_FROM_LP (first_fit);
+      }
+   }
+#if defined (_DEBUG)
+   first_fit-&gt;Lno = 0;
+   first_fit-&gt;Fname = NULL;
+#endif
+return first_fit;
+}
+
+void MemoryObject::operator delete (void FAR * p_void)
+{
+FP_MOBJECT p_mo = (FP_MOBJECT) p_void;
+ASSERT (AfxIsValidAddress (p_mo,
+                       sizeof (MemoryObject)));
+FP_FHB this_block = FarHeapBlock::GetHbFromHandle
+                           (p_mo-&gt;my_heap_block);
+if (this_block == NULL){
+   //  Unable to access block, raise memory exception
+   //    in non-debug build
+   AfxThrowMemoryException();
+   return;
+   }
+
+__segment cur_seg = (__segment) SELECTOROF (p_void);
+
+// ... debugging code not shown here
+//     due to space constraints ...
+
+//  First, unlink this block from the in-use list
+if (p_mo-&gt;prev_mo != NULL)
+   //  Point the previous block at the next block
+   (cur_seg:&gt;p_mo-&gt;prev_mo)-&gt;next_mo = p_mo-&gt;next_mo;
+else
+   {
+   //  This is the first block in the list
+   //  Check that the management structures also
+   //  think that it is the first block in the list
+   ASSERT (OFFSETOF (p_mo) ==
+             (WORD) (this_block-&gt;in_use_list));
+   //  The first block will now be the next block
+   this_block-&gt;in_use_list = p_mo-&gt;next_mo;
+   }
+
+if (p_mo-&gt;next_me != NULL)
+   //  Set the next block to point to the previous
+   //    block
+   (cur_seg:&gt;p_mo-&gt;next_mo)-&gt;prev_mo = p_mo-&gt;prev_mo;
+else
+   {
+   //  This is the last block in the list
+   //  Check that the management structures also
+   //  think that it is the last block in the list
+   ASSERT (OFFSETOF (p_mo) ==
+          (WORD) (this_block-&gt;end_in_use_list));
+   this_block-&gt;end_in_use_list = p_mo-&gt;prev_mo;
+   }
+
+//  Now chain the block back into the list of free
+//    blocks,
+if (this_block-&gt;free_list == NULL)
+   {
+   //  The free list is currently empty
+   //  Check that the management structures also
+   //  think that it is free
+   ASSERT (this_block-&gt;end_free_list == NULL);
+   this_block-&gt;free_list =
+             this_block-&gt;end_free_list =
+                MO_BASED_VOID_FROM_LP (p_mo);
+   p_mo-&gt;next_mo = p_mo-&gt;prev_mo = NULL;
+   }
+else
+   {
+   FP_MOBJECT insert_point =
+                cur_seg:&gt;this_block-&gt;free_list;
+   //  Starting at the beginning, scan through
+   //  the free list to find the insertion point.
+   //  Insert in memory order
+   while (OFFSETOF (insert_point) != NULL &amp;&amp;
+                 insert_point &lt;p_mo)
+      insert_point = cur_seg:&gt;insert_point-&gt;next_mo;
+
+   if (OFFSETOF (insert_point) == NULL)
+      {   //  insert at the end of the list
+      ASSERT ((cur_seg:&gt;this_block-&gt;end_free_list)
+                              -&gt;next_mo == NULL);
+      (cur_seg:&gt;this_block-&gt;end_free_list)-&gt;next_mo
+                    = MO_BASED_VOID_FROM_LP (p_mo):
+      p_mo-&gt;prev_mo = this_block-&gt;end_free_list;
+      p_mo-&gt;next_mo = NULL;
+      this_block-&gt;end_free_list
+                    MO_BASED_VOID_FROM_LP (p_mo);
+      }
+   else
+      {
+      //  Insert the block before insert_point
+      ASSERT (AfxIsValidAddress (insert_point,
+                       sizeof (MemoryObject)));
+      ASSERT (AfxIsValidAddress (p_mo,
+                       sizeof (MemoryObject)));
+      p_mo-&gt;next_mo =
+             MO_BASED_VOID_FROM_LP(insert_point);
+      p_mo-&gt;prev_mo = insert_point-&gt;prev_mo;
+      if (insert_point-)prev_mo == NULL)
+         {
+         //  p_mo to be the new first free block
+         ASSERT (insert_point ==
+                cur_seg:&gt;this_block-&gt;free_list);
+         this_block-&gt;free_list =
+                   MO_BASED_VOID_FROM_LP (p_mo);
+         }
+      else
+         (cur_seg:&gt;insert_point-)prev_mo)-&gt;next_mo
+                    = MO_BASED_VOID_FROM_LP (p_mo);
+      insert_point-&gt;prev_mo =
+                    MO_BASED_VOID_FROM_LP (p_mo);
+      }
+   }
+
+//  Now see whether it is possible to compact the
+//  inserted block with either (or both) of the
+//  adjacent blocks. First, can we combine it with
+//  the previous block?
+if (p_mo-&gt;prev_mo != NULL)
+   {
+   if ((DWORD) p_mo == (DWORD)(cur_seg:&gt;p_mo-&gt;prev_mo)
+          + (cur_seg:&gt;p_mo-&gt;prev_mo)-&gt;mo_block_size)
+      {   //  Compact with the previous block
+      (cur_seg:&gt;p_mo-)prev_mo)-&gt;next_mo =
+                                 p_mo-&gt;next_mo;
+      if (p_mo-&gt;next_mo == NULL)
+         {   //  this was the last block in the list
+         ASSERT (cur_seg:&gt;this_block-&gt;end_free_list
+                == p_mo);
+         this_block-&gt;end_free_list = p_mo-&gt;prev_mo;
+         }
+      else
+         (cur_seg:&gt;p_mo-&gt;next_mo)-&gt;prev_mo =
+                          p_mo-&gt;prev_mo;
+      (cur_seg:&gt;p_mo-&gt;prev_mo)-&gt;mo_block_size +=
+                          p_mo-&gt;mo_block_size;
+      //  Finally, as the block has been combined
+      //  with the one before, set the pointer to
+      //  that block
+      p_mo = cur_seg:&gt;p_mo-&gt;prev_mo;
+      }
+   }
+//  Can we combine it with the next block
+if (p_mo-&gt;next_mo != NULL)
+   {
+   if ((DWORD) p_mo + p_mo-&gt;mo_block_size ==
+                (DWORD) (cur_seg:&gt;p_mo-&gt;next_mo))
+      {   //  Compact with the next block
+      p_mo-&gt;mo_block_size +=
+         (cur_seg:&gt;p_mo-&gt;next_mo)-&gt;mo_block_size;
+      if ((cur_seg:&gt;p_mo-&gt;next_mo == NULL)
+         {
+         //  Next block is the last block in list
+         ASSERT (this_block-&gt;end_free_list ==
+                p_mo-&gt;next_mo);
+         this_block-&gt;end_free_list =
+             MO_BASED_VOID_FROM_LP (p_mo);
+         }
+      else
+         (cur_seg:&gt;(cur_seg:&gt;p_mo-&gt;next_mo)
+                   -&gt;next_mo)-&gt;prev_mo =
+             MO_BASED_VOID_FROM_LP (p_mo);
+      p_mo-&gt;next_mo =
+            (cur_seg:&gt;p_mo-&gt;next_mo)-&gt;next_mo;
+      }
+   }
+
+//  Finally, see if the FarHeapBlock is empty.
+//  If so, return it to Windows
+if (this_block-&gt;in_use_list == NULL)
+   {   //  The block is empty, return it to Windows
+   ASSERT (this_block-&gt;end_in_use_list == NULL);
+   delete this_block;
+   }
+}
+
+MemoryObject::MemoryObject ()
+{
+#if defined (_DEBUG)
+   flags = allocated;
+   _fstrcpy (validity_tag, validity_tag_value);
+#endif
+}
+
+MemoryObject::~MemoryObject ()
+{
+#if defined (_DEBUG)
+   if (_fstrcmp (validity_tag, validity_tag_value)
+      != 0)
+      {
+      TRACE0 ("MemoryObject::~MemoryObject()"
+             "attempting to delete an object with"
+             "an invalid tag!\n");
+      ASSERT (FALSE);
+      }
+   flags = unallocated;
+#endif
+}
+
+inline FP_MOBJECT MemoryObject::FindFreeSpace
+      (size_t size, FP_FHB &amp; block_allocated)
+{
+//  As this routine is only called once, from
+//  MemoryObject::new, it is declared as 'inline' for
+//  efficiency and speed
+
+//  First check that the requested size is within
+//  limits. We cannot allocate a block that is bigger
+//  that a FarHeapBlock less overheads.
+ASSERT (block_allocated-&gt;DefaultSize () &gt;
+      sizeof (FarHeapBlock) + sizeof(MemoryObject));
+if (size + sizeof (FarHeapBlock) +
+   sizeof (MemoryObject) &gt; block_allocated-&gt;DefaultSize ())
+   {
+   TRACE ("MemoryObject::FindFreeSpace cannot"
+         "allocate requested space\n");
+   ASSERT (FALSE);
+   return NULL;
+   }
+
+// ... code not shown here
+//     due to space constraints ...
+// End of File</pre>
+
+</BODY>
+</HTML>

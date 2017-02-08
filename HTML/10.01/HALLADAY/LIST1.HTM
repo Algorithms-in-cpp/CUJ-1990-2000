@@ -1,0 +1,231 @@
+<HTML><HEAD>
+<TITLE>January 1992/A Practical Use For Multiple Threads/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1</A></h4>
+<pre>/*
+ *      Traversal of multiple binary trees
+ */
+
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;assert.h&gt;
+
+#define BIGINT  (~(1 &lt;&lt; ((8*sizeof(int))-1)))  /* maximum integer */
+#define NNODES  25      /* the number of nodes per tree */
+#define NTREES  10      /* the number of binary trees to traverse */
+
+/* binary tree node definition */
+typedef struct node     {
+       struct node     *left;         /* left sub-tree */
+       struct node     *right;        /* right sub-tree */
+       int             key;           /* current node value */
+}       NODE;
+
+/***********************************************************************
+* the following section is the single threaded example
+***********************************************************************/
+#ifdef SINGLE_THREAD
+
+/* stack frame definition */
+typedef struct frame    {
+       struct node     *data;         /* the node being stacked */
+       struct frame    *next;         /* the next stack entry */
+}       FRAME;
+
+/* push a tree node onto the stack */
+void Push(FRAME **stackp, NODE *treep) {
+FRAME *temp;
+       assert(treep != NULL);
+       temp = malloc(sizeof(FRAME));
+       assert(temp != NULL);
+       temp-&gt;data = treep;
+       temp-&gt;next = *stackp;
+       (*stackp) = temp;
+       }
+
+/* get the top data item from the stack (without popping) */
+int Top(FRAME *stackp) {
+NODE    *tempt;
+
+       assert(stackp != NULL);
+       temp = stackp-&gt;data;
+       return(temp-&gt;key);
+}
+
+/* print the lowest value of all N trees */
+void DisplayLowest(FRAME *stackp[], int *lowest) {
+int current;
+int topvalue;
+int temp=BIGINT;
+int i;
+
+       /* for each tree in the list... */
+       for (i=0; i &lt; NTREES; i++) {
+              /* if the tree has not been completely traversed, */
+              if (stackp[i] != NULL) {
+                     /* get the current key of this tree */
+                     topvalue = Top(stackp[i]);
+                     /* compare the current key with the other trees */
+                     if (topvalue &lt; temp) {
+                            /* save the current tree number and its key */
+                            current = i;
+                            temp = topvalue;
+                     }
+              }
+       }
+       printf("key = %d\n", temp);
+       *lowest = current;
+}
+
+/* removes and returns the top entry from the stack */
+NODE *Pop(FRAME **stackp) {
+FRAME *temp;
+NODE *data;
+       
+       temp = *stackp;
+       *stackp = (*stackp)-&gt;next;
+       data = temp-&gt;data;
+       free(temp);
+       return(data);
+}
+
+/* traverse the right sub-tree */
+void TraverseRightSub(FRAME **stackp) {
+NODE *temp;
+FRAME *sframe;
+       
+       /* find the right sub-tree of the current node */
+       temp = Pop(stackp);
+       temp = temp-&gt;right;
+
+       /* traverse the sub tree as far left as possible */
+       while (temp != NULL) {
+              Push(stackp, temp);
+              temp = temp-&gt;left;
+       }
+}
+
+/* determine if there are unvisited nodes */
+int StacksExist(FRAME *stackp[]) {
+int i;
+
+       for (i = 0; i &lt; NTREES; i++){
+              if (stackp[i] != NULL)
+                     return(1);
+       }
+       return(0);
+}
+
+void MergeTrees(NODE *treep[]) {
+FRAME *stackp[NTREES];
+int i;
+
+       /* preload all stacks */
+       for (i = 0; i &lt; NTREES; i++) {
+              stackp[i] = NULL;
+              while (treep[i] != NULL) {
+                     Push(&amp;stackp[i], treep[i]);
+                     treep[i] = treep[i]-&gt;left;
+              }
+       }
+       do {
+              DisplayLowest(stackp, &amp;i);
+              TraverseRightSub(&amp;stackp[i]);
+       } while(StacksExist(stackp));
+}
+
+/*****************************************************************
+
+* the following section is the multi threaded example
+
+*****************************************************************/
+
+#else
+
+#include &lt;multi_c.h&gt;
+
+/* print the contents of a node (wait until it
+   is the lowest key)  */
+void     PrintNode(NODE *tree) {
+static   int     CurrentKey = BIGINT;
+
+       /* wait until this node contains the lowest key value */
+       do {
+              if (CurrentKey &gt; tree-&gt;key)
+                     CurrentKey = tree-&gt;key;
+              MtCYield();
+       } while (CurrentKey != tree-&gt;key);
+       /* reinitialize the current key */
+       CurrentKey = BIGINT;
+       printf("key = %d\n", tree-&gt;key);
+}
+
+/* recursively visit the nodes in a tree */
+void  PrintTree(NODE *tree) {
+
+       if (tree != NULL) {
+              PrintTree(tree-&gt;left);
+              PrintNode(tree);
+              PrintTree(tree-&gt;right);
+       }
+}
+
+/* traverse multiple binary trees */
+void    MergeTrees(NODE **trees) {
+int     i;
+
+       /* create a thread for each tree... */
+       for (i = 0; i &lt; NTREES; i++) {
+              MtCCoroutine(PrintTree(&amp;trees[i]));
+       }
+}
+
+#endif
+
+/* recursively add a node to the tree */
+void     AddKey(NODE **treep, int key) {
+
+       if ((*treep) == NULL) {
+              (*treep) = malloc(sizeof(NODE));
+              assert(*treep != NULL);
+              (*treep)-&gt;left = NULL;
+              (*treep)-&gt;right = NULL;
+              (*treep)-&gt;key = key;
+       } else {
+              if (key &lt; (*treep)-&gt;key) {
+                     AddKey(&amp;((*treep)-&gt;left), key);
+              } else {
+                     AddKey(&amp;((*treep)-&gt;right), key);
+              }
+       }
+}
+
+/* build a tree of NNODES random keys */
+void    BuildTree(NODE **treep) {
+int     i;
+
+       for (i = 0; i &lt; NNODES; i++) {
+              AddKey(treep, rand());
+       }
+}
+
+
+void    main() {
+NODE    *trees[NTREES];
+int     i;
+
+       /* randomly build the trees */
+       for (i = 0; i &lt; NTREES; i++) {
+              trees[i] = NULL;
+              BuildTree(&amp;trees[i]);
+       }
+       /* traverse the trees as a single tree */
+       MergeTrees(trees);
+}
+
+/* End of File */</pre>
+
+</BODY>
+</HTML>

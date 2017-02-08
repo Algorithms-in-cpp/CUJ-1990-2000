@@ -1,0 +1,236 @@
+<HTML><HEAD>
+<TITLE>May 1992/Implementing Direct Memory Access (DMA) in C/Listing 2</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 2 (adcdma.c) Routines for Data Acquisition through DMA on the Lab Master</A></h4>
+<pre>/*****************************************************
+
+       Routines for Data acquisition through DMA on the
+       Lab Master AD.
+
+       Copyright Don Bradley, 1991.
+
+       Permission is granted for used of these routines
+       in any manner as long as this copyright notice is
+       included.
+
+       Tested using Quick C 2.5 and MSC 6.0 on a
+       Toshiba T5200.
+
+*****************************************************/
+
+#include &lt;io.h&gt;
+#include &lt;errno.h&gt;
+#include &lt;conio.h&gt;
+
+#include "dma.h"
+#include "labmastr.h"
+
+// DMA buffer
+static int far *dma_buffer;
+
+// DMA buffer index
+static unsigned int dma_buff_index;
+// previous DMA buffer index
+static unsigned int old_dma_buff_index;
+
+// number of conversions to collect
+static long num_to_collect;
+// number of conversions collected
+static long num_collected;
+
+// DMA finished flag
+static int dma_finished;
+// DMA channel number
+static int dma_chn;
+
+void (*process)(int);
+
+/*****************************************************
+       init_adc_dma is a routine used for dma controlled
+       analogue voltage input.
+
+       called by:
+
+       init_adc_dma(num_chn, num_samples, *freq, dma_chn,
+                            proc_func);
+
+       where
+              int num_chn           # of channels to sample.
+                                       Start channel is always
+                                       chn 0. Thus chans collect
+                                       are 0 ... num_chn-1
+              long num_samples     # of samples to collect.
+                                       A sample is the group of
+                                       channels
+              double *freq          Frequency of sampling in Hz.
+              int dma_chn                DMA channel number from 5-7.
+              void(*proc_func)(int) process function to be
+                                called after each value is
+                                                   retrieved.
+*****************************************************/
+int init_adc_dma(unsigned int num_chn,
+              long num_samples, double *freq, int dma_channel,
+              void (*proc_func)(int))
+/*&amp; Setup adc for dma transfer. */
+       {
+       long length;
+       unsigned int i;
+       unsigned int dma_mode;
+
+       // check for proper passed values
+       if (dma_channel &lt; 5 || dma_channel &gt; 7)
+              return (0);
+
+       dma_chn = dma_channel;
+
+       disable_dma(dma_chn);
+
+       disable_adc();
+
+       if(num_chn &gt; MAX_CHANNELS)
+              return(FALSE);
+
+       if (*freq == 0.0)
+              return (FALSE);
+
+       process = proc_func;
+
+       /* create buffer for storing data in */
+
+       if(!(dma_buffer = alloc_dma_buffer(dma_chn,
+                ADC_DMA_BUFFER_LEN)))
+              return (FALSE);
+
+       clr_adc_dma_buffer();
+
+       // Frequency adjusted for number of channels.
+       // Next version will have a burst mode enabled.
+       *freq *= num_chn;
+
+       *freq = timerad(*freq);
+
+       // Readjust frequency for number of channels.
+       *freq /= num_chn;
+
+
+       // Setup the channel gain array.
+       for (i = 0;  i &lt; num_chn;  i++) {
+              outp(ADC_VIRTCHAN, i);
+              outp(ADC_CHN_GAIN_ARRAY,
+                       ADC_GAIN_1 | ADC_BANK_0 | i);
+              }
+
+       // set adc control register
+       outp(ADC_CONTROL, ADC_FIFO_ENABLE | ADC_SINGLE_ENDED | ((dma_chn - 4) &lt;&lt; 2));
+
+       outp(ADC_LASTCHAN, num_chn-1);
+
+       // Start converstions at channel zero
+       outp(ADC_VIRTCHAN, 0);
+
+       num_to_collect = num_chn * num_samples;
+       num_collected = 0L;
+
+       length = (num_to_collect &lt; (long)ADC_DMA_BUFFER_LEN) ? 
+          num_to_collect : (long)ADC_DMA_BUFFER_LEN;
+
+       // Setup dma transfer.
+       if(num_to_collect &gt; (long)ADC_DMA_BUFFER_LEN)
+              dma_mode = DMA_DEMAND_MODE | DMA_ADDRESS_INC |
+                      DMA_CONTINUOUS_ENABLE | DMA_ADC_TRANSFER;
+       else
+              dma_mode = DMA_DEMAND_MODE | DMA_ADDRESS_INC |
+                      DMA_CONTINUOUS_DISABLE | DMA_ADC_TRANSFER;
+
+       dma(dma_chn, dma_mode, dma_buffer, (unsigned int) length);
+
+       dma_finished = FALSE;
+
+       return (TRUE);
+       }
+
+void get_next adc_values()
+/*&amp; Returns the pointer to the next memory location,
+        increments appropriate buffer pointers. */
+       {
+
+       if(dma_buffer[dma_buff_index] == NON_ADC_VALUE)
+              return;
+
+       // wait until sample has been recorded
+       while(dma_buffer[dma_buff_index] != NON_ADC_VALUE) {
+
+              // Check for overrun by looking at last adc
+              // buffer location. If this     location has a valid
+              // adc value then an overrun has occurred. An
+              // over run condtion will result in automatic
+              // termination of adc collection. To detect an
+              // overrun the number of samples collected will
+              // be less than those requested.
+
+              if(dma_buffer[old_dma_buff_index] != NON_ADC_VALUE) {
+                    terminate_adc_dma();
+                    return;
+                    }
+
+              process(dma_buffer[dma_buff_index]);
+
+              // clear collected value from DMA buffer
+              dma_buffer[dma_buff_index] = NON_ADC_VALUE;
+
+              // increment buffer pointer
+              old_dma_buff_index = dma_buff_index;
+              if (++dma_buff_index &gt;= ADC_DMA_BUFFER_LEN)
+                    dma_buff_index = 0;
+
+              // Increment number of conversions collected.
+              // Used in automatic termination for repetitive
+              // sampling under DMA.
+              if(++num_collected &gt;= num_to_collect) {
+                    terminate_adc_dma();
+                    return;
+                    }
+              }
+       }
+
+void terminate_adc_dma()
+/* Terminates adc dma collection. */
+       {
+       disable_dma(dma_chn);
+       outp(ADC_CONTROL, 0);
+
+       free_dma_buffer(dma_chn);
+
+       dma_finished = TRUE;
+       }
+
+void clr_adc_dma_buffer()
+/*&amp; Clears the adc buffer to a non possible value. */
+{
+       unsigned int i;
+
+       for (i = 0;  i &lt; ADC_ DMA_BUFFER_LEN; i++)
+              dma_buffer[i] = NON_ADC_VALUE;
+
+       dma_buff_index = 0;
+       old_dma_buff_index = ADC_DMA_BUFFER_LEN-1;
+}
+
+int adc_dma_done(void)
+/*&amp; Returns TRUE if all conversions are done. */
+       {
+       return(dma_finished);
+       }
+
+long adc_dma_conversion_count()
+/*&amp; Returns the number of samples collected. */
+       {
+       return(num_collected);
+       }
+
+/* End of File */
+</pre>
+</BODY>
+</HTML>

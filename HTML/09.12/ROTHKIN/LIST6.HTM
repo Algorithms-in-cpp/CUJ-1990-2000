@@ -1,0 +1,205 @@
+<HTML><HEAD>
+<TITLE>December 1991/PC UART Device Driver/Listing 6</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 6 (term.c) Simple Terminal Emulation Program that Demonstrates the Use of the UART API.</A></h4>
+<pre>#include &lt;conio.h&gt;
+#include &lt;malloc.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;stddef.h&gt;
+#include "uart.h"
+
+void Usage(void);
+
+main()
+{
+   static char a_funcname[] = "TERM-main:";
+   int retcode,running,rx_tx_char,input_echo;
+   unsigned int cur_port;
+   struct t_port_info *p_cur_port_info;
+
+   printf("\nTERM - Initializing...\n");
+
+   g_uart_irq = 4;
+   g_num_ports = 1;
+
+   /* Allocate space for an array where we will store
+      information about all the ports */
+   gp_port_info = (struct t_port_info *)
+      calloc(g_num_ports,sizeof(struct t_port_info));
+   if (gp_port_info == NULL)
+   {
+      fprintf(stderr,"%s No memory for port info\n",
+             a_funcname);
+      exit(1);
+   }
+
+   /* Set parameters for each port */
+   gp_port_info[0].base_address = Ox3f8; /* COM1 */
+   gp_port_info[0].baud_rate = 2400L;
+   gp_port_info[0].data_bits = 8;
+   gp_port_info[0].parity = 0;      /* No Parity */
+   gp_port_info[0].stop_bits = 1;
+
+   /* Port will use hardware flow control */
+   gp_port_info[0].obey_rts_cts = 1;
+
+   /* Initialize the UART API */
+   retcode = Init_UART();
+   if (retcode == -1)
+   {
+      fprintf(stderr,
+         "%s Unable to initialize UART API\n",
+         a_funcname);
+      exit(1);
+   }
+
+   /* Display function key menu */
+   Usage();
+
+   cur_port = 1;
+   running = 1;
+   input_echo = 0;
+   printf("\nPort %u echo %s\n",cur_port,
+         (input_echo ? "on" : "off"));
+   while (running)
+   {
+      /* Check for received data */
+      rx_tx_char = Read_char(cur_port);
+      if (rx_tx_char &gt;= 0)
+      {   /* Got something! */
+
+         /* Display the received character */
+         printf("%c",(rx_tx_char &amp; 0x00ff));
+         /* Display any error conditions */
+         if (rx_tx_char &amp; OVERRUN_ERROR)
+            printf("\n\tOVERRUN\t");
+         if (rx_tx_char &amp; PARITY_ERROR)
+            printf("\n\tPARITY ERROR\t");
+         if (rx_tx_char &amp; FRAMING_ERROR)
+            printf("\n\tFRAMING_ERROR\t");
+         if (rx_tx_char &amp; BREAK_SIGNAL)
+            printf("\n\tBREAK\t");
+         if (rx_tx_char &amp; RING_INDICATION)
+            printf("\n\tRING\t");
+         if (rx_tx_char &amp; BUFFER_OVERRUN)
+            printf("\n\tBUFFER OVERRUN\t");
+
+      }   /* End received something */
+
+      /* Check the keyboard */
+      if (kbhit())
+      {   /* A key has been hit, retrieve it */
+         rx_tx_char = getch();
+         if (rx_tx_char == 0)
+         {   /* Function key was pressed */
+
+            /* Read and process the extended scan
+               code */
+            rx_tx_char = getch();
+            switch (rx_tx_char)
+            {
+                /* F1 - Help */
+                case 59 :
+                  Usage();
+                  break;
+
+                /* F2 - Toggle port number */
+                case 60 :
+                  cur_port++;
+                  if (cur_port &gt; g_num_ports)
+                     cur_port = 1;
+                  printf("\nPort %u\n",cur_port);
+                  break;
+
+                /* F3 - View port status */
+                case 61 :
+                  printf("\nPort %u echo %s\n",
+                    cur_port,
+                    (input_echo ? "on" : "off"));
+
+                  /* Set pointer to port's info
+                     entry */
+                  p_cur_port_info =
+                     &amp;(gp_port_info[cur_port -1]);
+
+                  printf("Base Address %4.4Xh\n",
+                     p_cur_port_info-&gt;
+                     base_address);
+                  if (p_cur_port_info-&gt;
+                     max_tx_chars &gt; 1)
+                     printf("\tUses FIFO\n\t");
+                  else
+                     printf("\tNo FIFO\n\t");
+
+                  printf("DSR %s DCD %s CTS %s\n",
+                     (p_cur_port_info-&gt;dsr_state ?
+                      "on" : "off"),
+                     (p_cur_port_info-&gt;dcd_state ?
+                      "on" : "off"),
+                     (p_cur_port_info-&gt;cts_state ?
+                      "on" : "off") );
+
+                  break;
+
+              /* F4 - Toggle input echo */
+              case 62 :
+                  if (input_echo)
+                     input_echo = 0;
+                  else
+                     input_echo = 1;
+                  printf("\nEcho %s\n",
+                     (input_echo ? "on" : "off"));
+                  break;
+
+              /* F10 - Exit */
+              case 68 :
+                  running = 0;
+                  break;
+
+              default : break;
+
+            }   /* End switch rx_tx_char */
+
+         }   /* End function key was pressed */
+         else
+         {   /* Normal key was pressed */
+
+            /* If echo is turned on, display the 
+               character entered */
+            if (input_echo)
+               printf("%c",(rx_tx_char &amp; 0x00ff));
+
+            /* Transmit the entered character */
+            Send_char(cur_port,(char) (rx_tx_char &amp;
+0x00ff) );
+
+         }   /* End normal key was pressed */
+
+      }   /* End a key has been hit */
+
+   }   /* End while running */
+
+   printf("\n\nShutting down...\n\n");
+
+   /* Exit to DOS after executing Exit_UART (registered
+      with atexit by Init_UART) */
+   exit(0);
+}
+
+void Usage(void)
+{
+   printf("\nTERM: F1=Help (this text)");
+   printf("\n      F2=Toggle current port number");
+   printf("\n      F3=View port status");
+   printf("\n      F4=Toggle input echo");
+   printf("\n     F10=Exit\n");
+   return;
+}
+
+/* End of File */
+</pre>
+</BODY>
+</HTML>

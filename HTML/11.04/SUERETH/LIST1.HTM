@@ -1,0 +1,430 @@
+<HTML><HEAD>
+<TITLE>April 1993/A Natural Language Processor/Listing 1</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 1 NATURAL.C <I>- A natural language processor</A></I></h4>
+<pre>/* copyright 1993 by Russ Suereth */
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+#include &lt;ctype.h&gt;
+
+#define ING 73          /* Restriction for ING word */
+
+void initialize(void);
+void reset_sentence(void);
+void get_record(char *);
+char *extract_word(void);
+int match_record(char *, int);
+char *extract_root(void);
+void check_underlying(void);
+int check_type(char *,int);
+void check_subject(void);
+void check_action(void);
+void check_place(void);
+void make_response(void);
+void make_answer(int);
+void get_verb_ing(void);
+int match_verb_ing(void);
+
+FILE *infile;
+char dic_record[80];
+int sentence;
+int word_ct;
+char word_array[10] [15];
+char root_array[10][15];
+char prime_types [10] [11];
+char phrases [10] [11];
+char type_array[10][5][11];
+char subjects [20] [15];
+char actions[20][15];
+char places[20][31];
+char response[80];
+
+void main()
+{
+   char *cur_word;
+   char in_sentence[80];
+
+   initialize();
+   if ((infile = fopen("diction", "r+")) == NULL) {
+      printf ("\nError opening dictionary\n");
+      exit(0);
+   }
+   printf("\nSentence: ");
+
+   while(gets(in_sentence)) {
+      if (in_sentence[O] == '\0') break;
+      reset_sentence();
+
+      cur_word = strtok(in_sentence, " ");
+      while(cur_word != NULL) {
+
+         get_record(cur_word);
+         cur_word = strtok(NULL," ");
+         if (++word_ct &gt; 9) break;
+      }
+
+      check_underlying();
+
+      check_subject();
+      check_action();
+      check_place();
+
+      make_response();
+      printf("Response: %s\n\nSentence: ", response);
+
+      if (++sentence &gt; 19) break;
+   }   /* end while */
+
+   fclose(infile);
+   return;
+}
+
+/*****************************************************/
+/* Initialize variables (subjects, actions and       */
+/* places arrays contain entries for 20 sentences).  */
+/*****************************************************/
+void initialize()
+{
+   int i;
+   for (i=0; i&lt;20; i++) {
+      subjects[i][0]   = '\0';
+      actions [i][0]   = '\0';
+      places[i][0]     = '\0';
+   }
+   sentence              = 0;
+   return;
+}
+
+/****************************************************/
+/* These variables are initialized for each new     */
+/* input sentence (each of the 10 word entries for  */
+/* the input sentence has 5 type_array entries).    */
+/****************************************************/
+void reset_sentence()
+{
+   int i,j;
+   word_ct  =  0;
+   for (i=0; i&lt;10; i++) {
+      word_array[i] [0]         = '\0';
+      root_array[i][0]          = '\0';
+      prime_types[i] [0]        = '\0';
+      phrases[i][0]             = '\0';
+      for (j=0; j&lt;5; j++)
+         type_array[i][j][0]  = '\0';
+   }
+   return;
+}
+
+/****************************************************/
+/* Get all the records from the dictionary. If the  */
+/* passed word is not in the dictionary, then the   */
+/* word could be a name.                            */
+/****************************************************/
+void get_record(char *pass_word)
+{
+   int types = 0;
+   rewind (infile);
+   fgets(dic_record, 80, infile);
+   while (! feof(infile)) {
+      if (match_record(pass_word, types) == 0)
+         types++;
+      fgets(dic_record, 80, infile);
+   }
+   if (types == 0) {
+      if (isupper( (int) pass_word[0]))
+         strcpy(type_array[word_ct][types], "NAME");
+      else
+         strcpy(type_array[word_ct][types], "NOTFOUND");
+   }
+   strcpy(word_array[word_ct], pass_word);
+   return;
+}
+
+/*******************************************************/
+/* Compare the passed word with the word in the        */
+/* current dictionary record. If they are the same,    */
+/* then extract the type (NOUN, VERB, etc.). If the    */
+/* type is a VERB, then also extract the root and      */
+/* and copy it to the root array.                      */
+/*******************************************************/
+int  match_record(char *pass_word, int types)
+{
+   int i, j;
+   char *root;
+   char *dic_word;
+   dic_word = extract_word();
+   /* Check if passed word equals dictionary word         */
+   if (strcmpi(pass_word, dic_word) != 0) return(1);
+
+   /* Word found, get the type                            */
+   for (i=14,j=0; i&lt;20; i++) {
+      if (isspace(dic_record[i])) break;
+      type_array[word_ct][types][j++] = dic_record[i];
+   }
+   /* Trim the type                                       */
+   type_array [word_ct][types][j] = '\0';
+
+   if (strcmp(type_array[word_ct][types],
+             "VERB") == 0) {
+      root = extract_root();
+      strcpy(root_array[word_ct], root);
+   }
+
+   return(0);
+}
+
+/******************************************************/
+/* Extract the word from the dictionary. The word is  */
+/* 14 characters in length and starts in column 1.    */
+/******************************************************/
+char *extract_word()
+{
+   int i, j;
+   char dic_word[15];
+   for (i=0,j=0; i&lt;14; i++) {
+      if (isspace(dic_record[i])) break;
+      dic_word[j++] = dic_record[i];
+   }
+   /* Trim the dictionary word                        */
+   dic_word[j] = '\0';
+   return(dic_word);
+}
+
+/******************************************************/
+/* Extract the root from the dictionary. It           */
+/* identifies a group of similar words (the root for  */
+/* run, ran, runs and running is run). It is 14       */
+/* characters in length and starts in column 35.      */
+/******************************************************/
+char *extract_root()
+{
+   int i, j;
+   char root[15];
+   for (i=34,j=0; i&lt;48; i++) {
+      if (isspace(dic_record[i])) break;
+      root[j++] = dic_record[i];
+   }
+   /* Trim the root */
+   root[j] = '\0';
+   return(root);
+}
+
+/******************************************************/
+/* Determine if the input sentence contains a known,  */
+/* underlying structure. If it does, then assign the  */
+/* correct types and phrases for the words.           */
+/******************************************************/
+void check_underlying()
+{
+   int i;
+
+   /* Structure WH-AUX-NAME-VERB                    */
+   i = 0;
+   if ( (check_type("WH", i) == 0) &amp;&amp;
+       (check_type("AUX", i+1) == 0) &amp;&amp;
+       (check_type("NAME", i+2) == 0) &amp;&amp;
+       (check_type("VERB", i+3) == 0) ) {
+      strcpy(prime_types[i], "WH");
+      strcpy(prime_types[i+1], "AUX");
+      strcpy(prime_types[i+2], "NAME");
+      strcpy(prime_types[i+3], "VERB");
+      strcpy(phrases[i], "WHQUESTION");
+      strcpy(phrases[i+1], "VERBPHRASE");
+      strcpy(phrases[i+2], "NOUNPHRASE");
+      strcpy(phrases[i+3], "VERBPHRASE");
+      return;
+   }
+
+   /* Structure NAME-AUX-VERB-PREP-DET-NOUN              */
+   if ( (check_type("NAME", i) == 0) &amp;&amp;
+       (check_type("AUX", i+1) == 0) &amp;&amp;
+       (check_type("VERB", i+2) == 0) &amp;&amp;
+       (check_type("PREP", i+3) == 0) &amp;&amp;
+       (check_type("DET", i+4) == 0) &amp;&amp;
+       (check_type("NOUN", i+5) == 0) ) {
+      strcpy(prime_types[i], "NAME");
+      strcpy(prime_types [i+1], "AUX");
+      strcpy(prime_types [i+2], "VERB");
+      strcpy(prime_types[i+3], "PREP");
+      strcpy(prime_types[i+4], "DET");
+      strcpy(prime_types[i+5], "NOUN");
+      strcpy(phrases[i], "NOUNPHRASE");
+      strcpy(phrases[i+1], "VERBPHRASE");
+      strcpy(phrases[i+2], "VERBPHRASE");
+      strcpy(phrases[i+3], "PREPPHRASE");
+      strcpy(phrases[i+4], "PREPPHRASE");
+      strcpy(phrases[i+5], "PREPPHRASE");
+      return;
+   }
+
+   return;
+}
+
+/******************************************************
+/* Compare the passed type with all the types for    */
+/* this word in the type_array. If the type is       */
+/* found, then return 0. The pass_number parameter   */
+/* identifies the word in the input sentence.        */
+/*****************************************************/
+int check_type(char *pass_type, int pass_number)
+{
+   int i;
+   for (i=0; type_array[pass_number][i][0]; i++) {
+      if (strcmp(type_array[pass_number][i],
+                pass_type) == 0)
+         /* Passed type is found in array                     */
+         return(0);
+   }
+   /* Passed type is not found in array  */
+   return(1);
+}
+
+/*****************************************************/
+/* If the correct type is "NAME", then the word      */
+/* refers to a subject so copy the word to the       */
+/* subjects array.                                   */
+/*****************************************************/
+void check_subject()
+{
+   int i;
+   for (i=0; i&lt;word_ct; i++) {
+      if (strcmp(prime_types[i], "NAME") == 0) {
+         strcpy(subjects[sentence], word_array[i]);
+         break;
+      }
+   }
+   return;
+}
+
+/*****************************************************/
+/* If the correct type is "VERB", then the word      */
+/* refers to an action so copy the word's root from  */
+/* the root array to the actions array.              */
+/*****************************************************/
+void check_action()
+{
+   int i;
+   for (i=0; i&lt;word_ct; i++) {
+      if (strcmp(prime_types[i], "VERB") == 0) {
+         strcpy(actions[sentence], root_array[i]);
+         break;
+      }
+   }
+   return;
+}
+
+/*****************************************************/
+/* If the phrase is a "PREPPHRASE", then all the     */
+/* words in the phrase refer to a place. Concatenate */
+/* these words to the places array.                  */
+/*****************************************************/
+void check_place()
+{
+   int i;
+   for (i=0; i&lt;word_ct; i++) {
+      if (strcmp(phrases[i], "PREPPHRASE") == 0) {
+         strcat(places[sentence], " ");
+         strcat(places[sentence], word_array[i]);
+      }
+   }
+   return;
+}
+
+/****************************************************/
+/* Determine the kind of response to generate. If   */
+/* the input sentence is a where-question and the   */
+/* subject and action is found in a previous array  */
+/* entry, then the response can state the location  */
+/* of where the subject and action occured.         */
+/****************************************************/
+void make_response()
+{
+   int i;
+
+   /* Last input sentence is not a where-question  */
+   if (strcmpi(word_array[0],"where") != 0) {
+      strcpy(response, "Ok");
+      return;
+   }
+
+   /* Last input sentence is a where-question      */
+   for (i=sentence-1; i &gt;= 0; i--]) {
+      if ( (strcmp(subjects[i],
+                  subjects[sentence]) == 0) &amp;&amp;
+          (strcmp(actions[i],
+                  actions[sentence]) == 0) &amp;&amp;
+          (strlen(places[i])           != 0) ) {
+         make_answer(i);
+         return;
+      }
+   }
+
+   /* Not enough information in actions and        */
+   /* subjects arrays.                             */
+   strcpy(response, "I don't know");
+   return;
+}
+
+/****************************************************/
+/* Generate a response that states the location of  */
+/* where the subject and action occured.            */
+/****************************************************/
+void make_answer(int prev_sentence)
+{
+   strcpy(response, subjects[prev_sentence]);
+   strcat(response, " ");
+   strcat(response, "was "};
+   get_verb_ing();
+   strcat(response, places[prev_sentence]);
+   return;
+}
+
+/****************************************************/
+/* Retrieve the ING version of the word from the    */
+/* dictionary (the ING version of run is running).  */
+/****************************************************/
+void get_verb_ing()
+{
+   rewind (infile);
+   fgets(dic_record, 80, infile);
+   while (! feof(infile)) {
+      if (match_verb_ing() == 0) break;
+      fgets(dic_record, 80, infile);
+   }
+   return;
+}
+
+/******************************************************/
+/* If the root in the current dictionary record       */
+/* matches the root in the actions array, and the     */
+/* current dictionary record has an ING restriction,  */
+/* then extract the dictionary word and return O.     */
+/******************************************************/
+int match_verb_ing()
+{
+   int i;
+   char *root;
+   char *dic_word;
+
+   root = extract_root();
+   if (strcmp(actions[sentence],root) == 0) {
+      /* Root found, look for ING restriction       */
+      for (i=24; i&lt;33; i++) {
+          if (isspace(dic_record[i])) break;
+          if (dic_record[i] == ING) {
+             dic_word = extract_word();
+             strcat(response, dic_word);
+             return(0);
+          }
+      }
+   }
+   return(1);
+}
+
+/* End of File */
+</pre>
+</BODY>
+</HTML>

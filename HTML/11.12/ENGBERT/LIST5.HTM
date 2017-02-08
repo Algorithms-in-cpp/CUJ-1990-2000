@@ -1,0 +1,366 @@
+<HTML><HEAD>
+<TITLE>December 1993/On-The-Fly Huffman Coding/Listing 5</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 5 <I>Main compression/decompression program</I></A></h4>
+<pre>/*                            MAIN.C
+**
+**  MAIN module for developing compression algorithms,
+**  opens input file and output files.
+**
+**  Calls the following 'compress library' functions:
+**              get_arguments
+**              compress
+**              decompress
+**      input_is_compressed etc.
+*/
+
+
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;    /* strrchr() */
+#include &lt;ctype.h&gt;
+#include &lt;signal.h&gt;
+#include &lt;sys\types.h&gt;
+#include &lt;sys\stat.h&gt;
+#include &lt;io.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;dos.h&gt;
+#include &lt;fcntl.h&gt;
+
+#include "config.h"
+#include "proto.h"   /* function prototypes*/
+
+#define MAX_LENGTH 128
+/*outfile_name, infile_name etc. are all concatenated
+from command line, which is not longer than 128 chars */
+
+static int exit_stat= 0;
+static char outfile_name[MAX_LENGTH] = {""};
+static char infile_name[MAX_LENGTH];
+static char output_directory[MAX_LENGTH] = {""};
+
+void onintr () {
+   unlink ( outfile_name );
+   exit ( 1 );
+}
+
+
+writeerr() {
+   perror ( outfile_name );
+   unlink ( outfile_name );
+   exit ( 1 );
+}
+
+
+
+static struct star starbuf;
+
+#ifdef COMPRESS
+
+static long int fsize;  /* uncompressed file size*/
+
+/************ copy_mode **************************/
+
+
+int copy_mode() {
+   int mode;
+      if (stat(infile_name, &amp;statbuf)) {
+             /* Get stat on input file */
+      perror(infile_name);
+             exit(0);
+      } else {
+#ifdef COMPRESS
+             fsize = (long) statbuf.st_size;
+#endif
+             mode = statbuf.st_mode &amp; 07777;
+             return mode;
+      }
+}
+#else COMPRESS
+
+/*********** set_mode ***************************/
+
+set_mode(int mode) {
+             if (chmod(outfile_name, mode)) {
+          perror(outfile_name);
+                    exit(0);
+             } else;
+}
+
+#endif
+
+
+static int date;
+static int time;
+static union REGS in;
+static union REGS out;
+static union REGS *inregs: &amp;in;
+static union REGS *outregs = &amp;out;
+
+#ifdef COMPRESS
+
+/********* copy_date_time() *****************/
+
+/* copy date and time to compressed file */
+
+copy_date_time() {
+unsigned int handle;
+
+             handle = open(infile_name, O_RDONLY);
+             if (!handle) {
+                    fprintf(stderr,  "Can't open file %s\n",
+                      infile_name);
+             } else {
+                    inregs-&gt;x.ax = 0x5700;
+                                   /* get date,time */
+                    inregs-&gt;x.bx = handle;
+                    intdos(inregs, outregs);
+                    if (outregs-&gt;x.cflag != 0) {
+                           perror(infile_name);
+                           exit(0);
+                    } else {
+                           date = outregs-&gt;x.cx;
+                           time = outregs-&gt;x.dx;
+                    }
+             }
+}
+#else
+
+/*************** set_date_time() *********************
+
+set_date_time() {
+int handle;
+      handle = open (outfile_name, 0_WRONLY);
+      if (!handle) {
+             fprintf(stderr," Can't open file %s\n", outfile_name);
+             exit(0);
+      } else {
+             inregs-&gt;x.ax = 0x5701; /* set date and time */
+             inregs-&gt;x.bx = (int) handle;
+             inregs-&gt;x.cx = date;
+             inregs-&gt;x.dx = time;
+             intdos(inregs,outregs);
+             if (outregs-&gt;x.cflag) fprintf(stderr,
+              " Can't write date/time to %s\n",
+              outfile_name);
+             else;
+      }
+}
+
+#endif
+
+
+/********** main () *****************************/
+
+main(int argc, char **argv ) {
+       int overwrite = 0;
+       /* Do not overwrite unless given -f flag */
+   char **filelist, **fileptr;
+       char *cp, *sufp;
+       /*cp = char pointer, sufp = suffix pointer */
+#ifdef COMPRESS
+       FILE *stream = 0;
+       char *infile_name_pointer;
+#endif
+       unsigned int mode;
+       int i,j,k;
+       char c;
+
+       signal ( SIGINT, onintr );
+
+       filelist = get_arguments(argc, argv, &amp;overwrite,
+       &amp;output_directory[0]); /* points to filenames*/
+       if (*filelist == NULL) {
+              /* if no filelist given on command line */
+              usage();
+       } else {
+              /* We can compress any number of files:
+                Will only compress regular files
+                (no directories)*/
+       for (fileptr = filelist; *fileptr; fileptr++) {
+#ifdef COMPRESS
+                    /* Check for 'reserved' extension: */
+                    if ((cp = strrchr(*fileptr, '.'))
+                       != NULL ) cp++; /*if '.' present */
+                    else cp =" ";
+                    if ( is_our_extension(cp) ) {
+                           /* if they are the same */
+                           fprintf(stderr,
+                            "%s: already has extension %s, file"
+                            "file not changed\n", *fileptr,--cp);
+                           continue;
+                    } else;
+
+                    /* Open input file for compression */
+                    if ((freopen(*fileptr, "rb", stdin))
+                             == NULL) {
+                           perror(*fileptr);
+                           continue;
+                    } else {
+                           strcpy (infile_name,*fileptr);
+                           /* set global infile_name*/
+                           /* and strip any path: */
+                           infile_name_pointer =
+                            strrchr(infile_name,'\\');
+                           if (!infile_name_pointer)
+                            infile_name_pointer =
+                             strrchr(infile_name,':');
+                           else;
+                           if (!infile_name_pointer)
+                            infile_name_pointer = infile_name;
+                           else infile_name_pointer++;
+                           /* point beyond ; or \ */
+                    }
+
+                     /* set up output filename,
+                     = first argument + extension */
+
+                  if (!stream) {
+                         /* Generate output filename */
+                         strcpy(outfile_name, output_directory);
+                         if (*outfile_name) {
+                               c = outfile_name
+                                [strlen(outfile_name)-1];
+                               if ( c != ':' &amp;&amp; c != '\\')
+                                 strcat(outfile_name,"\\");
+                                 /* '\' separates directory and file */
+                               else;
+                         } else;
+                         strcat(outfile_name, infile_name_pointer);
+                         /* use infile_name_pointer, which has no path */
+                         cp: outfile_name;
+                         if ((sufp = strrchr(cp, '.')) != NULL )
+                            *++sufp = '\0'; /*if there is a '.' */
+                         else strcat(outfile_name,".");
+                         strcat(outfile_name, return_extension() );
+                  } else;  /* we have valid output filename */
+
+#else COMPRESS
+
+                  /* Check for 'reserved' extension: */
+                  cp = *fileptr + strlen(*fileptr) - 3;
+                  if (is_our_extension(cp));
+                  /* if file has expected extension, no action */
+                  else {
+                         fprintf(stderr,"%s: extension %s expected"
+                         " -- will open file nevertheless\n",
+                         *fileptr, return_extension() );
+                  }
+
+                  /* Open input file for decompression */
+                  if ((freopen(*fileptr, "rb", stdin)) == NULL) {
+                                perror(*fileptr);
+                                continue;
+                  } else strcpy (infile_name, fileptr);
+                  /* set global infile_name*/
+                  /* Check the magic number */
+                  if (!input_is_compressed()){
+                         fprintf(stderr,"File %s is not in compressed"
+                          " format\n",*fileptr);
+                         continue;  /*to to next file*/
+                  } else;
+
+#endif /*COMPRESS*/
+
+                  /* Check for overwrite of existing file */
+
+#ifdef COMPRESS
+                  if (!stream)
+#endif
+                  if (overwrite == 0 ) {
+             if (stat(outfile_name, &amp;statbuf) == 0) {
+                 char response[2];
+                 response[0] = 'n';
+                                 fprintf(stderr, "%s already exists;",
+                                   outfile_name);
+                                 fprintf(stderr," do you wish to over"
+                                  "write %s (y or n)? ", outfile_name);
+                                 fflush(stderr);
+                                 read(2, response, 2);
+                                 while (response[1]) != '\n') {
+                                    if (read(2, response+1, 1) &lt; 0) {
+                                          perror("stderr"); break;
+                                    }
+                                 }
+                                 if (tolower(response[0]) != 'y') {
+                    fprintf(stderr, "\tnot overwritten\n");
+                    continue;
+                                 }
+                           }
+                    }
+
+#ifdef COMPRESS
+                    else;
+#endif
+
+#ifdef COMPRESS
+/* if we haven't opened the output file,
+** i.e. if this is our first file */
+                    if (!stream) {
+                           if ( (stream = freopen(outfile_name,
+                                  "wb", stdout)) == NULL) {
+                                perror(outfile_name);
+                                exit(0); /* cannot open output file) */
+                           } else;
+                           write_file_header ();
+                    } else;
+                    printf("%-12s",infile_name_pointer);
+                    /* output input-filename to compressed file */
+                    fprintf(stderr, "compressing %s:\n", *fileptr);
+                      /* for multiple files! */
+                    putw(copy_mode(),stdout);
+                    /* copy mode byte to file, set fsize */
+                    copy_date_time();
+                    putw(date,stdout);
+                    putw(time,stdout);
+                    exit_stat = compress(fsize);
+                    if (exit_stat == WRITE_ERR) writeerr();
+                    else;
+
+#else
+                    fprintf(stderr,"Uncompressing %s:\n",*fileptr );
+                    while ( (j = getchar() ) != EOF) {
+                           strcpy(outfile_name,output_directory);
+                           if (*outfile_name) {
+                                 c = outfile_name[strlen(outfile_name)-1];
+                                 if ( c != ':' &amp;&amp; c != '\\')
+                                  strcat(outfile_name,"\\");
+                                  /* separate directory and file names */
+                                 else;
+                           } else;
+                           outfile_name[k = strlen(outfile_name)] = j;
+                           for (i = 1; i&lt;12; i++)
+                              outfile_name[++k] = getchar();
+                           outfile_name[++k] = 0;
+                           if (freopen(outfile_name, "wb", stdout)
+                                  == NULL) {
+                                  perror(outfile_name);
+                                  exit(0);
+                           } else {
+                                  fprintf(stderr,"    %s\n", outfile_name);
+                                  /* get mode, time of compressed file: */
+                                  mode = getw(stdin);
+                                  date = getw(stdin);  /* get date */
+                                  time = getw(stdin);  /* get time */
+                                  exit_stat = decompress();
+                                  if (exit_stat == WRITE_ERR) writeerr();
+                                  else {
+                                        fclose (stdout);
+                                        set_date_time();
+                                        set_mode(mode);
+                                  }
+                           }
+                    } /* while there are more files to decompress*/
+#endif
+              }
+#ifdef COMPRESS
+       fclose (stdout);
+#endif
+       } /* else */
+} /* end of main() */
+
+/* End of File */
+</pre>
+</BODY>
+</HTML>

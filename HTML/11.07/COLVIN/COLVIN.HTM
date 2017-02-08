@@ -1,0 +1,228 @@
+
+
+<HTML>
+<HEAD>
+
+<TITLE>July 1993/Extending C for Object-Oriented Programming</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocjul.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Extending C for Object-Oriented Programming<A name="01C6_00A9"><A name="01C6_00A9"></font></h2><P>
+<h3 align="center"><font color="#800000"><A name="01C6_0000"><A name="01C6_0000">Gregory Colvin</font></h3><hr><blockquote><P>
+<P><i><A name="01C6_0000"><A name="01C6_0000">Although trained in cognitive psychology, Dr. Colvin has been happily hacking computers for twenty years. He has programmed professionally in C for the last ten years and in C++ for the last five, and is a member of X3J16, the ANSI C++ Standards committee. Greg is Scientist for Systems Development at Information Handling Services in Englewood, Colorado, 80150 (303-397-2848) and is on the Internet at gregc@ihs.com.</i></P><P>
+Three years ago my team and I set out to create two new programs for access to industry standards, vendor information, and catalog page images on CD-ROM. These programs were to be just the first of many, and though most of our customers were using only MS-DOS workstations we would soon need X Window, Microsoft Windows, and MacIntosh versions. We were less than six months from market. We met our goals with an object-oriented approach to C programming that may well serve others making the transition from C to C++.<P>
+In this article I present a redesigned and simplified version of the object macros of our tool kit kernel. Using this kernel it is possible to write object-oriented programs that can be compiled without change by either a Standard C compiler or a C++ compiler. If you need to implement an object-oriented design, an object-oriented language like C++, Smalltalk, or Eiffel will make your job much easier. But if you have compelling reasons to use Standard C this kernel may be of help. To motivate the presentation I will present a design for a simple file access facility and show how the design can be implemented in four different ways: traditional C, C++, object-oriented C, and C extended with object macros.<P>
+<h4><FONT COLOR="#000080"><A name="01C6_00AA">Standard C<A name="01C6_00AA"></FONT></h4></P>
+My team was convinced that only an object-oriented design could make the rapid creation of so many applications, across so many platforms, reasonably painless. But the object-oriented languages available at that time were all deficient in either performance or portability &#151; C was the language we all knew and loved. After much debate we chose to design our systems as an object class hierarchy and do the first implementations in Standard C, with the intention of porting to C++ as soon as quality compilers were supported on all of our target platforms.<P>
+Standard C does not support object-oriented programming. According to Bjarne Stroustrup, to support a style of programming means to make it "convenient (reasonably easy, safe, and efficient) to use that style." It is certainly possible to implement a class hierarchy in C, as the Xt Intrinsics and the Motif and Open Look widget sets demonstrate. But even a cursory reading of "Inside A Widget" will reveal just how inconvenient C can be.<P>
+Fortunately, the C preprocessor does allow the syntax of C to be extended, and Standard C blesses and codifies the necessary stringizing (operator #) and tokenizing (operator ##), which required dirty tricks in older C dialects. We were thus able to extend Standard C to provide a more convenient object-oriented syntax in which to implement our design. Although not perfect, it allowed us to get our products to market on schedule, and has eased our transition to C++.<P>
+<h4><FONT COLOR="#000080"><A name="01C6_00AB">File Access: A Simple Example in C and C++<A name="01C6_00AB"></FONT></h4></P>
+Let's say we need to implement a <I>File</I> facility that allows files to be opened either by the Standard C <I>open</I> call or by Unix system calls, but accessed by the same <I>Read, Write</I>, and <I>Seek</I> methods, without needing to know how the file was opened. I have sketched out the design of such a facility in <A href="fig1.htm">Figure 1</a>.
+ The <I>File</I> class declares <I>Read, Write</I> and <I>Seek</I> methods with no defining functions. The derived <I>StdFile</I> and <I>UnixFile</I> classes define these methods with the appropriate functions, and extend the <I>File</I> interface with appropriately defined <I>Construct</I> and <I>Destruct</I> methods.<P>
+In a traditional C implementation, the <I>File</I> object would be defined by a structure with a tagged union, which could contain either a standard file handle or a UNIX file descriptor:<P>
+<pre>typedef struct {
+union {
+    FILE *hdl;
+    int dsc;
+} u;
+
+enum { STD, UNIX } tag;
+} File;</pre>
+The <I>File</I> methods would be defined by access functions that take a pointer to this structure and <I>switch</I> on the tag to call the appropriate functions. For instance:<P>
+<pre>int FileRead(File*p,void*buf,int n)
+{ switch (p-&gt;tag) {
+  case STD:
+    if (fread(buf,n,1,p-&gt;u.hdl)&lt;1)
+      return -1;
+    return n;
+  case UNIX:
+    return read(p-&gt;u.dsc,buf,n);
+  }
+return -1;
+}</pre>
+The disadvantage of this approach becomes evident once you attempt to extend the <I>file</I> object by adding more access functions (e.g., character I/O) or other ways of opening files (e.g., calls for other operating systems). Although our design calls for three distinct classes, each with its own methods, this implementation defines only one data structure for all three classes, and one function for each method. Thus, every new function you write must have a <I>switch</I> on the type tag and code for all classes. Even worse, adding a new type means adding new members to the <I>File</I> structure, adding new cases to every switch in every function, and rebuilding and retesting the entire facility and every other piece of code that uses this facility. Forget a case in one of your switches and your compiler may not complain, but some user of your facility eventually will. If you want to further extend your class hierarchy, say to derive a class of <I>UnixFile</I> with special buffering, then your structures and switches get even more complex.<P>
+These difficulties can be managed in a small program, but can easily become overwhelming in larger programs. Thus the traditional C approach is most appropriate for small programs, or for programs whose design is well-specified before implementation and not likely to change in the future.<P>
+<h4><FONT COLOR="#000080"><A name="01C6_00AC">The C++ Approach<A name="01C6_00AC"></FONT></h4></P>
+C++ can provide a solution that maps much more closely to our design. The abstract <I>File</I> interface is declared in a single structure that serves as an abstract base class. No data members are declared, just the common access methods, which are defined as <I>null</I> by default:<P>
+<pre>struct File {
+  virtual int Read(void*buf,int n)=0;
+  virtual int Write(void*buf,int n)=0;
+  virtual long Seek(long off,int pos)=0;
+}</pre>
+This declaration would typically be in a separate header, so that users of the access functions need include only the common interface.<P>
+The <I>StdFile</I> class is derived from <I>File</I>, with a class declaration in a header file:<P>
+<pre>class StdFile::File {
+  FILE *hdl;
+public:
+  virtual int Read(void*buf,int n);
+  virtual int Write(void*buf,int n);
+  virtual long Seek(long off,int pos);
+  StdFile(const char*nam,const char*acc);
+  ~StdFile();
+};</pre>
+The method definitions would go in a separate source file:<P>
+<pre>int StdFile::Read(void*buf,int n)=0;
+{ if (fread(buf,n,1,hdl)&lt;1)
+    return -1;
+  return n;
+}
+//...other methods...</pre>
+The <I>StdFile</I> and <I>~StdFile</I> functions are special. The <I>StdFile</I> function is the constructor, which acquires any resources needed by the object, in this case a file handle. The <I>~StdFile</I> function is the destructor, which releases those resources. All C++ classes must have a constructor and destructor. The compiler will provide default implementations if the programmer doesn't.<P>
+The <I>UnixFile</I> class is also derived from <I>File</I>, with a class declaration in a header file:<P>
+<pre>class UnixFile::File {
+  int dsc;
+public:
+  virtual int Read(void*buf,int n);
+  virtual int Write(void*buf,int n);
+  virtual long Seek(long off, int pos);
+  UnixFile(const char*nam, int omode,int cmode=0);
+ ~UnixFile();
+};</pre>
+Again, the method definitions go in a separate source file:<P>
+<pre>virtual int Read(void *buf,int n)
+{ return read(dsc,buf,n);
+}
+//...other methods...</pre>
+Class declarations and definitions are typically placed in separate files so that they can be modified and extended independently, with minimal recompilation.<P>
+In C++, virtual functions provide for polymorphism, without the need for switching on tag fields. Thus the function<P>
+<pre>int GetNextBlock(File*fp)
+{ return fp-&gt;Read(BlkBuf,BlkSz)
+}</pre>
+might call either <I>StdFile::Read</I> or <I>UnixFile::Read</I> depending on the type, at the time of the call, of the actual <I>p</I> parameter.<P>
+<h4><FONT COLOR="#000080"><A name="01C6_00AD">Implementing Classes in C<A name="01C6_00AD"></FONT></h4></P>
+Stroustrup's original C++ compiler, CFront, is a portable front-end that emits efficient and notoriously cryptic C code. The Xt Intrinsics implement classes with similar, if slightly less cryptic, techniques. You too can use these techniques to implement objects directly in C. A picture of one possible implementation is shown in <A href="fig2.htm">Figure 2</a>.
+ This implementation is rooted in a method table (called a <I>vtable</I> in CFront), which is a structure of pointers to functions, one pointer for each method:<P>
+<pre>typedef struct {
+  int (*Read)(void*obj,void*buf,int n);
+  int (*Write)(void*obj,void*buf,int n);
+  long (*Seek)(void*obj,long off,int pos);
+} FileVTable;</pre>
+Each base class includes a pointer to a table of this type as a member of its data structure:<P>
+<pre>typedef struct {
+   FileVTable *methods;
+} File;</pre>
+Using this approach, you can derive <I>StdFile</I> from <I>File</I> by nesting structure declarations:<P>
+<pre>typedef struct {
+  FileVTable base;
+  void (*Construct)(void*obj,const char*nam,const char*acc);
+  void (*Destruct)(void*obj);
+} StdFileVTable;
+typedef struct {
+  File base;
+  FILE *hdl;
+} StdFile;</pre>
+You can derive <I>UnixFile</I> from <I>File</I> in the same way:<P>
+<pre>typedef struct {
+  FileVTable base;
+  void (*Construct)(void*obj,const char*nam,int omode,int cmode=0);
+  void (*Destruct)(void*obj);
+} UnixFileVTable;
+typedef struct {
+  File base;
+  int dsc;
+} UnixFile;</pre>
+Because a pointer to a structure (in Standard C) has the same value as a pointer to its first member, any pointer to a <I>StdFile</I> or to a <I>UnixFile</I> also points to a <I>File</I>. (The first member of each is a <I>File</I>.) Thus a pointer to a <I>StdFile</I> or a <I>UnixFile</I> can be safely cast to a pointer to <I>File</I>. Of course, the methods pointer of each <I>StdFile</I> object must be initialized to an appropriate table of functions for the <I>StdFile</I> type:<P>
+<pre>int StdFileRead (void*obj,void*buf,int n)
+{ StdFile *this=obj;
+if (fread(buf,n,1,(this-&gt;hdl)&lt;1)
+  return -1;
+return n;
+}
+/*...other functions...*/
+StdFileVTable StdFileVT =
+{ { StdFileRead,
+    StdFileWrite,
+    StdFileSeek },
+  StdFileConstruct,
+  StdFileDestruct,
+};</pre>
+and each <I>UnixFile</I> object must be initialized to an appropriate table of functions for the <I>UnixFile</I> type:<P>
+<pre>int UnixFileRead(void*obj,void*buf,int n)
+{ UnixFile* this= obj;
+  return read(this-&gt;dsc,buf,n);
+}
+/*...other functions...*/
+UnixFileVTable UnixFileVT =
+{ { UnixFileRead,
+    UnixFileWrite,
+    UnixFileSeek },
+  StdFileConstruct,
+  StdFileDestruct,
+};</pre>
+Given these definitions, a C++ expression for calling a virtual function, such as <I>f</I><I>p-&gt;Read(buf, n)</I>, can be implemented as the C expression <I>((File*)fp)-&gt;methods-&gt;Read(fp,buf,n)</I>. This expression will call a different function, depending on whether <I>fp</I> is a <I>StdFile*</I> or a <I>UnixFile*</I>, since these structures are initialized to point to different method tables.<P>
+Notice that with this implementation the cost, in time and space, of a virtual function call is comparable to calling a function which must switch on a type tag. The time cost is just accessing and calling the function via the method table, versus making a normal function call followed by accessing and switching on the tag. The space cost is just one table of pointers for each class and one extra pointer in each object, versus the switch logic in each function and one type tag in each object.<P>
+It is far from convenient to directly implement objects in this way, but it can be done. To implement a large class hierarchy you must properly declare, define, and initialize a host of class data structures and method tables. Using the resulting objects requires a cryptic syntax with lots of unsafe type casting. If you do choose to implement objects in this way I recommend you follow the lead of the Xt Intrinsics: establish and follow strict conventions for laying out and naming your data structures, and hide the ugly details of object creation and method invocation behind a wall of access functions.<P>
+<h4><FONT COLOR="#000080"><A name="01C6_00AE">Extending C Syntax with Macros<A name="01C6_00AE"></FONT></h4></P>
+The features of C++ which I have chosen to support with my extensions are type safety, public classes, single inheritance, virtual functions (with a pointer to <I>this</I>), constructors, destructors, runtime type identification, and separate declaration and implementation of classes. These features were sufficient to meet our needs, and I was unable to go much farther within the constraints of the C preprocessor. I chose not to support multiple inheritance, and cannot see how to provide operator overloading, function overloading, default arguments, or access specifiers using macros. The industrial strength predecessor to this extension did provide simple templates and exception handling, but I have omitted those features from this version.<P>
+The syntax presented here did not spring full grown from my forehead. It has evolved over six years of trial and error. I have not been able to provide as concise a syntax or as much type safety as C++, but I have tried to ensure that incorrect syntax will cause compiler or runtime diagnostics. I use runtime type checking where compile-time checking is impractical.<P>
+<A href="list1.htm">Listing 1</a>
+(<I>objects.h</I>) and <A href="list2.htm">Listing 2</a>
+(<I>objects.c</I>) provide the full source code for my extension. The code disk for this article also includes a simple <I>File</I> facility implemented in my extension.<P>
+<h4><FONT COLOR="#000080"><A name="01C6_00AF">Declaring Classes<A name="01C6_00AF"></FONT></h4></P>
+Just as with a C structure, you must declare a class before it is used. As the syntax shows, a class is declared by separately declaring first the methods and then the members of the class, using the macro<P>
+<pre>DCL_METHODS( class-name,base-name,constructor-parameters )
+DCL_MEMBERS( class-name,base-name )</pre>
+and associated macros. Methods are declared as pointers to functions using the <I>DCL.METHOD( method-name, method-parameters, return-type)</I><I> </I>and <I>REDCL_METHOD</I> macros, and members are declared just like C structure members. Note that the <I>base-name</I> for the methods and members declarations must be the same. A single base class, <I>Object</I>, is provided to serve as the starting point for other classes. For example, the <I>StdFile</I> class is declared as:<P>
+<pre>DCL_METHODS (StdFile, File, (const char *nam, const char *acc))
+REDCL_METHOD(Seek,(long off, int pos),long);
+REDCL_METHOD(Read,(void *buf, int n),int);
+REDCL_METHOD(Write,(void *buf, int n),int);
+END_METHODS
+DCL_MEMBERS(StdFile,File)
+FILE *hdl;
+END_MEMBERS</pre>
+The class declaration macros expand to declarations of two structures, one for the class method table and one for the class data structure. The names for these structures are derived from the <I>class-name</I> via token pasting. Each of these structures includes the corresponding structure from its base class by token pasting with the <I>base-name</I>.<P>
+<h4><FONT COLOR="#000080"><A name="01C6_00B0">Defining and Implementing Classes<A name="01C6_00B0"></FONT></h4></P>
+The macro<P>
+<pre>METHOD( class-name, method-name, (parameter-list), return-type)</pre>
+begins the implementation of a method, the body of which is pretty much the same as for a C function. Within a method implementation the keyword <I>this</I> is defined as a pointer to an object of the same class as the method, just as in C++. The object pointers for each active method invocation are pushed on a separate stack (rather than being passed as parameters), which allows for runtime type checking and casting. This separate stack does increase the space and time for method invocation. In the MS-DOS version, I avoid this overhead by using Borland's inline 8086 assembler to pass the object pointer in a register. For instance, the <I>Read</I> method for the <I>StdFile</I> class is implemented as:<P>
+<pre>METHOD(StdFile,Read,(void*buf,int n),int)
+if (fread(buf,n,1,this-&gt;hdl) &lt; 1)
+    return -1;
+return n;
+END_METHOD</pre>
+Two special methods must be implemented for each class: the constructor and the destructor. Constructors begin with the <I>CONSTRUCTOR(</I> <I>class-name, method-parameters)</I> macro, followed by the <I>CONSTRUCT</I>(<I>base-name, </I><I>constructor-arguments)</I> macro to invoke the base class constructor and set the methods pointer to the class-name method table. At the entry to each constructor the methods pointer points to the method table for that class. Construction is from the base class out to the derived classes. The constructor for the <I>StdFile</I> class is implemented as:<P>
+<pre>CONSTRUCTOR(StdFile, (const char*nam,const char*acc))
+CONSTRUCT (File,()); 
+this-&gt;hdl = fopen(nam,acc);
+assert (this-&gt;hdl );
+END_CONSTRUCTOR</pre>
+Destructors begin with the <I>DESTRUCTOR(class-name)</I><I> </I>macro. At the entry to each destructor the methods pointer points to the method table for that class. At the exit of each destructor the object destruction function automatically invokes the base class destructor. Destruction is from the derived class back to the base classes. The destructor for the <I>StdFile</I> class is implemented as:<P>
+<pre>DESTRUCTOR(StdFile)
+fclose(this-&gt;hdl);
+END_DESTRUCTOR</pre>
+Once you have implemented a class's methods you must define the class itself. The class definition begins with the <I>DEF_CLASS( class-name, base-name</I> <I>)</I><I> </I>macro, and ends with the <I>END_DEF</I> macro. Within the class definition each new class method is defined with the <I>DEF_METHOD( base-name, method-name )</I> macro, and inherited methods are redefined with the <I>REDEF_METHOD( base-name, class-name, method-name</I> <I>) </I>macro. The <I>REDEF_METHOD</I> macro can, in the C version of the macro, be used at any tune to change the behavior of a class. (This is arguably a bug rather than a feature.) The <I>StdFile</I> class is defined as:<P>
+<pre>DEF_CLASS (StdFile,File)
+REDEF_METHOD(StdFile,File,Read);
+REDEF_METHOD(StdFile,File,Write);
+REDEF_METHOD(StdFile,File,Seek);
+END_CLASS</pre>
+The definition of a class is actually implemented as the definition of a method table and a runtime function to initialize the table with pointers to functions. This function is called by the <I>USE(class-name)</I> macro, which must be invoked before any actual use of the class.<P>
+<h4><FONT COLOR="#000080"><A name="01C6_00B1">Creating and Destroying Objects<A name="01C6_00B1"></FONT></h4></P>
+With these macros, you can construct objects in two places: on the stack or on the heap. Objects on the stack can exist only within the scope of their declaration, whereas objects on the heap can exist until explicitly destroyed.<P>
+To create an object on the stack, use the <I>PUSH(object-pointer, class-name, constructor-arguments)</I> macro. (This statement declares <I>object-name</I> as a pointer to an object of the specified class.) Destroy an object on the stack with the <I>POP(object-pointer)</I> macro <I>beore</I> it goes out of scope.<P>
+To create an object on the heap, use the <I>NEW(class-name, constructor-arguments)</I> macro. This expression evaluates to a pointer to an object of the specified class. Destroy an object on the heap with the <I>DELETE(object-pointer)</I> macro (when it is no longer needed). Both of these macros invoke the class destructor method, which should release any resources used by the object.<P>
+<h4><FONT COLOR="#000080"><A name="01C6_00B2">Using Objects<A name="01C6_00B2"></FONT></h4></P>
+You use objects primarily by invoking their methods, and also by accessing their data. You can invoke object methods polymorphically with the <I>SEND</I> macro, or monomorphically with the <I>CALL</I> macro. You can access object data through the object pointer.<P>
+The <I>SEND( object-pointer, base-name, method-name, method-arguments )</I> macro invokes the named method of the specified base class as redefined for the class of the <I>object-pointer</I>. The <I>SEND</I> macro calls the function pointed to by the <I>method-name</I> member of the method table pointed to by the first member of the object pointed to by <I>object-pointer</I>. Thus the runtime type of <I>object-pointer</I> determines which function is called.<P>
+The <I>CALL( object-pointer, class-name, base-name, method-name, method-arguments )</I> macro invokes the named method of the specified base class as redefined for the specified class. The <I>CALL</I> macro calls the function pointed to by the <I>method-name</I> member of the method table of the specified class. Thus the compiler determines which function to call.<P>
+Dynamic binding with <I>SEND</I> is the most common form of method invocation. Indeed, I created all of this macro machinery primarily to make dynamic binding possible. Static binding with <I>CALL</I> is most useful when a redefined class method must invoke an earlier definition of that method.<P>
+<h4><FONT COLOR="#000080"><A name="01C6_00B3">Discipline<A name="01C6_00B3"></FONT></h4></P>
+As the implementer of a class library you should always provide a public interface which defines access macros for every <I>SEND, CALL</I>, and data access operation needed by a user of a class. If enforcing data-hiding is more important than performance, then access functions, rather than macros, can be declared in a separate set of interface headers, and the library can be provided as compiled code only.<P>
+As the user of a class you should never directly access the methods and data of that class. You should always treat a class as a black box, using only the public interface, so that the implementer is free to change the private implementation details. C compilers cannot automatically enforce this discipline, as can C++ compilers, but discipline is needed nonetheless.<P>
+<h4><FONT COLOR="#000080"><A name="01C6_00B4">Porting C Classes to C++<A name="01C6_00B4"></FONT></h4></P>
+Even if you choose to implement your classes in C, you may want or need a C++ implementation in the future. You can accomplish this port by simply using my macros to generate C++ instead of C. For many of the macros, like <I>POP</I> and <I>END_METHOD</I>, the translation amounts to a no-op. In others, like <I>METHOD, SEND</I>, and <I>CALL</I>, simple C++ code is substituted for more cryptic C code. <A href="list2.htm">Listing 2</a>
+provides both C and C++ versions of all these macros. Interestingly enough, Borland's Turbo C++ compiler produces smaller and faster output than does its Turbo C compiler for the example <I>File</I> classes, so don't be fooled into thinking that C++ is necessarily less efficient than C.<P>
+When we moved our project to C++, I ran our code through a Standard C preprocessor and a code beautifier, and followed that with some hand editing. Using this approach I was able to port several thousand lines of our C class code to C++ in a few days. The resulting code did not, of course, take full advantage of the more powerful C++ features, but did provide a clean, working starting point for further development.<P>
+<h4><FONT COLOR="#000080"><A name="01C6_00B5">Conclusion<A name="01C6_00B5"></FONT></h4></P>
+C++ remains my first choice for implementing an object-oriented design. Nonetheless, there can be good reasons to choose C, including include contractual obligations, the need to use an industry standard language, severe portability or performance constraints, and the availability of trained staff.<P>
+Although Standard C does not support object-oriented programming, it can be extended &#151; using its own preprocessor &#151; to support the essentials of object-oriented programming in a way that is upwardly compatible with C++.<P>
+<h4>Sidebar: <a href="sidebar1.htm">What is an Object? A Quick Review</a></h4>
+<h4>Sidebar: <a href="sidebar2.htm">Extended C Syntax</a></h4>
+<h4>Sidebar: <a href="sidebar3.htm">The Hazards of Macros</a></h4>
+
+<h4><a href="../../../source/1993/jul93/colvin.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

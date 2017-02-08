@@ -1,0 +1,55 @@
+
+
+
+<HTML>
+<HEAD>
+
+<TITLE>June 1990/Decoding Group 3 Images</TITLE></HEAD>
+<body bgcolor="#ffffff">
+<H2><A HREF="../tocjun.htm"><IMG SRC="../../toc.gif" ALT="{back to toc}" WIDTH="54" HEIGHT="54"></A><FONT COLOR="#FF0000">   Features</FONT></H2>
+
+<hr><h2 align="center"><font color="#800000">Decoding Group 3 Images<A name="0148_00AF"><A name="0148_00AF"></font></h2><P>
+<h3 align="center"><font color="#800000"><A name="0148_0000"><A name="0148_0000">Michael P. Marking</font></h3><hr><blockquote><P>
+<P><i><A name="0148_0000"><A name="0148_0000">Michael P. Marking has developed systems for aircraft, factory automation, image manipulation, and secure, distributed transaction processing. He can be reached at Post Office Box 8039, Scottsdale, Arizona 85252-8039.</i></P><P>
+Group 3 encoding, used by most facsimile machines and optionally for TIFF image files, has become a common encoding technique for raster images. Here I'll describe a scheme for decoding entire bytes of a Group 3 image at once, rather than a bit at a time. This scheme is considerably faster than bit-oriented neutral schemes, but requires additional memory (for the decoding tables).<P>
+Group 3 encoding (defined by the CCITT specification listed in the bibliography) encodes each scan line or row of pixels using a Huffman technique. The codewords are predefined and fixed. Each codeword represents a run of black pixels, a run of white pixels, or an end-of-line (EOL). Fill bits (zeroes) may follow each line to allow the fax imaging mechanism a certain minimum printing time. TIFF files dispense with the <I>EOL</I> codes, but align each row on a byte boundary. Other non-fax applications bring their own variations to Group 3 practice.</FONT></FONT><P>
+Group 3 encoding efficiency varies with the type of image, because the fixed code set represents a compromise. (One should view the specification as nearly optimal in an economic or engineering sense, rather than in a mathematical sense.)<P>
+For text and line art images, a ratio between the sizes of the unencoded (bitmap) and encoded images of from 10:1 to 30:1 is typical. However, for scanned complex images such as photographs &#151; without dithering &#151; expect ratios from 1.5:1 to 3:1.<P>
+Both encoding and decoding require extensive bit manipulation, an activity at which few general-purpose processors are adept.<P>
+My procedure avoids this bit manipulation by decoding all possible inputs in advance rather than at run time &#151; much like table-driven CRC computations.<P>
+<A href="table1.htm">Table 1</a>
+lists the codewords as defined by the CCITT specification. Because the standard defines separate sets of codewords for white runs and for black runs, during decoding one must know whether the current run is white or black. (Warning: sometimes images are stored as negatives, requiring inversion of all bits to create a positive.) Each row is assumed to begin with a white run, which may be of zero length. There are two classes of codewords: "terminating" and "makeup". A run is always encoded as zero or more <I>makeup</I> codewords followed by exactly one <I>terminating</I> codeword. The run's length is the sum of the lengths represented by the separate codewords.<P>
+To understand the decoding process, examine the fragment of a naive decoding program in <A href="list1.htm">Listing 1</a>.
+ This algorithm is simple and compact, but slow.<P>
+The best implementation of the routine <I>next_bit ()</I>, which returns <I>0</I> or <I>1</I> as the next bit of the input image, will vary among machines, but will probably employ a rotating mask or an indexed set of masks.</FONT></FONT></FONT></FONT></FONT></FONT><P>
+<A href="list2.htm">Listing 2</a>
+shows the faster byte-wide method I promised. This method depends on two precomputed tables, the <I>branch</I> table and the <I>action</I> table. Like a state machine, this algorithm examines the next byte of the encoded image during each cycle, and then (depending on the algorithm's current state) executes zero or more actions and assumes a new state.<P>
+There are 216 states, corresponding to the 216 rows of the branch table. The incoming byte is used to select the column of the branch table. The value at the row-column coordinate is the offset into the action table at which the activity sequence for that combination is located.<P>
+Another warning: Some files assume that the bits within a byte are to be processed beginning with the least significant. In that case, you must flip the bits end-for-end before using the byte as an index. You can do this quickly by indexing into an appropriate 256-byte array. Alternatively, you can build the assumption into the tables.<P>
+Each of the states corresponds to a string of zero or more bits that have been read but which don't correspond to a codeword &#151; valid or otherwise &#151; and to an assumption about whether the next codeword is to represent a white run or a black run. The zero state corresponds to the assumption made at the beginning of an image (assuming no leading EOL): no bits yet seen, next run white.<P>
+<A href="table2.htm">Table 2</a>
+lists the action table's opcode definitions which are interpreted by the routine <I>decode_image()</I>. Each value of the single bytes opcode corresponds to a certain length of white or black run, to <I> EOL</I>, or to an invalid code (since not all possible codewords are used). A special value of 255 terminates the mini-program, and the following byte is the new state. You must provide routines <I>g3_white_run()</I>, <I>g3_black_run()</I>, <I>g3_invalid_code()</I>, and <I>g3_EOL()</I> appropriate for your application.</FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT></FONT><P>
+<A href="list3.htm">Listing 3</a>
+shows the program used to build the tables. Since it's used only once, I made no attempt to optimize it.<P>
+The heart of the program is <I>build_table()</I> which constructs the branch table and action table entries corresponding to one state, then recursively invokes itself to explore all possible subsequent states. <I>build_table()</I> returns the state number corresponding to the resulting entry. It maintains a reference table of already-computed entries, returning an existing entry where possible. The varying-length bit strings corresponding to undigested preceding bits are stored as <I>longs,</I> with the length of the string shifted to the more significant end of the <I>long.</I></FONT></FONT></FONT></FONT></FONT></FONT></FONT><P>
+Since the last entry in each series of actions is the new state of the decoding machine, and since <I>build_program(),</I> (which returns the value of this variable) writes to the action table, the location must be remembered and revisited when <I>build_table()</I> returns with its answer.</FONT></FONT></FONT></FONT><P>
+The <I>build-table()</I> routine is constructed as two nested loops. The outer loop steps through the 256 possible values of bytes that might be encountered with the given prefix. The inner loop appends each bit of one of these possible bytes to the current working bit string, and determines if the concatenation is a known code. When a known code is detected, <I>build_table()</I> generates the appropriate action table entry and nulls the working bit string before continuing. The next state is based on whatever bit string is left at the end of the possible byte. All of the bit-level stuff essentially is being done when the table is built rather than at decode time.</FONT></FONT></FONT></FONT><P>
+The rest of the table construction program is fairly straightforward and needs little explanation. A few general points:<P>
+First, the code is fairly portable. The main caution regards word sizes and a proper choice of memory model to correctly address the large arrays.<P>
+Second, the arrays may be initialized at compile time to avoid loading them at execution time. But, not every compiler will fail to complain at initialization of quarter- megabyte arrays.<P>
+Third, error handling has been limited in order not to obscure the algorithm: Appropriate code should be added.<P>
+Finally, with a little knowledge of the code generated by your compiler you can tune the decode algorithm. For example, there are often fast (but not portable) ways to calculate the offset into the branch table. If your compiler doesn't play such games, it may be wise to deceive it into doing so. It may also be profitable to substitute indexed jumps for the if statement where the action table is interpreted.<P>
+I wrote this program simply to demonstrate the algorithm. A production version might look somewhat different.<P>
+A similar technique may be used with Group 4 encoding (which achieves even higher coding densities). Group 4 encodes the pixels in a row by describing the changes or differences from the previous row.<P>
+A variety of programs for manipulation of Group 3 and Group 4 images and TIFF image files, including working versions of the programs described here, will soon be added to the CUG library as volume number 317.<P>
+<h4><FONT COLOR="#000080"><A name="0148_00B0">Bibliography<A name="0148_00B0"></FONT></h4></P>
+CCITT, Fascicle VII.3, Recommendation T.4: <I>Standardization of Group 3 Facsimile Apparatus for Document Transmission</I>, Geneva, amended 1984.<P>
+CCITT, Fascicle VII.3, Recommendation T.5: <I>General Aspects of Group 4 Facsimile Apparatus</I>, Malaga-Torremolinos, 1984.<P>
+CCITT, Fascicle VII.3, Recommendation T.6: <I>Facsimile Coding Schemes and Coding Control Functions for Group 4 Facsimile Apparatus</I>, Malaga-Torremolinos, 1984.<P>
+Aldus Corporation and Microsoft Corporation, Tag Image File Format - Revision 4.0, Seattle/Redmond, 1987.<P>
+
+<h4><a href="../../../source/1990/jun90/marking.zip">Get Article Source Code</a></h4>
+
+</BLOCKQUOTE>
+</BODY>
+</HTML>

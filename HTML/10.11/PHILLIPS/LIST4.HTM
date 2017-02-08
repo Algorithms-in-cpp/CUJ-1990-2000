@@ -1,0 +1,506 @@
+<HTML><HEAD>
+<TITLE>November 1992/Image Processing, Part 8/Listing 4</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 4<B></B> <B><I></B>Functions used for image zooming and shrinking</I></A></h4>
+<pre>     /*************************************************
+     *
+     *       file d:\cips\scale.c
+     *       Functions: This file contains
+     *          zoom_image_array
+     *          shrink_image_array
+     *          interpolate_pixel
+     *          average_pixel
+     *          median_pixel
+     *          get_scaling_options
+     *          blank_image_array
+     *       Purpose:
+     *          These functions implement image array
+     *          zooming (enlarging) and shrinking.
+     *       External Calls:
+     *          wtiff.c - does_not_exist
+     *                    round_off_image_size
+     *                    create_allocate_tiff_file
+     *                    write_array_into_tiff_image
+     *          tiff.c - read_tiff_header
+     *          rtiff.c - read_tiff_image
+     *          rstring.c - read_string
+     *          numcvrt.c - get_integer
+     *          filter.c - median_of
+     *       Modifications:
+     *          8 April 1992 - created
+     *
+     ************************************************/
+
+#include "d:\cips\cips.h"
+#include &lt;malloc.h&gt;
+
+    /*******************************************
+    *
+    *   zoom_image_array(...
+    *   This function zooms in on an input
+    *   image array. It zooms by enlarging
+    *   an input image array and writing the
+    *   resulting image arrays to an output
+    *   image file. It can zoom or enlarge by
+    *   a factor of 2 or 4.
+    *   You can zoom or enlarge an image array
+    *   by using either the replication or
+    *   interpolation methods.
+    *
+    *******************************************/
+
+zoom_image_array(in_name, out_name, the_image, out_image,
+         il, ie, ll, le, scale, method)
+   char   in_name[], out_name[], method[];
+   int    il, ie, ll, le, scale;
+   short  the_image[ROWS][COLS],
+         out_image[ROWS][COLS];
+{
+   int    A, B, a, b, count, factor, i, j, length, width;
+   struct tiff_header_struct image_header;
+
+         /*****************************************
+         *
+         *   Check the scale factor. If it is not
+         *   a valid factor (2 or 4), then set
+         *   it to 2.
+         *
+         ****************************************/
+
+   factor = scale;
+   if(factor != 2 &amp;&amp;
+      factor != 4) factor = 2;
+   
+   if (does_not_exist (out_name)) {
+      printf("\n\n output file does not exist %s", out_name);
+      read_tiff_header(in_name, &amp;image_header);
+      image_header.image_length = ROWS*factor;
+      image_header.image_width  = COLS*factor;
+      create_allocate_tiff_file(out_name, &amp;image_header, out_image);
+   }  /* ends if does_not_exist */
+
+         /*******************************************
+         *
+         *   Let me try to explain the nested loops
+         *   shown below.
+         *   We will enlarge the_image by the factor.
+         *   Therefore, we want to divide the_image
+         *   into parts of size ROWS/factor by
+         *   COLS/factor. We will loop through
+         *   the_image parts ROWS/factor and COLS/factor
+         *   using the loops over i and j.
+         *   We divided the_image into parts so we must
+         *   include all of these parts. That is why we
+         *   do the loops over A and B. There are
+         *   factor*factor parts.
+         *   Finally, we do the loops over a and b.
+         *   We must replicate every element in the_image
+         *   factor*factor times and put these into
+         *   out_image. The a and b loops perform this
+         *   task.
+         *   The equations inside the []'s for
+         *   the_image and out_image are also confusing.
+         *   If you work them out, you'll see that we
+         *   are bouncing through the image arrays
+         *   and fitting the pixels into the right
+         *   places.
+         *   The final proof is that this works.
+         *   One final note: the factor should divide
+         *   evenly into ROWS. For example, ROWS=100
+         *   so using a factor of 8 is not good.
+         *   100/8 = 12.5 and this leave you with
+         *   an empty strip along the right and
+         *   bottom edges of the out_image.
+         *
+         *****************************************/
+         
+         /*****************************************
+         *
+         *   Replication method
+         *
+         *****************************************+/
+   
+   if(method[0] == 'r' || method[0] == 'R'){
+      read_tiff_image(in_name, the_image, il, ie, ll, le);
+      count = 1;
+      for(A=0; A&lt;factor; A++){
+       for(B=0; B&lt;factor; B++){
+        for(i=0; i&lt;ROWS/factor; i++){
+         for(j=0; j&lt;COLS/factor; j++){
+          for(a=0; a&lt;factor; a++){
+           for(b=0; b&lt;factor; b++){
+             out_image[factor*i+a][factor*j+b] =
+              the_image[i+A*ROWS/factor][j+B*COLS/factor];
+           }  /* ends loop over b */
+          }  /* ends loop over a */
+         }  /* ends loop over j */
+        }  /* ends loop over i */
+        printf("\nzooming replication %3d of %3d",
+              count++, factor*factor);
+        write_array_into_tiff_image(out_name, out_image,
+           1+A*ROWS, 1+B*COLS, 101+A*ROWS, 101+B*COLS);
+       }  /* ends loop over B */
+      }  /* ends loop over A */
+   }  /* ends replication method */
+
+          /***************************
+          *
+          *   Interpolation method
+          *
+          ***************************/
+   
+   if(method[0] == 'i' || method[0] == 'I'){
+      read_tiff_image(in_name, the_image, il, ie, ll, le);
+      count = 1;
+      for(A=0; A&lt;factor; A++){
+         for(B=0; B&lt;factor; B++){
+          for(i=0; i&lt;ROWS/factor; i++){
+           for(j=0; j&lt;COLS/factor; j++){
+            for(a=0; a&lt;factor; a++){
+             for(b=0; b&lt;factor; b++){
+                out_image[factor*i+a][factor*j+b] =
+                  interpolate_pixel(the_image, A, B, i, j, a, b, factor);
+             }  /* ends loop over b */
+            }  /* ends loop over a */
+           }  /* ends loop over j */
+          }  /* ends loop over i */
+       printf("\nzooming interpolation %3d of %3d", count++, factor*factor);
+       write_array_into_tiff_image(out_name, out_image, 1+A*ROWS, 1+B*COLS, 101+A*ROWS, 101+B*COLS);
+     }  /* ends loop over B */
+    }  /* ends loop over A */
+   }  /* ends interpolation method */
+
+}  /* ends zoom_image_array */
+   /***********************************************
+   *
+   *    interpolate_pixel(...
+   *    This function interpolates between pixel
+   *    values and returns the interlopated value.
+   *
+   ***********************************************/
+
+interpolate_pixel(the_image, A, B, i, j, a, b, factor)
+   int A, B, a, b, factor, i, j;
+   short the_image[ROWS][COLS];
+{
+   int num, x = 0, y = 0;
+   short diff, result;
+   
+   if(a &gt; 0) y = 1;
+   if(b &gt; 0) x = 1;
+   diff = the_image[y+i+A*ROWS/factor][x+j+B*COLS/factor] -
+         the_image[i+A*ROWS/factor][j+B*COLS/factor];
+         
+         /***********************************************
+         *
+         *    If you are at the edge of the input image
+         *    array, then you cannot interpolate to the
+         *    next point because there is no next point.
+         *    Therefore, set the diff to 0.
+         *
+         ***********************************************/
+   
+   if((y+i+A*ROWS/factor) &gt;= ROWS) diff = 0;
+   if((x+j+B*COLS/factor) &gt;= COLS) diff = 0;
+   
+   num = a+b;
+   if(num &gt; factor) num = factor;
+   
+   result = the_image[i+A*ROWS/factor][j+B*COLS/factor] +
+           num*diff/factor;
+   return(result);
+}  /* ends interpolate_pixel */
+
+    /*******************************************
+    *
+    *   shrink_image_array(...
+    *   This function shrinks a part of an
+    *   image. It takes a part of an input
+    *   image (described by il1, ie1, ll1, le1)
+    *   shrinks a 200x200 or 400x400 area down
+    *   to a 100x100 array, and writes this result
+    *   to an output file. The location in the
+    *   output file is described by il2, ie2,
+    *   ll2, le2.
+    *   You can shrink the input image area
+    *   by using either the averaging, median,
+    *   or corner method.
+    *
+    *******************************************/
+    
+shrink_image_array(in_name, out_name, the_image, out_image,
+         il1, ie1, ll1, le1, il2, ie2, ll2, le2,
+         scale, method)
+   char   in_name[], out_name[], method[];
+   int    il1, ie1, ll1, le1,
+         il2, ie2, ll2, le2, scale;
+   short  the_image[ROWS][COLS],
+         out_image[ROWS][COLS];
+{
+   int    A, B, a, b, count, factor, i, j, length, width;
+   struct tiff_header_struct image_header;
+
+          /*******************************************
+          *
+          *   Check the scale factor. If it is not
+          *   a valid factor (2 or 4), then set it to 2.
+          *
+          *******************************************/
+
+   factor = scale;
+   if(factor != 2 &amp;&amp;
+      factor != 4) factor = 2;
+   
+   if(does_not_exist(out_name)){
+      printf("\n\n output file does not exist %s", out_name);
+      read_tiff_header(in_name, &amp;image_header);
+      image_header.image_length = ROWS;
+      image_header.image_width  = COLS;
+      create_allocate_tiff_file(out_name, &amp;image_header, out_image);
+   }  /* ends if does_not_exist */
+   
+   read_tiff_header(in_name, &amp;image_header);
+
+          /*******************************************
+          *
+          *   Let me try to explain the nested loops
+          *   shown below.
+          *   We will shrink the_image by the factor.
+          *   Therefore, we want to read in factor*factor
+          *   image arrays and produce one ROWS by COLS
+          *   array for writing to disk.
+          *   That is why we loop over A and B.
+          *   We want to set every pixel in the out_image
+          *   array so we loop over i and j.
+          *   The equations inside the out_image []'s
+          *   look a little strange. What we are doing is
+          *   setting every element and moving over every
+          *   time through the loops over A and B. The first
+          *   loop is for i=0,49 then i=50,99 for a factor=2
+          *   and ROWS=100.
+          *   The final proof is that this works.
+          *   One final note: the factor should divide
+          *   evenly into ROWS. For example, ROWS=100
+          *   so using a factor of 8 is not good.
+          *   100/8 = 12.5 and this leave you with
+          *   an empty strip along the right and
+          *   bottom edges of the out_image.
+          *
+          *******************************************/
+          
+          /********************************
+          *
+          *   Corner method
+          *
+          *********************************/
+   
+   if(method[0] == 'c' || method[0] == 'C'){
+      count = 1;
+      for(A=0; A&lt;factor; A++){
+       for(B=0; B&lt;factor; B++){
+        printf("\n shrinking by corner %3d of %3d", count++, factor*factor);
+        if(image_header.image_length &lt; il1+A*ROWS ||
+           image_header.image_width &lt; ie1+B*COLS)
+           blank_image_array(the_image);
+        else
+           read_tiff_image(in_name, the_image,
+                        il1+A*ROWS, ie1+B*COLS,
+                        ll1+A*ROWS, le1+B*COLS);
+        for(i=0; i&lt;ROWS/factor; i++){
+         for(j=0; j&lt;COLS/factor; j++){
+            out_image[i+A*ROWS/factor][j+B*COLS/factor] =
+                    the_image[factor*i][factor*j];
+         }  /* ends loop over j */
+        }  /* ends loop over i */
+       }  /* ends loop over B */
+      }  /* ends loop over A */
+      write_array_into_tiff_image(out_name, out_image, il2, ie2, ll2, le2);
+   }  /* ends corner method */
+   
+          /******************************
+          *
+          *   Average Method
+          *
+          ******************************/
+   
+   if(method[0] == 'a' || method[0] == `A'){
+      count = 1;
+      for(A=0; A&lt;factor; A++){
+       for(B=0; B&lt;factor; B++){
+        printf("\n shrinking by average %3d of %3d", count++, factor*factor);
+        if(image_header.image_length &lt; il1+A*ROWS ||
+           image_header.image_width &lt; ie1+B*COLS)
+           blank_image_array(the_image);
+        else
+           read_tiff_image(in_name, the_image,
+                        il1+A*ROWS, ie1+B*COLS,
+                        ll1+A*ROWS, le1+B*COLS);
+        for(i=0; i&lt;ROWS/factor; i++){
+         for(j=0; j&lt;COLS/factor; j++){
+            out_image[i+A*ROWS/factor][j+B*COLS/factor] =
+                 average_pixel(the_image, factor, i, j);
+         }  /* ends loop over j */
+        }  /* ends loop over i */
+       }  /* ends loop over B */
+      }  /* ends loop over A */
+      write_array_into_tiff_image(out_name, out_image, il2, ie2, ll2, le2);
+   }  /* ends average method */
+   
+          /************************
+          *
+          *   Median Method
+          *
+          *************************/
+   
+   if(method[0] == 'm' || method[0] == `M'){
+      count = 1;
+      for(A=0; A&lt;factor; A++){
+       for(B=0; B&lt;factor; B++){
+        printf("\n shrinking by median %3d of %3d", count++, factor*factor);
+        if(image_header.image_length &lt; il1+A*ROWS ||
+           image_header.image_width &lt; ie1+B*COLS)
+           blank_image_array(the_image);
+        else
+           read_tiff_image(in_name, the_image,
+                        il1+A*ROWS, ie1+B*COLS,
+                        ll1+A*ROWS, le1+B*COLS);
+        for(i=0; i&lt;ROWS/factor; i++){
+         for(j=0; j&lt;COLS/factor; j++){
+            out_image[i+A*ROWS/factor][j+B*COLS/factor] =
+                   median_pixel(the_image, factor, i, j);
+         }  /* ends loop over j */
+        }  /* ends loop over i */
+       }  /* ends loop over B */
+      }  /* ends loop over A */
+      write_array_into_tiff_image(out_name, out_image, il2, ie2, ll2, le2);
+   }  /* ends median method */
+}  /* ends shrink_image_array */
+
+    /***********************************************
+    *
+    *   average_pixel(. . .
+    *   This function calculates the average
+    *   pixel value of a factor x factor array
+    *   of pixels inside the the_image array.
+    *   The coordinates i and j point to the upper
+    *   left hand corner of the small array.
+    *
+    ***********************************************/
+
+average_pixel(the_image, factor, i, j)
+   int factor, i, j;
+   short the_image[ROWS][COLS];
+{
+   int a, b, result = 0;
+   for(a=0; a&lt;factor; a++)
+      for(b=0; b&lt;factor; b++)
+         result = result + the_image[factor*i+a][factor*j+a];
+   result = result/(factor*factor);
+   
+   return(result);
+}  /* ends average_pixel */
+
+    /*********************************************
+    *
+    *   median_pixel(. . .
+    *   This function calculates the median
+    *   pixel value of a factor x factor array
+    *   of pixels inside the the_image array.
+    *   The coordinates i and j point to the upper
+    *   left hand corner of the small array.
+    *
+    ***********************************************/
+
+median_pixel(the_image, factor, i, j)
+   int   factor, i, j;
+   short the_image[ROWS][COLS];
+{
+   int   a, b, count, ff, result = 0;
+   short *elements;
+   
+   ff       = factor*factor;
+   elements = (short *) malloc(ff* sizeof(short));
+   
+     count = 0;
+   for(a=0; a&lt;factor; a++){
+        for(b=0; b&lt;factor; b++){
+           elements[count] = the_image[factor*i+a][factor*j+b];
+             count++;
+       }
+     }
+     
+   result = median_of(elements, &amp;ff);
+   free(elements);
+   return(result);
+   
+}  /* ends median_pixel */
+   
+    /***********************************************
+    *
+    *   blank_image_array(. . .
+    *   This function blanks out an image array
+    *   by filling it with zeros.
+    *
+    **********************************************/
+
+blank_image_array(image)
+   short image[ROWS][COLS];
+{
+   int i, j;
+   for(i=0; i&lt;ROWS; i++)
+      for(j=0; j&lt;COLS; j++)
+         image[i][j] = 0;
+}  /* ends blank_image_array */
+
+    /***********************************************
+    *
+    *    get_scaling_options(. . .
+    *    This function queries the user for the
+    *    parameters needed to perform scaling.
+    *
+    ***********************************************/
+
+get_scaling_options(zoom_shrink, scale, method)
+   int *scale;
+   char method[], zoom_shrink[];
+{
+   int not_finished = 1, response;
+   
+   while(not_finished){
+      printf("\n\t1. Zoom or Shrink is - %s", zoom_shrink);
+      printf("\n\t2. Scale factor is %d", *scale);
+      printf("\n\t3. Scaling Method is - %s", method);
+      printf("\n\t     Replication or Interpolation for Zooming"
+            "\n\t     Averaging Median or Corner for Shrinking");
+      printf("\n\n\tEnter choice (0 = no change) __\b");
+      get_integer(&amp;response);
+      
+      if(response == 0){
+        not_finished = 0;
+      }
+      
+      if(response == 1){
+         printf("\nEnter Zoom or Shrink (z or s) __\b");
+         read_string(zoom_shrink);
+      }
+      
+      if(response == 2){
+         printf("\nEnter Scale Factor (2 or 4) __\b");
+         get_integer(scale);
+      }
+      
+      if(response == 3){
+         printf("\nEnter Scaling Method: " "Replication or Interpolation for Zooming"
+            "\n "Averaging Median or Corner for Shrinking"
+            "\n\t__\b");
+         read_string(method);
+      }
+      
+   }  /* ends while not_finished */
+}  /* ends get_scaling_options */
+/* End of File */
+</pre>
+</BODY>
+</HTML>

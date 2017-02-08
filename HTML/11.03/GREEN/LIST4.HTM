@@ -1,0 +1,205 @@
+<HTML><HEAD>
+<TITLE>March 1993/SSX -- Stack Swap eXecutive/Listing 4</TITLE></HEAD>
+
+<BODY BACKGROUND="" BGCOLOR="#FFFFFF" TEXT="#000000">
+
+<h4><A NAME="heading1">Listing 4 DEMO.C<I> &#151; demo code for </I>SSX</A></h4>
+<pre>*****************************************************/
+/*     By Tom Green and Dennis Cronin               */
+/*     10/19/92                                     */
+/****************************************************/
+
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;dos.h&gt;
+#include &lt;bios.h&gt;
+#include &lt;conio.h&gt;
+#include "ssx.h"
+
+/* vector for PC timer interrupt */
+#define TIMER_INT_VEC           8
+/* 18.2 clock ticks per second on PC */
+#define TICKS_PER_SECOND        18L
+
+#define NUM_PQ_TASKS            5
+#define NUM_TS_TASKS            5
+
+void key_task(void);
+void print_ts_count_task(void);
+void sys_time_task(void);
+void ts_task(void);
+void print_q_task(void);
+void interrupt tick_handler(void);
+
+unsigned int pq_task_counter=0;
+unsigned int ts_task_counter=0;
+wait_q print_q;
+void interrupt (*old_timer_int)(void);
+unsigned long pq_count[NUM_PQ_TASKS];
+unsigned long ts_count[NUM_TS_TASKS];
+
+void main(void)
+
+{
+   unsigned int i;
+
+   clrscr();
+
+   pq_task_counter=0;
+   ts_task_counter=0;
+
+   if((ssx_init()) == INIT_ERROR){
+      printf("\nError initting SSX");
+      exit(1);
+   }
+
+   /* set up timer tick interrupt handler */
+   old_timer_int = getvect(TIMER_INT_VEC);
+   setvect(TIMER_INT_VEC,tick_handler);
+
+   /* install print q tasks */
+   for(i = 1;i &lt;= NUM_PQ_TASKS;i++){
+      if((ssx_task_create(1,i,print_q_task,0x200,
+                       "task"))!=SUCCESS)
+         cprintf("\nError creating task %d",i);
+   }
+   /* install time slice tasks */
+   for(i = NUM_PQ_TASKS + 1;i &lt;= (NUM_TS_TASKS +
+                          NUM_PQ_TASKS);i++){
+      if((ssx_task_create(1,i,ts_task,0x200,
+         "ts_task"))!=SUCCESS)
+         cprintf("\nError creating ts task");
+   }
+
+   /* install print ts count task */
+   if((ssx_task_create(1,22,print_ts_count_task,0x200,
+      "pts_task"))!=SUCCESS)
+      cprintf("\nError creating ts count task");
+   /* install keypress task */
+   if((ssx_task_create(1,21,key_task,0x200,
+      "key_task"))!=SUCCESS)
+      cprintf("\nError creating keypress task");
+   /* install system time task */
+   if((ssx_task_create(1,23,sys_time_task,0x200,
+      "st_task"))!=SUCCESS)
+      cprintf("\nError creating system time task");
+   cprintf("\r\nDone creating tasks");
+   cprintf("\r\nPress key to start SSX");
+   bioskey(0);
+   clrscr();
+   SET_SEMAPHORE(&amp;print_q);
+   ssx_run();
+
+   /* reset to old timer int handler */
+   setvect(TIMER_INT_VEC,old_timer_int);
+
+   clrscr();
+}
+
+/* ts_task - time slice task. this task gets a full
+ *           time slice to increment counter.
+ *           print_ts_count_task prints counters.  */
+
+void ts_task(void)
+
+{
+   int task_num;
+
+   task_num = ts_task_counter++;
+   ts_count[task_num] = 0L;
+
+   while(1){
+   ts_count[task_num]++;
+   }
+}
+
+/* print_q_task - this task waits for print q we have
+ *                set up and then increments counter
+ *                and prints and then releases print q */
+
+void print_q_task(void)
+{
+   unsigned int y,task_num;
+
+   task_num = pq_task_counter++;
+   y = task_num + 1;
+   pq_count[task_num] = 0L;
+
+   while(1){
+      ssx_wait(&amp;print_q);
+      pq_count[task_num]++;
+      gotoxy(1,y);
+      cprintf("Task   %02d %08lx",task_num,
+
+             pq_count[task_num]);
+      ssx_alert(&amp;print_q);
+   }
+}
+
+/* print_ts_count_task - task that prints counts
+ *                       from time sliced tasks
+ *                       once every 3 seconds */
+
+void print_ts_count_task(void)
+{
+   int task_num;
+
+   while(1){
+      ssx_wait(&amp;print_q);
+      for(task_num = 0;task_num &lt; NUM_TS_TASKS;
+         task_num++){
+         gotoxy(1,task_num + NUM_TS_TASKS + 1);
+         cprintf("TS Task %02d %08lx",task_num,
+                ts_count[task_num]);
+      }
+      ssx_alert(&amp;print_q);
+      ssx_task_delay(3 * TICKS_PER_SECOND);
+   }
+}
+
+/* key_task - task that checks for keypress every
+ *            2 seconds. calls ssx_stop when key
+ *            is pressed                            */
+
+void key_task(void)
+{
+   while(1){
+      if((bioskey(1)) != 0){
+         bioskey(0);
+         ssx_stop();
+      }
+      ssx_task_delay(2 * TICKS_PER_SECOND);
+   }
+}
+
+/* sys_time_task - prints how long it has been
+ *                 running once every minute */
+
+void sys_time_task(void)
+{
+   int task_num;
+
+   while(1){
+      ssx_wait(&amp;print_q);
+      gotoxy(1,15);
+      cprintf("Sytem time = %08lx seconds",
+          ssx_get_time()/ TICKS_PER_SECOND);
+      ssx_alert(&amp;print_q);
+      ssx_task_delay(1 * TICKS_PER_SECOND);
+   }
+}
+
+/* tick_handler - handles 18.2 per second timer
+ *                interrupts on PC                */
+
+void interrupt tick_handler(void)
+{
+   /* call original PC timer handler */
+   (*old_timer_int)();
+   /* inform SSX of clock tick */
+   ssx_clock_tick();
+}
+/* End of File */</pre>
+
+</BODY>
+</HTML>
